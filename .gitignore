@@ -1,0 +1,17 @@
+# Binary
+agent
+
+# Data directory
+.gomuxai/
+
+# Build artifacts
+bin/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Test artifacts
+coverage.out
+*.test

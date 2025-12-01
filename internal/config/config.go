@@ -1,0 +1,154 @@
+// Package config provides configuration management for the agent tool.
+package config
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// Config holds runtime configuration for the agent tool.
+type Config struct {
+	// Backend is the name of the backend to use (e.g., "claude", "aider").
+	Backend string `json:"backend"`
+
+	// DatabasePath is the path to the SQLite database file.
+	DatabasePath string `json:"database_path"`
+
+	// LogDir is the directory for agent log files.
+	LogDir string `json:"log_dir"`
+
+	// StateDir is the directory for agent state files.
+	StateDir string `json:"state_dir"`
+
+	// SessionPrefix is the prefix for tmux session names.
+	SessionPrefix string `json:"session_prefix"`
+
+	// DefaultScrollback is the default number of lines to capture.
+	DefaultScrollback int `json:"default_scrollback"`
+
+	// SpawnTimeout is the maximum time to wait for agent spawn operations.
+	// Default: 30s
+	SpawnTimeout time.Duration `json:"spawn_timeout"`
+
+	// CaptureTimeout is the maximum time to wait for capture operations.
+	// Default: 10s
+	CaptureTimeout time.Duration `json:"capture_timeout"`
+
+	// StatusTimeout is the maximum time to wait for status queries.
+	// Default: 5s
+	StatusTimeout time.Duration `json:"status_timeout"`
+
+	// StartupDelay is the time to wait after launching a CLI before sending init message.
+	// Default: 2s (can be set to 0 for testing)
+	StartupDelay time.Duration `json:"startup_delay"`
+}
+
+// Default timeout values.
+const (
+	DefaultSpawnTimeout   = 30 * time.Second
+	DefaultCaptureTimeout = 10 * time.Second
+	DefaultStatusTimeout  = 5 * time.Second
+	DefaultStartupDelay   = 2 * time.Second
+)
+
+// StorageDirName is the name of the data directory.
+const StorageDirName = ".gomuxai"
+
+// getStorageDir returns the base directory for all gomuxai data.
+// Priority:
+//  1. Directory where the binary lives (truly portable)
+//  2. Current working directory (fallback)
+//
+// This ensures the tool is portable - no files in ~/
+func getStorageDir() string {
+	// Try to get the directory where the binary is located
+	exe, err := os.Executable()
+	if err == nil {
+		// Resolve any symlinks to get the real path
+		exe, err = filepath.EvalSymlinks(exe)
+		if err == nil {
+			return filepath.Join(filepath.Dir(exe), StorageDirName)
+		}
+	}
+
+	// Fallback: use current working directory
+	return StorageDirName
+}
+
+// DefaultConfig returns a Config with sensible defaults.
+// Note: Backend is intentionally empty - it must be explicitly provided.
+// Storage is relative to the binary location for portability.
+func DefaultConfig() *Config {
+	baseDir := getStorageDir()
+
+	return &Config{
+		Backend:           "", // Must be explicitly set
+		DatabasePath:      filepath.Join(baseDir, "gomuxai.db"),
+		LogDir:            filepath.Join(baseDir, "logs"),
+		StateDir:          filepath.Join(baseDir, "state"),
+		SessionPrefix:     "agent-",
+		DefaultScrollback: 500,
+		SpawnTimeout:      DefaultSpawnTimeout,
+		CaptureTimeout:    DefaultCaptureTimeout,
+		StatusTimeout:     DefaultStatusTimeout,
+		StartupDelay:      DefaultStartupDelay,
+	}
+}
+
+// LoadFromFile loads configuration from a JSON file.
+func LoadFromFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %w", err)
+	}
+
+	cfg := DefaultConfig()
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parsing config file: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// Validate checks that required configuration is present.
+func (c *Config) Validate() error {
+	if c.Backend == "" {
+		return fmt.Errorf("backend is required: use --backend <name> or --backend-config <file>")
+	}
+	return nil
+}
+
+// EnsureDirs creates necessary directories if they don't exist.
+func (c *Config) EnsureDirs() error {
+	dirs := []string{
+		filepath.Dir(c.DatabasePath),
+		c.LogDir,
+		c.StateDir,
+	}
+
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("creating directory %s: %w", dir, err)
+		}
+	}
+
+	return nil
+}
+
+// SessionName returns the full tmux session name for an agent.
+func (c *Config) SessionName(agentName string) string {
+	return c.SessionPrefix + agentName
+}
+
+// LogPath returns the log file path for an agent.
+func (c *Config) LogPath(agentName string) string {
+	return filepath.Join(c.LogDir, agentName+".log")
+}
+
+// StatePath returns the state directory path for an agent.
+func (c *Config) StatePath(agentName string) string {
+	return filepath.Join(c.StateDir, agentName)
+}
