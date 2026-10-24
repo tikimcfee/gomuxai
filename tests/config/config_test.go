@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/config"
+	"github.com/tikimcfee/gomuxai/internal/natsbus"
 )
 
 // ===========================================================================
@@ -629,4 +630,12 @@ func containsSubstringImpl(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// The default host becomes a bus subject token, so it must be subject-safe.
+func TestDefaultConfig_HostIsSubjectSafe(t *testing.T) {
+	host := config.DefaultConfig().Host
+	if err := natsbus.ValidateHost(host); err != nil {
+		t.Errorf("default host %q: %v", host, err)
+	}
 }

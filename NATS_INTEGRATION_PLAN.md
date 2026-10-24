@@ -1,5 +1,47 @@
 # NATS Integration Plan for gomuxai
 
+## Revision 2026-10: what changed, and what v1 actually builds
+
+The original plan (below, from March) still explains the motivation, but three things changed its design:
+
+1. **Status no longer needs NATS.** Claude and agy agents now report status through their own lifecycle hooks (`agent report --hook`), and Claude's own `claude agents --json` acts as a reconciler. See `exploration/claude-hooks-findings.md` and `exploration/agy-hooks-findings.md`. The "replace terminal scraping" half of this plan is done without a bus.
+2. **"First CLI process hosts the server" doesn't work.** Almost every `agent` command exits within milliseconds, and the hosting process shuts the server down on exit. v1 runs one long-lived `agent bus` per host instead; CLI commands are only ever clients.
+3. **Agents now live on more than one machine.** The biggest gap is cross-host reach: talking to an agent on another machine currently means SSH plus raw tmux.
+
+### v1 design
+
+- **SQLite stays each host's source of truth** for agents, state, messages, tasks, and logs. An agent *is* a tmux session on one host, so that host owns its state. NATS does not take over storage in v1; a JetStream-backed queue (delivery to a host that's offline at send time) is the one likely later addition.
+- **One `agent bus` per host.** Hosts link as NATS leaf nodes (a hub plus leaves). With no bus running, every command behaves as it does today for local agents.
+- **RPC:** `gomux.<host>.rpc.<op>` request/reply. A host's bus runs the op through its local `AgentService`. Ops: `list`, `status`, `capture`, `send`, `respond` (approve/deny), and `keys` (local callers only by default). CLI addressing: `name@host`.
+- **Events:** each recorded status report is published on `gomux.<host>.agent.<name>.status` (core NATS, not persisted). `agent wait <name> --for idle` subscribes first, then checks current status, so it can't miss a transition.
+- The subjects, message types, and `ParseAgentRef` are in `internal/natsbus/contract.go`. `streams.go`, `coordinator.go`, and `subjects.go` are from the March design and unused by v1.
+
+### Security (from the start)
+
+Anything that can `send` to an agent can make it run commands, so the bus is treated like SSH:
+
+| Layer | Mechanism |
+|---|---|
+| Transport | TLS on leaf links. Each host has a self-signed cert, and peers are trusted by **pinned fingerprint** (like `known_hosts`, no CA) |
+| Identity | One **nkey** pair per host; peers are allowlisted by public key. Challenge-response, so no shared secret is on the wire or on disk elsewhere |
+| Least privilege | Per-key subject permissions: a peer may only publish `gomux.<host>.rpc.*` requests for allowlisted ops and subscribe to events |
+| Command surface | Fixed ops only, with a per-host allowlist; raw `keys` is off for remote callers by default. No general remote shell |
+| Local clients | Client port bound to `127.0.0.1`; local CLIs and hooks authenticate with a local nkey stored mode 0600 |
+
+Pairing: `agent bus init` generates the host's keys and cert; `agent bus trust <peer.pub>` installs a peer's **public** bundle (copied over SSH). Only public material leaves a host.
+
+### v1 tracks
+
+- **A. Bus daemon** (`agent bus init|trust|start|stop|status`), hub/leaf config, TLS pinning, nkeys, permissions, local connector. Security-sensitive: reviewed separately before it listens beyond localhost.
+- **B. RPC:** server handlers over `AgentService`, a client, and `name@host` in the CLI.
+- **C. Events and `agent wait`:** publish on report; the wait command.
+- **D. Two-host test:** a hub on one machine, a leaf on another, remote send/approve both ways.
+
+---
+
+## Original plan (2026-03)
+
+
 ### Current Architecture Analysis
 
 The current coordination model has three components that are the source of the pain points we ran into:

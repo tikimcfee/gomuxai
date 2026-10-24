@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -49,6 +51,10 @@ type Config struct {
 	// call to report status. Empty disables hook-based status reporting.
 	// Default: the running executable.
 	AgentBinary string `json:"agent_binary"`
+
+	// Host names this machine on the agent bus ("name@host" addressing and
+	// bus subjects). Default: the short hostname, made subject-safe.
+	Host string `json:"host"`
 }
 
 // Default timeout values.
@@ -77,6 +83,19 @@ func getStorageDir() string {
 	// Fallback: use current working directory
 	return StorageDirName
 }
+
+// defaultHost returns the short hostname with characters that can't appear in
+// a bus subject token replaced, e.g. "Ivans-Air.local" -> "Ivans-Air".
+func defaultHost() string {
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		return "localhost"
+	}
+	name, _, _ = strings.Cut(name, ".")
+	return hostUnsafe.ReplaceAllString(name, "-")
+}
+
+var hostUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
 // agentBinaryPath returns the resolved path of the running executable, or "".
 func agentBinaryPath() string {
@@ -108,6 +127,7 @@ func DefaultConfig() *Config {
 		StatusTimeout:     DefaultStatusTimeout,
 		StartupDelay:      DefaultStartupDelay,
 		AgentBinary:       agentBinaryPath(),
+		Host:              defaultHost(),
 	}
 }
 
