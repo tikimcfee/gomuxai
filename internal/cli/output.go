@@ -41,10 +41,12 @@ func notice(format string, a ...any) {
 	}
 }
 
-// printJSON prints v as indented JSON on stdout, for --json.
+// printJSON prints v as indented JSON on stdout, for --json. &, < and >
+// print as themselves, so commands read as typed.
 func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
 	return enc.Encode(v)
 }
 
