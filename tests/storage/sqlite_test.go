@@ -146,6 +146,92 @@ func TestMessageCRUD(t *testing.T) {
 	}
 }
 
+// The watcher delivers the first pending message, so the order must be the
+// order messages were queued, also within one second (created_at has whole
+// seconds).
+func TestPendingMessages_FIFO(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	queuedAt := time.Now()
+	for _, content := range []string{"A", "B", "C", "D", "E"} {
+		msg := &storage.Message{
+			SenderID:   "sender",
+			ReceiverID: "receiver",
+			Content:    content,
+			Status:     storage.MessageStatusPending,
+			CreatedAt:  queuedAt,
+		}
+		if err := store.CreateMessage(ctx, msg); err != nil {
+			t.Fatalf("creating message %s: %v", content, err)
+		}
+	}
+
+	for _, want := range []string{"A", "B", "C", "D", "E"} {
+		pending, err := store.GetPendingMessages(ctx, "receiver", 1)
+		if err != nil {
+			t.Fatalf("getting pending: %v", err)
+		}
+		if len(pending) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(pending))
+		}
+		if pending[0].Content != want {
+			t.Fatalf("next pending message is %q, want %q", pending[0].Content, want)
+		}
+		if err := store.UpdateMessageStatus(ctx, pending[0].ID, storage.MessageStatusDelivered); err != nil {
+			t.Fatalf("updating status: %v", err)
+		}
+	}
+}
+
+func TestPendingMessages_PerReceiver(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	agents := []string{"agent1", "agent2", "agent3"}
+	for _, agent := range agents {
+		for i := 0; i < 3; i++ {
+			msg := &storage.Message{
+				SenderID:   "coordinator",
+				ReceiverID: agent,
+				Content:    "task for " + agent,
+				Status:     storage.MessageStatusPending,
+				CreatedAt:  time.Now(),
+			}
+			if err := store.CreateMessage(ctx, msg); err != nil {
+				t.Fatalf("creating message for %s: %v", agent, err)
+			}
+		}
+	}
+
+	// Settling agent1's messages leaves the others' alone.
+	pending, err := store.GetPendingMessages(ctx, "agent1", 10)
+	if err != nil {
+		t.Fatalf("getting pending for agent1: %v", err)
+	}
+	statuses := []storage.MessageStatus{storage.MessageStatusDelivered, storage.MessageStatusFailed, storage.MessageStatusDelivered}
+	for i, msg := range pending {
+		if err := store.UpdateMessageStatus(ctx, msg.ID, statuses[i]); err != nil {
+			t.Fatalf("updating status: %v", err)
+		}
+	}
+
+	want := map[string]int{"agent1": 0, "agent2": 3, "agent3": 3, "nobody": 0}
+	for agent, n := range want {
+		pending, err := store.GetPendingMessages(ctx, agent, 10)
+		if err != nil {
+			t.Fatalf("getting pending for %s: %v", agent, err)
+		}
+		if len(pending) != n {
+			t.Errorf("%s: expected %d pending, got %d", agent, n, len(pending))
+		}
+	}
+}
+
 func TestGetNonExistentAgent(t *testing.T) {
 	store, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -341,19 +427,6 @@ func TestLogCRUD(t *testing.T) {
 		t.Errorf("expected 3 logs since time, got %d", len(logs))
 	}
 
-	// Delete logs
-	err = store.DeleteLogs(ctx, "test-agent")
-	if err != nil {
-		t.Fatalf("deleting logs: %v", err)
-	}
-
-	logs, err = store.GetLogs(ctx, "test-agent", 10)
-	if err != nil {
-		t.Fatalf("getting logs after delete: %v", err)
-	}
-	if len(logs) != 0 {
-		t.Errorf("expected 0 logs after delete, got %d", len(logs))
-	}
 }
 
 func TestStateCRUD(t *testing.T) {

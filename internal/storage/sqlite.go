@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -100,193 +101,163 @@ func (s *SQLiteStorage) migrate() error {
 	return err
 }
 
+// scanner is a *sql.Row or *sql.Rows.
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+// queryOne runs a single-row query, returning nil (and no error) when no row
+// matches.
+func queryOne[T any](ctx context.Context, db *sql.DB, scan func(scanner) (*T, error), query string, args ...any) (*T, error) {
+	v, err := scan(db.QueryRowContext(ctx, query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return v, err
+}
+
+// queryAll runs a query and scans every row.
+func queryAll[T any](ctx context.Context, db *sql.DB, scan func(scanner) (*T, error), query string, args ...any) ([]*T, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*T
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// exec runs a statement, wrapping any error with what it was doing.
+func (s *SQLiteStorage) exec(ctx context.Context, what, query string, args ...any) error {
+	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	return nil
+}
+
+// insert runs an INSERT and returns the new row's id.
+func (s *SQLiteStorage) insert(ctx context.Context, what, query string, args ...any) (int64, error) {
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", what, err)
+	}
+	id, _ := result.LastInsertId()
+	return id, nil
+}
+
+// parseTime reads a stored timestamp. RFC3339 parsing also accepts the
+// fractional seconds that state timestamps carry.
+func parseTime(s string) time.Time {
+	t, _ := time.Parse(time.RFC3339, s)
+	return t
+}
+
+const agentColumns = `name, session_name, backend, task_file, log_file, created_at`
+
+func scanAgent(row scanner) (*Agent, error) {
+	var agent Agent
+	var createdAt string
+	var taskFile, logFile sql.NullString
+	if err := row.Scan(&agent.Name, &agent.SessionName, &agent.Backend, &taskFile, &logFile, &createdAt); err != nil {
+		return nil, err
+	}
+	agent.TaskFile = taskFile.String
+	agent.LogFile = logFile.String
+	agent.CreatedAt = parseTime(createdAt)
+	return &agent, nil
+}
+
 // CreateAgent creates a new agent record.
 func (s *SQLiteStorage) CreateAgent(ctx context.Context, agent *Agent) error {
-	query := `
-		INSERT INTO agents (name, session_name, backend, task_file, log_file, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`
-
-	_, err := s.db.ExecContext(ctx, query,
-		agent.Name,
-		agent.SessionName,
-		agent.Backend,
-		agent.TaskFile,
-		agent.LogFile,
-		agent.CreatedAt.Format(time.RFC3339),
-	)
-
-	if err != nil {
-		return fmt.Errorf("inserting agent: %w", err)
-	}
-
-	return nil
+	return s.exec(ctx, "inserting agent",
+		`INSERT INTO agents (`+agentColumns+`) VALUES (?, ?, ?, ?, ?, ?)`,
+		agent.Name, agent.SessionName, agent.Backend, agent.TaskFile, agent.LogFile,
+		agent.CreatedAt.Format(time.RFC3339))
 }
 
 // GetAgent retrieves an agent by name.
 func (s *SQLiteStorage) GetAgent(ctx context.Context, name string) (*Agent, error) {
-	query := `
-		SELECT name, session_name, backend, task_file, log_file, created_at
-		FROM agents
-		WHERE name = ?
-	`
-
-	var agent Agent
-	var createdAt string
-	var taskFile, logFile sql.NullString
-
-	err := s.db.QueryRowContext(ctx, query, name).Scan(
-		&agent.Name,
-		&agent.SessionName,
-		&agent.Backend,
-		&taskFile,
-		&logFile,
-		&createdAt,
-	)
-
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	agent, err := queryOne(ctx, s.db, scanAgent,
+		`SELECT `+agentColumns+` FROM agents WHERE name = ?`, name)
 	if err != nil {
 		return nil, fmt.Errorf("querying agent: %w", err)
 	}
-
-	agent.TaskFile = taskFile.String
-	agent.LogFile = logFile.String
-	agent.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-
-	return &agent, nil
+	return agent, nil
 }
 
 // ListAgents returns all agents.
 func (s *SQLiteStorage) ListAgents(ctx context.Context) ([]*Agent, error) {
-	query := `
-		SELECT name, session_name, backend, task_file, log_file, created_at
-		FROM agents
-		ORDER BY created_at DESC
-	`
-
-	rows, err := s.db.QueryContext(ctx, query)
+	agents, err := queryAll(ctx, s.db, scanAgent,
+		`SELECT `+agentColumns+` FROM agents ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("querying agents: %w", err)
 	}
-	defer rows.Close()
-
-	var agents []*Agent
-	for rows.Next() {
-		var agent Agent
-		var createdAt string
-		var taskFile, logFile sql.NullString
-
-		if err := rows.Scan(
-			&agent.Name,
-			&agent.SessionName,
-			&agent.Backend,
-			&taskFile,
-			&logFile,
-			&createdAt,
-		); err != nil {
-			return nil, fmt.Errorf("scanning agent: %w", err)
-		}
-
-		agent.TaskFile = taskFile.String
-		agent.LogFile = logFile.String
-		agent.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		agents = append(agents, &agent)
-	}
-
-	return agents, rows.Err()
+	return agents, nil
 }
 
 // DeleteAgent removes an agent record.
 func (s *SQLiteStorage) DeleteAgent(ctx context.Context, name string) error {
-	query := `DELETE FROM agents WHERE name = ?`
-	_, err := s.db.ExecContext(ctx, query, name)
-	if err != nil {
-		return fmt.Errorf("deleting agent: %w", err)
+	return s.exec(ctx, "deleting agent", `DELETE FROM agents WHERE name = ?`, name)
+}
+
+const messageColumns = `id, sender_id, receiver_id, content, status, created_at`
+
+func scanMessage(row scanner) (*Message, error) {
+	var msg Message
+	var createdAt string
+	if err := row.Scan(&msg.ID, &msg.SenderID, &msg.ReceiverID, &msg.Content, &msg.Status, &createdAt); err != nil {
+		return nil, err
 	}
-	return nil
+	msg.CreatedAt = parseTime(createdAt)
+	return &msg, nil
 }
 
 // CreateMessage creates a new message record.
 func (s *SQLiteStorage) CreateMessage(ctx context.Context, msg *Message) error {
-	query := `
-		INSERT INTO messages (sender_id, receiver_id, content, status, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`
-
-	result, err := s.db.ExecContext(ctx, query,
-		msg.SenderID,
-		msg.ReceiverID,
-		msg.Content,
-		msg.Status,
-		msg.CreatedAt.Format(time.RFC3339),
-	)
+	id, err := s.insert(ctx, "inserting message",
+		`INSERT INTO messages (sender_id, receiver_id, content, status, created_at) VALUES (?, ?, ?, ?, ?)`,
+		msg.SenderID, msg.ReceiverID, msg.Content, msg.Status, msg.CreatedAt.Format(time.RFC3339))
 	if err != nil {
-		return fmt.Errorf("inserting message: %w", err)
+		return err
 	}
-
-	msg.ID, _ = result.LastInsertId()
+	msg.ID = id
 	return nil
 }
 
-// GetPendingMessages retrieves pending messages for a receiver.
+// GetPendingMessages retrieves pending messages for a receiver, oldest first.
 func (s *SQLiteStorage) GetPendingMessages(ctx context.Context, receiverID string, limit int) ([]*Message, error) {
-	query := `
-		SELECT id, sender_id, receiver_id, content, status, created_at
+	// created_at has whole seconds; id keeps messages queued within one
+	// second in the order they were queued.
+	messages, err := queryAll(ctx, s.db, scanMessage, `
+		SELECT `+messageColumns+`
 		FROM messages
 		WHERE receiver_id = ? AND status = 'pending'
-		ORDER BY created_at ASC
+		ORDER BY created_at ASC, id ASC
 		LIMIT ?
-	`
-
-	rows, err := s.db.QueryContext(ctx, query, receiverID, limit)
+	`, receiverID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("querying messages: %w", err)
 	}
-	defer rows.Close()
-
-	var messages []*Message
-	for rows.Next() {
-		var msg Message
-		var createdAt string
-
-		if err := rows.Scan(
-			&msg.ID,
-			&msg.SenderID,
-			&msg.ReceiverID,
-			&msg.Content,
-			&msg.Status,
-			&createdAt,
-		); err != nil {
-			return nil, fmt.Errorf("scanning message: %w", err)
-		}
-
-		msg.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		messages = append(messages, &msg)
-	}
-
-	return messages, rows.Err()
+	return messages, nil
 }
 
 // UpdateMessageStatus updates the status of a message.
 func (s *SQLiteStorage) UpdateMessageStatus(ctx context.Context, id int64, status MessageStatus) error {
-	query := `UPDATE messages SET status = ? WHERE id = ?`
-	_, err := s.db.ExecContext(ctx, query, status, id)
-	if err != nil {
-		return fmt.Errorf("updating message status: %w", err)
-	}
-	return nil
+	return s.exec(ctx, "updating message status", `UPDATE messages SET status = ? WHERE id = ?`, status, id)
 }
 
 // DeleteMessagesByAgent removes all messages involving an agent.
 func (s *SQLiteStorage) DeleteMessagesByAgent(ctx context.Context, agentName string) error {
-	query := `DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?`
-	_, err := s.db.ExecContext(ctx, query, agentName, agentName)
-	if err != nil {
-		return fmt.Errorf("deleting messages: %w", err)
-	}
-	return nil
+	return s.exec(ctx, "deleting messages",
+		`DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?`, agentName, agentName)
 }
 
 // Close closes the database connection.
@@ -294,218 +265,125 @@ func (s *SQLiteStorage) Close() error {
 	return s.db.Close()
 }
 
+const taskColumns = `name, content, source_file, created_at`
+
+func scanTask(row scanner) (*Task, error) {
+	var task Task
+	var createdAt string
+	var sourceFile sql.NullString
+	if err := row.Scan(&task.Name, &task.Content, &sourceFile, &createdAt); err != nil {
+		return nil, err
+	}
+	task.SourceFile = sourceFile.String
+	task.CreatedAt = parseTime(createdAt)
+	return &task, nil
+}
+
 // SetTask creates or updates a task in the repository.
 func (s *SQLiteStorage) SetTask(ctx context.Context, task *Task) error {
-	query := `
-		INSERT INTO tasks (name, content, source_file, created_at)
+	return s.exec(ctx, "setting task", `
+		INSERT INTO tasks (`+taskColumns+`)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(name) DO UPDATE SET
 			content = excluded.content,
 			source_file = excluded.source_file,
 			created_at = excluded.created_at
-	`
-
-	_, err := s.db.ExecContext(ctx, query,
-		task.Name,
-		task.Content,
-		task.SourceFile,
-		task.CreatedAt.Format(time.RFC3339),
-	)
-	if err != nil {
-		return fmt.Errorf("setting task: %w", err)
-	}
-
-	return nil
+	`, task.Name, task.Content, task.SourceFile, task.CreatedAt.Format(time.RFC3339))
 }
 
 // GetTask retrieves a task by name.
 func (s *SQLiteStorage) GetTask(ctx context.Context, name string) (*Task, error) {
-	query := `
-		SELECT name, content, source_file, created_at
-		FROM tasks
-		WHERE name = ?
-	`
-
-	var task Task
-	var createdAt string
-	var sourceFile sql.NullString
-
-	err := s.db.QueryRowContext(ctx, query, name).Scan(
-		&task.Name,
-		&task.Content,
-		&sourceFile,
-		&createdAt,
-	)
-
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	task, err := queryOne(ctx, s.db, scanTask,
+		`SELECT `+taskColumns+` FROM tasks WHERE name = ?`, name)
 	if err != nil {
 		return nil, fmt.Errorf("querying task: %w", err)
 	}
-
-	task.SourceFile = sourceFile.String
-	task.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-
-	return &task, nil
+	return task, nil
 }
 
 // ListTasks retrieves all tasks.
 func (s *SQLiteStorage) ListTasks(ctx context.Context) ([]*Task, error) {
-	query := `
-		SELECT name, content, source_file, created_at
-		FROM tasks
-		ORDER BY name ASC
-	`
-
-	rows, err := s.db.QueryContext(ctx, query)
+	tasks, err := queryAll(ctx, s.db, scanTask,
+		`SELECT `+taskColumns+` FROM tasks ORDER BY name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("querying tasks: %w", err)
 	}
-	defer rows.Close()
-
-	var tasks []*Task
-	for rows.Next() {
-		var task Task
-		var createdAt string
-		var sourceFile sql.NullString
-
-		if err := rows.Scan(
-			&task.Name,
-			&task.Content,
-			&sourceFile,
-			&createdAt,
-		); err != nil {
-			return nil, fmt.Errorf("scanning task: %w", err)
-		}
-
-		task.SourceFile = sourceFile.String
-		task.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		tasks = append(tasks, &task)
-	}
-
-	return tasks, rows.Err()
+	return tasks, nil
 }
 
 // DeleteTask removes a task by name.
 func (s *SQLiteStorage) DeleteTask(ctx context.Context, name string) error {
-	query := `DELETE FROM tasks WHERE name = ?`
-	_, err := s.db.ExecContext(ctx, query, name)
-	if err != nil {
-		return fmt.Errorf("deleting task: %w", err)
+	return s.exec(ctx, "deleting task", `DELETE FROM tasks WHERE name = ?`, name)
+}
+
+const logColumns = `id, agent_name, content, captured_at`
+
+func scanLog(row scanner) (*LogEntry, error) {
+	var entry LogEntry
+	var capturedAt string
+	if err := row.Scan(&entry.ID, &entry.AgentName, &entry.Content, &capturedAt); err != nil {
+		return nil, err
 	}
-	return nil
+	entry.CapturedAt = parseTime(capturedAt)
+	return &entry, nil
 }
 
 // AppendLog adds a new log entry for an agent.
 func (s *SQLiteStorage) AppendLog(ctx context.Context, entry *LogEntry) error {
-	query := `
-		INSERT INTO logs (agent_name, content, captured_at)
-		VALUES (?, ?, ?)
-	`
-
-	result, err := s.db.ExecContext(ctx, query,
-		entry.AgentName,
-		entry.Content,
-		entry.CapturedAt.Format(time.RFC3339),
-	)
+	id, err := s.insert(ctx, "appending log",
+		`INSERT INTO logs (agent_name, content, captured_at) VALUES (?, ?, ?)`,
+		entry.AgentName, entry.Content, entry.CapturedAt.Format(time.RFC3339))
 	if err != nil {
-		return fmt.Errorf("appending log: %w", err)
+		return err
 	}
-
-	entry.ID, _ = result.LastInsertId()
+	entry.ID = id
 	return nil
 }
 
-// GetLogs retrieves recent log entries for an agent.
+// GetLogs retrieves recent log entries for an agent, newest first.
 func (s *SQLiteStorage) GetLogs(ctx context.Context, agentName string, limit int) ([]*LogEntry, error) {
-	query := `
-		SELECT id, agent_name, content, captured_at
+	entries, err := queryAll(ctx, s.db, scanLog, `
+		SELECT `+logColumns+`
 		FROM logs
 		WHERE agent_name = ?
 		ORDER BY captured_at DESC
 		LIMIT ?
-	`
-
-	rows, err := s.db.QueryContext(ctx, query, agentName, limit)
+	`, agentName, limit)
 	if err != nil {
 		return nil, fmt.Errorf("querying logs: %w", err)
 	}
-	defer rows.Close()
-
-	var entries []*LogEntry
-	for rows.Next() {
-		var entry LogEntry
-		var capturedAt string
-
-		if err := rows.Scan(
-			&entry.ID,
-			&entry.AgentName,
-			&entry.Content,
-			&capturedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scanning log: %w", err)
-		}
-
-		entry.CapturedAt, _ = time.Parse(time.RFC3339, capturedAt)
-		entries = append(entries, &entry)
-	}
-
-	return entries, rows.Err()
+	return entries, nil
 }
 
-// GetLogsSince retrieves log entries since a specific time.
+// GetLogsSince retrieves log entries since a specific time, oldest first.
 func (s *SQLiteStorage) GetLogsSince(ctx context.Context, agentName string, since time.Time) ([]*LogEntry, error) {
-	query := `
-		SELECT id, agent_name, content, captured_at
+	entries, err := queryAll(ctx, s.db, scanLog, `
+		SELECT `+logColumns+`
 		FROM logs
 		WHERE agent_name = ? AND captured_at >= ?
 		ORDER BY captured_at ASC
-	`
-
-	rows, err := s.db.QueryContext(ctx, query, agentName, since.Format(time.RFC3339))
+	`, agentName, since.Format(time.RFC3339))
 	if err != nil {
 		return nil, fmt.Errorf("querying logs since: %w", err)
 	}
-	defer rows.Close()
-
-	var entries []*LogEntry
-	for rows.Next() {
-		var entry LogEntry
-		var capturedAt string
-
-		if err := rows.Scan(
-			&entry.ID,
-			&entry.AgentName,
-			&entry.Content,
-			&capturedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scanning log: %w", err)
-		}
-
-		entry.CapturedAt, _ = time.Parse(time.RFC3339, capturedAt)
-		entries = append(entries, &entry)
-	}
-
-	return entries, rows.Err()
+	return entries, nil
 }
 
-// DeleteLogs removes all log entries for an agent.
-func (s *SQLiteStorage) DeleteLogs(ctx context.Context, agentName string) error {
-	query := `DELETE FROM logs WHERE agent_name = ?`
-	_, err := s.db.ExecContext(ctx, query, agentName)
-	if err != nil {
-		return fmt.Errorf("deleting logs: %w", err)
+const stateColumns = `agent_name, key, value, updated_at`
+
+func scanState(row scanner) (*StateEntry, error) {
+	var entry StateEntry
+	var updatedAt string
+	if err := row.Scan(&entry.AgentName, &entry.Key, &entry.Value, &updatedAt); err != nil {
+		return nil, err
 	}
-	return nil
+	entry.UpdatedAt = parseTime(updatedAt)
+	return &entry, nil
 }
 
 // SetState creates or updates a state entry for an agent.
 func (s *SQLiteStorage) SetState(ctx context.Context, entry *StateEntry) error {
-	if _, err := s.db.ExecContext(ctx, setStateQuery, stateArgs(entry)...); err != nil {
-		return fmt.Errorf("setting state: %w", err)
-	}
-	return nil
+	return s.exec(ctx, "setting state", setStateQuery, stateArgs(entry)...)
 }
 
 // SetStates creates or updates several state entries atomically, so readers
@@ -529,7 +407,7 @@ func (s *SQLiteStorage) SetStates(ctx context.Context, entries []*StateEntry) er
 }
 
 const setStateQuery = `
-	INSERT INTO state (agent_name, key, value, updated_at)
+	INSERT INTO state (` + stateColumns + `)
 	VALUES (?, ?, ?, ?)
 	ON CONFLICT(agent_name, key) DO UPDATE SET
 		value = excluded.value,
@@ -544,75 +422,25 @@ func stateArgs(entry *StateEntry) []any {
 
 // GetState retrieves a single state entry.
 func (s *SQLiteStorage) GetState(ctx context.Context, agentName, key string) (*StateEntry, error) {
-	query := `
-		SELECT agent_name, key, value, updated_at
-		FROM state
-		WHERE agent_name = ? AND key = ?
-	`
-
-	var entry StateEntry
-	var updatedAt string
-
-	err := s.db.QueryRowContext(ctx, query, agentName, key).Scan(
-		&entry.AgentName,
-		&entry.Key,
-		&entry.Value,
-		&updatedAt,
-	)
-
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	entry, err := queryOne(ctx, s.db, scanState,
+		`SELECT `+stateColumns+` FROM state WHERE agent_name = ? AND key = ?`, agentName, key)
 	if err != nil {
 		return nil, fmt.Errorf("querying state: %w", err)
 	}
-
-	entry.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
-	return &entry, nil
+	return entry, nil
 }
 
 // ListState retrieves all state entries for an agent.
 func (s *SQLiteStorage) ListState(ctx context.Context, agentName string) ([]*StateEntry, error) {
-	query := `
-		SELECT agent_name, key, value, updated_at
-		FROM state
-		WHERE agent_name = ?
-		ORDER BY key ASC
-	`
-
-	rows, err := s.db.QueryContext(ctx, query, agentName)
+	entries, err := queryAll(ctx, s.db, scanState,
+		`SELECT `+stateColumns+` FROM state WHERE agent_name = ? ORDER BY key ASC`, agentName)
 	if err != nil {
 		return nil, fmt.Errorf("querying state: %w", err)
 	}
-	defer rows.Close()
-
-	var entries []*StateEntry
-	for rows.Next() {
-		var entry StateEntry
-		var updatedAt string
-
-		if err := rows.Scan(
-			&entry.AgentName,
-			&entry.Key,
-			&entry.Value,
-			&updatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scanning state: %w", err)
-		}
-
-		entry.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
-		entries = append(entries, &entry)
-	}
-
-	return entries, rows.Err()
+	return entries, nil
 }
 
 // DeleteState removes all state entries for an agent.
 func (s *SQLiteStorage) DeleteState(ctx context.Context, agentName string) error {
-	query := `DELETE FROM state WHERE agent_name = ?`
-	_, err := s.db.ExecContext(ctx, query, agentName)
-	if err != nil {
-		return fmt.Errorf("deleting state: %w", err)
-	}
-	return nil
+	return s.exec(ctx, "deleting state", `DELETE FROM state WHERE agent_name = ?`, agentName)
 }

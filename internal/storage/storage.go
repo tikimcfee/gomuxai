@@ -29,7 +29,6 @@ type Storage interface {
 	AppendLog(ctx context.Context, entry *LogEntry) error
 	GetLogs(ctx context.Context, agentName string, limit int) ([]*LogEntry, error)
 	GetLogsSince(ctx context.Context, agentName string, since time.Time) ([]*LogEntry, error)
-	DeleteLogs(ctx context.Context, agentName string) error
 
 	// State operations
 	SetState(ctx context.Context, entry *StateEntry) error
