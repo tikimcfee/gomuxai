@@ -268,6 +268,26 @@ func TestStatusShowsWholePermissionInput(t *testing.T) {
 	}
 }
 
+// wait for idle says, once, that the agent is blocked on a prompt.
+func TestWaitHintsWhenAgentWaits(t *testing.T) {
+	setupCLI(t)
+	noBus(t)
+	t.Cleanup(func() { waitFor, waitInterval = "", 0 })
+	waitFor, waitInterval = "idle", 20*time.Millisecond
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		agentService.Report(context.Background(), "worker", service.StatusReport{Status: service.AgentStatusIdle})
+	}()
+	out, err := stdout(t, func() error { return runWait(waitCmd, []string{"worker"}) })
+	if err != nil || out != "worker: idle\n" {
+		t.Fatalf("wait = %q, %v", out, err)
+	}
+	want := "hint: worker is waiting on a person (a permission prompt or question), so it won't be idle until someone answers: agent status worker -v shows what it's asking (--for idle,waiting returns on prompts)\n"
+	if hints.String() != want {
+		t.Errorf("hints = %q, want %q", hints.String(), want)
+	}
+}
+
 func TestWrapIndented(t *testing.T) {
 	got := wrapIndented("permission: Bash: echo one two three\nsecond line", 20, "  ")
 	want := "permission: Bash:\n  echo one two three\n  second line"
