@@ -109,7 +109,7 @@ func warnLocalNetwork(peers []natsbus.PeerBundle) {
 		if p.URL != "" {
 			fmt.Fprintln(os.Stderr, "note: macOS blocks LAN links from processes in tmux unless the agent binary "+
 				"carries its own Local Network permission. If linking fails with \"no route to host\", "+
-				"build with `make macos` on this Mac (see CLAUDE.md).")
+				"build with `make macos` on this Mac (see the macOS section of README.md).")
 			return
 		}
 	}

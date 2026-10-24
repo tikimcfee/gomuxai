@@ -33,7 +33,7 @@ shell's PATH may not include it:
     agent send NAME "message"          # message an agent (NAME@HOST on another host)
     agent status NAME -v               # what an agent is doing right now
     agent wait NAME --for idle,waiting --next --timeout 10m   # its next turn ends, or it needs a person
-    agent state get NAME _result       # its latest reply (agents on this host only)
+    agent state get NAME _result       # its latest reply (claude agents on this host)
 
 Messages from other agents start with "[from NAME@HOST]". The sender can't see
 your terminal: to answer, send your reply back with `+"`agent send NAME@HOST \"...\"`"+`.

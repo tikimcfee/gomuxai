@@ -1,7 +1,7 @@
 package natsbus_test
 
-// Adversarial tests for the bus's security model (see "Security" in
-// NATS_INTEGRATION_PLAN.md). The hub is trusted; the attackers are an
+// Adversarial tests for the bus's security model (see "Security model, in
+// short" in docs/ARCHITECTURE.md). The hub is trusted; the attackers are an
 // unauthenticated network client, a trusted but malicious non-hub peer
 // ("mallory"), and other local users.
 //

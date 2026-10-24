@@ -1,6 +1,7 @@
 // Package natsbus is the cross-host agent bus: one NATS server per host,
-// linked to the others as leaf nodes. See "Revision 2026-10" in
-// NATS_INTEGRATION_PLAN.md for the design.
+// linked to the others as leaf nodes. See "The bus" in docs/ARCHITECTURE.md
+// for the design ("Revision 2026-10" in docs/history/NATS_INTEGRATION_PLAN.md
+// for how it got there).
 //
 // SQLite stays each host's source of truth. The bus adds two things:
 //
