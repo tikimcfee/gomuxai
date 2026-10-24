@@ -43,6 +43,12 @@ func (b *ClaudeBackend) LaunchCommandWithHooks(reportCmd, sessionID string) stri
 		b.LaunchCommand(), util.ShellQuote(sessionID), util.ShellQuote(claudeHookSettings(reportCmd)))
 }
 
+// WithInstructions appends the briefing to Claude's system prompt. Unlike a
+// CLAUDE.md, nothing is written into the agent's project.
+func (b *ClaudeBackend) WithInstructions(launchCmd, path string) string {
+	return launchCmd + " --append-system-prompt-file " + util.ShellQuote(path)
+}
+
 // claudeHookSettings returns the --settings JSON registering reportCmd on every hook event.
 func claudeHookSettings(reportCmd string) string {
 	type hookCmd struct {

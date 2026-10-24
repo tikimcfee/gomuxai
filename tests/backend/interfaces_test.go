@@ -11,6 +11,7 @@ var (
 	_ backend.HookProvider         = (*namedagents.ClaudeBackend)(nil)
 	_ backend.NativeStatusProvider = (*namedagents.ClaudeBackend)(nil)
 	_ backend.PermissionResponder  = (*namedagents.ClaudeBackend)(nil)
+	_ backend.InstructionsProvider = (*namedagents.ClaudeBackend)(nil)
 
 	_ backend.HookProvider        = (*namedagents.AgyBackend)(nil)
 	_ backend.PermissionResponder = (*namedagents.AgyBackend)(nil)

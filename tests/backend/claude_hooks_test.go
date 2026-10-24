@@ -374,3 +374,15 @@ func TestClaudePermissionPromptVisible(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeWithInstructions(t *testing.T) {
+	cmd := namedagents.NewClaudeBackend().WithInstructions("claude --session-id x", "/data/agents/it's/instructions.md")
+	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.TrimPrefix(cmd, "claude ")).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(args) != 4 || args[2] != "--append-system-prompt-file" || args[3] != "/data/agents/it's/instructions.md" {
+		t.Errorf("args = %q", args)
+	}
+}

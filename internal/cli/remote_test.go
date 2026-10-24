@@ -272,3 +272,19 @@ func TestRemoteHostNotAnswering(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// Messages an agent sends carry its address so the recipient can reply;
+// messages typed by a user don't.
+func TestFromAgent(t *testing.T) {
+	old := cfg
+	t.Cleanup(func() { cfg = old })
+	cfg = &config.Config{Host: "h1"}
+	t.Setenv("AGENT_NAME", "")
+	if got := fromAgent("hi"); got != "hi" {
+		t.Errorf("user message changed: %q", got)
+	}
+	t.Setenv("AGENT_NAME", "lead")
+	if got := fromAgent("hi"); got != "[from lead@h1] hi" {
+		t.Errorf("agent message = %q", got)
+	}
+}

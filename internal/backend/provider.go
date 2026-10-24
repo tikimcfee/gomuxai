@@ -43,6 +43,14 @@ type HookProvider interface {
 	ParseHookEvent(event string, payload []byte) (report HookReport, ok bool, err error)
 }
 
+// InstructionsProvider is implemented by backends that can give an agent
+// standing instructions at launch without writing into its project.
+type InstructionsProvider interface {
+	// WithInstructions returns launchCmd changed to load the instructions in
+	// the file at path (absolute).
+	WithInstructions(launchCmd, path string) string
+}
+
 // PromptFlagProvider is implemented by backends whose CLI can accept the
 // initial task prompt via a launch flag (e.g. agy -i <prompt>).
 type PromptFlagProvider interface {

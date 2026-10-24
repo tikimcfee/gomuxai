@@ -44,6 +44,9 @@ func runQueue(cmd *cobra.Command, args []string) error {
 		sender = "user"
 	}
 
+	if sender != "user" {
+		message = fmt.Sprintf("[from %s@%s] %s", sender, cfg.Host, message)
+	}
 	if err := agentService.Queue(getContext(), sender, name, message); err != nil {
 		return err
 	}

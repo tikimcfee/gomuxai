@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -83,6 +84,7 @@ type SpawnOptions struct {
 	TaskContent     string // Task content directly (from DB task repository)
 	SkipPermissions bool   // Pass --dangerously-skip-permissions to Claude / Agy
 	TrustWorkspace  bool   // Confirm the CLI's workspace trust prompt on launch
+	SpawnedBy       string // agent that requested the spawn ("" for a user)
 }
 
 // agentNamePattern keeps names safe as tmux session names and as path
@@ -143,6 +145,10 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		// fall back to the hostname, which AGENT_HOST may override.
 		"AGENT_HOST": s.cfg.Host,
 	}
+	if s.cfg.AgentBinary != "" {
+		// So the agent (and its hooks) can just run `agent`.
+		env["PATH"] = filepath.Dir(s.cfg.AgentBinary) + string(os.PathListSeparator) + os.Getenv("PATH")
+	}
 	if err := s.tmux.CreateSession(sessionName, env); err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)
 	}
@@ -196,6 +202,13 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 				return abort(fmt.Errorf("storing %s: %w", key, err))
 			}
 		}
+	}
+	if ip, ok := provider.(backend.InstructionsProvider); ok {
+		path, err := s.writeInstructions(opts.Name, opts.SpawnedBy)
+		if err != nil {
+			return abort(err)
+		}
+		launchCmd = ip.WithInstructions(launchCmd, path)
 	}
 	promptInLaunch := false
 	if pfp, ok := provider.(backend.PromptFlagProvider); ok && initMsg != "" {
@@ -273,6 +286,10 @@ func (s *AgentService) spawnWithBackend(ctx context.Context, opts SpawnOptions, 
 		// Hooks publish status events under this host; without it they'd
 		// fall back to the hostname, which AGENT_HOST may override.
 		"AGENT_HOST": s.cfg.Host,
+	}
+	if s.cfg.AgentBinary != "" {
+		// So the agent (and its hooks) can just run `agent`.
+		env["PATH"] = filepath.Dir(s.cfg.AgentBinary) + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
 	if err := s.tmux.CreateSession(sessionName, env); err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)

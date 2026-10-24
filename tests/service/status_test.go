@@ -3,8 +3,11 @@ package service_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
@@ -55,11 +58,18 @@ func (f *fakeHookBackend) NativeStatus(ctx context.Context, sessionID string) (b
 // spawnFake registers a fake hook backend and spawns an agent on it.
 func spawnFake(t *testing.T, env *testEnv, name string) *fakeHookBackend {
 	t.Helper()
+	return spawnFakeWith(t, env, name, service.SpawnOptions{})
+}
+
+// spawnFakeWith is spawnFake with extra spawn options.
+func spawnFakeWith(t *testing.T, env *testEnv, name string, opts service.SpawnOptions) *fakeHookBackend {
+	t.Helper()
 	fake := &fakeHookBackend{ClaudeBackend: namedagents.NewClaudeBackend()}
 	env.backends.Register(fake)
 	env.backends.RegisterFactory("fakehooks", func(backend.ProviderConfig) backend.Provider { return fake })
 
-	if _, err := env.service.Spawn(context.Background(), service.SpawnOptions{Name: name, Backend: "fakehooks"}); err != nil {
+	opts.Name, opts.Backend = name, "fakehooks"
+	if _, err := env.service.Spawn(context.Background(), opts); err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
 	return fake
@@ -278,5 +288,51 @@ func TestSpawn_RejectsUnsafeNames(t *testing.T) {
 		if err := service.ValidateAgentName(name); err != nil {
 			t.Errorf("ValidateAgentName(%q): %v", name, err)
 		}
+	}
+}
+
+// Every spawned agent gets a briefing on reaching other agents, loaded at
+// launch without writing into its project.
+func TestSpawn_BriefsTheAgent(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/opt/gomux/agent"
+	env.cfg.Host = "h1"
+
+	spawnFakeWith(t, env, "worker", service.SpawnOptions{SpawnedBy: "lead"})
+
+	path := filepath.Join(env.cfg.AgentDir("worker"), "instructions.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("instructions not written: %v", err)
+	}
+	for _, want := range []string{`agent "worker" on host "h1"`, `agent "lead"`, "full path, /opt/gomux/agent", "[from NAME@HOST]", "agent send"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("instructions missing %q", want)
+		}
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0600 {
+		t.Errorf("instructions mode %o, want 600", info.Mode().Perm())
+	}
+
+	// The launch command loads them (the fake backend launches `true`).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		out, _ := env.tmux.Capture(env.cfg.SessionName("worker"), 20, true)
+		if strings.Contains(out, "--append-system-prompt-file") && strings.Contains(out, "instructions.md") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("launch command didn't load the instructions:\n%s", out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Cleanup removes them with the agent's directory.
+	if err := env.service.Cleanup(context.Background(), "worker"); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("instructions survived cleanup: %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/service"
@@ -72,6 +73,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		TaskContent:     taskContent,
 		SkipPermissions: skipPermissions,
 		TrustWorkspace:  trustWorkspace,
+		SpawnedBy:       os.Getenv("AGENT_NAME"),
 	}
 
 	agent, err := agentService.Spawn(getContext(), opts)

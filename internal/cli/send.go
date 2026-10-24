@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -32,6 +33,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	message = fromAgent(message)
 	if remote {
 		client, closeFn, err := dialRemote(ref.Host)
 		if err != nil {
@@ -47,4 +49,14 @@ func runSend(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Sent message to %q\n", name)
 	return nil
+}
+
+// fromAgent marks a message sent by an agent with its address, so the
+// recipient knows who to reply to. Messages typed by a user are unmarked.
+func fromAgent(message string) string {
+	from := os.Getenv("AGENT_NAME")
+	if from == "" {
+		return message
+	}
+	return fmt.Sprintf("[from %s@%s] %s", from, cfg.Host, message)
 }
