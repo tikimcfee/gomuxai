@@ -11,11 +11,15 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
-// Default configuration values.
 const (
-	DefaultMaxRetries       = 3
-	DefaultBaseBackoff      = time.Second
-	DefaultUnknownThreshold = 5
+	// maxRetries is how many failed sends a message gets before it fails.
+	maxRetries = 3
+	// baseBackoff is the wait after the first failed send; it doubles with
+	// each further failure.
+	baseBackoff = time.Second
+	// unknownThreshold is how many checks in a row may find the agent's
+	// status unknown before its message fails.
+	unknownThreshold = 5
 )
 
 // messageState tracks retry and unknown status counts for a message.
@@ -34,11 +38,6 @@ type Watcher struct {
 	wg       sync.WaitGroup
 	logger   *slog.Logger
 
-	// Configuration
-	maxRetries       int
-	baseBackoff      time.Duration
-	unknownThreshold int
-
 	// State tracking (protected by mu)
 	mu     sync.Mutex
 	states map[int64]*messageState
@@ -47,46 +46,22 @@ type Watcher struct {
 // WatcherOption configures a Watcher.
 type WatcherOption func(*Watcher)
 
-// WithLogger sets a custom logger.
+// WithLogger sets a custom logger (default: slog.Default()).
 func WithLogger(logger *slog.Logger) WatcherOption {
 	return func(w *Watcher) {
 		w.logger = logger
 	}
 }
 
-// WithMaxRetries sets the maximum retry count.
-func WithMaxRetries(n int) WatcherOption {
-	return func(w *Watcher) {
-		w.maxRetries = n
-	}
-}
-
-// WithBaseBackoff sets the base backoff duration.
-func WithBaseBackoff(d time.Duration) WatcherOption {
-	return func(w *Watcher) {
-		w.baseBackoff = d
-	}
-}
-
-// WithUnknownThreshold sets the threshold for consecutive Unknown statuses.
-func WithUnknownThreshold(n int) WatcherOption {
-	return func(w *Watcher) {
-		w.unknownThreshold = n
-	}
-}
-
 // NewWatcher creates a new watcher.
 func NewWatcher(svc *service.AgentService, store storage.Storage, interval time.Duration, opts ...WatcherOption) *Watcher {
 	w := &Watcher{
-		service:          svc,
-		storage:          store,
-		interval:         interval,
-		stopCh:           make(chan struct{}),
-		logger:           slog.Default(),
-		maxRetries:       DefaultMaxRetries,
-		baseBackoff:      DefaultBaseBackoff,
-		unknownThreshold: DefaultUnknownThreshold,
-		states:           make(map[int64]*messageState),
+		service:  svc,
+		storage:  store,
+		interval: interval,
+		stopCh:   make(chan struct{}),
+		logger:   slog.Default(),
+		states:   make(map[int64]*messageState),
 	}
 
 	for _, opt := range opts {
@@ -229,12 +204,11 @@ func (w *Watcher) handleDeliveryFailure(ctx context.Context, msg *storage.Messag
 	state.lastAttempt = time.Now()
 	state.unknownCount = 0 // Reset unknown count on delivery attempt
 
-	if state.retryCount >= w.maxRetries {
+	if state.retryCount >= maxRetries {
 		logger.Warn("max retries exceeded, marking message as failed",
 			"retry_count", state.retryCount,
-			"max_retries", w.maxRetries)
-		w.storage.UpdateMessageStatus(ctx, msg.ID, storage.MessageStatusFailed)
-		w.clearState(msg.ID)
+			"max_retries", maxRetries)
+		w.failMessage(ctx, msg, logger)
 		return
 	}
 
@@ -248,18 +222,17 @@ func (w *Watcher) handleUnknownStatus(ctx context.Context, msg *storage.Message,
 	state := w.getOrCreateState(msg.ID)
 	state.unknownCount++
 
-	if state.unknownCount >= w.unknownThreshold {
+	if state.unknownCount >= unknownThreshold {
 		logger.Warn("unknown status threshold exceeded, marking message as failed",
 			"unknown_count", state.unknownCount,
-			"threshold", w.unknownThreshold)
-		w.storage.UpdateMessageStatus(ctx, msg.ID, storage.MessageStatusFailed)
-		w.clearState(msg.ID)
+			"threshold", unknownThreshold)
+		w.failMessage(ctx, msg, logger)
 		return
 	}
 
 	logger.Debug("agent status unknown, will retry",
 		"unknown_count", state.unknownCount,
-		"threshold", w.unknownThreshold)
+		"threshold", unknownThreshold)
 }
 
 func (w *Watcher) canAttemptDelivery(msgID int64) bool {
@@ -282,7 +255,7 @@ func (w *Watcher) canAttemptDelivery(msgID int64) bool {
 func (w *Watcher) calculateBackoff(retryCount int) time.Duration {
 	// Exponential backoff: baseBackoff * 2^(retryCount-1)
 	multiplier := 1 << (retryCount - 1) // 1, 2, 4, 8...
-	return w.baseBackoff * time.Duration(multiplier)
+	return baseBackoff * time.Duration(multiplier)
 }
 
 func (w *Watcher) getOrCreateState(msgID int64) *messageState {
