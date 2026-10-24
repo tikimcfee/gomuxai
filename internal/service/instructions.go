@@ -61,6 +61,15 @@ CLI's built-in subagents are still fine for quick lookups. Name helpers
 Clean up your helpers when you're done with them. You can clean up only your
 own helpers and theirs; `+"`agent list`"+` shows each agent's parent.
 `, name)
+	b.WriteString(`
+## When the agent tool gets in your way
+
+If ` + "`agent`" + ` confuses you, an error doesn't say what to do, or it lacks
+something you need, file it, then carry on with your work. Check
+` + "`agent friction list`" + ` first, and ` + "`agent friction +1 ID`" + ` a matching entry instead:
+
+    agent friction add "summary" --kind help|error|missing|bug|docs|other
+`)
 	return b.String()
 }
 
@@ -102,12 +111,17 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 }
 
 // agentSafeCommands are the agent subcommands a spawned agent may run without
-// a permission prompt: they read status or deliver messages that the
-// recipient's own permission prompts still guard. approve/deny, keys, and
-// send --force are left out: they would let one agent answer another
-// agent's prompts, which is the user's call. So are spawn and cleanup, which
-// start and stop agents: the user approves each one.
-var agentSafeCommands = []string{"send", "list", "status", "wait", "events", "state get"}
+// a permission prompt: they read status or history, deliver messages that
+// the recipient's own permission prompts still guard, or file and vote on
+// friction, which only writes a note. approve/deny, keys, and send --force
+// are left out: they would let one agent answer another agent's prompts,
+// which is the user's call. So are spawn and cleanup, which start and stop
+// agents: the user approves each one. So are friction accept and resolve,
+// which are for the people working on the tool.
+var agentSafeCommands = []string{
+	"send", "list", "status", "wait", "events", "state get", "history",
+	"friction add", "friction +1", "friction list", "friction show",
+}
 
 // allowedCommandPrefixes are agentSafeCommands as the agent may type them:
 // bare (on PATH) or by the full path the briefing gives.
