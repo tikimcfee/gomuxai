@@ -26,8 +26,9 @@ Agents spawned with a hook-capable backend (claude, agy) report automatically:
 spawn wires the backend's lifecycle hooks to "agent report --hook".
 
 With --hook, the backend's hook payload is read from stdin. Hook mode never
-writes to stdout and always exits 0, so a reporting problem can't disturb
-the agent; errors go to stderr.
+writes to stdout and exits 0 even if the report fails, so a reporting problem
+can't disturb the agent; errors go to stderr. (It still exits 1 if the tool
+can't start, e.g. its database can't be opened.)
 
 The agent name defaults to AGENT_NAME.
 
