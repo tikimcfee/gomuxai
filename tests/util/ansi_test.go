@@ -53,3 +53,28 @@ func TestStripANSI(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeTerminal(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "plain text", input: "hello world", expected: "hello world"},
+		{name: "keeps newline and tab", input: "a\tb\nc", expected: "a\tb\nc"},
+		{name: "unicode", input: "❯ héllo", expected: "❯ héllo"},
+		{name: "drops escape, keeps its printable tail", input: "\x1b[31mred\x1b[0m", expected: "[31mred[0m"},
+		{name: "drops carriage return", input: "fake\rreal", expected: "fakereal"},
+		{name: "drops bell and backspace", input: "a\x07b\x08c", expected: "abc"},
+		{name: "drops DEL", input: "a\x7fb", expected: "ab"},
+		{name: "drops C1 CSI", input: "a\u009b31mb", expected: "a31mb"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if result := util.SanitizeTerminal(tt.input); result != tt.expected {
+				t.Errorf("SanitizeTerminal(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
