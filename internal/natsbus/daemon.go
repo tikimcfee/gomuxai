@@ -129,6 +129,7 @@ func ConnectLocal(dir, host string, opts ...nats.Option) (*nats.Conn, error) {
 		nats.Nkey(pub, id.LocalKey.Sign),
 		nats.Timeout(500 * time.Millisecond),
 		nats.Name("agent " + host),
+		nats.CustomInboxPrefix(InboxPrefix(host)), // peers' links only carry their own
 	}, opts...)
 	nc, err := nats.Connect(strings.TrimSpace(string(data)), opts...)
 	if errors.Is(err, nats.ErrNoServers) {
@@ -159,6 +160,10 @@ func serverOptions(cfg DaemonConfig, id *Identity, peers []PeerBundle) (*natsser
 		Port:       cfg.ClientPort,
 		NoSigs:     true,
 		// No JetStream, monitoring, or system account exposure in v1.
+		// JetStream and monitoring are off unless configured; the system
+		// account is on by default and answers $SYS.REQ.* (connection
+		// details, peer addresses) for every account.
+		NoSystemAccount: true,
 		Nkeys: []*natsserver.NkeyUser{{
 			Nkey:                   id.LocalPublicKey(),
 			AllowedConnectionTypes: connTypes(jwt.ConnectionTypeStandard),
@@ -190,7 +195,21 @@ func serverOptions(cfg DaemonConfig, id *Identity, peers []PeerBundle) (*natsser
 		}
 		opts.LeafNode.TLSPinnedCerts = pins // empty set: no peer can link
 		opts.LeafNode.TLSTimeout = 2
+		// No plaintext INFO (server name, version) to unauthenticated dialers.
+		opts.LeafNode.TLSHandshakeFirst = true
 	} else {
+		// The hub sees and can answer everything this host sends, so only
+		// one peer may be it. A second bundle with a URL (a peer's own
+		// export can carry one) would quietly get the same trust.
+		var hubs []string
+		for _, p := range peers {
+			if p.URL != "" {
+				hubs = append(hubs, p.Host)
+			}
+		}
+		if len(hubs) > 1 {
+			return nil, fmt.Errorf("more than one trusted peer is a hub (has a url): %s; v1 links to one hub, so re-trust the others without a url", strings.Join(hubs, ", "))
+		}
 		for _, p := range peers {
 			if p.URL == "" {
 				continue
@@ -228,19 +247,31 @@ func peerPermissions(self, peer string, knownPeers []string, remoteOps []string)
 		Publish: &natsserver.SubjectPermission{
 			Allow: []string{
 				SubjectRoot + ".*.rpc.*", // requests, to any host
-				"_INBOX.>",               // replies to requests
-				SubjectAllStatus("*"),    // events, narrowed by deny
+				// Replies to requests. This also lets a peer that learns
+				// another host's reply subject answer in its place; response
+				// permissions would prevent that, but the hub then never
+				// tells the peer about the requester's interest, so genuine
+				// replies don't cross the link either.
+				"_INBOX.>",
+				SubjectAllStatus("*"), // events, narrowed by deny
 			},
 			Deny: deny,
 		},
 		Subscribe: &natsserver.SubjectPermission{
 			Allow: []string{
 				SubjectRoot + "." + peer + ".rpc.*", // requests for it
-				"_INBOX.>",
+				InboxPrefix(peer) + ".>",            // replies to its own requests only
 				SubjectAllStatus("*"),
 			},
 		},
 	}
+}
+
+// InboxPrefix is where host's clients receive replies. Each host has its
+// own, so the hub can forward a peer the replies to its requests without
+// also forwarding everyone else's (capture output, status details).
+func InboxPrefix(host string) string {
+	return "_INBOX." + host
 }
 
 // remoteLeaf configures this host's link to a peer hub: TLS pinned to the
@@ -272,8 +303,9 @@ func remoteLeaf(self string, id *Identity, hub PeerBundle, remoteOps []string) (
 			VerifyPeerCertificate: pinVerifier(hub.Host, hub.CertSHA),
 			MinVersion:            tls.VersionTLS13,
 		},
-		TLSTimeout:  2,
-		DenyImports: append(deniedOps(self, remoteOps), SubjectRoot+"."+self+".local.>"),
+		TLSTimeout:        2,
+		TLSHandshakeFirst: true, // the hub expects it (see serverOptions)
+		DenyImports:       append(deniedOps(self, remoteOps), SubjectRoot+"."+self+".local.>"),
 	}, nil
 }
 

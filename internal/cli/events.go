@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
+	"unicode"
 
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
@@ -120,13 +122,17 @@ func runEvents(cmd *cobra.Command, args []string) error {
 		case <-interrupt:
 			return nil
 		case msg := <-msgs:
-			if eventsJSON {
-				fmt.Fprintln(out, string(msg.Data))
-				continue
-			}
+			// Events can come from other hosts: decode (which rejects
+			// forged host/agent fields) and re-encode rather than echo
+			// raw bytes into the terminal.
 			ev, err := natsbus.DecodeStatusEvent(msg)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "agent events: %v\n", err)
+				fmt.Fprintf(os.Stderr, "agent events: %s\n", strconv.QuoteToGraphic(err.Error()))
+				continue
+			}
+			if eventsJSON {
+				data, _ := json.Marshal(ev)
+				fmt.Fprintln(out, string(data))
 				continue
 			}
 			fmt.Fprintln(out, formatStatusEvent(ev))
@@ -136,16 +142,29 @@ func runEvents(cmd *cobra.Command, args []string) error {
 
 // formatStatusEvent renders ev as one line, e.g.
 // "15:04:05.000 helper@air waiting event=PermissionRequest tool=Bash detail=...".
+// Fields other than the (validated) host and agent are quoted if they hold
+// anything but printable text, so an event can't write escape sequences to
+// the terminal.
 func formatStatusEvent(ev natsbus.StatusEvent) string {
-	line := fmt.Sprintf("%s %s@%s %s", ev.At.Local().Format("15:04:05.000"), ev.Agent, ev.Host, ev.Status)
+	line := fmt.Sprintf("%s %s@%s %s", ev.At.Local().Format("15:04:05.000"), ev.Agent, ev.Host, printable(ev.Status))
 	if ev.Event != "" {
-		line += " event=" + ev.Event
+		line += " event=" + printable(ev.Event)
 	}
 	if ev.Tool != "" {
-		line += " tool=" + ev.Tool
+		line += " tool=" + printable(ev.Tool)
 	}
 	if ev.Detail != "" {
 		line += " detail=" + strconv.Quote(ev.Detail)
 	}
 	return line
+}
+
+// printable returns s, or s quoted if it has non-printable characters or spaces.
+func printable(s string) string {
+	for _, r := range s {
+		if !unicode.IsPrint(r) || unicode.IsSpace(r) {
+			return strconv.Quote(s)
+		}
+	}
+	return s
 }

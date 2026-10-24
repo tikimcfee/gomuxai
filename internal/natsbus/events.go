@@ -106,11 +106,17 @@ func (p *Publisher) Close() error {
 	return err
 }
 
-// DecodeStatusEvent parses a message published on a status subject.
+// DecodeStatusEvent parses a message published on a status subject. The
+// event's host and agent must be the subject's: bus permissions only govern
+// who may publish on which subject, so a body naming anything else is forged.
 func DecodeStatusEvent(msg *nats.Msg) (StatusEvent, error) {
 	var ev StatusEvent
 	if err := json.Unmarshal(msg.Data, &ev); err != nil {
 		return ev, fmt.Errorf("decoding status event on %s: %w", msg.Subject, err)
+	}
+	if !namePattern.MatchString(ev.Host) || !namePattern.MatchString(ev.Agent) ||
+		msg.Subject != SubjectStatus(ev.Host, ev.Agent) {
+		return StatusEvent{}, fmt.Errorf("status event on %s claims to be from %q@%q", msg.Subject, ev.Agent, ev.Host)
 	}
 	return ev, nil
 }

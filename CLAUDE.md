@@ -159,6 +159,7 @@ agent bus stop
 - A machine serves other machines only the ops in `--remote-ops` (default: `list,status,capture,send,respond`; raw `keys` is local-only). Peers can't publish events as another host.
 - Local clients on `127.0.0.1` authenticate with a key in `.gomuxai/bus/local.nk` (mode 0600).
 - The hub routes all cross-machine traffic, so run it on the machine you trust most. Status events are hints: `agent wait` confirms them with a real status check.
+- A machine links to one hub: only one trusted bundle may carry a `url` (`bus start` refuses more). Re-trust any other peer from a bundle without one.
 - Use `AGENT_HOST` to override this machine's host name. An identity is bound to the name it was created with.
 
 ### Reporting Your Own Status
