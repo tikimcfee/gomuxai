@@ -75,6 +75,7 @@ func init() {
 	rootCmd.AddCommand(denyCmd)
 	rootCmd.AddCommand(waitCmd)
 	rootCmd.AddCommand(eventsCmd)
+	rootCmd.AddCommand(versionCmd)
 }
 
 func setup(cmd *cobra.Command, args []string) error {
