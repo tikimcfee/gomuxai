@@ -9,10 +9,9 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
 )
 
-// ProviderConfig holds configuration options passed when creating providers.
-// Backend-specific options are checked via type assertion or fields.
+// ProviderConfig holds the per-agent options a Provider is created with.
 type ProviderConfig struct {
-	// SkipPermissions is used by Claude and Agy backends to pass --dangerously-skip-permissions
+	// SkipPermissions makes Claude and Agy pass --dangerously-skip-permissions.
 	SkipPermissions bool
 
 	// AgentDir is the per-agent bundle directory under .gomuxai/agents/<name>
@@ -22,11 +21,13 @@ type ProviderConfig struct {
 // ProviderFactory creates a new Provider instance with the given config.
 type ProviderFactory func(cfg ProviderConfig) Provider
 
-// Registry manages available backends.
+// Registry holds the available backends. Built-in ones have a Provider
+// factory, so each agent gets an instance configured for it. Every backend,
+// custom JSON ones included, is also registered as a Backend: custom ones
+// spawn from it, and status scraping reads its patterns.
 type Registry struct {
 	mu        sync.RWMutex
 	backends  map[string]Backend
-	providers map[string]Provider
 	factories map[string]ProviderFactory
 }
 
@@ -34,32 +35,19 @@ type Registry struct {
 func NewRegistry() *Registry {
 	r := &Registry{
 		backends:  make(map[string]Backend),
-		providers: make(map[string]Provider),
 		factories: make(map[string]ProviderFactory),
 	}
 
-	// Register built-in backends from namedagents
-	claude := namedagents.NewClaudeBackend()
-	aider := namedagents.NewAiderBackend()
-	agy := namedagents.NewAgyBackend()
+	r.Register(namedagents.NewClaudeBackend())
+	r.Register(namedagents.NewAiderBackend())
+	r.Register(namedagents.NewAgyBackend())
 
-	r.Register(claude)
-	r.Register(aider)
-	r.Register(agy)
-
-	// Register as providers (default instances)
-	r.RegisterProvider(claude)
-	r.RegisterProvider(aider)
-	r.RegisterProvider(agy)
-
-	// Register factories for creating configured instances
 	r.RegisterFactory("claude", func(cfg ProviderConfig) Provider {
 		return namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{
 			SkipPermissions: cfg.SkipPermissions,
 		})
 	})
 	r.RegisterFactory("aider", func(cfg ProviderConfig) Provider {
-		// Aider doesn't have special config yet, return default
 		return namedagents.NewAiderBackend()
 	})
 	r.RegisterFactory("agy", func(cfg ProviderConfig) Provider {
@@ -91,49 +79,6 @@ func (r *Registry) Get(name string) (Backend, error) {
 	return b, nil
 }
 
-// List returns all registered backend names.
-func (r *Registry) List() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0, len(r.backends))
-	for name := range r.backends {
-		names = append(names, name)
-	}
-	return names
-}
-
-// RegisterProvider adds a provider to the registry.
-func (r *Registry) RegisterProvider(p Provider) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.providers[p.Name()] = p
-}
-
-// GetProvider retrieves a provider by name.
-func (r *Registry) GetProvider(name string) (Provider, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	p, ok := r.providers[name]
-	if !ok {
-		return nil, fmt.Errorf("provider %q not found", name)
-	}
-	return p, nil
-}
-
-// ListProviders returns all registered provider names.
-func (r *Registry) ListProviders() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0, len(r.providers))
-	for name := range r.providers {
-		names = append(names, name)
-	}
-	return names
-}
-
 // RegisterFactory registers a factory function for creating providers.
 func (r *Registry) RegisterFactory(name string, factory ProviderFactory) {
 	r.mu.Lock()
@@ -141,8 +86,8 @@ func (r *Registry) RegisterFactory(name string, factory ProviderFactory) {
 	r.factories[name] = factory
 }
 
-// CreateProvider creates a new provider instance with the given config.
-// This returns a fresh instance configured with the provided options.
+// CreateProvider returns a fresh instance of the named built-in backend,
+// configured with cfg.
 func (r *Registry) CreateProvider(name string, cfg ProviderConfig) (Provider, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

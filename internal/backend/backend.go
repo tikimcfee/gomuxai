@@ -1,13 +1,13 @@
 // Package backend provides backend definitions for different AI CLI tools.
 package backend
 
-// Backend defines the interface for AI CLI tool backends.
+// Backend describes a CLI tool by its launch command and the regex patterns
+// that tell its status from terminal output. Custom JSON backends
+// (--backend-config) implement only this; status scraping uses it for every
+// backend, the built-in ones included.
 type Backend interface {
 	// Name returns the backend identifier.
 	Name() string
-
-	// SessionPrefix returns the prefix for tmux session names.
-	SessionPrefix() string
 
 	// LaunchCommand returns the command to start the CLI tool.
 	LaunchCommand() string

@@ -1,7 +1,6 @@
 package namedagents
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,18 +10,6 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/util"
-)
-
-// Agy status detection patterns (fallback when hooks have not reported yet).
-var (
-	// Idle: prompt at end of output
-	agyIdlePattern = regexp.MustCompile(`(?m)^>\s*$`)
-
-	// Processing: spinner characters, thinking indicators, tool use
-	agyProcessingPattern = regexp.MustCompile(`(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|Thinking|Running|Reading|Editing)`)
-
-	// Error: permission denied, rate limits, API errors
-	agyErrorPattern = regexp.MustCompile(`(?i)(Permission denied|Rate limit|Error:|API Error|failed|could not)`)
 )
 
 // agyHookTimeoutSec bounds each hook; `agent report` is a local DB write.
@@ -38,8 +25,8 @@ type AgyConfig struct {
 	AgentDir string
 }
 
-// AgyBackend implements Provider, HookProvider, PermissionResponder, and
-// PromptFlagProvider for the Antigravity CLI (agy).
+// AgyBackend implements Provider, and most optional backend interfaces, for
+// the Antigravity CLI (agy).
 type AgyBackend struct {
 	config     AgyConfig
 	exitSuffix string
@@ -55,74 +42,9 @@ func NewAgyBackendWithConfig(cfg AgyConfig) *AgyBackend {
 	return &AgyBackend{config: cfg}
 }
 
-// Identity
-
 func (b *AgyBackend) Name() string {
 	return "agy"
 }
-
-func (b *AgyBackend) SessionPrefix() string {
-	return "agent-"
-}
-
-// Lifecycle
-
-func (b *AgyBackend) Initialize(ctx context.Context) error {
-	return nil
-}
-
-func (b *AgyBackend) Cleanup() error {
-	if b.config.AgentDir != "" {
-		_ = os.RemoveAll(b.config.AgentDir)
-	}
-	return nil
-}
-
-// Status detection (fallback when no hook report is recorded)
-
-func (b *AgyBackend) GetStatus(ctx context.Context, output string) (types.Status, error) {
-	if agyErrorPattern.MatchString(output) {
-		return types.StatusError, nil
-	}
-
-	if agyProcessingPattern.MatchString(output) {
-		return types.StatusProcessing, nil
-	}
-
-	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
-	if len(lines) > 0 {
-		lastLine := lines[len(lines)-1]
-		if agyIdlePattern.MatchString(lastLine) || strings.TrimSpace(lastLine) == ">" {
-			return types.StatusIdle, nil
-		}
-	}
-
-	if agyIdlePattern.MatchString(output) {
-		return types.StatusIdle, nil
-	}
-
-	return types.StatusUnknown, nil
-}
-
-// GetIdlePatternForLog returns a regex pattern for file watcher optimization.
-func (b *AgyBackend) GetIdlePatternForLog() string {
-	return `(?m)^>\s*$`
-}
-
-// ExtractLastMessage extracts the last assistant message from output.
-func (b *AgyBackend) ExtractLastMessage(output string) string {
-	output = strings.TrimRight(output, "\n\r\t ")
-	if strings.HasSuffix(output, "> ") {
-		output = strings.TrimSuffix(output, "> ")
-	}
-	if strings.HasSuffix(output, ">") {
-		output = strings.TrimSuffix(output, ">")
-	}
-	output = strings.TrimRight(output, "\n\r\t ")
-	return output
-}
-
-// Commands
 
 // agyEnv clears the variables agy uses to decide it's in a remote SSH session.
 // When they're set, agy skips the OS keyring and every launch comes up "not
@@ -195,7 +117,7 @@ func (b *AgyBackend) ExitCommand() string {
 	return "/exit"
 }
 
-// Legacy Backend interface methods (for backwards compatibility)
+// Backend interface: status scraping, used only before the first hook report.
 
 func (b *AgyBackend) IdlePattern() string {
 	return `(?m)^>\s*$`
@@ -218,7 +140,7 @@ func (b *AgyBackend) ProcessingPattern() string {
 // against stale respawns.
 func (b *AgyBackend) LaunchCommandWithHooks(reportCmd, sessionID string) string {
 	bundleDir := b.bundleDir(sessionID)
-	if err := WriteAgyHooksBundle(bundleDir, reportCmd); err != nil {
+	if err := writeAgyHooksBundle(bundleDir, reportCmd); err != nil {
 		return b.LaunchCommand()
 	}
 	b.exitSuffix = "; " + agyExitReportCmd(reportCmd)
@@ -240,9 +162,9 @@ func (b *AgyBackend) bundleDir(sessionID string) string {
 	return filepath.Join(".gomuxai", "agents", id)
 }
 
-// WriteAgyHooksBundle writes <bundleDir>/.agents/hooks.json registering
+// writeAgyHooksBundle writes <bundleDir>/.agents/hooks.json registering
 // PreInvocation, PreToolUse, PostToolUse, and Stop hooks that invoke reportCmd.
-func WriteAgyHooksBundle(bundleDir, reportCmd string) error {
+func writeAgyHooksBundle(bundleDir, reportCmd string) error {
 	hooksDir := filepath.Join(bundleDir, ".agents")
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
 		return fmt.Errorf("creating agy hooks dir: %w", err)
@@ -317,8 +239,9 @@ type agyToolCall struct {
 }
 
 // ParseHookEvent maps an agy hook event and payload to a status report.
-// Note: agy has no SessionEnd or PermissionRequest/waiting hook event;
-// neither status is faked here (process exit is detected via tmux pane liveness).
+// agy has no SessionEnd or permission hook event, so neither status comes
+// from here: the launch command reports the exit, and the service tells a
+// permission dialog from the screen (PermissionPromptVisible).
 func (b *AgyBackend) ParseHookEvent(event string, payload []byte) (types.HookReport, bool, error) {
 	var p agyHookPayload
 	if err := json.Unmarshal(payload, &p); err != nil {

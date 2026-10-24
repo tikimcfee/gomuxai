@@ -63,9 +63,6 @@ func TestAgySpawn_GeneratesHooksBundleAndReportsLifecycle(t *testing.T) {
 		t.Fatalf("Spawn: %v", err)
 	}
 
-	// Register in provider map so StatusInfo/ReportHook can look up "fakeagy"
-	env.backends.RegisterProvider(fake)
-
 	// Verify .gomuxai/agents/agy-worker/.agents/hooks.json exists
 	hooksPath := filepath.Join(env.cfg.AgentDir("agy-worker"), ".agents", "hooks.json")
 	if _, err := os.Stat(hooksPath); err != nil {
@@ -192,7 +189,6 @@ func TestAgyWaitingAndApprove_WhenPermissionDialogVisible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	env.backends.RegisterProvider(fake)
 	spawnID := spawnIDOf(t, fake.reportCmd)
 
 	// PreToolUse fires while no dialog is on screen: status is processing,

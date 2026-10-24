@@ -96,29 +96,15 @@ type PermissionResponder interface {
 	PermissionPromptVisible(screen string) bool
 }
 
-// Provider defines the interface for AI CLI tool backends.
-// Unlike the simpler Backend interface, Provider does status analysis internally
-// rather than returning patterns for the caller to match.
+// Provider defines the interface for the built-in AI CLI tool backends.
+// What a backend can do beyond launching (hooks, native status, permission
+// prompts, ...) it declares by implementing the optional interfaces above.
 type Provider interface {
-	// Identity
 	Name() string
-	SessionPrefix() string
-
-	// Lifecycle
-	Initialize(ctx context.Context) error
-	Cleanup() error
-
-	// Status detection - PROVIDER DOES THE ANALYSIS
-	GetStatus(ctx context.Context, output string) (Status, error)
-
-	// Quick check for file watcher optimization
-	GetIdlePatternForLog() string
-
-	// Output parsing
-	ExtractLastMessage(output string) string
-
-	// Commands
 	LaunchCommand() string
 	InitMessage(taskFile string) string
+
+	// ExitCommand is typed into an idle agent before cleanup kills its
+	// session, so the CLI can exit cleanly ("" for none).
 	ExitCommand() string
 }
