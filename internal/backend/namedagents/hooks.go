@@ -1,6 +1,7 @@
 package namedagents
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -29,20 +30,36 @@ func newHookCommand(command string) hookCommand {
 	return hookCommand{Type: "command", Command: command, Timeout: hookTimeoutSec}
 }
 
-// maxDetailLen keeps status details to a single readable line.
+// maxDetailLen keeps error details to a single readable line.
 const maxDetailLen = 120
 
+// maxToolInputLen bounds the tool input a report stores. Larger inputs
+// (e.g. a Write of a big file) aren't stored; the detail still names the
+// call.
+const maxToolInputLen = 64 << 10
+
 // toolSummary renders a tool call as "tool: <most telling input>", the
-// input being the first of keys set in it.
+// input being the first of keys set in it. The input is kept whole, line
+// breaks included: for a permission prompt, it is what an answer allows.
 func toolSummary(tool string, input json.RawMessage, keys []string) string {
 	var fields map[string]any
 	_ = json.Unmarshal(input, &fields)
 	for _, key := range keys {
-		if v, ok := fields[key].(string); ok && v != "" {
-			return truncate(tool + ": " + v)
+		if v, ok := fields[key].(string); ok && strings.TrimSpace(v) != "" {
+			return tool + ": " + strings.TrimSpace(v)
 		}
 	}
 	return tool
+}
+
+// toolInput returns input, compacted, for HookReport.ToolInput, or "" if
+// it isn't a JSON object or is too large to store.
+func toolInput(input json.RawMessage) string {
+	var b bytes.Buffer
+	if err := json.Compact(&b, input); err != nil || b.Len() > maxToolInputLen || !bytes.HasPrefix(b.Bytes(), []byte("{")) {
+		return ""
+	}
+	return b.String()
 }
 
 // permissionKey returns the key that answers a numbered permission dialog:

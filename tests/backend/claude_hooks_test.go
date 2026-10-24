@@ -173,17 +173,26 @@ func TestClaudeParseHookEvent_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestClaudeParseHookEvent_TruncatesLongDetail(t *testing.T) {
-	payload := `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"` + strings.Repeat("é", 300) + `"}}`
+// A permission prompt's detail and input are kept whole: whoever answers
+// it needs to see everything it allows.
+func TestClaudeParseHookEvent_KeepsPermissionInputWhole(t *testing.T) {
+	command := strings.Repeat("é", 300) + `\necho \"two\"` // as escaped in JSON
+	payload := `{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"` + command + `","description":"d"}}`
 	r, _, err := namedagents.NewClaudeBackend().ParseHookEvent("", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHookEvent: %v", err)
 	}
-	if n := len([]rune(r.Detail)); n != 120 {
-		t.Errorf("detail is %d runes, want 120", n)
+	if want := "permission: Bash: " + strings.Repeat("é", 300) + "\necho \"two\""; r.Detail != want {
+		t.Errorf("detail = %q, want the whole command", r.Detail)
 	}
-	if !strings.HasSuffix(r.Detail, "…") {
-		t.Errorf("detail should end with an ellipsis: %q", r.Detail)
+	if want := `{"command":"` + command + `","description":"d"}`; r.ToolInput != want {
+		t.Errorf("tool input = %q, want %q", r.ToolInput, want)
+	}
+
+	// Other events don't keep the input.
+	r, _, _ = namedagents.NewClaudeBackend().ParseHookEvent("", []byte(`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}`))
+	if r.ToolInput != "" {
+		t.Errorf("PreToolUse kept tool input %q", r.ToolInput)
 	}
 }
 

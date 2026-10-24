@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -76,6 +78,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			Detail: info.Detail,
 			Tool:   info.Tool,
 		}
+		if json.Valid([]byte(info.ToolInput)) {
+			out.ToolInput = json.RawMessage(info.ToolInput)
+		}
 		if !info.UpdatedAt.IsZero() {
 			out.UpdatedAt = &info.UpdatedAt
 		}
@@ -88,11 +93,22 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if info.Event != "" {
 			fmt.Printf("  event:  %s (%s ago)\n", info.Event, time.Since(info.UpdatedAt).Round(time.Second))
 		}
-		if info.Detail != "" {
-			fmt.Printf("  detail: %s\n", wrapIndented(info.Detail, statusWrapWidth, "          "))
+		// At a prompt, the input says in full what an answer allows; the
+		// detail then only needs to name it.
+		input := ""
+		if info.Status == service.AgentStatusWaiting {
+			input = formatToolInput(info.ToolInput)
+		}
+		if info.Detail != "" && input != "" {
+			fmt.Printf("  detail: %s\n", service.OneLine(info.Detail))
+		} else if info.Detail != "" {
+			fmt.Printf("  detail: %s\n", wrapIndented(info.Detail, statusWrapWidth, statusIndent))
 		}
 		if info.Tool != "" {
 			fmt.Printf("  tool:   %s\n", info.Tool)
+		}
+		if input != "" {
+			fmt.Printf("  input:  %s\n", input)
 		}
 	}
 	switch {
@@ -108,18 +124,51 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 // statusJSONOut is a status as --json prints it.
 type statusJSONOut struct {
-	Agent     string     `json:"agent"`
-	Host      string     `json:"host"`
-	Status    string     `json:"status"`
-	Source    string     `json:"source"`
-	Event     string     `json:"event,omitempty"`
-	Detail    string     `json:"detail,omitempty"`
-	Tool      string     `json:"tool,omitempty"`
-	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	Agent  string `json:"agent"`
+	Host   string `json:"host"`
+	Status string `json:"status"`
+	Source string `json:"source"`
+	Event  string `json:"event,omitempty"`
+	Detail string `json:"detail,omitempty"`
+	Tool   string `json:"tool,omitempty"`
+	// ToolInput is the full input of the last tool call that may need
+	// permission: at a prompt, what approving it allows.
+	ToolInput json.RawMessage `json:"tool_input,omitempty"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty"`
 }
 
-// statusWrapWidth is the width status -v wraps a detail to.
-const statusWrapWidth = 100
+// statusWrapWidth is the width status -v wraps a detail to, and
+// statusIndent lines up its continuation lines under the first.
+const (
+	statusWrapWidth = 100
+	statusIndent    = "          "
+)
+
+// formatToolInput renders a tool call's input (a JSON object) for status
+// -v: one "key: value" per field, in order, with string values as they are,
+// line breaks included, so a command reads as it would run. It returns ""
+// for an empty or malformed input.
+func formatToolInput(input string) string {
+	var fields map[string]json.RawMessage
+	if input == "" || json.Unmarshal([]byte(input), &fields) != nil || len(fields) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var lines []string
+	for _, k := range keys {
+		value := string(fields[k])
+		var s string
+		if json.Unmarshal(fields[k], &s) == nil {
+			value = s
+		}
+		lines = append(lines, k+": "+wrapIndented(value, statusWrapWidth, statusIndent+"  "))
+	}
+	return strings.Join(lines, "\n"+statusIndent)
+}
 
 // wrapIndented wraps s to width columns, keeping its own line breaks, and
 // indents every line after the first with indent.
@@ -158,6 +207,7 @@ func remoteStatus(ref natsbus.AgentRef) (*service.StatusInfo, error) {
 		Event:     resp.Event,
 		Detail:    resp.Detail,
 		Tool:      resp.Tool,
+		ToolInput: resp.ToolInput,
 		UpdatedAt: resp.UpdatedAt,
 	}, nil
 }

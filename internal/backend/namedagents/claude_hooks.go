@@ -122,6 +122,7 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 	case "PermissionRequest":
 		r.Status = types.StatusWaiting
 		r.Detail = "permission: " + claudeToolSummary(p.ToolName, p.ToolInput)
+		r.ToolInput = toolInput(p.ToolInput)
 	case "PreCompact":
 		r.Status = types.StatusProcessing
 		r.Detail = "compacting"

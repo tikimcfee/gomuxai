@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -157,7 +158,7 @@ func TestStateErrorsAndClear(t *testing.T) {
 	}
 
 	out, err = stdout(t, func() error { return runStateClear(stateClearCmd, []string{"worker"}) })
-	if err != nil || out != "Cleared 1 key for agent worker (kept 4 \"_\" keys that status reports write).\n" {
+	if err != nil || out != "Cleared 1 key for agent worker (kept 5 \"_\" keys that status reports write).\n" {
 		t.Errorf("state clear = %q, %v", out, err)
 	}
 	if st, _ := agentService.StatusInfo(context.Background(), "worker"); st == nil || st.Status != service.AgentStatusWaiting {
@@ -213,6 +214,57 @@ func TestJSONOutput(t *testing.T) {
 	}
 	if hints.Len() != 0 {
 		t.Errorf("--json printed hints: %q", hints.String())
+	}
+}
+
+// status -v and --json show the whole tool call a prompt asks about, here
+// and over the bus.
+func TestStatusShowsWholePermissionInput(t *testing.T) {
+	setupCLI(t)
+	serveAsH1(t)
+	t.Cleanup(func() { statusJSON = false })
+	command := "cat TASK.md; python3 -c \"\nimport wordfreq\nprint('हिन्दी Straße')\"" + strings.Repeat(" x", 80)
+	input, _ := json.Marshal(map[string]string{"command": command, "description": "check it"})
+	if err := agentService.Report(context.Background(), "worker", service.StatusReport{
+		Status: service.AgentStatusWaiting, Event: "PermissionRequest", Tool: "Bash",
+		Detail: "permission: Bash: " + command, ToolInput: string(input),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statusVerbose = true
+	for _, target := range []string{"worker", "worker@h1"} {
+		out, err := stdout(t, func() error { return runStatus(statusCmd, []string{target}) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{
+			"  input:  command: cat TASK.md; python3 -c \"\n",
+			"\n            import wordfreq\n            print('हिन्दी Straße')\" x x",
+			"\n          description: check it\n",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("status -v %s lacks %q:\n%s", target, want, out)
+			}
+		}
+		xs := 0
+		for _, f := range strings.Fields(out[strings.Index(out, "input:"):]) {
+			if f == "x" {
+				xs++
+			}
+		}
+		if xs != 80 {
+			t.Errorf("status -v %s cut the command:\n%s", target, out)
+		}
+	}
+
+	statusVerbose, statusJSON = false, true
+	out, err := stdout(t, func() error { return runStatus(statusCmd, []string{"worker@h1"}) })
+	var got struct {
+		ToolInput map[string]string `json:"tool_input"`
+	}
+	if err != nil || json.Unmarshal([]byte(out), &got) != nil || got.ToolInput["command"] != command {
+		t.Errorf("status --json tool_input = %q, %v\n%s", got.ToolInput["command"], err, out)
 	}
 }
 

@@ -156,6 +156,9 @@ type StatusResponse struct {
 	Detail    string    `json:"detail,omitempty"`
 	Tool      string    `json:"tool,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	// ToolInput is the full input (JSON) of the tool call a permission
+	// prompt asks about; empty otherwise, and from hosts that predate it.
+	ToolInput string `json:"tool_input,omitempty"`
 
 	// The last recorded report, which Status may lag or override.
 	ReportedStatus string    `json:"reported_status,omitempty"`

@@ -19,7 +19,8 @@ const (
 	StateKeyDetail    = "_detail"
 	StateKeyResult    = "_result"
 	StateKeySessionID = "_session_id"
-	StateKeyTool      = "_tool" // tool the last event concerned, e.g. the one awaiting permission
+	StateKeyTool      = "_tool"       // tool the last event concerned, e.g. the one awaiting permission
+	StateKeyToolInput = "_tool_input" // that tool call's full input (JSON), when it may need permission
 	// StateKeySpawnID identifies one spawn of an agent name. Hook commands
 	// carry it, so hooks from a previous agent with the same name (e.g. the
 	// SessionEnd fired while cleanup kills it) can't write into a respawn.
@@ -39,6 +40,7 @@ type StatusReport struct {
 	Event     string
 	Detail    string
 	Tool      string
+	ToolInput string // full input (JSON) of the tool call that may need permission
 	Result    string // only stored when non-empty
 	SessionID string // only stored when non-empty
 	// ClearResult empties the stored result (a new turn started), so a
@@ -57,6 +59,7 @@ type StatusInfo struct {
 	Event     string
 	Detail    string
 	Tool      string
+	ToolInput string    // full input (JSON) of the tool call a permission prompt is about
 	UpdatedAt time.Time // time of the last report; zero for other sources
 
 	// The last recorded report, whatever Status was resolved from. Status can
@@ -90,6 +93,8 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 		StateKeyEvent:  r.Event,
 		StateKeyDetail: r.Detail,
 		StateKeyTool:   r.Tool,
+		// Always written, so an input never outlives the call it describes.
+		StateKeyToolInput: r.ToolInput,
 	}
 	if r.Result != "" || r.ClearResult {
 		values[StateKeyResult] = r.Result
@@ -150,6 +155,7 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 		Event:     hr.Event,
 		Detail:    hr.Detail,
 		Tool:      hr.Tool,
+		ToolInput: hr.ToolInput,
 		Result:    hr.Result,
 		SessionID: hr.SessionID,
 
@@ -198,7 +204,7 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 		// Hook detail is only trustworthy while it agrees with the backend;
 		// e.g. an interrupted permission prompt fires no hook at all.
 		if reported != nil && reported.Status == native {
-			info.Event, info.Detail, info.Tool, info.UpdatedAt = reported.Event, reported.Detail, reported.Tool, reported.UpdatedAt
+			info.Event, info.Detail, info.Tool, info.ToolInput, info.UpdatedAt = reported.Event, reported.Detail, reported.Tool, reported.ToolInput, reported.UpdatedAt
 		}
 		return info, reported, nil
 	}
@@ -259,6 +265,7 @@ func (s *AgentService) reportedStatus(ctx context.Context, name string) (*Status
 	info.Event = values[StateKeyEvent]
 	info.Detail = values[StateKeyDetail]
 	info.Tool = values[StateKeyTool]
+	info.ToolInput = values[StateKeyToolInput]
 	return info, nil
 }
 

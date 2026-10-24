@@ -33,10 +33,13 @@ func (s Status) String() string {
 
 // HookReport is a status update derived from a backend lifecycle hook payload.
 type HookReport struct {
-	Status    Status
-	Event     string // backend's event name, e.g. "PreToolUse"
-	Detail    string // short human-readable context, e.g. "Bash: go test ./..."
-	Tool      string // tool the event concerns, if any
+	Status Status
+	Event  string // backend's event name, e.g. "PreToolUse"
+	Detail string // human-readable context, e.g. "Bash: go test ./..."
+	Tool   string // tool the event concerns, if any
+	// ToolInput is the tool call's full input (JSON) when the event may
+	// raise a permission prompt, so whoever answers it can see all of it.
+	ToolInput string
 	Result    string // final assistant message, when the event carries one
 	SessionID string // backend's session id, when the event carries one
 	// ClearResult marks the start of a new turn or conversation, after which

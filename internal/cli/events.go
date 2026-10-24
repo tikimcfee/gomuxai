@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
+	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
 // busPublisher publishes this process's status events. It connects on the
@@ -164,7 +165,8 @@ func formatStatusEvent(ev natsbus.StatusEvent) string {
 		line += " tool=" + printable(ev.Tool)
 	}
 	if ev.Detail != "" {
-		line += " detail=" + strconv.Quote(ev.Detail)
+		// One line per event: --json has the detail whole.
+		line += " detail=" + strconv.Quote(service.OneLine(ev.Detail))
 	}
 	return line
 }

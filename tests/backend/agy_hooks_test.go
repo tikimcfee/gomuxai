@@ -168,17 +168,19 @@ func TestAgyParseHookEvent_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestAgyParseHookEvent_TruncatesLongDetail(t *testing.T) {
+// agy's permission dialog follows PreToolUse, so that event keeps the call
+// whole.
+func TestAgyParseHookEvent_KeepsToolCallWhole(t *testing.T) {
 	payload := `{"conversationId":"c1","toolCall":{"name":"run_command","args":{"CommandLine":"` + strings.Repeat("é", 300) + `"}}}`
 	r, _, err := namedagents.NewAgyBackend().ParseHookEvent("PreToolUse", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHookEvent: %v", err)
 	}
-	if n := len([]rune(r.Detail)); n != 120 {
-		t.Errorf("detail is %d runes, want 120", n)
+	if want := "run_command: " + strings.Repeat("é", 300); r.Detail != want {
+		t.Errorf("detail = %q, want the whole command", r.Detail)
 	}
-	if !strings.HasSuffix(r.Detail, "…") {
-		t.Errorf("detail should end with an ellipsis: %q", r.Detail)
+	if want := `{"CommandLine":"` + strings.Repeat("é", 300) + `"}`; r.ToolInput != want {
+		t.Errorf("tool input = %q, want %q", r.ToolInput, want)
 	}
 }
 

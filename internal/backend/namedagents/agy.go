@@ -244,6 +244,10 @@ func (b *AgyBackend) ParseHookEvent(event string, payload []byte) (types.HookRep
 	case "PreToolUse":
 		r.Status = types.StatusProcessing
 		r.Detail = agyToolSummary(p.ToolCall.Name, p.ToolCall.Args)
+		// agy shows its permission dialog after PreToolUse, with no hook of
+		// its own: keep the input for the status that promotes this to
+		// waiting.
+		r.ToolInput = toolInput(p.ToolCall.Args)
 	case "PostToolUse":
 		r.Status = types.StatusProcessing
 		summary := agyToolSummary(p.ToolCall.Name, p.ToolCall.Args)
