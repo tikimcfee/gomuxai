@@ -170,28 +170,32 @@ func (c *Client) paneTarget(sessionName string) (string, error) {
 	return pane.Id, nil
 }
 
-// SendKeys sends text to a tmux session.
+// SendKeys types text into a tmux session literally. Without -l, tmux reads
+// text that happens to be a key name ("C-c", "Escape", "0x3") as that key,
+// and without "--" text starting with '-' as send-keys flags ("-R" resets
+// the terminal). Text can come from other hosts over the bus.
 func (c *Client) SendKeys(session string, text string) error {
-	pane, err := c.getFirstPane(session)
+	target, err := c.paneTarget(session)
 	if err != nil {
 		return err
 	}
 
-	if err := pane.SendKeys(text); err != nil {
+	if _, err := c.tmux.Command("send-keys", "-l", "-t", target, "--", text); err != nil {
 		return fmt.Errorf("sending keys: %w", err)
 	}
 
 	return nil
 }
 
-// SendSpecialKey sends a special key to a session.
+// SendSpecialKey sends a special key to a session. key is never read as a
+// flag: one that isn't a key name is typed as text.
 func (c *Client) SendSpecialKey(session string, key string) error {
 	target, err := c.paneTarget(session)
 	if err != nil {
 		return err
 	}
 	// Use raw tmux command for special keys
-	_, err = c.tmux.Command("send-keys", "-t", target, key)
+	_, err = c.tmux.Command("send-keys", "-t", target, "--", key)
 	if err != nil {
 		return fmt.Errorf("sending key %q: %w", key, err)
 	}

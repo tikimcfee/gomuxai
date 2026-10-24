@@ -317,6 +317,56 @@ func TestSendKeys(t *testing.T) {
 	}
 }
 
+// SendKeys carries `agent send` text, which can come from another host over
+// the bus. Text that is also a tmux key name or starts with '-' must be typed
+// as is, not sent as that key or parsed as a send-keys flag.
+func TestSendKeys_IsLiteral(t *testing.T) {
+	requireTmux(t)
+
+	client, err := tmux.NewClient()
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+	sessionName := uniqueSessionName(t)
+	defer cleanupSession(sessionName)
+	if err := client.CreateSession(sessionName, nil); err != nil {
+		t.Fatalf("creating session: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// cat -v shows control keys as ^X, so a key sent instead of the text
+	// shows up differently (or, for C-c, ends cat).
+	client.SendKeys(sessionName, "cat -v")
+	client.SendSpecialKey(sessionName, "Enter")
+	time.Sleep(200 * time.Millisecond)
+
+	texts := []string{"Escape", "C-c", "0x41", "^A", "-R", "-t%0", "--"}
+	for _, text := range texts {
+		if err := client.SendKeys(sessionName, text); err != nil {
+			t.Fatalf("sending %q: %v", text, err)
+		}
+		client.SendSpecialKey(sessionName, "Enter")
+	}
+	// A special key starting with '-' isn't a flag either.
+	client.SendSpecialKey(sessionName, "-N2")
+	client.SendSpecialKey(sessionName, "Enter")
+	time.Sleep(300 * time.Millisecond)
+
+	output, err := client.Capture(sessionName, 50, true)
+	if err != nil {
+		t.Fatalf("capturing output: %v", err)
+	}
+	lines := map[string]int{}
+	for _, line := range strings.Split(output, "\n") {
+		lines[strings.TrimSpace(line)]++
+	}
+	for _, text := range append(texts, "-N2") {
+		if lines[text] < 2 { // typed by the terminal, then echoed by cat
+			t.Errorf("%q not typed literally; pane:\n%s", text, output)
+		}
+	}
+}
+
 // TestSendSpecialKey tests special key transmission
 func TestSendSpecialKey(t *testing.T) {
 	requireTmux(t)
