@@ -4,7 +4,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/backend"
@@ -47,7 +46,7 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&backendName, "backend", "", "Backend to use (e.g., claude, aider)")
+	rootCmd.PersistentFlags().StringVar(&backendName, "backend", "", "Backend to use (claude, aider, agy)")
 	rootCmd.PersistentFlags().StringVar(&backendConfig, "backend-config", "", "Path to backend config file")
 
 	// Add all subcommands
@@ -76,7 +75,7 @@ func init() {
 
 func setup(cmd *cobra.Command, args []string) error {
 	// Skip setup for commands that don't need it
-	if cmd.Name() == "help" || cmd.Name() == "version" {
+	if cmd.Name() == "help" {
 		return nil
 	}
 
@@ -97,11 +96,8 @@ func setup(cmd *cobra.Command, args []string) error {
 		cfg.Backend = backendName
 	}
 
-	// For commands that need a backend, validate it
-	needsBackend := map[string]bool{
-		"spawn": true,
-	}
-	if needsBackend[cmd.Name()] {
+	// Only spawn needs a backend
+	if cmd.Name() == "spawn" {
 		if err := cfg.Validate(); err != nil {
 			return err
 		}
@@ -128,11 +124,10 @@ func setup(cmd *cobra.Command, args []string) error {
 	// Initialize backend registry
 	backends = backend.NewRegistry()
 
-	// Load custom backend if provided
+	// Load custom backend if provided. The file may be an app config
+	// instead, so an invalid backend config isn't an error.
 	if backendConfig != "" {
-		if err := backends.LoadFromFile(backendConfig); err != nil {
-			// Ignore if it's not a valid backend config (might be app config)
-		}
+		_ = backends.LoadFromFile(backendConfig)
 	}
 
 	// Initialize agent service
@@ -144,9 +139,4 @@ func setup(cmd *cobra.Command, args []string) error {
 
 func getContext() context.Context {
 	return context.Background()
-}
-
-func exitError(err error) {
-	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-	os.Exit(1)
 }
