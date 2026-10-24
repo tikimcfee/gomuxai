@@ -44,6 +44,23 @@ answer before its message has actually arrived; wait for it (or use agent wait).
 Your status (idle, working, waiting on a permission prompt) is reported
 automatically. Use `+"`agent`"+` rather than tmux to reach other agents.
 `, name, s.cfg.Host, by, bin)
+	fmt.Fprintf(&b, `
+## Helpers
+
+For parallel or long-running work that a person may want to watch or steer,
+spawn a helper: it runs in its own tmux session, where they can see it. Your
+CLI's built-in subagents are still fine for quick lookups. Name helpers
+<yourname>-<role>:
+
+    agent spawn %[1]s-review --backend claude   # starts in the directory you run it from
+    agent send %[1]s-review "the task"
+    agent wait %[1]s-review --for idle --next --timeout 30m
+    agent state get %[1]s-review _result
+    agent cleanup %[1]s-review
+
+Clean up your helpers when you're done with them. You can clean up only your
+own helpers and theirs; `+"`agent list`"+` shows each agent's parent.
+`, name)
 	return b.String()
 }
 
@@ -88,7 +105,8 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 // a permission prompt: they read status or deliver messages that the
 // recipient's own permission prompts still guard. approve/deny, keys, and
 // send --force are left out: they would let one agent answer another
-// agent's prompts, which is the user's call.
+// agent's prompts, which is the user's call. So are spawn and cleanup, which
+// start and stop agents: the user approves each one.
 var agentSafeCommands = []string{"send", "list", "status", "wait", "events", "state get"}
 
 // allowedCommandPrefixes are agentSafeCommands as the agent may type them:

@@ -306,7 +306,8 @@ func TestSpawn_BriefsTheAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instructions not written: %v", err)
 	}
-	for _, want := range []string{`agent "worker" on host "h1"`, `agent "lead"`, "full path, /opt/gomux/agent", "[from NAME@HOST]", "agent send"} {
+	for _, want := range []string{`agent "worker" on host "h1"`, `agent "lead"`, "full path, /opt/gomux/agent", "[from NAME@HOST]", "agent send",
+		"agent spawn worker-review --backend claude", "agent cleanup worker-review"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("instructions missing %q", want)
 		}
