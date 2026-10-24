@@ -22,12 +22,28 @@ Method: a logging hook (`hook.sh` → one JSON line per call: time, `$AGENT_NAME
 | `PermissionRequest` | permission dialog shown, **immediately** (+13ms after PreToolUse) | `tool_name`, `tool_input` | `waiting` (needs human) |
 | `Notification` | ~6s after the dialog, `notification_type: permission_prompt`, `message: "Claude needs your permission"` | `notification_type`, `message` | `waiting` (redundant w/ above, delayed) |
 | `PostToolUse` | after tool succeeds | `tool_response`, `duration_ms` | `busy` |
-| `Stop` | turn finished | `last_assistant_message`, `background_tasks`, `session_crons`, `stop_hook_active` | `idle` (+ result) |
+| `Stop` | turn finished | `last_assistant_message`, `background_tasks`, `session_crons`, `stop_hook_active` | `idle` (+ result); `processing` (no result) while `background_tasks` has a running entry |
 | `SessionEnd` | `/exit` (`reason: prompt_input_exit`); also fired on tmux kill-session. `/clear` fires it too (`reason: clear`), followed by `SessionStart` (`source: clear`) | `reason` | `exited` (ignored for `clear`) |
 
 Registered but not triggered by these probes (settings accepted them without error): `PostToolUseFailure`, `StopFailure`, `SubagentStart`, `SubagentStop`, `PreCompact`.
 
 Every payload carries `session_id`, `transcript_path`, `cwd`, `hook_event_name`.
+
+## Background work outlives the turn
+
+Probed later the same day: asking the agent to start a background Bash command (`run_in_background`) or a background subagent ends the turn right away, with an interim reply ("started"). `Stop` then carries the live work:
+
+```json
+"background_tasks": [
+  {"id": "berqn6wy0", "type": "shell", "status": "running",
+   "description": "Sleep 45 seconds then echo finished", "command": "sleep 45; echo finished"},
+  {"id": "adfca3363a3dc3bba", "type": "subagent", "status": "running",
+   "description": "Run sleep 30 and reply ok", "agent_type": "general-purpose"}
+],
+"session_crons": []
+```
+
+(Two separate probes, one entry each, merged here.) When the work finishes, Claude starts a new turn by itself: `UserPromptSubmit` with a `<task-notification>` prompt, then a `Stop` whose `background_tasks` is `[]` once nothing is left. Finished tasks drop out of the list rather than staying with a terminal status. `claude agents --json` says `busy` the whole time. Only `"running"` was observed as a status.
 
 ## The gap: interrupts fire nothing
 

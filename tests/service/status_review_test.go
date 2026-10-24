@@ -225,6 +225,63 @@ func TestRespondPermission_ExpectTool(t *testing.T) {
 	}
 }
 
+// Repro (real claude): reply "A" to one prompt, then send another (or /clear).
+// _result kept saying "A" until the next Stop, so a coordinator polling it
+// read the previous turn's reply as this one's. And a turn that launched
+// background work stopped with an interim reply ("started") stored as the
+// result and status idle, while the work and the real reply were still to come.
+func TestReportHook_ResultTracksCurrentTurn(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	spawnFake(t, env, "worker")
+
+	result := func() string {
+		t.Helper()
+		e, _ := env.store.GetState(ctx, "worker", service.StateKeyResult)
+		if e == nil {
+			return ""
+		}
+		return e.Value
+	}
+	hook := func(payload string) {
+		t.Helper()
+		if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+			t.Fatalf("ReportHook: %v", err)
+		}
+	}
+
+	hook(`{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"A","background_tasks":[]}`)
+	if got := result(); got != "A" {
+		t.Fatalf("_result = %q, want A", got)
+	}
+
+	hook(`{"hook_event_name":"UserPromptSubmit","session_id":"s","prompt":"now launch the job"}`)
+	if got := result(); got != "" {
+		t.Errorf("_result = %q after a new prompt, want empty (stale reply from the previous turn)", got)
+	}
+
+	hook(`{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"started","background_tasks":[{"id":"b1","type":"shell","status":"running","command":"make"}],"session_crons":[]}`)
+	if st, _ := env.service.Status(ctx, "worker"); st != service.AgentStatusProcessing {
+		t.Errorf("status = %s with a background task running, want processing", st)
+	}
+	if got := result(); got != "" {
+		t.Errorf("_result = %q, want empty (interim reply recorded as the result)", got)
+	}
+
+	// The task's completion starts a turn of its own.
+	hook(`{"hook_event_name":"UserPromptSubmit","session_id":"s","prompt":"<task-notification>b1 completed</task-notification>"}`)
+	hook(`{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"build passed","background_tasks":[],"session_crons":[]}`)
+	if got := result(); got != "build passed" {
+		t.Errorf("_result = %q, want the final reply", got)
+	}
+
+	hook(`{"hook_event_name":"SessionStart","session_id":"s2","source":"clear"}`)
+	if got := result(); got != "" {
+		t.Errorf("_result = %q after /clear, want empty", got)
+	}
+}
+
 // Repro (race): the agent is waiting on a Bash prompt; someone else answers
 // it while `agent deny` is between its status check and the keypress. deny
 // then sent Escape into the turn now running, cancelling the work that was

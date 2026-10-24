@@ -40,6 +40,9 @@ type StatusReport struct {
 	Tool      string
 	Result    string // only stored when non-empty
 	SessionID string // only stored when non-empty
+	// ClearResult empties the stored result (a new turn started), so a
+	// reader never takes the previous turn's reply for this one's.
+	ClearResult bool
 }
 
 // StatusInfo describes an agent's status and where it came from.
@@ -75,7 +78,7 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 		StateKeyDetail: r.Detail,
 		StateKeyTool:   r.Tool,
 	}
-	if r.Result != "" {
+	if r.Result != "" || r.ClearResult {
 		values[StateKeyResult] = r.Result
 	}
 	if r.SessionID != "" {
@@ -122,6 +125,8 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 		Tool:      hr.Tool,
 		Result:    hr.Result,
 		SessionID: hr.SessionID,
+
+		ClearResult: hr.ClearResult,
 	})
 }
 

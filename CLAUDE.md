@@ -105,6 +105,8 @@ When a Claude agent finishes a turn, its final reply is stored for you:
 agent state get helper _result
 ```
 
+`_result` belongs to the current turn: it is emptied when a new prompt is submitted (or on `/clear`), so an empty value means the turn hasn't finished. A turn that leaves background work running (a background shell or subagent) stays `processing` and stores no result; its replies are interim. When the work finishes, Claude starts a turn on its own, and that turn's reply becomes the result.
+
 ### Answering Permission Prompts
 
 ```bash

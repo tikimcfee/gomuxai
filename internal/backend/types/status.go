@@ -39,6 +39,9 @@ type HookReport struct {
 	Tool      string // tool the event concerns, if any
 	Result    string // final assistant message, when the event carries one
 	SessionID string // backend's session id, when the event carries one
+	// ClearResult marks the start of a new turn or conversation, after which
+	// the previous turn's Result no longer answers anything.
+	ClearResult bool
 }
 
 // PermissionResponse is an answer to a pending permission prompt.

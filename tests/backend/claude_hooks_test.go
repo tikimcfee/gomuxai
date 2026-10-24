@@ -72,6 +72,30 @@ func TestClaudeParseHookEvent(t *testing.T) {
 			wantResult: "done",
 		},
 		{
+			// Observed: the agent launched a background shell, replied
+			// "started", and Stop fired while the shell kept running.
+			name:       "stop with a background shell running is not idle",
+			payload:    `{"hook_event_name":"Stop","session_id":"s1","last_assistant_message":"started","background_tasks":[{"id":"berqn6wy0","type":"shell","status":"running","description":"Sleep 45 seconds then echo finished","command":"sleep 45; echo finished"}],"session_crons":[]}`,
+			wantOK:     true,
+			wantStatus: backend.StatusProcessing,
+			wantDetail: "turn finished, 1 background task(s) running",
+		},
+		{
+			name:       "stop with a background subagent running is not idle",
+			payload:    `{"hook_event_name":"Stop","session_id":"s1","last_assistant_message":"launched","background_tasks":[{"id":"adfca3363a3dc3bba","type":"subagent","status":"running","description":"Run sleep 30 and reply ok","agent_type":"general-purpose"}],"session_crons":[]}`,
+			wantOK:     true,
+			wantStatus: backend.StatusProcessing,
+			wantDetail: "turn finished, 1 background task(s) running",
+		},
+		{
+			name:       "stop after background work finished",
+			payload:    `{"hook_event_name":"Stop","session_id":"s1","last_assistant_message":"The subagent replied ok.","background_tasks":[],"session_crons":[]}`,
+			wantOK:     true,
+			wantStatus: backend.StatusIdle,
+			wantDetail: "turn finished",
+			wantResult: "The subagent replied ok.",
+		},
+		{
 			name:       "session end",
 			payload:    `{"hook_event_name":"SessionEnd","session_id":"s1","reason":"prompt_input_exit"}`,
 			wantOK:     true,
@@ -117,6 +141,28 @@ func TestClaudeParseHookEvent(t *testing.T) {
 				t.Errorf("session id = %q, want s1", r.SessionID)
 			}
 		})
+	}
+}
+
+// A new prompt or conversation makes the stored result stale.
+func TestClaudeParseHookEvent_ClearResult(t *testing.T) {
+	provider := namedagents.NewClaudeBackend()
+	for payload, want := range map[string]bool{
+		`{"hook_event_name":"UserPromptSubmit","prompt":"hi"}`:                         true,
+		`{"hook_event_name":"UserPromptSubmit","prompt":"<task-notification>..."}`:     true,
+		`{"hook_event_name":"SessionStart","source":"clear"}`:                          true,
+		`{"hook_event_name":"SessionStart","source":"compact"}`:                        false,
+		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}`:          false,
+		`{"hook_event_name":"Stop","last_assistant_message":"done"}`:                   false,
+		`{"hook_event_name":"Stop","last_assistant_message":"","background_tasks":[]}`: false,
+	} {
+		r, ok, err := provider.ParseHookEvent([]byte(payload))
+		if err != nil || !ok {
+			t.Fatalf("%s: ok=%v err=%v", payload, ok, err)
+		}
+		if r.ClearResult != want {
+			t.Errorf("%s: ClearResult = %v, want %v", payload, r.ClearResult, want)
+		}
 	}
 }
 

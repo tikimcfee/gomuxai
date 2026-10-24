@@ -76,6 +76,30 @@ type claudeHookPayload struct {
 	LastAssistantMessage string          `json:"last_assistant_message"`
 	Reason               string          `json:"reason"`
 	Error                string          `json:"error"`
+	// BackgroundTasks (Stop) lists work the session started that outlives
+	// the turn. Observed entries: {"id", "type": "shell" | "subagent",
+	// "status": "running", "description", "command" | "agent_type"};
+	// finished tasks drop out of the list.
+	BackgroundTasks []claudeBackgroundTask `json:"background_tasks"`
+}
+
+type claudeBackgroundTask struct {
+	Status string `json:"status"`
+}
+
+// runningBackgroundTasks counts the tasks still at work. When one finishes,
+// Claude starts a new turn on its own (a UserPromptSubmit whose prompt is a
+// <task-notification>), so the session isn't idle yet. session_crons are
+// left out on purpose: a cron fires later as a fresh turn, and between fires
+// the agent really is idle.
+func runningBackgroundTasks(tasks []claudeBackgroundTask) int {
+	n := 0
+	for _, t := range tasks {
+		if t.Status == "running" || t.Status == "pending" {
+			n++
+		}
+	}
+	return n
 }
 
 // ParseHookEvent maps a Claude Code hook payload to a status report.
@@ -93,9 +117,12 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 	case "SessionStart":
 		r.Status = types.StatusIdle
 		r.Detail = "session " + p.Source
+		// startup, resume, clear: a different conversation. compact keeps it.
+		r.ClearResult = p.Source != "compact"
 	case "UserPromptSubmit":
 		r.Status = types.StatusProcessing
 		r.Detail = "prompt received"
+		r.ClearResult = true
 	case "PreToolUse", "PostToolUse":
 		r.Status = types.StatusProcessing
 		r.Detail = toolSummary(p.ToolName, p.ToolInput)
@@ -117,6 +144,13 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		r.Status = types.StatusIdle
 		r.Detail = "waiting for input"
 	case "Stop":
+		if n := runningBackgroundTasks(p.BackgroundTasks); n > 0 {
+			// The reply is interim ("started it, will report back"); the
+			// real one comes from the turn the task's completion starts.
+			r.Status = types.StatusProcessing
+			r.Detail = fmt.Sprintf("turn finished, %d background task(s) running", n)
+			break
+		}
 		r.Status = types.StatusIdle
 		r.Detail = "turn finished"
 		r.Result = p.LastAssistantMessage
