@@ -62,7 +62,7 @@ What it is watching is said once on stderr (-q drops it), so stdout holds
 only events.`,
 	Example: `  agent events                 # every agent on this host
   agent events helper
-  agent events helper@air      # an agent on another host
+  agent events helper@hub      # an agent on another host
   agent events --all-hosts --json`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runEvents,
@@ -152,7 +152,7 @@ func runEvents(cmd *cobra.Command, args []string) error {
 }
 
 // formatStatusEvent renders ev as one line, e.g.
-// "15:04:05.000 helper@air waiting event=PermissionRequest tool=Bash detail=...".
+// "15:04:05.000 helper@hub waiting event=PermissionRequest tool=Bash detail=...".
 // Fields other than the (validated) host and agent are quoted if they hold
 // anything but printable text, so an event can't write escape sequences to
 // the terminal.

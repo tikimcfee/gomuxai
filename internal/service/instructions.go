@@ -32,7 +32,7 @@ shell's PATH may not include it:
     agent list                         # agents on this host; --host H for another host
     agent send NAME "message"          # message an agent (NAME@HOST on another host)
     agent status NAME -v               # what an agent is doing right now
-    agent wait NAME --for idle --next --timeout 10m   # wait for its next turn to finish
+    agent wait NAME --for idle,waiting --next --timeout 10m   # its next turn ends, or it needs a person
     agent state get NAME _result       # its latest reply (agents on this host only)
 
 Messages from other agents start with "[from NAME@HOST]". The sender can't see
@@ -54,7 +54,7 @@ CLI's built-in subagents are still fine for quick lookups. Name helpers
 
     agent spawn %[1]s-review --backend claude   # starts in the directory you run it from
     agent send %[1]s-review "the task"
-    agent wait %[1]s-review --for idle --next --timeout 30m
+    agent wait %[1]s-review --for idle,waiting --next --timeout 30m
     agent state get %[1]s-review _result
     agent cleanup %[1]s-review
 
