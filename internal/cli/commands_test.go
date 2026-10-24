@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
 func TestCommandArgs(t *testing.T) {
@@ -187,4 +188,27 @@ func exampleWords(s string) []string {
 		words = append(words, word.String())
 	}
 	return words
+}
+
+func TestSpawnSummary(t *testing.T) {
+	agent := &storage.Agent{Name: "lead-review", SessionName: "agent-lead-review", Backend: "claude"}
+	tests := []struct {
+		parent, task, taskFile, want string
+	}{
+		{"", "", "", `Spawned agent "lead-review" (session: agent-lead-review, backend: claude)
+It has no task yet: agent send lead-review "..."
+`},
+		{"lead", "review-auth", "tasks/review.md", `Spawned agent "lead-review" (session: agent-lead-review, backend: claude) as a helper of "lead"
+Sent it task "review-auth".
+`},
+		{"lead", "", "tasks/review.md", `Spawned agent "lead-review" (session: agent-lead-review, backend: claude) as a helper of "lead"
+Asked it to read tasks/review.md.
+`},
+	}
+	for _, tt := range tests {
+		agent.SpawnedBy = tt.parent
+		if got := spawnSummary(agent, tt.task, tt.taskFile); got != tt.want {
+			t.Errorf("spawnSummary(%q, %q, %q) =\n%s\nwant:\n%s", tt.parent, tt.task, tt.taskFile, got, tt.want)
+		}
+	}
 }

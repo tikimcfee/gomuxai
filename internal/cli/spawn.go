@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/service"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
 var (
@@ -27,6 +29,11 @@ Initial work, if given, is sent as the agent's first message:
   - [task-file]    : a request to read that file (claude/agy: "Please read and
                      execute the task in <file>", aider: "/read <file>")
 Without either, send the first message yourself with "agent send".
+
+When an agent runs spawn (AGENT_NAME set), the new agent is recorded as its
+helper: "agent list" shows it under PARENT, and only that agent (or its own
+parent, and so on up) or a person can clean it up. It starts in the
+directory spawn runs from.
 
 Examples:
   agent spawn researcher --backend claude
@@ -90,8 +97,26 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Printf("Spawned agent %q (session: %s, backend: %s)\n",
-		agent.Name, agent.SessionName, agent.Backend)
-
+	fmt.Print(spawnSummary(agent, spawnTask, taskFile))
 	return nil
+}
+
+// spawnSummary says what spawn did: the new agent, its parent if an agent
+// spawned it, and what it was sent first.
+func spawnSummary(agent *storage.Agent, task, taskFile string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Spawned agent %q (session: %s, backend: %s)", agent.Name, agent.SessionName, agent.Backend)
+	if agent.SpawnedBy != "" {
+		fmt.Fprintf(&b, " as a helper of %q", agent.SpawnedBy)
+	}
+	b.WriteString("\n")
+	switch {
+	case task != "":
+		fmt.Fprintf(&b, "Sent it task %q.\n", task)
+	case taskFile != "":
+		fmt.Fprintf(&b, "Asked it to read %s.\n", taskFile)
+	default:
+		fmt.Fprintf(&b, "It has no task yet: agent send %s \"...\"\n", agent.Name)
+	}
+	return b.String()
 }
