@@ -199,23 +199,16 @@ func (s *statusSource) record(status string) {
 	s.mu.Unlock()
 }
 
-func (s *statusSource) current(ctx context.Context) (natsbus.Observation, error) {
-	status, err := s.currentStatus(ctx)
+func (s *statusSource) current(context.Context) (natsbus.Observation, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return natsbus.Observation{Status: status, ReportedStatus: s.reported, ReportedAt: s.reportedAt}, err
-}
-
-func (s *statusSource) currentStatus(context.Context) (string, error) {
-	s.mu.Lock()
-	status := s.status
+	obs := natsbus.Observation{Status: s.status, ReportedStatus: s.reported, ReportedAt: s.reportedAt}
 	s.calls++
 	first := s.calls == 1
 	s.mu.Unlock()
 	if first && s.onFirst != nil {
 		s.onFirst()
 	}
-	return status, nil
+	return obs, nil
 }
 
 func (s *statusSource) callCount() int {

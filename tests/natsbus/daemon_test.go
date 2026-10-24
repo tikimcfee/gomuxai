@@ -93,8 +93,19 @@ func waitLinked(t *testing.T, d *natsbus.Daemon, n int) {
 // serve answers every op for host on nc, echoing which op ran.
 func serve(t *testing.T, nc *nats.Conn, host string) {
 	t.Helper()
+	answerAll(t, nc, host, func(m *nats.Msg) string { return "ran " + m.Subject })
+}
+
+// serveSecret answers every op for host with secret.
+func serveSecret(t *testing.T, nc *nats.Conn, host, secret string) {
+	t.Helper()
+	answerAll(t, nc, host, func(*nats.Msg) string { return secret })
+}
+
+func answerAll(t *testing.T, nc *nats.Conn, host string, answer func(*nats.Msg) string) {
+	t.Helper()
 	sub, err := nc.Subscribe(natsbus.SubjectRPC(host, "*"), func(m *nats.Msg) {
-		m.Respond([]byte("ran " + m.Subject))
+		m.Respond([]byte(answer(m)))
 	})
 	if err != nil {
 		t.Fatal(err)

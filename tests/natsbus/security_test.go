@@ -54,17 +54,6 @@ func hubAndPeers(t *testing.T, names ...string) (hubConn *nats.Conn, peers map[s
 	return hub.connect(t), peers
 }
 
-// serveSecret answers every op for host with secret.
-func serveSecret(t *testing.T, nc *nats.Conn, host, secret string) {
-	t.Helper()
-	sub, err := nc.Subscribe(natsbus.SubjectRPC(host, "*"), func(m *nats.Msg) { m.Respond([]byte(secret)) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sub.Unsubscribe() })
-	nc.Flush()
-}
-
 // A peer may subscribe to replies, but only to its own: RPC replies (capture
 // output, status details) between other hosts must not reach it.
 func TestSecurity_PeerCantReadOtherHostsReplies(t *testing.T) {
