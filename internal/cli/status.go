@@ -5,12 +5,14 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/natsbus"
+	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
 var statusVerbose bool
 
 var statusCmd = &cobra.Command{
-	Use:   "status <name>",
+	Use:   "status <name>[@host]",
 	Short: "Check the status of an agent",
 	Long: `Status reports whether an agent is idle, processing, waiting (blocked on a
 human, e.g. a permission prompt), error, exited, or unknown.
@@ -20,9 +22,12 @@ Sources, most authoritative first:
   report  the last status reported by backend hooks or "agent report"
   scrape  regex over terminal output (backends without hooks)
 
+An agent on another host is addressed as name@host (needs a running bus).
+
 Examples:
   agent status researcher
-  agent status builder -v   # also show source, last event, and detail`,
+  agent status builder -v   # also show source, last event, and detail
+  agent status builder@hub  # an agent on host "hub"`,
 	Args: cobra.ExactArgs(1),
 	RunE: runStatus,
 }
@@ -33,8 +38,17 @@ func init() {
 
 func runStatus(cmd *cobra.Command, args []string) error {
 	name := args[0]
+	ref, remote, err := parseTarget(name)
+	if err != nil {
+		return err
+	}
 
-	info, err := agentService.StatusInfo(getContext(), name)
+	var info *service.StatusInfo
+	if remote {
+		info, err = remoteStatus(ref)
+	} else {
+		info, err = agentService.StatusInfo(getContext(), ref.Name)
+	}
 	if err != nil {
 		return err
 	}
@@ -53,4 +67,24 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+func remoteStatus(ref natsbus.AgentRef) (*service.StatusInfo, error) {
+	client, closeFn, err := dialRemote(ref.Host)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFn()
+	resp, err := client.Status(getContext(), ref)
+	if err != nil {
+		return nil, err
+	}
+	return &service.StatusInfo{
+		Status:    service.AgentStatus(resp.Status),
+		Source:    resp.Source,
+		Event:     resp.Event,
+		Detail:    resp.Detail,
+		Tool:      resp.Tool,
+		UpdatedAt: resp.UpdatedAt,
+	}, nil
 }

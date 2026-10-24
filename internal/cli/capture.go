@@ -4,20 +4,23 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/natsbus"
 )
 
 var captureCmd = &cobra.Command{
-	Use:   "capture <name>",
+	Use:   "capture <name>[@host]",
 	Short: "Capture output from an agent's terminal",
 	Long: `Capture retrieves the current content from an agent's tmux pane.
 
 By default, ANSI escape codes are stripped for clean output.
 Use --raw to preserve escape codes.
+An agent on another host is addressed as name@host (needs a running bus).
 
 Examples:
   agent capture researcher
   agent capture builder --lines 100
-  agent capture builder --raw`,
+  agent capture builder --raw
+  agent capture builder@hub`,
 	Args: cobra.ExactArgs(1),
 	RunE: runCapture,
 }
@@ -33,13 +36,30 @@ func init() {
 }
 
 func runCapture(cmd *cobra.Command, args []string) error {
-	name := args[0]
+	ref, remote, err := parseTarget(args[0])
+	if err != nil {
+		return err
+	}
 
-	output, err := agentService.Capture(getContext(), name, captureLines, captureRaw)
+	var output string
+	if remote {
+		output, err = remoteCapture(ref)
+	} else {
+		output, err = agentService.Capture(getContext(), ref.Name, captureLines, captureRaw)
+	}
 	if err != nil {
 		return err
 	}
 
 	fmt.Print(output)
 	return nil
+}
+
+func remoteCapture(ref natsbus.AgentRef) (string, error) {
+	client, closeFn, err := dialRemote(ref.Host)
+	if err != nil {
+		return "", err
+	}
+	defer closeFn()
+	return client.Capture(getContext(), ref, captureLines, captureRaw)
 }
