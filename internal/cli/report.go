@@ -13,6 +13,7 @@ var (
 	reportAs      string
 	reportHook    bool
 	reportSpawnID string
+	reportEvent   string
 )
 
 var reportCmd = &cobra.Command{
@@ -21,7 +22,7 @@ var reportCmd = &cobra.Command{
 	Long: `Report records an agent's status, so others don't have to infer it from
 terminal output. Statuses: idle, processing, waiting, error, exited.
 
-Agents spawned with a hook-capable backend (claude) report automatically:
+Agents spawned with a hook-capable backend (claude, agy) report automatically:
 spawn wires the backend's lifecycle hooks to "agent report --hook".
 
 With --hook, the backend's hook payload is read from stdin. Hook mode never
@@ -33,7 +34,8 @@ The agent name defaults to AGENT_NAME.
 Examples:
   agent report idle
   agent report processing "running test suite"
-  agent report --hook --as helper < payload.json`,
+  agent report --hook --as helper < payload.json
+  agent report --hook --as helper --event PreInvocation < payload.json`,
 	Args: cobra.MaximumNArgs(2),
 	RunE: runReport,
 }
@@ -42,6 +44,7 @@ func init() {
 	reportCmd.Flags().StringVar(&reportAs, "as", "", "Agent name (defaults to AGENT_NAME)")
 	reportCmd.Flags().BoolVar(&reportHook, "hook", false, "Read a backend hook payload from stdin")
 	reportCmd.Flags().StringVar(&reportSpawnID, "spawn-id", "", "With --hook: drop the report unless the agent is still this spawn (set by spawn)")
+	reportCmd.Flags().StringVar(&reportEvent, "event", "", "Hook event name (for backends whose payload omits it)")
 }
 
 func runReport(cmd *cobra.Command, args []string) error {
@@ -82,5 +85,5 @@ func reportFromHook(name string) error {
 	if err != nil {
 		return fmt.Errorf("reading hook payload: %w", err)
 	}
-	return agentService.ReportHook(getContext(), name, reportSpawnID, payload)
+	return agentService.ReportHook(getContext(), name, reportSpawnID, reportEvent, payload)
 }

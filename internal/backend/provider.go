@@ -36,8 +36,17 @@ type HookProvider interface {
 	LaunchCommandWithHooks(reportCmd, sessionID string) string
 
 	// ParseHookEvent maps a hook payload to a status report.
+	// event is the hook event name when passed on the command line (for
+	// backends whose stdin payload omits it); backends that embed the event
+	// name in payload may prefer the payload field.
 	// ok is false for events that carry no status change.
-	ParseHookEvent(payload []byte) (report HookReport, ok bool, err error)
+	ParseHookEvent(event string, payload []byte) (report HookReport, ok bool, err error)
+}
+
+// PromptFlagProvider is implemented by backends whose CLI can accept the
+// initial task prompt via a launch flag (e.g. agy -i <prompt>).
+type PromptFlagProvider interface {
+	AppendPromptFlag(launchCmd, prompt string) string
 }
 
 // NativeStatusProvider is implemented by backends whose CLI can report the

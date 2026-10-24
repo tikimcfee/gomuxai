@@ -93,7 +93,7 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 // Events that carry no status change are ignored. spawnID is the id the hook
 // command was launched with; hooks from any other spawn of this agent name
 // are rejected. An empty spawnID skips the check (hooks wired by hand).
-func (s *AgentService) ReportHook(ctx context.Context, name, spawnID string, payload []byte) error {
+func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event string, payload []byte) error {
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
 		return err
@@ -111,7 +111,7 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID string, pay
 	if !ok {
 		return fmt.Errorf("backend %q does not support hooks", agent.Backend)
 	}
-	hr, ok, err := hp.ParseHookEvent(payload)
+	hr, ok, err := hp.ParseHookEvent(event, payload)
 	if err != nil || !ok {
 		return err
 	}

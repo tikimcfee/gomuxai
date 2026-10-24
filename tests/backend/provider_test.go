@@ -401,11 +401,15 @@ func TestAiderLifecycle(t *testing.T) {
 	}
 }
 
-// TestProviderInterface ensures both backends implement Provider interface.
+// TestProviderInterface ensures built-in backends implement Provider interface.
 func TestProviderInterface(t *testing.T) {
-	// This test verifies at compile time that both backends implement Provider
+	// This test verifies at compile time that built-in backends implement Provider
 	var _ backend.Provider = namedagents.NewClaudeBackend()
 	var _ backend.Provider = namedagents.NewAiderBackend()
+	var _ backend.Provider = namedagents.NewAgyBackend()
+	var _ backend.HookProvider = namedagents.NewAgyBackend()
+	var _ backend.PermissionResponder = namedagents.NewAgyBackend()
+	var _ backend.PromptFlagProvider = namedagents.NewAgyBackend()
 }
 
 // TestStatusString tests the Status String() method.
@@ -475,6 +479,18 @@ func TestRegistryCreateProvider(t *testing.T) {
 	// Verify they're different instances
 	if p1 == p2 {
 		t.Error("CreateProvider should return new instances")
+	}
+
+	// Create agy provider via registry
+	pAgy, err := registry.CreateProvider("agy", backend.ProviderConfig{
+		SkipPermissions: true,
+		AgentDir:        "/tmp/agy-test-dir",
+	})
+	if err != nil {
+		t.Fatalf("CreateProvider(agy) error = %v", err)
+	}
+	if cmd := pAgy.LaunchCommand(); cmd != "agy --dangerously-skip-permissions" {
+		t.Errorf("agy LaunchCommand() = %q, want %q", cmd, "agy --dangerously-skip-permissions")
 	}
 }
 

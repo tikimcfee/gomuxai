@@ -78,10 +78,13 @@ type claudeHookPayload struct {
 }
 
 // ParseHookEvent maps a Claude Code hook payload to a status report.
-func (b *ClaudeBackend) ParseHookEvent(payload []byte) (types.HookReport, bool, error) {
+func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.HookReport, bool, error) {
 	var p claudeHookPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return types.HookReport{}, false, fmt.Errorf("decoding hook payload: %w", err)
+	}
+	if p.Event == "" {
+		p.Event = event
 	}
 
 	r := types.HookReport{Event: p.Event, SessionID: p.SessionID, Tool: p.ToolName}

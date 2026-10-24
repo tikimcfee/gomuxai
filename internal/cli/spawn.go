@@ -9,6 +9,7 @@ import (
 
 var (
 	skipPermissions bool
+	trustWorkspace  bool
 	taskName        string
 )
 
@@ -33,7 +34,9 @@ Examples:
 
 func init() {
 	spawnCmd.Flags().BoolVar(&skipPermissions, "skip-permissions", false,
-		"Pass --dangerously-skip-permissions to Claude (use with caution)")
+		"Pass --dangerously-skip-permissions to Claude or Agy (use with caution)")
+	spawnCmd.Flags().BoolVar(&trustWorkspace, "trust-workspace", false,
+		"Confirm the CLI's workspace trust prompt on launch (use with caution)")
 	spawnCmd.Flags().StringVar(&taskName, "task", "",
 		"Reference a task from the repository by name")
 }
@@ -68,6 +71,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		TaskFile:        taskFile,
 		TaskContent:     taskContent,
 		SkipPermissions: skipPermissions,
+		TrustWorkspace:  trustWorkspace,
 	}
 
 	agent, err := agentService.Spawn(getContext(), opts)

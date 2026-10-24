@@ -95,7 +95,7 @@ agent status <name> -v     # also: source, last event, detail
 
 Returns: `idle`, `processing`, `waiting` (blocked on a human, e.g. a permission prompt), `error`, `exited`, or `unknown`.
 
-For `claude` agents, status comes from Claude Code itself: spawn wires its lifecycle hooks to `agent report --hook`, and `agent status` checks `claude agents --json`. No terminal scraping. Other backends still fall back to regex scraping, which can say `unknown`.
+For `claude` and `agy` agents, status comes from the CLI itself: spawn wires lifecycle hooks to `agent report --hook` (and for `claude`, `agent status` also checks `claude agents --json`). No terminal scraping once hooks have fired. Other backends fall back to regex scraping, which can say `unknown`.
 
 When a Claude agent finishes a turn, its final reply is stored for you:
 
@@ -109,14 +109,14 @@ agent state get helper _result
 agent status helper -v                  # detail: permission: Bash: rm -rf build / tool: Bash
 agent approve helper --expect Bash      # yes, once, only if it's still the Bash prompt
 agent approve helper --always           # yes, and don't ask again (meaning varies by dialog)
-agent deny helper                       # no (for Claude this cancels the turn; follow up with send)
+agent deny helper                       # no (for Claude/agy this cancels the turn; follow up with send)
 ```
 
-**Read the detail before approving.** `approve`/`deny` refuse unless the agent is `waiting`, and refuse dialogs that are questions for the user rather than permission prompts (Claude's `AskUserQuestion`, `ExitPlanMode`): answer those with `send`/`keys`. `--expect <tool>` guards against a different prompt having replaced the one you inspected. `--force` overrides the checks.
+**Read the detail before approving.** `approve`/`deny` refuse unless the agent is `waiting`, and refuse dialogs that are questions for the user rather than permission prompts (Claude's `AskUserQuestion`, `ExitPlanMode`; agy's `ask_question`): answer those with `send`/`keys`. `--expect <tool>` guards against a different prompt having replaced the one you inspected. `--force` overrides the checks. Note: `agy` has no `PermissionRequest`/`waiting` hook event (its status remains `processing` after `PreToolUse`), so `agent approve`/`agent deny` on an `agy` agent requires `--force`.
 
 ### Reporting Your Own Status
 
-Claude agents report automatically. Anything else can report by hand:
+`claude` and `agy` agents report automatically. Anything else can report by hand:
 
 ```bash
 agent report processing "running the test suite"
@@ -506,6 +506,8 @@ The high-level commands (`spawn`, `send`, `queue`, `status`) are conveniences. T
 Native wins when it disagrees with the last report: an interrupted Claude permission prompt fires no hook at all, so the report would stay stuck at `waiting`. When the CLI answers but no longer lists the session while the last report still says it's alive, status is `exited`: the process died without its `SessionEnd` hook (crash, `kill -9`).
 
 **Claude hooks** (`internal/backend/namedagents/claude_hooks.go`) are injected at launch with `claude --settings '<json>'`, so nothing is written into the agent's project. Each hook runs `<agent binary> report --hook --as <name> --spawn-id <id>`, which reads the payload on stdin, never writes stdout, and exits 0 once the CLI has initialized (a broken DB dir still exits 1). `--spawn-id` drops reports from an earlier agent of the same name, e.g. the `SessionEnd` of the claude that `cleanup` just killed landing on a respawn. The event → status mapping and the observed payloads are in `exploration/claude-hooks-findings.md`. Hooks are only wired when `Config.AgentBinary` is set (it defaults to the running executable).
+
+**Antigravity (`agy`) hooks** (`internal/backend/namedagents/agy.go`) are injected at launch via `agy --add-dir .gomuxai/agents/<name>`, pointing to a generated per-agent `.agents/hooks.json` bundle that `cleanup` removes. Because `agy` runs hooks with `cwd` set to the bundle dir and omits the event name from stdin JSON, each hook invokes `<agent binary> report --hook --as <name> --spawn-id <id> --event <Event>`. `PreInvocation`, `PreToolUse`, and `PostToolUse` map to `processing` (recording `toolCall.name` in `_tool`); `Stop` maps to `idle`, `processing` (`fullyIdle: false`), or `error`. `agy` has no `SessionEnd` or `PermissionRequest`/`waiting` hook event, so `agent approve`/`agent deny` refuses `agy` agents unless `--force` is passed. Initial tasks are passed via `-i <prompt>`, and `--trust-workspace` on `agent spawn` opts into confirming `agy`'s first-launch workspace trust prompt. See `exploration/agy-hooks-findings.md`.
 
 **Scrape patterns** (legacy, `internal/backend/namedagents/*.go`):
 - Claude idle `^>\s*$` no longer matches Claude Code's `❯` prompt; it only matters for Claude sessions spawned without hooks.

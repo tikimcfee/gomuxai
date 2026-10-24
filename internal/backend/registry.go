@@ -12,8 +12,11 @@ import (
 // ProviderConfig holds configuration options passed when creating providers.
 // Backend-specific options are checked via type assertion or fields.
 type ProviderConfig struct {
-	// SkipPermissions is used by Claude backend to pass --dangerously-skip-permissions
+	// SkipPermissions is used by Claude and Agy backends to pass --dangerously-skip-permissions
 	SkipPermissions bool
+
+	// AgentDir is the per-agent bundle directory under .gomuxai/agents/<name>
+	AgentDir string
 }
 
 // ProviderFactory creates a new Provider instance with the given config.
@@ -38,13 +41,16 @@ func NewRegistry() *Registry {
 	// Register built-in backends from namedagents
 	claude := namedagents.NewClaudeBackend()
 	aider := namedagents.NewAiderBackend()
+	agy := namedagents.NewAgyBackend()
 
 	r.Register(claude)
 	r.Register(aider)
+	r.Register(agy)
 
 	// Register as providers (default instances)
 	r.RegisterProvider(claude)
 	r.RegisterProvider(aider)
+	r.RegisterProvider(agy)
 
 	// Register factories for creating configured instances
 	r.RegisterFactory("claude", func(cfg ProviderConfig) Provider {
@@ -55,6 +61,12 @@ func NewRegistry() *Registry {
 	r.RegisterFactory("aider", func(cfg ProviderConfig) Provider {
 		// Aider doesn't have special config yet, return default
 		return namedagents.NewAiderBackend()
+	})
+	r.RegisterFactory("agy", func(cfg ProviderConfig) Provider {
+		return namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{
+			SkipPermissions: cfg.SkipPermissions,
+			AgentDir:        cfg.AgentDir,
+		})
 	})
 
 	return r

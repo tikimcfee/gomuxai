@@ -45,13 +45,13 @@ func TestReportHook_IgnoresHooksFromPreviousSpawn(t *testing.T) {
 	fresh := spawnFake(t, env, "worker")
 	newSpawn := spawnIDOf(t, fresh.reportCmd)
 	start := `{"hook_event_name":"SessionStart","source":"startup","session_id":"` + fresh.sessionID + `"}`
-	if err := env.service.ReportHook(ctx, "worker", newSpawn, []byte(start)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", newSpawn, "", []byte(start)); err != nil {
 		t.Fatalf("new SessionStart: %v", err)
 	}
 
 	// The dying first claude's SessionEnd arrives late.
 	end := `{"hook_event_name":"SessionEnd","reason":"other","session_id":"` + oldSession + `"}`
-	_ = env.service.ReportHook(ctx, "worker", oldSpawn, []byte(end))
+	_ = env.service.ReportHook(ctx, "worker", oldSpawn, "", []byte(end))
 
 	if st, _ := env.store.GetState(ctx, "worker", service.StateKeyStatus); st == nil || st.Value != string(service.AgentStatusIdle) {
 		t.Errorf("_status = %+v, want idle (stale SessionEnd from the previous spawn was applied)", st)
@@ -70,7 +70,7 @@ func TestReportHook_AcceptsSessionChangeWithinSpawn(t *testing.T) {
 	fake := spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"SessionStart","source":"clear","session_id":"after-clear"}`
-	if err := env.service.ReportHook(ctx, "worker", spawnIDOf(t, fake.reportCmd), []byte(payload)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", spawnIDOf(t, fake.reportCmd), "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 	if sid, _ := env.store.GetState(ctx, "worker", service.StateKeySessionID); sid == nil || sid.Value != "after-clear" {
@@ -142,7 +142,7 @@ func TestRespondPermission_RefusesQuestionDialogs(t *testing.T) {
 	spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Favorite color?"}]}}`
-	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{}); err == nil {
@@ -192,7 +192,7 @@ func TestRespondPermission_ForceAnswersQuestionDialogs(t *testing.T) {
 	spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"AskUserQuestion","tool_input":{}}`
-	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{Force: true}); err != nil {
@@ -207,7 +207,7 @@ func TestRespondPermission_ExpectTool(t *testing.T) {
 	spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}`
-	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 	info, err := env.service.StatusInfo(ctx, "worker")

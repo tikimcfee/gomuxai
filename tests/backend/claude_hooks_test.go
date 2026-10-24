@@ -87,7 +87,7 @@ func TestClaudeParseHookEvent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r, ok, err := provider.ParseHookEvent([]byte(tt.payload))
+			r, ok, err := provider.ParseHookEvent("", []byte(tt.payload))
 			if err != nil {
 				t.Fatalf("ParseHookEvent: %v", err)
 			}
@@ -114,7 +114,7 @@ func TestClaudeParseHookEvent(t *testing.T) {
 }
 
 func TestClaudeParseHookEvent_InvalidJSON(t *testing.T) {
-	_, _, err := namedagents.NewClaudeBackend().ParseHookEvent([]byte("not json"))
+	_, _, err := namedagents.NewClaudeBackend().ParseHookEvent("", []byte("not json"))
 	if err == nil {
 		t.Fatal("expected error for invalid payload")
 	}
@@ -122,7 +122,7 @@ func TestClaudeParseHookEvent_InvalidJSON(t *testing.T) {
 
 func TestClaudeParseHookEvent_TruncatesLongDetail(t *testing.T) {
 	payload := `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"` + strings.Repeat("é", 300) + `"}}`
-	r, _, err := namedagents.NewClaudeBackend().ParseHookEvent([]byte(payload))
+	r, _, err := namedagents.NewClaudeBackend().ParseHookEvent("", []byte(payload))
 	if err != nil {
 		t.Fatalf("ParseHookEvent: %v", err)
 	}

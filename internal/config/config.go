@@ -165,3 +165,15 @@ func (c *Config) LogPath(agentName string) string {
 func (c *Config) StatePath(agentName string) string {
 	return filepath.Join(c.StateDir, agentName)
 }
+
+// AgentDir returns the per-agent bundle directory under the gomuxai data dir
+// (e.g. .gomuxai/agents/<name>).
+func (c *Config) AgentDir(agentName string) string {
+	baseDir := StorageDirName
+	if c.StateDir != "" {
+		baseDir = filepath.Dir(c.StateDir)
+	} else if c.DatabasePath != "" {
+		baseDir = filepath.Dir(c.DatabasePath)
+	}
+	return filepath.Join(baseDir, "agents", agentName)
+}

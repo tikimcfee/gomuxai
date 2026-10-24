@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -78,7 +79,8 @@ type SpawnOptions struct {
 	Backend         string
 	TaskFile        string // Path to task file (read from filesystem)
 	TaskContent     string // Task content directly (from DB task repository)
-	SkipPermissions bool   // Pass --dangerously-skip-permissions to Claude
+	SkipPermissions bool   // Pass --dangerously-skip-permissions to Claude / Agy
+	TrustWorkspace  bool   // Confirm the CLI's workspace trust prompt on launch
 }
 
 // Spawn creates and starts a new agent.
@@ -86,6 +88,7 @@ func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.A
 	// Create provider with config (fresh instance for this agent)
 	provider, err := s.backends.CreateProvider(opts.Backend, backend.ProviderConfig{
 		SkipPermissions: opts.SkipPermissions,
+		AgentDir:        s.cfg.AgentDir(opts.Name),
 	})
 	if err != nil {
 		// Fall back to default backend if no factory
@@ -141,12 +144,21 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	abort := func(err error) (*storage.Agent, error) {
 		s.tmux.KillSession(sessionName)
 		s.storage.DeleteAgent(ctx, opts.Name)
+		_ = os.RemoveAll(s.cfg.AgentDir(opts.Name))
 		return nil, err
 	}
 
 	// Start log piping
 	if err := s.tmux.PipePane(sessionName, logPath); err != nil {
 		// Non-fatal, continue without logging
+	}
+
+	// Resolve initial message based on task source
+	var initMsg string
+	if opts.TaskContent != "" {
+		initMsg = opts.TaskContent
+	} else if opts.TaskFile != "" {
+		initMsg = provider.InitMessage(opts.TaskFile)
 	}
 
 	// Launch the CLI tool, with status hooks when the backend supports them
@@ -164,6 +176,11 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 			}
 		}
 	}
+	promptInLaunch := false
+	if pfp, ok := provider.(backend.PromptFlagProvider); ok && initMsg != "" {
+		launchCmd = pfp.AppendPromptFlag(launchCmd, initMsg)
+		promptInLaunch = true
+	}
 	if err := s.tmux.SendKeys(sessionName, launchCmd); err != nil {
 		return abort(fmt.Errorf("launching backend: %w", err))
 	}
@@ -180,31 +197,39 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		}
 	}
 
-	// Send initial message based on task source
-	if opts.TaskContent != "" {
-		// Task content provided directly (from DB task repository)
-		// Send the content as the initial message
-		initMsg := opts.TaskContent
-		if err := s.tmux.SendKeys(sessionName, initMsg); err != nil {
-			return abort(fmt.Errorf("sending task content: %w", err))
-		}
-		if err := s.tmux.SendSpecialKey(sessionName, "Enter"); err != nil {
-			return abort(fmt.Errorf("sending enter: %w", err))
-		}
-	} else if opts.TaskFile != "" {
-		// Task file path provided - use backend's init message format
-		initMsg := provider.InitMessage(opts.TaskFile)
-		if initMsg != "" {
-			if err := s.tmux.SendKeys(sessionName, initMsg); err != nil {
-				return abort(fmt.Errorf("sending init message: %w", err))
-			}
+	// Confirm the workspace trust prompt only when opted in via --trust-workspace
+	// (trusting a repo also enables any .agents hooks inside that repo).
+	if opts.TrustWorkspace {
+		if captured, err := s.tmux.Capture(sessionName, 30, true); err == nil && isWorkspaceTrustPrompt(captured) {
 			if err := s.tmux.SendSpecialKey(sessionName, "Enter"); err != nil {
-				return abort(fmt.Errorf("sending init enter: %w", err))
+				return abort(fmt.Errorf("confirming workspace trust: %w", err))
+			}
+			if s.cfg.StartupDelay > 0 {
+				select {
+				case <-ctx.Done():
+					return abort(ctx.Err())
+				case <-time.After(s.cfg.StartupDelay):
+				}
 			}
 		}
 	}
 
+	// Send initial message if it was not already passed on the launch command line
+	if !promptInLaunch && initMsg != "" {
+		if err := s.tmux.SendKeys(sessionName, initMsg); err != nil {
+			return abort(fmt.Errorf("sending init message: %w", err))
+		}
+		if err := s.tmux.SendSpecialKey(sessionName, "Enter"); err != nil {
+			return abort(fmt.Errorf("sending init enter: %w", err))
+		}
+	}
+
 	return agent, nil
+}
+
+func isWorkspaceTrustPrompt(output string) bool {
+	return strings.Contains(output, "Do you trust the contents of this project?") ||
+		strings.Contains(output, "Yes, I trust this folder")
 }
 
 // spawnWithBackend spawns an agent using the legacy Backend interface.
@@ -406,6 +431,11 @@ func (s *AgentService) Cleanup(ctx context.Context, name string) error {
 	// Delete messages
 	if err := s.storage.DeleteMessagesByAgent(ctx, name); err != nil {
 		cleanupErrs.Add(fmt.Errorf("deleting messages: %w", err))
+	}
+
+	// Remove per-agent bundle directory (if any)
+	if err := os.RemoveAll(s.cfg.AgentDir(name)); err != nil {
+		cleanupErrs.Add(fmt.Errorf("removing agent dir: %w", err))
 	}
 
 	// Delete agent record - this is the critical operation

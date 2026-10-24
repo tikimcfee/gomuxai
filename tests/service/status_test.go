@@ -104,7 +104,7 @@ func TestReportHook_UpdatesStatus(t *testing.T) {
 	spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"PermissionRequest","session_id":"s-2","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}`
-	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestReportHook_StopStoresResult(t *testing.T) {
 	spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"Found 3 issues."}`
-	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 	entry, err := env.store.GetState(ctx, "worker", service.StateKeyResult)
@@ -144,7 +144,7 @@ func TestReportHook_UnknownAgent(t *testing.T) {
 	env := setupTestEnv(t)
 	defer env.cleanup()
 
-	err := env.service.ReportHook(context.Background(), "ghost", "", []byte(`{"hook_event_name":"Stop"}`))
+	err := env.service.ReportHook(context.Background(), "ghost", "", "", []byte(`{"hook_event_name":"Stop"}`))
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected not found error, got %v", err)
 	}
