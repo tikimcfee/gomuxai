@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -83,8 +84,24 @@ type SpawnOptions struct {
 	TrustWorkspace  bool   // Confirm the CLI's workspace trust prompt on launch
 }
 
+// agentNamePattern keeps names safe as tmux session names and as path
+// components: cleanup removes .gomuxai/agents/<name>, so "../.." must not pass.
+var agentNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+// ValidateAgentName reports whether name can be used for a new agent.
+func ValidateAgentName(name string) error {
+	if !agentNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid agent name %q: use letters, digits, '-' and '_', starting with a letter or digit", name)
+	}
+	return nil
+}
+
 // Spawn creates and starts a new agent.
 func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.Agent, error) {
+	if err := ValidateAgentName(opts.Name); err != nil {
+		return nil, err
+	}
+
 	// Create provider with config (fresh instance for this agent)
 	provider, err := s.backends.CreateProvider(opts.Backend, backend.ProviderConfig{
 		SkipPermissions: opts.SkipPermissions,

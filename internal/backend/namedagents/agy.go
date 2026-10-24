@@ -361,3 +361,11 @@ func (b *AgyBackend) PermissionKey(resp types.PermissionResponse, tool string) (
 		return "", fmt.Errorf("unsupported permission response %d", resp)
 	}
 }
+
+// PermissionPromptVisible never confirms a prompt: agy fires no hook while its
+// dialog is up, so its status never reads "waiting" and approve/deny already
+// need --force, which skips this check. Recognizing the dialog on screen would
+// let a stale status through without --force, so stay conservative.
+func (b *AgyBackend) PermissionPromptVisible(screen string) bool {
+	return false
+}

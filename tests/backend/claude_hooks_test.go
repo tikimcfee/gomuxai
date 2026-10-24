@@ -156,7 +156,7 @@ func TestClaudeParseHookEvent_ClearResult(t *testing.T) {
 		`{"hook_event_name":"Stop","last_assistant_message":"done"}`:                   false,
 		`{"hook_event_name":"Stop","last_assistant_message":"","background_tasks":[]}`: false,
 	} {
-		r, ok, err := provider.ParseHookEvent([]byte(payload))
+		r, ok, err := provider.ParseHookEvent("", []byte(payload))
 		if err != nil || !ok {
 			t.Fatalf("%s: ok=%v err=%v", payload, ok, err)
 		}

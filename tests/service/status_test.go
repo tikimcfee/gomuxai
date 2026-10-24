@@ -262,3 +262,21 @@ func TestParseAgentStatus(t *testing.T) {
 		t.Error("done should be rejected")
 	}
 }
+
+// Cleanup removes .gomuxai/agents/<name>, so names must not escape that dir.
+func TestSpawn_RejectsUnsafeNames(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+
+	for _, name := range []string{"", "..", "../..", "a/b", ".hidden", "-flag", "has space", "semi;colon"} {
+		_, err := env.service.Spawn(context.Background(), service.SpawnOptions{Name: name, Backend: "claude"})
+		if err == nil || !strings.Contains(err.Error(), "invalid agent name") {
+			t.Errorf("Spawn(%q): err = %v, want invalid agent name", name, err)
+		}
+	}
+	for _, name := range []string{"helper", "api-analyzer", "rv_2", "A1"} {
+		if err := service.ValidateAgentName(name); err != nil {
+			t.Errorf("ValidateAgentName(%q): %v", name, err)
+		}
+	}
+}

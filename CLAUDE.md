@@ -377,6 +377,7 @@ agent queue agent-b "Agent A is done. Read results from state."
 |-------|------------|
 | `queue` needs watcher running | Start `agent watch` in background (use `--interval` to tune) |
 | `status` can return `unknown` (non-Claude backends) | Check state instead, or capture output |
+| `state set <name>` fails unless `<name>` is a spawned agent (state rows belong to an agent record) | Coordinators that weren't spawned by `agent` can't publish state yet; have them report through a spawned helper or messages |
 | Spawn doesn't auto-send task | Use `send` after spawn |
 | No streaming capture | Poll with `capture` periodically |
 | Backend always required | Use `--backend claude` or config file |

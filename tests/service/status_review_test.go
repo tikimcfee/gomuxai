@@ -246,7 +246,7 @@ func TestReportHook_ResultTracksCurrentTurn(t *testing.T) {
 	}
 	hook := func(payload string) {
 		t.Helper()
-		if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+		if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 			t.Fatalf("ReportHook: %v", err)
 		}
 	}
@@ -293,7 +293,7 @@ func TestRespondPermission_RefusesWhenPromptLeftScreen(t *testing.T) {
 	fake := spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"Bash","tool_input":{"command":"go test ./..."}}`
-	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 	fake.promptGone = true // answered meanwhile; status still says waiting
