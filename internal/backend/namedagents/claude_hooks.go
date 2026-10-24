@@ -30,12 +30,6 @@ var claudeHookEvents = []string{
 	"SessionEnd",
 }
 
-// claudeHookTimeoutSec bounds each hook; `agent report` is a local DB write.
-const claudeHookTimeoutSec = 10
-
-// maxDetailLen keeps status details to a single readable line.
-const maxDetailLen = 120
-
 // LaunchCommandWithHooks injects status hooks via --settings, so nothing is
 // written into the agent's project directory.
 func (b *ClaudeBackend) LaunchCommandWithHooks(reportCmd, sessionID string) string {
@@ -51,20 +45,9 @@ func (b *ClaudeBackend) WithInstructions(launchCmd, path string) string {
 
 // claudeHookSettings returns the --settings JSON registering reportCmd on every hook event.
 func claudeHookSettings(reportCmd string) string {
-	type hookCmd struct {
-		Type    string `json:"type"`
-		Command string `json:"command"`
-		Timeout int    `json:"timeout"`
-	}
-	type matcher struct {
-		Matcher string    `json:"matcher"`
-		Hooks   []hookCmd `json:"hooks"`
-	}
-	hooks := make(map[string][]matcher, len(claudeHookEvents))
+	hooks := make(map[string][]hookMatcher, len(claudeHookEvents))
 	for _, event := range claudeHookEvents {
-		hooks[event] = []matcher{{
-			Hooks: []hookCmd{{Type: "command", Command: reportCmd, Timeout: claudeHookTimeoutSec}},
-		}}
+		hooks[event] = []hookMatcher{{Hooks: []hookCommand{newHookCommand(reportCmd)}}}
 	}
 	data, _ := json.Marshal(map[string]any{"hooks": hooks})
 	return string(data)
@@ -131,13 +114,13 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		r.ClearResult = true
 	case "PreToolUse", "PostToolUse":
 		r.Status = types.StatusProcessing
-		r.Detail = toolSummary(p.ToolName, p.ToolInput)
+		r.Detail = claudeToolSummary(p.ToolName, p.ToolInput)
 	case "PostToolUseFailure":
 		r.Status = types.StatusProcessing
-		r.Detail = "failed: " + toolSummary(p.ToolName, p.ToolInput)
+		r.Detail = "failed: " + claudeToolSummary(p.ToolName, p.ToolInput)
 	case "PermissionRequest":
 		r.Status = types.StatusWaiting
-		r.Detail = "permission: " + toolSummary(p.ToolName, p.ToolInput)
+		r.Detail = "permission: " + claudeToolSummary(p.ToolName, p.ToolInput)
 	case "PreCompact":
 		r.Status = types.StatusProcessing
 		r.Detail = "compacting"
@@ -176,16 +159,13 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 	return r, true, nil
 }
 
-// toolSummary renders a tool call as "Tool: <most telling input>".
-func toolSummary(tool string, input json.RawMessage) string {
-	var fields map[string]any
-	_ = json.Unmarshal(input, &fields)
-	for _, key := range []string{"command", "file_path", "pattern", "url", "query", "description"} {
-		if v, ok := fields[key].(string); ok && v != "" {
-			return truncate(tool + ": " + v)
-		}
-	}
-	return tool
+// claudeToolInputKeys are the tool_input fields that best describe a tool
+// call, most telling first.
+var claudeToolInputKeys = []string{"command", "file_path", "pattern", "url", "query", "description"}
+
+// claudeToolSummary renders a tool call as "Tool: <most telling input>".
+func claudeToolSummary(tool string, input json.RawMessage) string {
+	return toolSummary(tool, input, claudeToolInputKeys)
 }
 
 // NativeStatus reads the session's status from `claude agents --json`.
@@ -238,19 +218,7 @@ var claudeDialogTools = map[string]bool{
 // PermissionKey returns the key that answers Claude's permission dialog:
 // "1" is "Yes", "2" is the "don't ask again" variant, Escape cancels the turn.
 func (b *ClaudeBackend) PermissionKey(resp types.PermissionResponse, tool string) (string, error) {
-	if claudeDialogTools[tool] {
-		return "", fmt.Errorf("%s is a question for the user, not a permission prompt; answer it with send/keys (or --force)", tool)
-	}
-	switch resp {
-	case types.PermissionApprove:
-		return "1", nil
-	case types.PermissionApproveAlways:
-		return "2", nil
-	case types.PermissionDeny:
-		return "Escape", nil
-	default:
-		return "", fmt.Errorf("unsupported permission response %d", resp)
-	}
+	return permissionKey(resp, tool, claudeDialogTools)
 }
 
 // claudeDialogNoOption matches the "No" line of a permission dialog. Its
@@ -258,21 +226,11 @@ func (b *ClaudeBackend) PermissionKey(resp types.PermissionResponse, tool string
 // it behaves exactly like Escape, so it is only used for detection.
 var claudeDialogNoOption = regexp.MustCompile(`(?m)^[\s❯]*\d+\.\s+No\b`)
 
-// claudeDialogTailLines bounds the detection to the bottom of the screen,
-// where the dialog sits, so a numbered "No" in an older reply can't match.
-const claudeDialogTailLines = 12
-
 // PermissionPromptVisible reports whether Claude's permission dialog is on
 // screen: a numbered "No" option above the "Esc to cancel" footer. A running
 // turn shows "esc to interrupt" instead, and the idle prompt neither.
 func (b *ClaudeBackend) PermissionPromptVisible(screen string) bool {
-	var tail []string
-	lines := strings.Split(screen, "\n")
-	for i := len(lines) - 1; i >= 0 && len(tail) < claudeDialogTailLines; i-- {
-		if strings.TrimSpace(lines[i]) != "" {
-			tail = append(tail, lines[i])
-		}
-	}
+	tail := screenTail(screen)
 	if len(tail) == 0 || !strings.Contains(tail[0], "Esc to cancel") {
 		return false
 	}
@@ -302,21 +260,4 @@ func (b *ClaudeBackend) TrustKeys(screen string) []string {
 		return []string{"Enter"}
 	}
 	return []string{"Down", "Enter"}
-}
-
-func truncate(s string) string {
-	runes := []rune(strings.Join(strings.Fields(s), " "))
-	if len(runes) > maxDetailLen {
-		return string(runes[:maxDetailLen-1]) + "…"
-	}
-	return string(runes)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

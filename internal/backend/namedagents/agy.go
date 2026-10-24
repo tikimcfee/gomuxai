@@ -12,9 +12,6 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
-// agyHookTimeoutSec bounds each hook; `agent report` is a local DB write.
-const agyHookTimeoutSec = 10
-
 // AgyConfig holds configuration options for the Antigravity CLI (agy) backend.
 type AgyConfig struct {
 	// SkipPermissions passes --dangerously-skip-permissions to agy CLI.
@@ -85,10 +82,7 @@ func (b *AgyBackend) WithInstructions(launchCmd, path string) string {
 	if strings.Contains(launchCmd, addDir) {
 		return launchCmd
 	}
-	if b.exitSuffix != "" && strings.HasSuffix(launchCmd, b.exitSuffix) {
-		return strings.TrimSuffix(launchCmd, b.exitSuffix) + addDir + b.exitSuffix
-	}
-	return launchCmd + addDir
+	return b.insertBeforeExit(launchCmd, addDir)
 }
 
 // AppendPromptFlag delivers the initial task via agy's -i (--prompt-interactive)
@@ -99,11 +93,16 @@ func (b *AgyBackend) AppendPromptFlag(launchCmd, prompt string) string {
 	if prompt == "" {
 		return launchCmd
 	}
+	return b.insertBeforeExit(launchCmd, " -i "+util.ShellQuote(prompt))
+}
+
+// insertBeforeExit appends args to launchCmd, ahead of the exit report that
+// LaunchCommandWithHooks attached, so they go to agy rather than the report.
+func (b *AgyBackend) insertBeforeExit(launchCmd, args string) string {
 	if b.exitSuffix != "" && strings.HasSuffix(launchCmd, b.exitSuffix) {
-		base := strings.TrimSuffix(launchCmd, b.exitSuffix)
-		return fmt.Sprintf("%s -i %s%s", base, util.ShellQuote(prompt), b.exitSuffix)
+		return strings.TrimSuffix(launchCmd, b.exitSuffix) + args + b.exitSuffix
 	}
-	return fmt.Sprintf("%s -i %s", launchCmd, util.ShellQuote(prompt))
+	return launchCmd + args
 }
 
 func (b *AgyBackend) InitMessage(taskFile string) string {
@@ -184,34 +183,21 @@ func writeAgyHooksBundle(bundleDir, reportCmd string) error {
 // PreInvocation and Stop take flat handler arrays; PreToolUse and PostToolUse
 // take matcher-grouped arrays.
 func agyHooksJSON(reportCmd string) ([]byte, error) {
-	type hookCmd struct {
-		Type    string `json:"type"`
-		Command string `json:"command"`
-		Timeout int    `json:"timeout"`
-	}
-	type matcherGroup struct {
-		Matcher string    `json:"matcher"`
-		Hooks   []hookCmd `json:"hooks"`
-	}
-	cmdFor := func(event string) hookCmd {
-		return hookCmd{
-			Type:    "command",
-			Command: fmt.Sprintf("%s --event %s", reportCmd, event),
-			Timeout: agyHookTimeoutSec,
-		}
+	cmdFor := func(event string) hookCommand {
+		return newHookCommand(fmt.Sprintf("%s --event %s", reportCmd, event))
 	}
 	doc := map[string]any{
 		"gomuxai": map[string]any{
-			"PreInvocation": []hookCmd{cmdFor("PreInvocation")},
-			"PreToolUse": []matcherGroup{{
+			"PreInvocation": []hookCommand{cmdFor("PreInvocation")},
+			"PreToolUse": []hookMatcher{{
 				Matcher: "*",
-				Hooks:   []hookCmd{cmdFor("PreToolUse")},
+				Hooks:   []hookCommand{cmdFor("PreToolUse")},
 			}},
-			"PostToolUse": []matcherGroup{{
+			"PostToolUse": []hookMatcher{{
 				Matcher: "*",
-				Hooks:   []hookCmd{cmdFor("PostToolUse")},
+				Hooks:   []hookCommand{cmdFor("PostToolUse")},
 			}},
-			"Stop": []hookCmd{cmdFor("Stop")},
+			"Stop": []hookCommand{cmdFor("Stop")},
 		},
 	}
 	return json.MarshalIndent(doc, "", "  ")
@@ -296,22 +282,18 @@ func isAgyErrorTermination(reason string) bool {
 	}
 }
 
+// agyToolArgKeys are the toolCall.args fields that best describe a tool
+// call, most telling first; Claude-style names follow agy's own.
+var agyToolArgKeys = append([]string{
+	"CommandLine", "Path", "TargetFile", "SearchPath", "Query", "Pattern", "Url", "ToolName", "toolSummary",
+}, claudeToolInputKeys...)
+
 // agyToolSummary renders an agy tool call as "tool: <most telling arg>".
 func agyToolSummary(tool string, args json.RawMessage) string {
 	if tool == "" {
 		return "tool"
 	}
-	var fields map[string]any
-	_ = json.Unmarshal(args, &fields)
-	for _, key := range []string{
-		"CommandLine", "Path", "TargetFile", "SearchPath", "Query", "Pattern", "Url", "ToolName", "toolSummary",
-		"command", "file_path", "pattern", "url", "query", "description",
-	} {
-		if v, ok := fields[key].(string); ok && v != "" {
-			return truncate(tool + ": " + v)
-		}
-	}
-	return tool
+	return toolSummary(tool, args, agyToolArgKeys)
 }
 
 // agyDialogTools present a multiple-choice question dialog to the user rather
@@ -323,19 +305,7 @@ var agyDialogTools = map[string]bool{
 // PermissionKey returns the key that answers agy's numbered permission dialog:
 // "1" approves once, "2" approves always in the conversation, Escape cancels/denies.
 func (b *AgyBackend) PermissionKey(resp types.PermissionResponse, tool string) (string, error) {
-	if agyDialogTools[tool] {
-		return "", fmt.Errorf("%s is a question for the user, not a permission prompt; answer it with send/keys (or --force)", tool)
-	}
-	switch resp {
-	case types.PermissionApprove:
-		return "1", nil
-	case types.PermissionApproveAlways:
-		return "2", nil
-	case types.PermissionDeny:
-		return "Escape", nil
-	default:
-		return "", fmt.Errorf("unsupported permission response %d", resp)
-	}
+	return permissionKey(resp, tool, agyDialogTools)
 }
 
 // agyDialogYesOption and agyDialogNoOption match the numbered "1. Yes" and
@@ -345,22 +315,12 @@ var (
 	agyDialogNoOption  = regexp.MustCompile(`(?m)^[\s>❯]*\d+\.\s+No\b`)
 )
 
-// agyDialogTailLines bounds detection to the bottom of the screen so a
-// numbered list in an older reply cannot match.
-const agyDialogTailLines = 12
-
 // PermissionPromptVisible reports whether agy's permission dialog is on
 // screen: numbered "1. Yes" and "N. No" options above the "esc to cancel"
 // statusline footer. An idle prompt shows "? for shortcuts" instead, and
 // a question dialog (ask_question) shows "esc to discard".
 func (b *AgyBackend) PermissionPromptVisible(screen string) bool {
-	var tail []string
-	lines := strings.Split(screen, "\n")
-	for i := len(lines) - 1; i >= 0 && len(tail) < agyDialogTailLines; i-- {
-		if strings.TrimSpace(lines[i]) != "" {
-			tail = append(tail, lines[i])
-		}
-	}
+	tail := screenTail(screen)
 	if len(tail) == 0 || !strings.Contains(strings.ToLower(tail[0]), "esc to cancel") {
 		return false
 	}
