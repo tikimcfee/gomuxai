@@ -209,6 +209,7 @@ func agyHooksJSON(reportCmd string) ([]byte, error) {
 type agyHookPayload struct {
 	Event             string      `json:"hook_event_name"`
 	ConversationID    string      `json:"conversationId"`
+	TranscriptPath    string      `json:"transcriptPath"`
 	LastUserInput     string      `json:"lastUserInput"`
 	InvocationNum     int         `json:"invocationNum"`
 	ExecutionNum      int         `json:"executionNum"`
@@ -234,7 +235,7 @@ func (b *AgyBackend) ParseHookEvent(event string, payload []byte) (types.HookRep
 		return types.HookReport{}, false, fmt.Errorf("decoding hook payload: %w", err)
 	}
 	ev := firstNonEmpty(event, p.Event)
-	r := types.HookReport{Event: ev, SessionID: p.ConversationID, Tool: p.ToolCall.Name}
+	r := types.HookReport{Event: ev, SessionID: p.ConversationID, Tool: p.ToolCall.Name, Transcript: p.TranscriptPath}
 
 	switch ev {
 	case "PreInvocation":

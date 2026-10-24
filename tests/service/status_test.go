@@ -155,6 +155,26 @@ func TestReportHook_StopStoresResult(t *testing.T) {
 	}
 }
 
+func TestReportHook_StoresTranscript(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	spawnFake(t, env, "worker")
+
+	const path = "/home/user/.claude/projects/p/s.jsonl"
+	payload := `{"hook_event_name":"UserPromptSubmit","session_id":"s","transcript_path":"` + path + `"}`
+	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
+		t.Fatalf("ReportHook: %v", err)
+	}
+	// A payload without a path keeps the one stored.
+	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(`{"hook_event_name":"Stop","session_id":"s"}`)); err != nil {
+		t.Fatalf("ReportHook: %v", err)
+	}
+	if entry, _ := env.store.GetState(ctx, "worker", service.StateKeyTranscript); entry == nil || entry.Value != path {
+		t.Errorf("transcript = %+v, want %s", entry, path)
+	}
+}
+
 func TestReportHook_UnknownAgent(t *testing.T) {
 	env := setupTestEnv(t)
 	defer env.cleanup()

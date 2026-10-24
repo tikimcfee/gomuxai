@@ -42,6 +42,9 @@ type HookReport struct {
 	ToolInput string
 	Result    string // final assistant message, when the event carries one
 	SessionID string // backend's session id, when the event carries one
+	// Transcript is the path of the session's transcript file (the CLI's
+	// own JSONL record of the conversation), when the event carries one.
+	Transcript string
 	// ClearResult marks the start of a new turn or conversation, after which
 	// the previous turn's Result no longer answers anything.
 	ClearResult bool

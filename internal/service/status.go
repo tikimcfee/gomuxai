@@ -21,6 +21,9 @@ const (
 	StateKeySessionID = "_session_id"
 	StateKeyTool      = "_tool"       // tool the last event concerned, e.g. the one awaiting permission
 	StateKeyToolInput = "_tool_input" // that tool call's full input (JSON), when it may need permission
+	// StateKeyTranscript is the path of the CLI's own transcript of the
+	// session, from the last hook payload that named one.
+	StateKeyTranscript = "_transcript"
 	// StateKeySpawnID identifies one spawn of an agent name. Hook commands
 	// carry it, so hooks from a previous agent with the same name (e.g. the
 	// SessionEnd fired while cleanup kills it) can't write into a respawn.
@@ -43,6 +46,9 @@ type StatusReport struct {
 	ToolInput string // full input (JSON) of the tool call that may need permission
 	Result    string // only stored when non-empty
 	SessionID string // only stored when non-empty
+	// Transcript is the path of the CLI's transcript file; only stored
+	// when non-empty.
+	Transcript string
 	// ClearResult empties the stored result (a new turn started), so a
 	// reader never takes the previous turn's reply for this one's.
 	ClearResult bool
@@ -102,6 +108,9 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 	if r.SessionID != "" {
 		values[StateKeySessionID] = r.SessionID
 	}
+	if r.Transcript != "" {
+		values[StateKeyTranscript] = r.Transcript
+	}
 	now := time.Now()
 	entries := make([]*storage.StateEntry, 0, len(values))
 	for key, value := range values {
@@ -159,6 +168,7 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 		Result:    hr.Result,
 		SessionID: hr.SessionID,
 
+		Transcript:  hr.Transcript,
 		ClearResult: hr.ClearResult,
 	})
 }

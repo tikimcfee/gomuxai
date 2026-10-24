@@ -59,6 +59,7 @@ func claudeHookSettings(reportCmd string) string {
 type claudeHookPayload struct {
 	Event                string          `json:"hook_event_name"`
 	SessionID            string          `json:"session_id"`
+	TranscriptPath       string          `json:"transcript_path"`
 	Source               string          `json:"source"`
 	ToolName             string          `json:"tool_name"`
 	ToolInput            json.RawMessage `json:"tool_input"`
@@ -102,7 +103,7 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		p.Event = event
 	}
 
-	r := types.HookReport{Event: p.Event, SessionID: p.SessionID, Tool: p.ToolName}
+	r := types.HookReport{Event: p.Event, SessionID: p.SessionID, Tool: p.ToolName, Transcript: p.TranscriptPath}
 	switch p.Event {
 	case "SessionStart":
 		r.Status = types.StatusIdle

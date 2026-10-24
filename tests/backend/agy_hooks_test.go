@@ -161,6 +161,19 @@ func TestAgyParseHookEvent(t *testing.T) {
 	}
 }
 
+// Every payload names the conversation's transcript; agent logs reads it.
+func TestAgyParseHookEvent_Transcript(t *testing.T) {
+	const path = "/home/user/.gemini/antigravity-cli/brain/c1/.system_generated/logs/transcript_full.jsonl"
+	payload := `{"conversationId":"c1","transcriptPath":"` + path + `","stepIdx":1,"toolCall":{"name":"run_command","args":{"CommandLine":"ls"}}}`
+	r, ok, err := namedagents.NewAgyBackend().ParseHookEvent("PostToolUse", []byte(payload))
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if r.Transcript != path {
+		t.Errorf("transcript = %q, want %q", r.Transcript, path)
+	}
+}
+
 func TestAgyParseHookEvent_InvalidJSON(t *testing.T) {
 	_, _, err := namedagents.NewAgyBackend().ParseHookEvent("PreInvocation", []byte("not json"))
 	if err == nil {

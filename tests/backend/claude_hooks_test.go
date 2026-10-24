@@ -166,6 +166,18 @@ func TestClaudeParseHookEvent_ClearResult(t *testing.T) {
 	}
 }
 
+// Every payload names the session's transcript; agent logs reads it.
+func TestClaudeParseHookEvent_Transcript(t *testing.T) {
+	payload := `{"hook_event_name":"PreToolUse","session_id":"s1","transcript_path":"/home/user/.claude/projects/-home-user-proj/s1.jsonl","tool_name":"Bash","tool_input":{"command":"ls"}}`
+	r, ok, err := namedagents.NewClaudeBackend().ParseHookEvent("", []byte(payload))
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if want := "/home/user/.claude/projects/-home-user-proj/s1.jsonl"; r.Transcript != want {
+		t.Errorf("transcript = %q, want %q", r.Transcript, want)
+	}
+}
+
 func TestClaudeParseHookEvent_InvalidJSON(t *testing.T) {
 	_, _, err := namedagents.NewClaudeBackend().ParseHookEvent("", []byte("not json"))
 	if err == nil {
