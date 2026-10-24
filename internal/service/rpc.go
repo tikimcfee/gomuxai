@@ -28,12 +28,17 @@ func (h rpcHandler) List(ctx context.Context) (*natsbus.ListResponse, error) {
 	}
 	resp := &natsbus.ListResponse{Agents: make([]natsbus.AgentInfo, 0, len(agents))}
 	for _, a := range agents {
+		status := AgentStatusUnknown
+		if info, err := h.s.StatusInfo(ctx, a.Name); err == nil {
+			status = info.Status
+		}
 		resp.Agents = append(resp.Agents, natsbus.AgentInfo{
 			Name:      a.Name,
 			Session:   a.SessionName,
 			Backend:   a.Backend,
 			SpawnedBy: a.SpawnedBy,
 			CreatedAt: a.CreatedAt,
+			Status:    string(status),
 		})
 	}
 	return resp, nil
@@ -42,7 +47,7 @@ func (h rpcHandler) List(ctx context.Context) (*natsbus.ListResponse, error) {
 func (h rpcHandler) Status(ctx context.Context, req natsbus.StatusRequest) (*natsbus.StatusResponse, error) {
 	info, err := h.s.StatusInfo(ctx, req.Agent)
 	if err != nil {
-		return nil, err
+		return nil, remoteErr(err)
 	}
 	return &natsbus.StatusResponse{
 		Status:    string(info.Status),
@@ -60,13 +65,14 @@ func (h rpcHandler) Status(ctx context.Context, req natsbus.StatusRequest) (*nat
 func (h rpcHandler) Capture(ctx context.Context, req natsbus.CaptureRequest) (*natsbus.CaptureResponse, error) {
 	out, err := h.s.Capture(ctx, req.Agent, req.Lines, req.Raw)
 	if err != nil {
-		return nil, err
+		return nil, remoteErr(err)
 	}
 	return &natsbus.CaptureResponse{Output: out}, nil
 }
 
 func (h rpcHandler) Send(ctx context.Context, req natsbus.SendRequest) error {
-	return h.s.Send(ctx, req.Agent, req.Message)
+	_, err := h.s.Send(ctx, req.Agent, req.Message)
+	return remoteErr(err)
 }
 
 func (h rpcHandler) Respond(ctx context.Context, req natsbus.RespondRequest) error {
@@ -74,14 +80,15 @@ func (h rpcHandler) Respond(ctx context.Context, req natsbus.RespondRequest) err
 	if err != nil {
 		return err
 	}
-	return h.s.RespondPermission(ctx, req.Agent, resp, PermissionOptions{
+	_, err = h.s.RespondPermission(ctx, req.Agent, resp, PermissionOptions{
 		Force:      req.Force,
 		ExpectTool: req.ExpectTool,
 	})
+	return remoteErr(err)
 }
 
 func (h rpcHandler) Keys(ctx context.Context, req natsbus.KeysRequest) error {
-	return h.s.Keys(ctx, req.Agent, req.Text, req.Key)
+	return remoteErr(h.s.Keys(ctx, req.Agent, req.Text, req.Key))
 }
 
 // Keys sends text, then the special key, to an agent's session. Either may be

@@ -30,6 +30,7 @@ type Storage interface {
 	GetState(ctx context.Context, agentName, key string) (*StateEntry, error)
 	ListState(ctx context.Context, agentName string) ([]*StateEntry, error)
 	DeleteState(ctx context.Context, agentName string) error
+	DeleteStateKey(ctx context.Context, agentName, key string) error
 
 	// Command log
 	LogCommand(ctx context.Context, rec *CommandRecord) error

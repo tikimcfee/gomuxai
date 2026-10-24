@@ -14,21 +14,19 @@ import (
 
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup <name> [<name>...]",
-	Short: "Clean up agents by name",
+	Short: "Stop agents and delete their records",
 	Long: `Cleanup removes the named agents: it asks each idle one to exit, kills its
 tmux session, and deletes its record, queued messages, state, and files. Its
-log file stays, for agent logs. It prints one line per name, and exits
-non-zero if any of them failed.
+log file stays, for agent logs. It prints one line per name ("cleaned up",
+"refused", or "failed"), and exits 1 if any of them wasn't cleaned up.
 
 Inside an agent (AGENT_NAME set), you can clean up only your own helpers
 and their helpers, as "agent list" shows under PARENT, and not yourself:
 your session would be killed partway through the cleanup. Name a helper's
 own helpers along with it, or it is refused, since you couldn't reach them
 once it's gone. A person can clean up any agent. Cleanup never removes an
-agent you didn't name: it says which helpers remain instead.
-
-Examples:
-  agent cleanup researcher
+agent you didn't name: it says which helpers remain instead.`,
+	Example: `  agent cleanup researcher
   agent cleanup lead-build lead-build-test`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runCleanup,
@@ -73,7 +71,8 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 	failed := 0
 	for _, name := range names {
 		if t.agents[name] == nil {
-			fmt.Printf("failed %q: no such agent\n", name)
+			_, err := agentService.Agent(ctx, name)
+			fmt.Printf("failed %q: %v\n", name, err)
 			failed++
 			continue
 		}
@@ -92,7 +91,7 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 		}
 		delete(t.agents, name)
 
-		did := "removed its record, state, logs, queued messages, and files"
+		did := fmt.Sprintf("removed its record, state, queued messages, and files; its log stays (agent logs %s)", name)
 		if killed {
 			did = fmt.Sprintf("killed session %s; %s", agent.SessionName, did)
 		}

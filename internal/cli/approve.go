@@ -17,48 +17,47 @@ var (
 
 var approveCmd = &cobra.Command{
 	Use:   "approve <name>[@host]",
-	Short: "Approve an agent's pending permission prompt",
-	Long: `Approve answers "yes" to the permission prompt an agent is waiting on.
+	Short: "Answer yes to an agent's permission prompt",
+	Long: `Approve answers "yes" to the permission prompt an agent is waiting on, and
+says which prompt it answered.
 
 Check what it's asking first: "agent status <name> -v" shows the pending
-tool call. Refuses unless the agent's status is "waiting", and refuses dialogs
-that are questions for the user rather than permission prompts (e.g. Claude's
-AskUserQuestion). --force overrides both.
+tool call in full. Refuses unless the agent's status is "waiting", and refuses
+dialogs that are questions for the user rather than permission prompts (e.g.
+Claude's AskUserQuestion: answer those with send/keys). --force overrides
+both.
 
 Use --expect with the tool you inspected, so a prompt that replaced it in the
 meantime isn't approved blind. An agent on another host is addressed as
-name@host (needs a running bus); its host runs the same checks.
-
-Examples:
-  agent approve helper --expect Bash
+name@host (needs a running bus); its host runs the same checks.`,
+	Example: `  agent status helper -v && agent approve helper --expect Bash
   agent approve helper --always   # Claude's "yes, don't ask again" option
   agent approve helper@hub --expect Bash`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		resp := backend.PermissionApprove
+		resp, verb := backend.PermissionApprove, "Approved"
 		if approveAlways {
-			resp = backend.PermissionApproveAlways
+			resp, verb = backend.PermissionApproveAlways, "Always approved"
 		}
-		return respondPermission(args[0], resp, "approved")
+		return respondPermission(args[0], resp, verb)
 	},
 }
 
 var denyCmd = &cobra.Command{
 	Use:   "deny <name>[@host]",
-	Short: "Deny an agent's pending permission prompt",
+	Short: "Answer no to an agent's permission prompt",
 	Long: `Deny rejects the permission prompt an agent is waiting on. For Claude this
 cancels the current turn; follow up with "agent send" to redirect it.
 
 Refuses unless the agent's status is "waiting" and the prompt is still on
 screen (override with --force): for Claude the deny key is Escape, which
-would cancel the turn if the prompt was answered in the meantime.
-
-Examples:
-  agent deny helper
+would cancel the turn if the prompt was answered in the meantime.`,
+	Example: `  agent deny helper
+  agent deny helper --expect Bash
   agent deny helper@hub`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return respondPermission(args[0], backend.PermissionDeny, "denied")
+		return respondPermission(args[0], backend.PermissionDeny, "Denied")
 	},
 }
 
@@ -75,10 +74,11 @@ func respondPermission(name string, resp backend.PermissionResponse, verb string
 	if err != nil {
 		return err
 	}
+	var info *service.StatusInfo
 	if remote {
 		err = remoteRespond(ref, resp)
 	} else {
-		err = agentService.RespondPermission(getContext(), ref.Name, resp, service.PermissionOptions{
+		info, err = agentService.RespondPermission(getContext(), ref.Name, resp, service.PermissionOptions{
 			Force:      permissionForce,
 			ExpectTool: permissionExpect,
 		})
@@ -86,7 +86,20 @@ func respondPermission(name string, resp backend.PermissionResponse, verb string
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s: %s\n", name, verb)
+	prompt := "prompt"
+	if info != nil && info.Tool != "" {
+		prompt = info.Tool + " prompt"
+	}
+	line := fmt.Sprintf("%s %s's %s", verb, name, prompt)
+	if info != nil && info.Detail != "" {
+		line += fmt.Sprintf(" (%s)", service.OneLine(info.Detail))
+	}
+	fmt.Println(line + ".")
+	if resp == backend.PermissionDeny && !remote {
+		if a, err := agentService.Agent(getContext(), ref.Name); err == nil && a.Backend == "claude" {
+			hint("denying cancels Claude's turn: tell it what to do instead with agent send %s \"...\"", name)
+		}
+	}
 	return nil
 }
 

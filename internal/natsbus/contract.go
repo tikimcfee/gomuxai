@@ -139,6 +139,9 @@ type AgentInfo struct {
 	Backend   string    `json:"backend"`
 	SpawnedBy string    `json:"spawned_by,omitempty"` // parent agent; "" when a person spawned it
 	CreatedAt time.Time `json:"created_at"`
+	// Status is the agent's resolved status, as StatusResponse.Status;
+	// empty from hosts that predate it.
+	Status string `json:"status,omitempty"`
 }
 
 type StatusRequest struct {

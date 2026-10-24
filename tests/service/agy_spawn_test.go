@@ -188,7 +188,7 @@ func TestAgyWaitingAndApprove_WhenPermissionDialogVisible(t *testing.T) {
 	if st, _ := env.service.Status(ctx, "agy-perm"); st != service.AgentStatusProcessing {
 		t.Fatalf("without dialog on screen: status = %s, want processing", st)
 	}
-	if err := env.service.RespondPermission(ctx, "agy-perm", backend.PermissionApprove, service.PermissionOptions{}); err == nil {
+	if _, err := env.service.RespondPermission(ctx, "agy-perm", backend.PermissionApprove, service.PermissionOptions{}); err == nil {
 		t.Fatal("approve succeeded without dialog on screen")
 	}
 
@@ -224,7 +224,7 @@ func TestAgyWaitingAndApprove_WhenPermissionDialogVisible(t *testing.T) {
 	}
 
 	// Approve without --force (and with --expect run_command) now succeeds.
-	if err := env.service.RespondPermission(ctx, "agy-perm", backend.PermissionApprove, service.PermissionOptions{
+	if _, err := env.service.RespondPermission(ctx, "agy-perm", backend.PermissionApprove, service.PermissionOptions{
 		ExpectTool: "run_command",
 	}); err != nil {
 		t.Fatalf("RespondPermission without --force failed: %v", err)

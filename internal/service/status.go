@@ -313,7 +313,7 @@ func (s *AgentService) permissionPromptVisible(agent *storage.Agent) bool {
 func (s *AgentService) scrapeStatus(agent *storage.Agent) (AgentStatus, error) {
 	be, err := s.backends.Get(agent.Backend)
 	if err != nil {
-		return AgentStatusUnknown, fmt.Errorf("getting backend: %w", err)
+		return AgentStatusUnknown, unloadedBackend(agent)
 	}
 
 	output, err := s.tmux.Capture(agent.SessionName, 50, true)
@@ -353,30 +353,32 @@ type PermissionOptions struct {
 	ExpectTool string
 }
 
-// RespondPermission answers an agent's pending permission prompt.
-func (s *AgentService) RespondPermission(ctx context.Context, name string, resp backend.PermissionResponse, opts PermissionOptions) error {
+// RespondPermission answers an agent's pending permission prompt. It
+// returns the status it found the agent in, which describes the prompt it
+// answered.
+func (s *AgentService) RespondPermission(ctx context.Context, name string, resp backend.PermissionResponse, opts PermissionOptions) (*StatusInfo, error) {
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	info, err := s.StatusInfo(ctx, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !opts.Force && info.Status != AgentStatusWaiting {
-		return fmt.Errorf("agent %q is %s, not waiting on a permission prompt (use --force to send anyway)", name, info.Status)
+		return nil, fmt.Errorf("agent %s is %s, not waiting on a permission prompt, so there is nothing to answer (agent status %s -v shows what it's doing; --force sends the key anyway)", name, info.Status, name)
 	}
 	if opts.ExpectTool != "" && info.Tool != opts.ExpectTool {
-		return fmt.Errorf("agent %q is waiting on %q, not %q", name, info.Tool, opts.ExpectTool)
+		return nil, fmt.Errorf("agent %s is waiting on %q, not %q: check the new prompt with agent status %s -v before answering it", name, info.Tool, opts.ExpectTool, name)
 	}
 
 	provider, err := s.provider(agent)
 	if err != nil {
-		return fmt.Errorf("getting backend: %w", err)
+		return nil, fmt.Errorf("agent %s runs backend %q, which can't answer permission prompts: use agent keys %s@%s to press the keys yourself", name, agent.Backend, name, s.cfg.Host)
 	}
 	pr, ok := provider.(backend.PermissionResponder)
 	if !ok {
-		return fmt.Errorf("backend %q does not support answering permission prompts", agent.Backend)
+		return nil, fmt.Errorf("agent %s runs backend %q, which can't answer permission prompts: use agent keys %s@%s to press the keys yourself", name, agent.Backend, name, s.cfg.Host)
 	}
 	tool := info.Tool
 	if opts.Force {
@@ -384,7 +386,7 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 	}
 	key, err := pr.PermissionKey(resp, tool)
 	if err != nil {
-		return fmt.Errorf("agent %q: %w", name, err)
+		return nil, fmt.Errorf("agent %s: %w", name, err)
 	}
 	// The status above can be hundreds of ms old (native status runs the
 	// backend CLI), and the prompt may have been answered since. For Claude
@@ -397,14 +399,14 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 	if !opts.Force {
 		screen, err := s.tmux.Capture(agent.SessionName, 0, true)
 		if err != nil {
-			return fmt.Errorf("capturing screen: %w", err)
+			return nil, fmt.Errorf("capturing screen: %w", err)
 		}
 		if !pr.PermissionPromptVisible(screen) {
-			return fmt.Errorf("agent %q has no permission prompt on screen; it may have just been answered (use --force to send anyway)", name)
+			return nil, fmt.Errorf("agent %s has no permission prompt on screen; it may have just been answered (agent status %s -v shows what it's doing; --force sends the key anyway)", name, name)
 		}
 	}
 	if err := s.tmux.SendSpecialKey(agent.SessionName, key); err != nil {
-		return fmt.Errorf("sending %q: %w", key, err)
+		return nil, fmt.Errorf("sending %q: %w", key, err)
 	}
 
 	// Record the expected outcome now: a denied prompt fires no hook, and an
@@ -413,7 +415,14 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 	if resp == backend.PermissionDeny {
 		report = StatusReport{Status: AgentStatusIdle, Event: "denied"}
 	}
-	return s.Report(ctx, name, report)
+	return info, s.Report(ctx, name, report)
+}
+
+// unloadedBackend is the error for an agent whose custom backend this
+// process didn't load: custom backends are only known through the
+// --backend-config they were spawned with.
+func unloadedBackend(agent *storage.Agent) error {
+	return fmt.Errorf("agent %s runs backend %q, which isn't built in: pass the --backend-config file it was spawned with (e.g. agent --backend-config <file> status %s)", agent.Name, agent.Backend, agent.Name)
 }
 
 // provider returns an instance of agent's backend for the optional
@@ -428,9 +437,14 @@ func (s *AgentService) getAgent(ctx context.Context, name string) (*storage.Agen
 		return nil, fmt.Errorf("getting agent: %w", err)
 	}
 	if agent == nil {
-		return nil, fmt.Errorf("agent %q not found", name)
+		return nil, s.notFound(ctx, name)
 	}
 	return agent, nil
+}
+
+// Agent returns the named agent's record, or an *AgentNotFoundError.
+func (s *AgentService) Agent(ctx context.Context, name string) (*storage.Agent, error) {
+	return s.getAgent(ctx, name)
 }
 
 func (s *AgentService) setState(ctx context.Context, name, key, value string) error {

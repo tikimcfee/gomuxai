@@ -34,7 +34,7 @@ var (
 
 var waitCmd = &cobra.Command{
 	Use:   "wait <name>[@host] --for <status[,status...]>",
-	Short: "Wait until an agent reaches a status",
+	Short: "Block until an agent reaches a status (exit 2 on timeout)",
 	Long: `Wait blocks until an agent's status is one of the given statuses, prints
 it, and exits 0. Statuses: idle, processing, waiting, error, exited, unknown.
 
@@ -56,14 +56,19 @@ Right after "agent send", the agent still looks idle from its previous turn
 until it picks the message up, so "--for idle" would return at once. Use
 --next: it ignores the given statuses until the agent has been seen in another
 one (e.g. processing), so it waits for the turn the message starts. Run it
-right after the send; a turn that finishes before wait starts is missed.
+right after the send; a turn that finishes before wait starts is missed, so
+give it a --timeout.
 
-Examples:
-  agent send helper "review auth.go" && agent wait helper --for idle --next
+An agent blocked on a permission prompt stays "waiting" until someone
+answers, so a coordinator usually waits with --for idle,waiting and checks
+which it got. Without "waiting" in --for, wait says on stderr when it sees
+the agent waiting, and keeps waiting.
+
+For a Claude agent, its reply is then in "agent state get <name> _result".`,
+	Example: `  agent send helper "review auth.go" && agent wait helper --for idle,waiting --next --timeout 30m
   agent wait helper --for idle
-  agent wait helper --for idle,waiting --timeout 10m
   agent wait helper --for exited
-  agent wait helper@hub --for idle --timeout 10m`,
+  agent wait helper@hub --for idle,waiting --timeout 10m`,
 	Args: cobra.ExactArgs(1),
 	RunE: runWait,
 }
@@ -149,6 +154,20 @@ func runWait(cmd *cobra.Command, args []string) error {
 				ReportedStatus: resp.ReportedStatus,
 				ReportedAt:     resp.ReportedAt,
 			}, nil
+		}
+	}
+
+	if !slices.Contains(targets, string(service.AgentStatusWaiting)) {
+		// Blocked on a person, the agent won't reach the targets until
+		// someone answers: say so once, from the status check that saw it.
+		check := current
+		current = func(ctx context.Context) (natsbus.Observation, error) {
+			obs, err := check(ctx)
+			if err == nil && obs.Status == string(service.AgentStatusWaiting) {
+				hint("%s is waiting on a person (a permission prompt or question), so it won't be %s until someone answers: agent status %s -v shows what it's asking (--for %s,waiting returns on prompts)",
+					ref, strings.Join(targets, " or "), ref, strings.Join(targets, ","))
+			}
+			return obs, err
 		}
 	}
 

@@ -403,3 +403,8 @@ func (s *SQLiteStorage) ListState(ctx context.Context, agentName string) ([]*Sta
 func (s *SQLiteStorage) DeleteState(ctx context.Context, agentName string) error {
 	return s.exec(ctx, "deleting state", `DELETE FROM state WHERE agent_name = ?`, agentName)
 }
+
+// DeleteStateKey removes one state entry for an agent.
+func (s *SQLiteStorage) DeleteStateKey(ctx context.Context, agentName, key string) error {
+	return s.exec(ctx, "deleting state", `DELETE FROM state WHERE agent_name = ? AND key = ?`, agentName, key)
+}

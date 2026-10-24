@@ -185,7 +185,7 @@ func (w *Watcher) failMessage(ctx context.Context, msg *storage.Message, logger 
 }
 
 func (w *Watcher) deliverMessage(ctx context.Context, agentName string, msg *storage.Message, logger *slog.Logger) {
-	if err := w.service.Send(ctx, agentName, msg.Content); err != nil {
+	if _, err := w.service.Send(ctx, agentName, msg.Content); err != nil {
 		logger.Error("failed to send message", "error", err)
 		w.handleDeliveryFailure(ctx, msg, logger)
 		return

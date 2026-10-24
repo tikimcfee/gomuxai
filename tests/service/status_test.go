@@ -234,7 +234,7 @@ func TestRespondPermission_RequiresWaiting(t *testing.T) {
 	spawnFake(t, env, "worker")
 	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusProcessing})
 
-	err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{})
+	_, err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{})
 	if err == nil || !strings.Contains(err.Error(), "not waiting") {
 		t.Errorf("expected refusal, got %v", err)
 	}
@@ -255,7 +255,7 @@ func TestRespondPermission_ApproveAndDeny(t *testing.T) {
 	}
 	for _, tt := range tests {
 		env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusWaiting})
-		if err := env.service.RespondPermission(ctx, "worker", tt.resp, service.PermissionOptions{}); err != nil {
+		if _, err := env.service.RespondPermission(ctx, "worker", tt.resp, service.PermissionOptions{}); err != nil {
 			t.Fatalf("RespondPermission(%v): %v", tt.resp, err)
 		}
 		if st, _ := env.service.Status(ctx, "worker"); st != tt.want {
@@ -347,7 +347,7 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 
 	// A permission dialog on screen.
 	fake.promptGone = false
-	if err := env.service.Send(ctx, "worker", "hello"); err == nil || !strings.Contains(err.Error(), "permission prompt on screen") {
+	if _, err := env.service.Send(ctx, "worker", "hello"); err == nil || !strings.Contains(err.Error(), "permission prompt on screen") {
 		t.Errorf("send at a permission dialog: err = %v", err)
 	}
 	fake.promptGone = true
@@ -358,7 +358,7 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		err := env.service.Send(ctx, "worker", "hello")
+		_, err := env.service.Send(ctx, "worker", "hello")
 		if err != nil && strings.Contains(err.Error(), "trust prompt") {
 			break
 		}
@@ -371,7 +371,7 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	// No dialog: send goes through.
 	env.tmux.Clear(env.cfg.SessionName("worker"))
 	time.Sleep(200 * time.Millisecond)
-	if err := env.service.Send(ctx, "worker", "echo ok"); err != nil {
+	if _, err := env.service.Send(ctx, "worker", "echo ok"); err != nil {
 		t.Errorf("send with no dialog: %v", err)
 	}
 }

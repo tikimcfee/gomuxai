@@ -6,17 +6,23 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
 var logsCmd = &cobra.Command{
 	Use:   "logs <name>",
-	Short: "View an agent's terminal output log",
-	Long: `Logs prints the last lines of an agent's log file, .gomuxai/logs/<name>.log,
-which holds everything its terminal has shown.
+	Short: "Print an agent's terminal history, even after cleanup",
+	Long: `Logs prints the last lines of an agent's log file, which holds everything
+its terminal has shown. Log files are <name>.log in the data dir next to the
+agent binary, not in the working directory; here:
+  ` + filepath.Join(config.DefaultConfig().LogDir, "<name>.log") + `
 
 The file is a raw terminal stream, so logs cleans it into text: escape
 sequences are dropped, cursor movements become spaces and line breaks, and
@@ -24,10 +30,8 @@ blank lines and consecutive repeats (screen redraws) are left out. Lines a TUI
 redrew only in part can show gaps. The file has no timestamps.
 
 The log outlives the agent: cleanup keeps it, and an agent spawned again
-under the same name appends to it.
-
-Examples:
-  agent logs researcher
+under the same name appends to it. For the live screen, use "agent capture".`,
+	Example: `  agent logs researcher
   agent logs researcher --lines 100`,
 	Args: cobra.ExactArgs(1),
 	RunE: runLogs,
@@ -51,7 +55,10 @@ func runLogs(cmd *cobra.Command, args []string) error {
 
 	lines, err := tailLogLines(cfg.LogPath(name), logsLines)
 	if errors.Is(err, fs.ErrNotExist) || (err == nil && len(lines) == 0) {
-		fmt.Printf("No logs found for agent %q\n", name)
+		if _, agentErr := agentService.Agent(getContext(), name); agentErr != nil {
+			return noLog(name)
+		}
+		fmt.Printf("Agent %s has logged no output yet (%s).\n", name, absPath(cfg.LogPath(name)))
 		return nil
 	}
 	if err != nil {
@@ -62,6 +69,39 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		fmt.Println(line)
 	}
 	return nil
+}
+
+// noLog is the error for a name with neither a log nor an agent: it
+// suggests close names among both.
+func noLog(name string) error {
+	var names []string
+	if files, err := os.ReadDir(cfg.LogDir); err == nil {
+		for _, f := range files {
+			if n, ok := strings.CutSuffix(f.Name(), ".log"); ok {
+				names = append(names, n)
+			}
+		}
+	}
+	if agents, err := agentService.List(getContext()); err == nil {
+		for _, a := range agents {
+			if !slices.Contains(names, a.Name) {
+				names = append(names, a.Name)
+			}
+		}
+	}
+	msg := fmt.Sprintf("no log for %q: no agent by that name has run on host %s", name, cfg.Host)
+	if similar := util.Similar(name, names); len(similar) > 0 {
+		return fmt.Errorf("%s; did you mean %s?", msg, util.OrList(similar, nil))
+	}
+	return fmt.Errorf("%s (logs are in %s)", msg, absPath(cfg.LogDir))
+}
+
+// absPath returns path made absolute, or as it is if that fails.
+func absPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
 }
 
 // logTailChunk is how much of the end of a log file tailLogLines reads

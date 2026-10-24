@@ -7,24 +7,38 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
+	"github.com/tikimcfee/gomuxai/internal/service"
 	"golang.org/x/term"
 )
 
 var sendCmd = &cobra.Command{
 	Use:   "send <name>[@host] <message>",
-	Short: "Send a message to an agent immediately",
-	Long: `Send delivers a message to an agent's terminal immediately.
+	Short: "Type a message into an agent now",
+	Long: `Send types a message into an agent's terminal immediately, and says what
+status it found the agent in.
 
 The message is typed in even while the agent is working (Claude and agy queue
 it). It is refused while the agent is at a dialog (a permission or workspace
 trust prompt), where the Enter would answer the dialog instead; answer those
-with approve/deny. --force overrides that check for a local agent, and only
-works for a person at a terminal. Use 'queue' to wait until the agent is idle.
-An agent on another host is addressed as name@host (needs a running bus).
+with approve/deny. It is also refused once the agent has exited, since the
+message would run in the shell left behind. --force overrides these checks
+for a local agent, and only works for a person at a terminal. Use 'queue' to
+wait until the agent is idle. An agent on another host is addressed as
+name@host (needs a running bus).
 
-Examples:
-  agent send researcher "analyze the codebase structure"
-  agent send builder "please create the user model"
+A message sent by an agent (AGENT_NAME set) starts with "[from name@host]",
+so the recipient knows where to reply.
+
+"Sent" means the message was typed into the agent's terminal, not that the
+agent has read it: right after a send, the agent still looks idle until it
+picks the message up. To wait for the turn it starts, use
+"agent wait <name> --for idle,waiting --next".
+
+A long message typed into Claude's terminal can arrive as a pasted block,
+which Claude may treat as data rather than as instructions: keep instructions
+short, or put them in a file and send its path.`,
+	Example: `  agent send researcher "analyze the codebase structure"
+  agent send builder "run the tests" && agent wait builder --for idle,waiting --next
   agent send builder@hub "run the tests"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: runSend,
@@ -33,7 +47,7 @@ Examples:
 var sendForce bool
 
 func init() {
-	sendCmd.Flags().BoolVar(&sendForce, "force", false, "Send even if the agent is at a dialog (local agents only)")
+	sendCmd.Flags().BoolVar(&sendForce, "force", false, "Send even if the agent is at a dialog or has exited (local agents, people only)")
 }
 
 func runSend(cmd *cobra.Command, args []string) error {
@@ -52,6 +66,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 		// AGENT_NAME.
 		return fmt.Errorf("--force needs a person at a terminal; agents answer dialogs through a person (agent approve/deny)")
 	}
+	var found string // the status send found the agent in, if it knows
 	switch {
 	case remote && sendForce:
 		return fmt.Errorf("--force only applies to local agents")
@@ -61,14 +76,24 @@ func runSend(cmd *cobra.Command, args []string) error {
 		})
 	case sendForce:
 		err = agentService.SendUnchecked(getContext(), ref.Name, message)
+		found = "unchecked: --force"
 	default:
-		err = agentService.Send(getContext(), ref.Name, message)
+		var status service.AgentStatus
+		status, err = agentService.Send(getContext(), ref.Name, message)
+		found = "it was " + string(status)
+		if status == service.AgentStatusUnknown {
+			found = "its status is unknown"
+		}
 	}
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Sent message to %q\n", name)
+	if found != "" {
+		fmt.Printf("Sent to %s (%s).\n", name, found)
+	} else {
+		fmt.Printf("Sent to %s.\n", name)
+	}
 	return nil
 }
 

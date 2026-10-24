@@ -28,8 +28,9 @@ var busConnect natsbus.LocalConnector = func() (*nats.Conn, error) {
 	return natsbus.ConnectLocal(cfg.BusDir(), cfg.Host)
 }
 
-// busSession is the tmux session `agent bus start` runs the bus in.
-const busSession = "gomux-bus"
+// busSession is the tmux session `agent bus start` runs the bus in. Tests
+// may rename it, to stay clear of a real bus.
+var busSession = "gomux-bus"
 
 var (
 	busURL        string
@@ -57,14 +58,24 @@ trusts a peer by installing the peer's public bundle. Nothing secret is copied.
   agent bus start                         # other hosts
 
 Peers may only call the ops in --remote-ops on this host (default: list,
-status, capture, send, respond); raw keys stays local-only unless allowed.`,
+status, capture, send, respond); raw keys stays local-only unless allowed.
+
+Only reaching other hosts needs a bus: everything on one host works without.`,
+	Example: `  agent bus status
+  agent bus init && agent bus start`,
+	RunE: runGroup,
 }
 
 var busInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Create this host's bus keys and certificate",
-	Args:  cobra.NoArgs,
+	Example: `  agent bus init
+  agent bus init --url tls://hub.example:7422   # on the hub`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if busSetUp() {
+			return fmt.Errorf("this host (%s) already has a bus identity in %s: agent bus export prints its public bundle", cfg.Host, cfg.BusDir())
+		}
 		id, err := natsbus.InitIdentity(cfg.BusDir(), cfg.Host)
 		if err != nil {
 			return err
@@ -84,7 +95,9 @@ var busInitCmd = &cobra.Command{
 var busExportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Print this host's public bundle",
-	Args:  cobra.NoArgs,
+	Example: `  agent bus export > monolith.pub.json
+  agent bus export --url tls://hub.example:7422`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id, err := natsbus.LoadIdentity(cfg.BusDir(), cfg.Host)
 		if err != nil {
@@ -105,6 +118,8 @@ var busTrustCmd = &cobra.Command{
 	Long: `Trust installs a peer's public bundle (from its "agent bus init" or
 "agent bus export"). Check the key and pin it prints against the peer's own
 output before relying on the link. Restart the bus to apply.`,
+	Example: `  agent bus trust hub.pub.json
+  agent bus trust - < hub.pub.json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var data []byte
@@ -137,33 +152,41 @@ output before relying on the link. Restart the bus to apply.`,
 }
 
 var busRunCmd = &cobra.Command{
-	Use:   "run",
-	Short: "Run the bus in the foreground",
-	Long:  `Run serves the bus until interrupted. "agent bus start" runs it in a tmux session.`,
-	Args:  cobra.NoArgs,
-	RunE:  runBus,
+	Use:     "run",
+	Short:   "Run the bus in the foreground",
+	Long:    `Run serves the bus until interrupted. "agent bus start" runs it in a tmux session.`,
+	Example: `  agent bus run --listen 0.0.0.0:7422`,
+	Args:    cobra.NoArgs,
+	RunE:    runBus,
 }
 
 var busStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the bus in the background (tmux session " + busSession + ")",
-	Args:  cobra.NoArgs,
-	RunE:  startBus,
+	Example: `  agent bus start
+  agent bus start --listen 0.0.0.0:7422   # on the hub`,
+	Args: cobra.NoArgs,
+	RunE: startBus,
 }
 
 var busStopCmd = &cobra.Command{
-	Use:   "stop",
-	Short: "Stop the background bus",
-	Args:  cobra.NoArgs,
-	RunE:  stopBus,
+	Use:     "stop",
+	Short:   "Stop the background bus",
+	Example: `  agent bus stop`,
+	Args:    cobra.NoArgs,
+	RunE:    stopBus,
 }
 
 var busStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show whether the bus is running and which peers are linked",
-	Args:  cobra.NoArgs,
-	RunE:  busStatus,
+	Example: `  agent bus status
+  agent bus status --json`,
+	Args: cobra.NoArgs,
+	RunE: busStatus,
 }
+
+var busStatusJSON bool
 
 func init() {
 	for _, c := range []*cobra.Command{busInitCmd, busExportCmd} {
@@ -174,6 +197,7 @@ func init() {
 		c.Flags().StringSliceVar(&busRemoteOps, "remote-ops", natsbus.DefaultRemoteOps, "Ops peers may call on this host")
 		c.Flags().IntVar(&busClientPort, "client-port", natsbus.DefaultClientPort, "Local client port (127.0.0.1)")
 	}
+	busStatusCmd.Flags().BoolVar(&busStatusJSON, "json", false, "Print the bus status as JSON")
 	busCmd.AddCommand(busInitCmd, busExportCmd, busTrustCmd, busRunCmd, busStartCmd, busStopCmd, busStatusCmd)
 }
 
@@ -272,7 +296,10 @@ func runBus(cmd *cobra.Command, args []string) error {
 
 func startBus(cmd *cobra.Command, args []string) error {
 	if exists, _ := tmuxClient.SessionExists(busSession); exists {
-		return fmt.Errorf("bus session %q already exists (agent bus stop first)", busSession)
+		if err := checkOwnBusSession(); err != nil {
+			return err
+		}
+		return fmt.Errorf("the bus is already running in tmux session %s (agent bus status shows it; agent bus stop first to restart it)", busSession)
 	}
 	if _, err := natsbus.LoadIdentity(cfg.BusDir(), cfg.Host); err != nil {
 		return err
@@ -316,13 +343,37 @@ func startBus(cmd *cobra.Command, args []string) error {
 	return busStatus(cmd, args)
 }
 
+// checkOwnBusSession fails if this data dir's bus isn't running while the
+// bus session exists. The session name is the same for every data dir on
+// the tmux server, while each bus records its address in its own data dir:
+// the session then runs another agent binary's bus (or a dead one), which
+// isn't this binary's to stop.
+func checkOwnBusSession() error {
+	nc, err := busConnect()
+	if err == nil {
+		nc.Close()
+		return nil
+	}
+	if !errors.Is(err, natsbus.ErrNoBus) {
+		return err
+	}
+	return fmt.Errorf("tmux session %s exists, but this data dir's bus (%s) isn't running: the session likely runs the bus of another agent binary with its own data dir, so it's left alone. If it's a dead bus of this one, agent session kill %s",
+		busSession, cfg.BusDir(), busSession)
+}
+
 func stopBus(cmd *cobra.Command, args []string) error {
 	exists, err := tmuxClient.SessionExists(busSession)
 	if err != nil {
 		return err
 	}
 	if !exists {
-		return fmt.Errorf("no bus session %q", busSession)
+		if _, err := queryBus(time.Second); err == nil {
+			return fmt.Errorf("the bus is running, but not in tmux session %s (started with agent bus run?): stop it with Ctrl-C where it runs", busSession)
+		}
+		return fmt.Errorf("no bus is running on host %s (no tmux session %s), so there is nothing to stop", cfg.Host, busSession)
+	}
+	if err := checkOwnBusSession(); err != nil {
+		return err
 	}
 	// Interrupt first so the bus shuts down cleanly and removes its URL file.
 	tmuxClient.SendSpecialKey(busSession, "c-c")
@@ -340,22 +391,70 @@ func stopBus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func busStatus(cmd *cobra.Command, args []string) error {
+// queryBus asks this host's bus for its status, waiting up to timeout for
+// the answer. It returns natsbus.ErrNoBus if no bus is running.
+func queryBus(timeout time.Duration) (*busInfo, error) {
 	nc, err := busConnect()
-	if errors.Is(err, natsbus.ErrNoBus) {
-		fmt.Printf("%s: bus not running\n", cfg.Host)
-		return nil
-	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer nc.Close()
-	msg, err := nc.Request(natsbus.SubjectLocal(cfg.Host, "bus"), nil, 2*time.Second)
+	msg, err := nc.Request(natsbus.SubjectLocal(cfg.Host, "bus"), nil, timeout)
 	if err != nil {
-		return fmt.Errorf("bus not answering: %w", err)
+		return nil, fmt.Errorf("bus not answering: %w", err)
 	}
 	var info busInfo
 	if err := json.Unmarshal(msg.Data, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// busStatusOut is the bus status as --json prints it.
+type busStatusOut struct {
+	Host        string   `json:"host"`
+	SetUp       bool     `json:"set_up"` // has an identity ("agent bus init")
+	Running     bool     `json:"running"`
+	ClientURL   string   `json:"client_url,omitempty"`
+	HubAddr     string   `json:"hub_addr,omitempty"` // where it accepts peer links, if it is the hub
+	LinkedPeers int      `json:"linked_peers"`
+	Trusted     []string `json:"trusted"`
+	RemoteOps   []string `json:"remote_ops"`
+}
+
+// busSetUp reports whether this host has a bus identity ("agent bus init").
+func busSetUp() bool {
+	_, err := natsbus.LoadIdentity(cfg.BusDir(), cfg.Host)
+	return err == nil
+}
+
+func busStatus(cmd *cobra.Command, args []string) error {
+	info, err := queryBus(2 * time.Second)
+	if busStatusJSON {
+		out := busStatusOut{Host: cfg.Host, SetUp: busSetUp(), Trusted: []string{}, RemoteOps: []string{}}
+		if errors.Is(err, natsbus.ErrNoBus) {
+			return printJSON(out)
+		}
+		if err != nil {
+			return err
+		}
+		out.Running = true
+		out.ClientURL, out.HubAddr, out.LinkedPeers = info.ClientURL, info.LeafAddr, info.LinkedPeers
+		out.Trusted, out.RemoteOps = info.Trusted, info.RemoteOps
+		return printJSON(out)
+	}
+	if errors.Is(err, natsbus.ErrNoBus) {
+		fmt.Printf("%s: bus not running\n", cfg.Host)
+		if exists, _ := tmuxClient.SessionExists(busSession); exists {
+			hint("tmux session %s exists, but runs no bus of this data dir (%s): likely another agent binary's bus", busSession, cfg.BusDir())
+		} else if busSetUp() {
+			hint("start it: agent bus start (add --listen 0.0.0.0:7422 on the hub)")
+		} else {
+			hint("set it up first: agent bus init (see agent bus --help)")
+		}
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 	fmt.Printf("%s: bus running (clients on %s)\n", info.Host, info.ClientURL)

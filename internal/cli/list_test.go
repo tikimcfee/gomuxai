@@ -49,10 +49,10 @@ func TestListShowsParents(t *testing.T) {
 		t.Fatalf("list:\n%s", out)
 	}
 	// The newer helper still follows its parent.
-	if fields := strings.Fields(lines[2]); fields[0] != "worker" || fields[1] != "-" {
+	if fields := strings.Fields(lines[2]); fields[0] != "worker" || fields[1] != "waiting" || fields[2] != "-" {
 		t.Errorf("parent row = %q", lines[2])
 	}
-	if fields := strings.Fields(lines[3]); fields[0] != "worker-test" || fields[1] != "worker" {
+	if fields := strings.Fields(lines[3]); fields[0] != "worker-test" || fields[1] != "unknown" || fields[2] != "worker" {
 		t.Errorf("helper row = %q", lines[3])
 	}
 }

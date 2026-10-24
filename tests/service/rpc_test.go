@@ -118,7 +118,7 @@ func TestRPC_ServiceErrors(t *testing.T) {
 	client := serveService(t, env)
 
 	_, err := client.Status(ctx, natsbus.AgentRef{Name: "ghost", Host: "h1"})
-	if err == nil || err.Error() != `agent "ghost" not found` {
+	if err == nil || !strings.HasPrefix(err.Error(), `agent "ghost" not found (1 agent there`) {
 		t.Errorf("status of unknown agent: err = %v", err)
 	}
 	err = client.Respond(ctx, natsbus.AgentRef{Name: "worker", Host: "h1"}, natsbus.RespondRequest{Response: "yes-please", Force: true})

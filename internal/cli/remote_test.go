@@ -21,6 +21,10 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
+// hints collects what the commands of a test that called setupCLI print on
+// stderr through hint and notice.
+var hints *strings.Builder
+
 // setupCLI points the CLI's globals at a temp database holding one agent,
 // "worker", waiting on a Bash permission prompt, on host "local". The agent
 // has no tmux session: status comes from its report alone.
@@ -52,7 +56,10 @@ func setupCLI(t *testing.T) {
 	t.Cleanup(func() {
 		cfg, store, tmuxClient, backends, agentService, busConnect = oldCfg, oldStore, oldTmux, oldBackends, oldService, oldConnect
 		statusVerbose, listHost, permissionExpect, keysNoEnter = false, "", "", false
+		hintOut, hinted = os.Stderr, false
 	})
+	hints = new(strings.Builder)
+	hintOut, hinted = hints, false
 	cfg, store, tmuxClient, backends = testCfg, testStore, testTmux, backend.NewRegistry()
 	agentService = service.NewAgentService(cfg, store, tmuxClient, backends)
 
@@ -167,10 +174,11 @@ func TestLocalTargetsDontDialTheBus(t *testing.T) {
 			t.Errorf("list --host %q = %q, %v", host, out, err)
 		}
 	}
-	if err := runSend(sendCmd, []string{"ghost@local", "hi"}); err == nil || err.Error() != `agent "ghost" not found` {
+	const notFound = `agent "ghost" not found on host local (1 agent there: agent list)`
+	if err := runSend(sendCmd, []string{"ghost@local", "hi"}); err == nil || err.Error() != notFound {
 		t.Errorf("send ghost@local: err = %v", err)
 	}
-	if err := runKeys(keysCmd, []string{"ghost@local", "hi"}); err == nil || err.Error() != `agent "ghost" not found` {
+	if err := runKeys(keysCmd, []string{"ghost@local", "hi"}); err == nil || err.Error() != notFound {
 		t.Errorf("keys ghost@local: err = %v", err)
 	}
 }
@@ -238,7 +246,9 @@ func TestRemoteErrorsMatchLocal(t *testing.T) {
 	for _, p := range pairs {
 		_, localErr := stdout(t, p.local)
 		_, remoteErr := stdout(t, p.remote)
-		if localErr == nil || remoteErr == nil || localErr.Error() != remoteErr.Error() {
+		// Listing a remote host's agents takes --host (here the served
+		// host's own name, since h1 is this CLI's service).
+		if localErr == nil || remoteErr == nil || localErr.Error() != strings.Replace(remoteErr.Error(), "agent list --host local", "agent list", 1) {
 			t.Errorf("%s: local err %v, remote err %v", p.name, localErr, remoteErr)
 		}
 	}
@@ -315,10 +325,14 @@ func TestQueueTargets(t *testing.T) {
 	forbidBus(t)
 	t.Setenv("AGENT_NAME", "")
 
-	for _, target := range []string{"worker", "worker@local"} {
+	for i, target := range []string{"worker", "worker@local"} {
 		out, err := stdout(t, func() error { return runQueue(queueCmd, []string{target, "hi"}) })
-		if err != nil || out != "Queued message from \"user\" to \"worker\"\n" {
-			t.Errorf("queue %s = %q, %v", target, out, err)
+		want := "Queued for worker from user (it is waiting).\n"
+		if i == 1 {
+			want = "Queued for worker from user, behind 1 other message (it is waiting).\n"
+		}
+		if err != nil || out != want {
+			t.Errorf("queue %s = %q, %v; want %q", target, out, err, want)
 		}
 	}
 	err := runQueue(queueCmd, []string{"worker@h1", "hi"})

@@ -145,7 +145,7 @@ func TestRespondPermission_RefusesQuestionDialogs(t *testing.T) {
 	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
-	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{}); err == nil {
+	if _, err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{}); err == nil {
 		t.Error("approve answered an AskUserQuestion dialog; want a refusal without --force")
 	} else {
 		t.Logf("refused: %v", err)
@@ -195,7 +195,7 @@ func TestRespondPermission_ForceAnswersQuestionDialogs(t *testing.T) {
 	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
-	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{Force: true}); err != nil {
+	if _, err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{Force: true}); err != nil {
 		t.Errorf("--force should answer the dialog: %v", err)
 	}
 }
@@ -216,11 +216,11 @@ func TestRespondPermission_ExpectTool(t *testing.T) {
 	}
 
 	// The prompt you inspected was replaced by a different one: refuse.
-	err = env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{ExpectTool: "Edit"})
+	_, err = env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{ExpectTool: "Edit"})
 	if err == nil {
 		t.Fatal("approved a Bash prompt while expecting Edit")
 	}
-	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{ExpectTool: "Bash"}); err != nil {
+	if _, err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{ExpectTool: "Bash"}); err != nil {
 		t.Errorf("expected Bash approval to go through: %v", err)
 	}
 }
@@ -298,13 +298,13 @@ func TestRespondPermission_RefusesWhenPromptLeftScreen(t *testing.T) {
 	}
 	fake.promptGone = true // answered meanwhile; status still says waiting
 
-	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionDeny, service.PermissionOptions{}); err == nil {
+	if _, err := env.service.RespondPermission(ctx, "worker", backend.PermissionDeny, service.PermissionOptions{}); err == nil {
 		t.Fatal("deny sent Escape with no prompt on screen; it would cancel the running turn")
 	}
 	if ev, _ := env.store.GetState(ctx, "worker", service.StateKeyEvent); ev == nil || ev.Value != "PermissionRequest" {
 		t.Errorf("_event = %+v, want PermissionRequest (a refused deny must not record itself)", ev)
 	}
-	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionDeny, service.PermissionOptions{Force: true}); err != nil {
+	if _, err := env.service.RespondPermission(ctx, "worker", backend.PermissionDeny, service.PermissionOptions{Force: true}); err != nil {
 		t.Errorf("--force should skip the screen check: %v", err)
 	}
 }

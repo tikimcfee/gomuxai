@@ -114,7 +114,10 @@ func TestSpawnRequiresBackend(t *testing.T) {
 func TestHelpExamplesParse(t *testing.T) {
 	var walk func(*cobra.Command)
 	walk = func(c *cobra.Command) {
-		for _, line := range strings.Split(c.Long, "\n") {
+		if c.Example == "" && !c.Hidden && c.Name() != "help" && c.Name() != "completion" && !isCompletionCmd(c) {
+			t.Errorf("%s has no Example", c.CommandPath())
+		}
+		for _, line := range strings.Split(c.Long+"\n"+c.Example, "\n") {
 			if !strings.HasPrefix(line, "  ") {
 				continue
 			}
@@ -129,6 +132,23 @@ func TestHelpExamplesParse(t *testing.T) {
 		}
 	}
 	walk(rootCmd)
+}
+
+func isCompletionCmd(c *cobra.Command) bool {
+	return c.HasParent() && c.Parent().Name() == "completion"
+}
+
+// Every command's short description is one line, and every command but
+// help is in a group, so "agent help" lists it by task.
+func TestHelpLayout(t *testing.T) {
+	for _, c := range rootCmd.Commands() {
+		if strings.Contains(c.Short, "\n") || c.Short == "" {
+			t.Errorf("%s: Short = %q, want one line", c.CommandPath(), c.Short)
+		}
+		if c.GroupID == "" && c.Name() != "help" && c.Name() != "completion" {
+			t.Errorf("%s has no group", c.CommandPath())
+		}
+	}
 }
 
 func checkExample(t *testing.T, from *cobra.Command, args []string) {
@@ -159,9 +179,11 @@ func checkExample(t *testing.T, from *cobra.Command, args []string) {
 }
 
 // exampleWords splits a help example into shell words, honoring double
-// quotes and dropping a trailing "# comment" or "< input" redirect.
+// quotes and dropping a trailing "# comment" or "< input" or "> output"
+// redirect.
 func exampleWords(s string) []string {
 	s, _, _ = strings.Cut(s, " < ")
+	s, _, _ = strings.Cut(s, " > ")
 	var words []string
 	var word strings.Builder
 	inWord, quoted := false, false
@@ -195,13 +217,13 @@ func TestSpawnSummary(t *testing.T) {
 	tests := []struct {
 		parent, task, taskFile, want string
 	}{
-		{"", "", "", `Spawned agent "lead-review" (session: agent-lead-review, backend: claude)
+		{"", "", "", `Spawned agent lead-review (session agent-lead-review, backend claude).
 It has no task yet: agent send lead-review "..."
 `},
-		{"lead", "review-auth", "tasks/review.md", `Spawned agent "lead-review" (session: agent-lead-review, backend: claude) as a helper of "lead"
-Sent it task "review-auth".
+		{"lead", "review-auth", "tasks/review.md", `Spawned agent lead-review (session agent-lead-review, backend claude), a helper of lead.
+Sent it task review-auth.
 `},
-		{"lead", "", "tasks/review.md", `Spawned agent "lead-review" (session: agent-lead-review, backend: claude) as a helper of "lead"
+		{"lead", "", "tasks/review.md", `Spawned agent lead-review (session agent-lead-review, backend claude), a helper of lead.
 Asked it to read tasks/review.md.
 `},
 	}

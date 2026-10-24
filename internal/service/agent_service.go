@@ -214,7 +214,12 @@ func (s *AgentService) newSession(ctx context.Context, name string) (string, err
 		return "", fmt.Errorf("checking existing agent: %w", err)
 	}
 	if existing != nil {
-		return "", fmt.Errorf("agent %q already exists", name)
+		return "", fmt.Errorf("agent %s already exists (session %s, created %s): pick another name, or agent cleanup %s first",
+			name, existing.SessionName, existing.CreatedAt.Format("2006-01-02 15:04"), name)
+	}
+	if exists, _ := s.tmux.SessionExists(s.cfg.SessionName(name)); exists {
+		return "", fmt.Errorf("tmux session %s already exists, but no agent %s does (a leftover session?): pick another name, or agent session kill %s first",
+			s.cfg.SessionName(name), name, s.cfg.SessionName(name))
 	}
 
 	env := map[string]string{
@@ -362,39 +367,77 @@ func (s *AgentService) sendLine(sessionName, text string) error {
 // the agent is at a dialog: Enter there answers the dialog rather than
 // sending a message (it approves a permission prompt, or picks "No, exit" at
 // Claude's trust prompt), so a message must never be how a dialog gets
-// answered. Use approve/deny, or SendUnchecked to override.
-func (s *AgentService) Send(ctx context.Context, name string, message string) error {
+// answered. Use approve/deny, or SendUnchecked to override. It also refuses
+// an agent whose CLI has exited, since the message would run in the shell
+// left behind. It returns the status it found the agent in (unknown if it
+// couldn't tell).
+func (s *AgentService) Send(ctx context.Context, name string, message string) (AgentStatus, error) {
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
-		return err
+		return AgentStatusUnknown, err
 	}
-	if err := s.checkNotAtDialog(ctx, agent); err != nil {
-		return err
+	status, err := s.checkCanSend(ctx, agent)
+	if err != nil {
+		return status, err
 	}
-	return s.SendUnchecked(ctx, name, message)
+	return status, s.SendUnchecked(ctx, name, message)
 }
 
-// checkNotAtDialog fails if the agent is waiting on a prompt or shows a
-// permission or trust dialog on screen.
-func (s *AgentService) checkNotAtDialog(ctx context.Context, agent *storage.Agent) error {
-	if info, err := s.StatusInfo(ctx, agent.Name); err == nil && info.Status == AgentStatusWaiting {
-		return fmt.Errorf("agent %q is waiting on a prompt (%s); answer it with approve/deny first, or use --force", agent.Name, info.Detail)
+// checkCanSend fails if the agent has exited, is waiting on a prompt, or
+// shows a permission or trust dialog on screen. It returns the agent's
+// status.
+func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (AgentStatus, error) {
+	status := AgentStatusUnknown
+	if info, err := s.StatusInfo(ctx, agent.Name); err == nil {
+		status = info.Status
+		switch info.Status {
+		case AgentStatusWaiting:
+			prompt := "a prompt"
+			if info.Detail != "" {
+				prompt = fmt.Sprintf("a prompt (%s)", OneLine(info.Detail))
+			}
+			return status, fmt.Errorf("agent %s is waiting on %s, where the message's Enter would answer it: see it with agent status %s -v, then agent approve %s or agent deny %s (a person can send anyway with --force)",
+				agent.Name, prompt, agent.Name, agent.Name, agent.Name)
+		case AgentStatusExited:
+			return status, fmt.Errorf("agent %s has exited, so the message would be typed into the shell left behind: agent logs %s shows how it ended, and agent cleanup %s removes it",
+				agent.Name, agent.Name, agent.Name)
+		}
 	}
 	provider, err := s.provider(agent)
 	if err != nil {
-		return nil // custom backend: nothing to recognize dialogs with
+		return status, nil // custom backend: nothing to recognize dialogs with
 	}
 	screen, err := s.tmux.Capture(agent.SessionName, 0, true)
 	if err != nil {
-		return nil // SendUnchecked reports a missing session
+		return status, nil // SendUnchecked reports a missing session
 	}
 	if pr, ok := provider.(backend.PermissionResponder); ok && pr.PermissionPromptVisible(screen) {
-		return fmt.Errorf("agent %q has a permission prompt on screen; answer it with approve/deny first, or use --force", agent.Name)
+		return status, fmt.Errorf("agent %s has a permission prompt on screen, where the message's Enter would answer it: agent approve %s or agent deny %s first (a person can send anyway with --force)",
+			agent.Name, agent.Name, agent.Name)
 	}
 	if tp, ok := provider.(backend.TrustPrompter); ok && tp.TrustKeys(screen) != nil {
-		return fmt.Errorf("agent %q is at a workspace trust prompt; answer it (or respawn with --trust-workspace) before sending", agent.Name)
+		return status, fmt.Errorf("agent %s is at a workspace trust prompt, where the message's Enter would answer it: answer it in its session (%s), or clean it up and respawn with --trust-workspace",
+			agent.Name, agent.SessionName)
 	}
-	return nil
+	return status, nil
+}
+
+// maxOneLine bounds OneLine's result.
+const maxOneLine = 120
+
+// OneLine shortens a status detail to one line, for messages that quote it.
+func OneLine(s string) string {
+	runes := []rune(strings.Join(strings.Fields(s), " "))
+	if len(runes) > maxOneLine {
+		return string(runes[:maxOneLine-1]) + "…"
+	}
+	return string(runes)
+}
+
+// sessionGone is the error for an agent whose tmux session no longer exists.
+func sessionGone(agent *storage.Agent) error {
+	return fmt.Errorf("agent %s's tmux session %s is gone (its CLI exited or the session was killed): agent logs %s shows its last output, and agent cleanup %s removes the record",
+		agent.Name, agent.SessionName, agent.Name, agent.Name)
 }
 
 // SendUnchecked types a message into an agent without checking for dialogs.
@@ -410,7 +453,7 @@ func (s *AgentService) SendUnchecked(ctx context.Context, name string, message s
 		return fmt.Errorf("checking session: %w", err)
 	}
 	if !exists {
-		return fmt.Errorf("session %q does not exist", agent.SessionName)
+		return sessionGone(agent)
 	}
 
 	return s.sendLine(agent.SessionName, message)
@@ -418,13 +461,8 @@ func (s *AgentService) SendUnchecked(ctx context.Context, name string, message s
 
 // Queue queues a message for delivery when agent is idle.
 func (s *AgentService) Queue(ctx context.Context, senderID, receiverID, content string) error {
-	// Verify receiver exists
-	agent, err := s.storage.GetAgent(ctx, receiverID)
-	if err != nil {
-		return fmt.Errorf("getting receiver: %w", err)
-	}
-	if agent == nil {
-		return fmt.Errorf("agent %q not found", receiverID)
+	if _, err := s.getAgent(ctx, receiverID); err != nil {
+		return err
 	}
 
 	msg := &storage.Message{
@@ -445,6 +483,9 @@ func (s *AgentService) Capture(ctx context.Context, name string, lines int, raw 
 		return "", err
 	}
 
+	if exists, err := s.tmux.SessionExists(agent.SessionName); err == nil && !exists {
+		return "", sessionGone(agent)
+	}
 	if lines <= 0 {
 		lines = s.cfg.DefaultScrollback
 	}

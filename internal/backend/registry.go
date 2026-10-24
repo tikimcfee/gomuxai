@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
@@ -78,7 +80,12 @@ func (r *Registry) Get(name string) (Backend, error) {
 
 	b, ok := r.backends[name]
 	if !ok {
-		return nil, fmt.Errorf("backend %q %w", name, ErrNotFound)
+		names := make([]string, 0, len(r.backends))
+		for n := range r.backends {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("backend %q %w (known: %s; or define one with --backend-config <file>)", name, ErrNotFound, strings.Join(names, ", "))
 	}
 	return b, nil
 }

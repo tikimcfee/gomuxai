@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
@@ -10,28 +11,44 @@ import (
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all managed agents",
-	Long: `List shows all agents currently being managed.
-
-This displays agents tracked in the database along with their parent, tmux
-session, backend, and creation time. --host lists another host's agents
+	Short: "List the agents on this host (or another)",
+	Long: `List shows the agents recorded on this host, with their status, parent,
+tmux session, backend, and creation time. --host lists another host's agents
 through the bus.
+
+STATUS is the same live status "agent status" shows (idle, processing,
+waiting, error, exited, unknown); "agent status <name> -v" says more. A host
+running an older agent sends none, shown as "-".
 
 PARENT is the agent that spawned it with "agent spawn", or "-" when a person
 did. Each agent's helpers are listed right after it, so a team reads as one
-block. An agent can clean up only its own helpers and theirs.
-
-Examples:
-  agent list
-  agent list --host hub`,
+block. An agent can clean up only its own helpers and theirs.`,
+	Example: `  agent list
+  agent list --host hub
+  agent list --json`,
 	Args: cobra.NoArgs,
 	RunE: runList,
 }
 
-var listHost string
+var (
+	listHost string
+	listJSON bool
+)
 
 func init() {
 	listCmd.Flags().StringVar(&listHost, "host", "", "Host whose agents to list (default: this host)")
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "Print the agents as JSON")
+}
+
+// agentJSON is an agent as list --json prints it.
+type agentJSON struct {
+	Name      string    `json:"name"`
+	Host      string    `json:"host"`
+	Status    string    `json:"status,omitempty"`
+	Parent    string    `json:"parent,omitempty"`
+	Session   string    `json:"session"`
+	Backend   string    `json:"backend"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -40,25 +57,53 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if listJSON {
+		host := cfg.Host
+		if isRemoteHost(listHost) {
+			host = listHost
+		}
+		out := make([]agentJSON, 0, len(agents))
+		for _, a := range teamOrder(agents) {
+			out = append(out, agentJSON{Name: a.Name, Host: host, Status: a.Status, Parent: a.SpawnedBy, Session: a.Session, Backend: a.Backend, CreatedAt: a.CreatedAt})
+		}
+		return printJSON(out)
+	}
+
 	if len(agents) == 0 {
-		fmt.Println("No agents found")
+		if isRemoteHost(listHost) {
+			fmt.Printf("No agents on host %s.\n", listHost)
+		} else {
+			fmt.Printf("No agents on host %s (agent spawn <name> --backend claude starts one).\n", cfg.Host)
+		}
 		return nil
 	}
 
-	fmt.Printf("%-20s %-20s %-25s %-10s %s\n", "NAME", "PARENT", "SESSION", "BACKEND", "CREATED")
-	fmt.Println("--------------------------------------------------------------------------------")
+	fmt.Printf("%-20s %-11s %-20s %-25s %-10s %s\n", "NAME", "STATUS", "PARENT", "SESSION", "BACKEND", "CREATED")
+	fmt.Println("---------------------------------------------------------------------------------------------")
+	waiting := 0
 	for _, agent := range teamOrder(agents) {
 		parent := agent.SpawnedBy
 		if parent == "" {
 			parent = "-"
 		}
-		fmt.Printf("%-20s %-20s %-25s %-10s %s\n",
+		status := agent.Status
+		if status == "" {
+			status = "-" // a host that doesn't send status
+		}
+		if status == string(service.AgentStatusWaiting) {
+			waiting++
+		}
+		fmt.Printf("%-20s %-11s %-20s %-25s %-10s %s\n",
 			agent.Name,
+			status,
 			parent,
 			agent.Session,
 			agent.Backend,
 			agent.CreatedAt.Format("2006-01-02 15:04:05"),
 		)
+	}
+	if waiting > 0 {
+		hint("%s waiting on a person (a permission prompt or question): agent status <name> -v shows what it's asking", plural(waiting, "agent"))
 	}
 	return nil
 }

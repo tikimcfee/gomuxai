@@ -9,15 +9,16 @@ import (
 
 var captureCmd = &cobra.Command{
 	Use:   "capture <name>[@host]",
-	Short: "Capture output from an agent's terminal",
-	Long: `Capture retrieves the current content from an agent's tmux pane.
+	Short: "Print an agent's screen and recent scrollback",
+	Long: `Capture prints what an agent's terminal shows now: the screen plus up to
+--lines lines of scrollback above it. It takes an agent name, not a session
+name. For history older than the scrollback, or after cleanup, use
+"agent logs".
 
 By default, ANSI escape codes are stripped for clean output.
 Use --raw to preserve escape codes.
-An agent on another host is addressed as name@host (needs a running bus).
-
-Examples:
-  agent capture researcher
+An agent on another host is addressed as name@host (needs a running bus).`,
+	Example: `  agent capture researcher
   agent capture builder --lines 100
   agent capture builder --raw
   agent capture builder@hub`,
@@ -31,7 +32,7 @@ var (
 )
 
 func init() {
-	captureCmd.Flags().IntVar(&captureLines, "lines", 50, "Number of lines to capture")
+	captureCmd.Flags().IntVar(&captureLines, "lines", 50, "Lines of scrollback above the screen to include")
 	captureCmd.Flags().BoolVar(&captureRaw, "raw", false, "Preserve ANSI escape codes")
 }
 

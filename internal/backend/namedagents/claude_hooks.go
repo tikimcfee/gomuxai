@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
@@ -170,13 +171,43 @@ func claudeToolSummary(tool string, input json.RawMessage) string {
 
 // NativeStatus reads the session's status from `claude agents --json`.
 func (b *ClaudeBackend) NativeStatus(ctx context.Context, sessionID string) (types.Status, bool, error) {
+	out, err := claudeAgents.get(ctx)
+	if err != nil {
+		return types.StatusUnknown, false, err
+	}
+	return ParseClaudeAgentsJSON(out, sessionID)
+}
+
+// claudeAgentsTTL is how long one `claude agents --json` answer serves
+// other agents' status checks in the same process, so listing several
+// agents' status runs the CLI once rather than once per agent. Well under
+// the 2s and 5s re-check intervals of wait and the watcher.
+const claudeAgentsTTL = 500 * time.Millisecond
+
+// claudeAgents caches `claude agents --json` for claudeAgentsTTL.
+var claudeAgents claudeAgentsCache
+
+type claudeAgentsCache struct {
+	mu  sync.Mutex
+	at  time.Time
+	out []byte
+	err error // a failure is cached too: a hung CLI shouldn't cost 3s per agent
+}
+
+func (c *claudeAgentsCache) get(ctx context.Context) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.at.IsZero() && time.Since(c.at) < claudeAgentsTTL {
+		return c.out, c.err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "claude", "agents", "--json").Output()
 	if err != nil {
-		return types.StatusUnknown, false, fmt.Errorf("claude agents --json: %w", err)
+		err = fmt.Errorf("claude agents --json: %w", err)
 	}
-	return ParseClaudeAgentsJSON(out, sessionID)
+	c.out, c.err, c.at = out, err, time.Now()
+	return out, err
 }
 
 // ParseClaudeAgentsJSON finds sessionID in `claude agents --json` output.

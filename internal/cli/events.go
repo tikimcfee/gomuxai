@@ -48,7 +48,7 @@ var (
 
 var eventsCmd = &cobra.Command{
 	Use:   "events [name[@host]]",
-	Short: "Stream agent status events from the bus",
+	Short: "Stream agent status events from the bus (runs until Ctrl-C)",
 	Long: `Events prints each status event published on the agent bus, one line per
 event, until interrupted. Every recorded status report (hooks, "agent report",
 approve/deny) publishes one. Needs a running bus.
@@ -57,8 +57,9 @@ Events are what was reported, not the resolved status: a change only the
 backend's native status shows (e.g. an interrupted permission prompt) has no
 event. "agent status" stays the authority.
 
-Examples:
-  agent events                 # every agent on this host
+What it is watching is said once on stderr (-q drops it), so stdout holds
+only events.`,
+	Example: `  agent events                 # every agent on this host
   agent events helper
   agent events helper@air      # an agent on another host
   agent events --all-hosts --json`,
@@ -111,6 +112,15 @@ func runEvents(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("subscribing to status events: %w", err)
 	}
 	defer sub.Unsubscribe()
+	who := "every agent"
+	if agent != "*" {
+		who = "agent " + agent
+	}
+	where := "on host " + host
+	if host == "*" {
+		where = "on every host"
+	}
+	notice("Watching status events of %s %s. Ctrl-C stops.", who, where)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)

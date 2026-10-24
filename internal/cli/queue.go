@@ -6,17 +6,19 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
 var queueCmd = &cobra.Command{
 	Use:   "queue <name> <message>",
-	Short: "Queue a message for delivery when agent is idle",
-	Long: `Queue adds a message to the inbox for delivery when the agent is ready.
+	Short: "Queue a message, delivered by the watcher when the agent is idle",
+	Long: `Queue adds a message to the agent's inbox, for delivery when it is ready.
 
 The watcher ("agent watch") delivers queued messages when the agent's status
 is idle, or error (a failed turn, back at its prompt). It holds them while the
 agent is processing or waiting, and fails them if the agent has exited.
-Without a running watcher, queued messages are never delivered.
+Without a running watcher, queued messages are never delivered: queue says so
+when it finds none.
 
 The agent must be on this host: name@<this host> works, while an agent on
 another host is refused, since queueing isn't served over the bus (use
@@ -24,10 +26,8 @@ another host is refused, since queueing isn't served over the bus (use
 
 Use --from to specify the sender (defaults to AGENT_NAME env var or "user").
 A message from anyone but "user" is marked with the sender's address, as
-"agent send" marks messages from agents.
-
-Examples:
-  agent queue researcher "when you're free, check the test results"
+"agent send" marks messages from agents.`,
+	Example: `  agent queue researcher "when you're free, check the test results"
   agent queue builder --from coordinator "priority: fix the auth bug"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: runQueue,
@@ -62,10 +62,24 @@ func runQueue(cmd *cobra.Command, args []string) error {
 	if sender != "user" {
 		message = markSender(sender, message)
 	}
-	if err := agentService.Queue(getContext(), sender, name, message); err != nil {
+	ctx := getContext()
+	if err := agentService.Queue(ctx, sender, name, message); err != nil {
 		return err
 	}
 
-	fmt.Printf("Queued message from %q to %q\n", sender, name)
+	line := fmt.Sprintf("Queued for %s from %s", name, sender)
+	if pending, err := store.GetPendingMessages(ctx, name, 100); err == nil && len(pending) > 1 {
+		line += fmt.Sprintf(", behind %s", plural(len(pending)-1, "other message"))
+	}
+	if info, err := agentService.StatusInfo(ctx, name); err == nil {
+		line += fmt.Sprintf(" (it is %s)", info.Status)
+		if info.Status == service.AgentStatusExited {
+			line += "; it has exited, so the watcher will fail the message"
+		}
+	}
+	fmt.Println(line + ".")
+	if running, checked := watcherRunning(); checked && !running {
+		hint("no watcher is running, so it won't be delivered until one starts: agent watch (or agent send %s now)", name)
+	}
 	return nil
 }

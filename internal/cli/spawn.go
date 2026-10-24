@@ -20,7 +20,7 @@ var (
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn <name> [task-file]",
-	Short: "Spawn a new agent",
+	Short: "Start a new agent in its own tmux session",
 	Long: `Spawn creates a new agent in a tmux session, running the backend's CLI
 (built in: claude, aider, agy).
 
@@ -33,10 +33,16 @@ Without either, send the first message yourself with "agent send".
 When an agent runs spawn (AGENT_NAME set), the new agent is recorded as its
 helper: "agent list" shows it under PARENT, and only that agent (or its own
 parent, and so on up) or a person can clean it up. It starts in the
-directory spawn runs from.
+directory spawn runs from, so it gets that project's permission settings
+(for Claude, its .claude/ settings on top of the user's); --skip-permissions
+bypasses them.
 
-Examples:
-  agent spawn researcher --backend claude
+Spawn returns once the CLI has had its startup time, and says the status it
+found the agent in: "idle" means it is ready for a message.
+
+A custom backend (--backend-config <file>) is only known through that file:
+pass it again to status, wait, and watch for that agent.`,
+	Example: `  agent spawn researcher --backend claude
   agent spawn researcher --backend claude --task research-auth
   agent spawn builder --backend claude tasks/build.md
   agent spawn helper --backend aider
@@ -63,12 +69,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// Priority: --task flag > positional task-file argument
 	if spawnTask != "" {
 		// Fetch task from DB
-		task, err := store.GetTask(getContext(), spawnTask)
+		task, err := getTask(spawnTask)
 		if err != nil {
-			return fmt.Errorf("fetching task: %w", err)
-		}
-		if task == nil {
-			return fmt.Errorf("task %q not found", spawnTask)
+			return err
 		}
 		taskContent = task.Content
 		// Use source file if available for reference
@@ -98,21 +101,40 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Print(spawnSummary(agent, spawnTask, taskFile))
+	if info, err := agentService.StatusInfo(getContext(), name); err == nil {
+		fmt.Println(spawnReadiness(name, info.Status))
+	}
 	return nil
+}
+
+// spawnReadiness says what the status spawn found the new agent in means
+// for sending to it.
+func spawnReadiness(name string, status service.AgentStatus) string {
+	switch status {
+	case service.AgentStatusIdle:
+		return "It is idle: ready for a message."
+	case service.AgentStatusProcessing:
+		return "It is processing (still starting, or working on its task)."
+	case service.AgentStatusWaiting:
+		return fmt.Sprintf("It is already waiting on a prompt: agent status %s -v shows it.", name)
+	case service.AgentStatusExited:
+		return fmt.Sprintf("It has already exited: agent logs %s shows why.", name)
+	}
+	return fmt.Sprintf("Its status is %s so far: agent wait %s --for idle --timeout 1m waits until it's ready.", status, name)
 }
 
 // spawnSummary says what spawn did: the new agent, its parent if an agent
 // spawned it, and what it was sent first.
 func spawnSummary(agent *storage.Agent, task, taskFile string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Spawned agent %q (session: %s, backend: %s)", agent.Name, agent.SessionName, agent.Backend)
+	fmt.Fprintf(&b, "Spawned agent %s (session %s, backend %s)", agent.Name, agent.SessionName, agent.Backend)
 	if agent.SpawnedBy != "" {
-		fmt.Fprintf(&b, " as a helper of %q", agent.SpawnedBy)
+		fmt.Fprintf(&b, ", a helper of %s", agent.SpawnedBy)
 	}
-	b.WriteString("\n")
+	b.WriteString(".\n")
 	switch {
 	case task != "":
-		fmt.Fprintf(&b, "Sent it task %q.\n", task)
+		fmt.Fprintf(&b, "Sent it task %s.\n", task)
 	case taskFile != "":
 		fmt.Fprintf(&b, "Asked it to read %s.\n", taskFile)
 	default:

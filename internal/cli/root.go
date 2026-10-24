@@ -35,14 +35,35 @@ var (
 // rootCmd is the base command.
 var rootCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "Multi-agent orchestration tool",
-	Long: `agent is a CLI tool for orchestrating AI agents in tmux sessions.
+	Short: "Coordinate AI agents running in tmux sessions",
+	Long: `agent spawns AI agents (claude, aider, agy) in tmux sessions and coordinates
+them: messages, status, permission prompts, and shared state, on this host or
+across hosts linked by the agent bus.
 
-Agents can use this tool to spawn sub-agents, send messages, capture output,
-and coordinate with other agents. The same binary serves both as the
-orchestrator and as the tool agents use for inter-agent communication.`,
+Run "agent" alone for a short orientation (who you are, your agents, the bus);
+"agent help <command>" has each command's details and examples.
+
+Results go to stdout; a hint about what to do next may follow on stderr
+(-q drops it). Exit codes: 0 done, 1 failed; wait exits 2 when it times out.`,
+	Example: `  agent spawn helper --backend claude
+  agent send helper "summarize README.md" && agent wait helper --for idle --next
+  agent state get helper _result`,
 	PersistentPreRunE: setup,
 	SilenceUsage:      true,
+}
+
+// Command groups for "agent help".
+var commandGroups = []struct {
+	group *cobra.Group
+	cmds  []*cobra.Command
+}{
+	{&cobra.Group{ID: "agents", Title: "Agents:"}, []*cobra.Command{spawnCmd, listCmd, cleanupCmd}},
+	{&cobra.Group{ID: "messages", Title: "Messages:"}, []*cobra.Command{sendCmd, queueCmd, watchCmd}},
+	{&cobra.Group{ID: "status", Title: "Status and waiting:"}, []*cobra.Command{statusCmd, waitCmd, approveCmd, denyCmd, captureCmd, logsCmd, eventsCmd, reportCmd}},
+	{&cobra.Group{ID: "state", Title: "State and tasks:"}, []*cobra.Command{stateCmd, taskCmd}},
+	{&cobra.Group{ID: "bus", Title: "Machines (bus):"}, []*cobra.Command{busCmd}},
+	{&cobra.Group{ID: "tool", Title: "About this tool:"}, []*cobra.Command{frictionCmd, historyCmd, versionCmd}},
+	{&cobra.Group{ID: "tmux", Title: "Low-level tmux (session names, not agent names):"}, []*cobra.Command{sessionCmd, keysCmd, keyCmd, clearCmd}},
 }
 
 // Execute runs the CLI and records the run in the command log. Its error's
@@ -56,34 +77,23 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&backendName, "backend", "", "Backend to use (claude, aider, agy)")
-	rootCmd.PersistentFlags().StringVar(&backendConfig, "backend-config", "", "Path to backend config file")
+	rootCmd.PersistentFlags().StringVar(&backendName, "backend", "", "Backend for spawn: claude, aider, or agy (spawn requires it or --backend-config; no default)")
+	rootCmd.PersistentFlags().StringVar(&backendConfig, "backend-config", "", "JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it")
+	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Don't print hints (results and errors still print)")
 
-	// Add all subcommands
-	rootCmd.AddCommand(spawnCmd)
-	rootCmd.AddCommand(sendCmd)
-	rootCmd.AddCommand(queueCmd)
-	rootCmd.AddCommand(captureCmd)
-	rootCmd.AddCommand(listCmd)
-	rootCmd.AddCommand(statusCmd)
-	rootCmd.AddCommand(cleanupCmd)
-	rootCmd.AddCommand(watchCmd)
-	rootCmd.AddCommand(sessionCmd)
-	rootCmd.AddCommand(keysCmd)
-	rootCmd.AddCommand(keyCmd)
-	rootCmd.AddCommand(clearCmd)
-	rootCmd.AddCommand(taskCmd)
-	rootCmd.AddCommand(stateCmd)
-	rootCmd.AddCommand(logsCmd)
-	rootCmd.AddCommand(reportCmd)
-	rootCmd.AddCommand(busCmd)
-	rootCmd.AddCommand(approveCmd)
-	rootCmd.AddCommand(denyCmd)
-	rootCmd.AddCommand(waitCmd)
-	rootCmd.AddCommand(eventsCmd)
-	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(historyCmd)
-	rootCmd.AddCommand(frictionCmd)
+	for _, g := range commandGroups {
+		rootCmd.AddGroup(g.group)
+		for _, c := range g.cmds {
+			c.GroupID = g.group.ID
+			rootCmd.AddCommand(c)
+		}
+	}
+	rootCmd.CompletionOptions.HiddenDefaultCmd = true
+	cobra.EnableCommandSorting = false // keep each group in task order
+	rootCmd.SetFlagErrorFunc(flagError)
+	// Subcommands of subcommands are added by later init functions, so the
+	// whole tree is only there once the CLI runs.
+	cobra.OnInitialize(func() { explainArgErrors(rootCmd) })
 }
 
 func setup(cmd *cobra.Command, args []string) error {

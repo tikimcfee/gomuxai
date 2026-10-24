@@ -10,20 +10,19 @@ import (
 
 var keysCmd = &cobra.Command{
 	Use:   "keys <session | name@host> <text>",
-	Short: "Send text to a tmux session",
-	Long: `Keys sends text to a tmux session pane.
+	Short: "Type text into a tmux session (then Enter)",
+	Long: `Keys types text into a tmux session's pane, then presses Enter (--no-enter
+skips it). The text is typed literally: key names like "Escape" are typed as
+words; use "agent key" to press special keys.
 
-By default, Enter is sent after the text. Use --no-enter to skip.
-
-This is a low-level command for agents that need to interact with arbitrary
-tmux sessions (not just managed agents).
+This is a low-level command for driving arbitrary tmux sessions, and takes a
+session name (agent "helper"'s session is "agent-helper"). It does no dialog
+checks: to message an agent, use "agent send".
 
 name@host addresses a managed agent instead of a session, on any host
 (including this one). Buses don't serve keys to other hosts unless
-configured to.
-
-Examples:
-  agent keys my-session "ls -la"
+configured to.`,
+	Example: `  agent keys my-session "ls -la"
   agent keys my-session "echo hello" --no-enter
   agent keys builder@hub "y" --no-enter`,
 	Args: cobra.MinimumNArgs(2),
@@ -43,6 +42,9 @@ func runKeys(cmd *cobra.Command, args []string) error {
 	if strings.Contains(session, "@") {
 		return agentKeys(session, text)
 	}
+	if err := checkSession(session); err != nil {
+		return err
+	}
 
 	if err := tmuxClient.SendKeys(session, text); err != nil {
 		return err
@@ -54,8 +56,16 @@ func runKeys(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Printf("Sent to %q\n", session)
+	fmt.Printf("Typed into session %s%s.\n", session, enterNote())
 	return nil
+}
+
+// enterNote says whether keys pressed Enter after the text.
+func enterNote() string {
+	if keysNoEnter {
+		return " (no Enter)"
+	}
+	return " and pressed Enter"
 }
 
 // agentKeys sends text (and Enter, unless --no-enter) to the agent named by
@@ -79,6 +89,6 @@ func agentKeys(target, text string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Sent to %q\n", target)
+	fmt.Printf("Typed into agent %s%s.\n", target, enterNote())
 	return nil
 }
