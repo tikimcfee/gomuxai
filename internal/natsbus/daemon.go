@@ -148,7 +148,7 @@ func serverOptions(cfg DaemonConfig, id *Identity, peers []PeerBundle) (*natsser
 		remoteOps = DefaultRemoteOps
 	}
 	for _, op := range remoteOps {
-		if !slices.Contains(allOps, op) {
+		if !slices.Contains(AllOps, op) {
 			return nil, fmt.Errorf("unknown op %q in remote ops", op)
 		}
 	}
@@ -205,7 +205,8 @@ func serverOptions(cfg DaemonConfig, id *Identity, peers []PeerBundle) (*natsser
 	return opts, nil
 }
 
-var allOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys}
+// AllOps lists every RPC op a bus serves to local clients.
+var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys}
 
 // peerPermissions limits what a linked peer can do on the hub. A leaf
 // connection's permissions are from the hub's point of view of that link:
@@ -287,7 +288,7 @@ func peerHosts(peers []PeerBundle) []string {
 // deniedOps lists host's RPC subjects for ops not in remoteOps.
 func deniedOps(host string, remoteOps []string) []string {
 	var denied []string
-	for _, op := range allOps {
+	for _, op := range AllOps {
 		if !slices.Contains(remoteOps, op) {
 			denied = append(denied, SubjectRPC(host, op))
 		}

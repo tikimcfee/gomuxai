@@ -186,6 +186,12 @@ func (c *Config) StatePath(agentName string) string {
 	return filepath.Join(c.StateDir, agentName)
 }
 
+// BusDir returns the agent bus directory (identity, trusted peers, runtime
+// files), alongside the database.
+func (c *Config) BusDir() string {
+	return filepath.Join(filepath.Dir(c.DatabasePath), "bus")
+}
+
 // AgentDir returns the per-agent bundle directory under the gomuxai data dir
 // (e.g. .gomuxai/agents/<name>).
 func (c *Config) AgentDir(agentName string) string {
