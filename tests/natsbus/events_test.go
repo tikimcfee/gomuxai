@@ -244,6 +244,7 @@ func TestWait_ReturnsOnEvent(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 			publish(t, pub, "other", "idle")     // a different agent
 			publish(t, pub, "worker", "waiting") // not a target
+			src.set("idle")
 			publish(t, pub, "worker", "idle")
 		})
 	}
@@ -256,8 +257,58 @@ func TestWait_ReturnsOnEvent(t *testing.T) {
 	if d := time.Since(start); d > 2*time.Second {
 		t.Errorf("took %v", d)
 	}
-	if n := src.callCount(); n != 1 {
-		t.Errorf("Current called %d times; the event should have ended the wait", n)
+	if n := src.callCount(); n != 2 {
+		t.Errorf("Current called %d times; want the initial check plus one confirming the event", n)
+	}
+}
+
+// A status event is a hint: one that the agent's real status doesn't back up
+// (forged by the routing hub, or simply stale) must not end the wait.
+func TestWait_UnconfirmedEventDoesNotEndWait(t *testing.T) {
+	nc := natstest.Start(t)
+	pub := natstest.Connect(t, nc.ConnectedUrl())
+	src := &statusSource{status: "processing"}
+	src.onFirst = func() {
+		goBackground(t, func() {
+			time.Sleep(50 * time.Millisecond)
+			publish(t, pub, "worker", "idle") // forged: the agent is still working
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	status, err := natsbus.Wait(ctx, nc, waitOpts(src, time.Hour, "idle"))
+	if err == nil {
+		t.Fatalf("Wait returned %q on an event the real status never confirmed", status)
+	}
+	// Initial check, the immediate confirmation, and the short recheck.
+	if n := src.callCount(); n < 3 {
+		t.Errorf("Current called %d times; want the event confirmed and rechecked", n)
+	}
+}
+
+// The real status often lags the event (Claude's native status trails its
+// hooks), so the confirmation is retried shortly rather than at the next tick.
+func TestWait_LaggingStatusIsRecheckedSoon(t *testing.T) {
+	nc := natstest.Start(t)
+	pub := natstest.Connect(t, nc.ConnectedUrl())
+	src := &statusSource{status: "processing"}
+	src.onFirst = func() {
+		goBackground(t, func() {
+			time.Sleep(50 * time.Millisecond)
+			publish(t, pub, "worker", "idle")
+			time.Sleep(300 * time.Millisecond)
+			src.set("idle") // the real status catches up
+		})
+	}
+
+	start := time.Now()
+	status, err := natsbus.Wait(testCtx(t), nc, waitOpts(src, time.Hour, "idle"))
+	if err != nil || status != "idle" {
+		t.Fatalf("Wait = %q, %v; want idle", status, err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("took %v; the recheck should have caught up well before the next tick", d)
 	}
 }
 
@@ -341,7 +392,10 @@ func TestWait_FailStatusEndsWait(t *testing.T) {
 	nc := natstest.Start(t)
 	pub := natstest.Connect(t, nc.ConnectedUrl())
 	src := &statusSource{status: "processing"}
-	src.onFirst = func() { publish(t, pub, "worker", "exited") }
+	src.onFirst = func() {
+		src.set("exited")
+		publish(t, pub, "worker", "exited")
+	}
 
 	status, err := natsbus.Wait(testCtx(t), nc, waitOpts(src, time.Hour, "idle"))
 	if err == nil || status != "exited" {

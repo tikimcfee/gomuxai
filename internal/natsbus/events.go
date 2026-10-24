@@ -214,6 +214,7 @@ func Wait(ctx context.Context, nc *nats.Conn, opts WaitOptions) (string, error) 
 	}
 	ticker := time.NewTicker(opts.Interval)
 	defer ticker.Stop()
+	var recheck <-chan time.Time // pending confirmation of an event, if any
 	for {
 		select {
 		case <-ctx.Done():
@@ -223,7 +224,22 @@ func Wait(ctx context.Context, nc *nats.Conn, opts WaitOptions) (string, error) 
 			if err != nil {
 				continue // not ours to fail on; the backstop still runs
 			}
-			if done, err := settle(ev.Status); done {
+			// Events are hints: the hub routes them and could forge one (see
+			// remoteLeaf in daemon.go). A status that would end the wait is
+			// confirmed with a real check; the backend's own status can lag
+			// its hook by a second or two, so an unconfirmed one is rechecked
+			// shortly instead of waiting for the next tick.
+			if slices.Contains(opts.For, ev.Status) || slices.Contains(opts.Fail, ev.Status) {
+				if done, err := check(); done {
+					return last, err
+				}
+				recheck = time.After(eventRecheckDelay)
+				continue
+			}
+			settle(ev.Status) // can only arm --next, never end the wait
+		case <-recheck:
+			recheck = nil
+			if done, err := check(); done {
 				return last, err
 			}
 		case <-ticker.C:
@@ -233,3 +249,7 @@ func Wait(ctx context.Context, nc *nats.Conn, opts WaitOptions) (string, error) 
 		}
 	}
 }
+
+// eventRecheckDelay is how long Wait gives a lagging status check to catch
+// up with an event before checking again.
+const eventRecheckDelay = 1500 * time.Millisecond
