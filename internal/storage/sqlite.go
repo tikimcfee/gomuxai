@@ -84,7 +84,7 @@ func (s *SQLiteStorage) migrate() error {
 		PRIMARY KEY (agent_name, key),
 		FOREIGN KEY (agent_name) REFERENCES agents(name) ON DELETE CASCADE
 	);
-	`
+	` + commandLogSchema
 
 	if _, err := s.db.Exec(schema); err != nil {
 		return err

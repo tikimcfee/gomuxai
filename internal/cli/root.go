@@ -4,6 +4,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/backend"
@@ -43,10 +45,14 @@ orchestrator and as the tool agents use for inter-agent communication.`,
 	SilenceUsage:      true,
 }
 
-// Execute runs the CLI.
+// Execute runs the CLI and records the run in the command log. Its error's
+// exit code is ExitCode(err).
 func Execute() error {
 	defer closeBusPublisher()
-	return rootCmd.Execute()
+	start := time.Now()
+	cmd, err := rootCmd.ExecuteC()
+	recordCommand(cmd, os.Args[1:], start, err)
+	return err
 }
 
 func init() {
@@ -76,6 +82,7 @@ func init() {
 	rootCmd.AddCommand(waitCmd)
 	rootCmd.AddCommand(eventsCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(historyCmd)
 }
 
 func setup(cmd *cobra.Command, args []string) error {

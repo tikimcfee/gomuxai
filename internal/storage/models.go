@@ -42,6 +42,31 @@ type Task struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// CommandRecord is one run of the agent command, for agent history.
+type CommandRecord struct {
+	ID         int64     `json:"id"`
+	StartedAt  time.Time `json:"started_at"`
+	DurationMS int64     `json:"duration_ms"`
+	Host       string    `json:"host"`
+	Agent      string    `json:"agent,omitempty"`  // AGENT_NAME; "" for a person
+	Parent     string    `json:"parent,omitempty"` // the agent's spawned_by, filled in by LogCommand
+	Cwd        string    `json:"cwd"`
+	Args       []string  `json:"args"` // without the program name
+	ExitCode   int       `json:"exit_code"`
+	Error      string    `json:"error,omitempty"` // first line of the error
+	Build      string    `json:"build"`
+}
+
+// CommandFilter selects command records. The zero value selects all.
+type CommandFilter struct {
+	ByAgent bool   // only Agent's commands
+	Agent   string // with ByAgent; "" for a person's
+	Cwd     string // only commands run in this directory, if set
+	Failed  bool   // only commands that exited non-zero
+	Since   time.Time
+	Limit   int // the newest Limit records, if set
+}
+
 // StateEntry represents a key-value state entry.
 type StateEntry struct {
 	AgentName string    `json:"agent_name"`

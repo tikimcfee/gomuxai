@@ -31,6 +31,10 @@ type Storage interface {
 	ListState(ctx context.Context, agentName string) ([]*StateEntry, error)
 	DeleteState(ctx context.Context, agentName string) error
 
+	// Command log
+	LogCommand(ctx context.Context, rec *CommandRecord) error
+	ListCommands(ctx context.Context, f CommandFilter) ([]*CommandRecord, error) // newest first
+
 	// Lifecycle
 	Close() error
 }

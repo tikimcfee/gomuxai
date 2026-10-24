@@ -166,12 +166,8 @@ func runWait(cmd *cobra.Command, args []string) error {
 		if last == "" {
 			last = "unknown"
 		}
-		fmt.Fprintf(os.Stderr, "Error: timed out after %s waiting for %s to be %s (last status: %s)\n",
-			waitTimeout, ref, strings.Join(targets, " or "), last)
-		if nc != nil {
-			nc.Close()
-		}
-		os.Exit(waitTimeoutExitCode)
+		return &exitError{code: waitTimeoutExitCode, err: fmt.Errorf("timed out after %s waiting for %s to be %s (last status: %s)",
+			waitTimeout, ref, strings.Join(targets, " or "), last)}
 	}
 	if err != nil {
 		return err
