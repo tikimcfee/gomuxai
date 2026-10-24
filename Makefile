@@ -1,4 +1,4 @@
-.PHONY: build test clean install lint fmt macos
+.PHONY: all build build-all build-linux build-darwin macos test test-coverage clean install lint fmt tidy dev run
 
 # Build variables
 BINARY_NAME=agent
@@ -18,14 +18,18 @@ build:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
 	@echo "Built $(BUILD_DIR)/$(BINARY_NAME)"
 
-# Build for all platforms
-build-all: build-linux build-darwin build-windows
+# Cross-compile release binaries. There is no Windows target: agents run in
+# tmux, which Windows doesn't have (use the Linux build under WSL).
+build-all: build-linux build-darwin
 
 build-linux:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 $(MAIN_PATH)
 	GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 $(MAIN_PATH)
 
+# Plain macOS binaries, without the embedded Info.plist and signature: their
+# bus can't link to peers over the LAN from inside tmux. Use `make macos` on
+# the Mac for that.
 build-darwin:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(MAIN_PATH)
@@ -50,10 +54,6 @@ macos:
 	codesign --verify --strict $(BUILD_DIR)/$(BINARY_NAME)
 	@codesign -dv $(BUILD_DIR)/$(BINARY_NAME) 2>&1 | grep -E '^(Identifier|TeamIdentifier|Info.plist)'
 	@echo "Built and signed $(BUILD_DIR)/$(BINARY_NAME)"
-
-build-windows:
-	@mkdir -p $(BUILD_DIR)
-	GOOS=windows GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(MAIN_PATH)
 
 # Run tests
 test:
