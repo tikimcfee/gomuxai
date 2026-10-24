@@ -123,6 +123,26 @@ func setupTestEnv(t *testing.T) *testEnv {
 	}
 }
 
+// waitForSession waits until a session's screen shows every one of wants.
+func waitForSession(t *testing.T, env *testEnv, sessionName string, wants ...string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		out, _ := env.tmux.Capture(sessionName, 20, true)
+		missing := false
+		for _, want := range wants {
+			missing = missing || !strings.Contains(out, want)
+		}
+		if !missing {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session %s doesn't show %q:\n%s", sessionName, wants, out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // TestSpawn_FullFlow tests the complete spawn operation.
 func TestSpawn_FullFlow(t *testing.T) {
 	env := setupTestEnv(t)
@@ -280,17 +300,7 @@ func TestSpawn_CustomBackend(t *testing.T) {
 		t.Fatalf("agent not stored: %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		out, _ := env.tmux.Capture(agent.SessionName, 20, true)
-		if strings.Contains(out, "echo custom-launched") && strings.Contains(out, "echo task plan.md") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("session didn't get the launch command and task:\n%s", out)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitForSession(t, env, agent.SessionName, "echo custom-launched", "echo task plan.md")
 	if _, err := os.Stat(filepath.Join(env.cfg.AgentDir("custom-worker"), "launch.sh")); !os.IsNotExist(err) {
 		t.Errorf("custom backend should launch without a script: %v", err)
 	}

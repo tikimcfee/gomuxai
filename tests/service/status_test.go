@@ -325,17 +325,7 @@ func TestSpawn_BriefsTheAgent(t *testing.T) {
 	if !strings.Contains(string(launch), "--append-system-prompt-file") || !strings.Contains(string(launch), "instructions.md") {
 		t.Errorf("launch command doesn't load the instructions:\n%s", launch)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		out, _ := env.tmux.Capture(env.cfg.SessionName("worker"), 20, true)
-		if strings.Contains(out, "launch.sh") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("session didn't run launch.sh:\n%s", out)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitForSession(t, env, env.cfg.SessionName("worker"), "launch.sh")
 
 	// Cleanup removes them with the agent's directory.
 	if err := env.service.Cleanup(context.Background(), "worker"); err != nil {

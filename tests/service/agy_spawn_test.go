@@ -33,12 +33,9 @@ func (f *fakeAgyBackend) AppendPromptFlag(launchCmd, prompt string) string {
 	return "true"
 }
 
-func TestAgySpawn_GeneratesHooksBundleAndReportsLifecycle(t *testing.T) {
-	env := setupTestEnv(t)
-	defer env.cleanup()
-	env.cfg.AgentBinary = "/opt/gomuxai/agent"
-	ctx := context.Background()
-
+// spawnFakeAgy registers the fake agy backend and spawns an agent on it.
+func spawnFakeAgy(t *testing.T, env *testEnv, opts service.SpawnOptions) *fakeAgyBackend {
+	t.Helper()
 	var fake *fakeAgyBackend
 	env.backends.RegisterFactory("fakeagy", func(cfg backend.ProviderConfig) backend.Provider {
 		fake = &fakeAgyBackend{
@@ -50,18 +47,25 @@ func TestAgySpawn_GeneratesHooksBundleAndReportsLifecycle(t *testing.T) {
 		return fake
 	})
 
+	opts.Backend = "fakeagy"
+	if _, err := env.service.Spawn(context.Background(), opts); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	return fake // the spawn's instance: later lookups make new ones
+}
+
+func TestAgySpawn_GeneratesHooksBundleAndReportsLifecycle(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/opt/gomuxai/agent"
+	ctx := context.Background()
+
 	taskFile := filepath.Join(t.TempDir(), "task.md")
 	if err := os.WriteFile(taskFile, []byte("Say hi"), 0644); err != nil {
 		t.Fatalf("writing task file: %v", err)
 	}
 
-	if _, err := env.service.Spawn(ctx, service.SpawnOptions{
-		Name:     "agy-worker",
-		Backend:  "fakeagy",
-		TaskFile: taskFile,
-	}); err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
+	fake := spawnFakeAgy(t, env, service.SpawnOptions{Name: "agy-worker", TaskFile: taskFile})
 
 	// Verify .gomuxai/agents/agy-worker/.agents/hooks.json exists
 	hooksPath := filepath.Join(env.cfg.AgentDir("agy-worker"), ".agents", "hooks.json")
@@ -171,24 +175,8 @@ func TestAgyWaitingAndApprove_WhenPermissionDialogVisible(t *testing.T) {
 	env.cfg.AgentBinary = "/opt/gomuxai/agent"
 	ctx := context.Background()
 
-	var fake *fakeAgyBackend
-	env.backends.RegisterFactory("fakeagy", func(cfg backend.ProviderConfig) backend.Provider {
-		fake = &fakeAgyBackend{
-			AgyBackend: namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{
-				SkipPermissions: cfg.SkipPermissions,
-				AgentDir:        cfg.AgentDir,
-			}),
-		}
-		return fake
-	})
-
-	agent, err := env.service.Spawn(ctx, service.SpawnOptions{
-		Name:    "agy-perm",
-		Backend: "fakeagy",
-	})
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
+	fake := spawnFakeAgy(t, env, service.SpawnOptions{Name: "agy-perm"})
+	session := env.cfg.SessionName("agy-perm")
 	spawnID := spawnIDOf(t, fake.reportCmd)
 
 	// PreToolUse fires while no dialog is on screen: status is processing,
@@ -207,16 +195,17 @@ func TestAgyWaitingAndApprove_WhenPermissionDialogVisible(t *testing.T) {
 	// Render agy's permission dialog at the bottom of the agent's pane and
 	// block on read so the shell prompt doesn't appear below "esc to cancel".
 	dialogCmd := `printf '\nRun this command?\n> 1. Yes, run command\n  2. Yes, and always allow\n  4. No, cancel\nesc to cancel\n'; read -r -n 1 _`
-	if err := env.tmux.SendKeys(agent.SessionName, dialogCmd); err != nil {
+	if err := env.tmux.SendKeys(session, dialogCmd); err != nil {
 		t.Fatalf("SendKeys: %v", err)
 	}
-	if err := env.tmux.SendSpecialKey(agent.SessionName, "Enter"); err != nil {
+	if err := env.tmux.SendSpecialKey(session, "Enter"); err != nil {
 		t.Fatalf("SendSpecialKey: %v", err)
 	}
 
 	// Wait briefly for the shell to print the dialog lines.
 	var info *service.StatusInfo
 	for i := 0; i < 40; i++ {
+		var err error
 		info, err = env.service.StatusInfo(ctx, "agy-perm")
 		if err != nil {
 			t.Fatalf("StatusInfo: %v", err)
@@ -227,7 +216,7 @@ func TestAgyWaitingAndApprove_WhenPermissionDialogVisible(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	if info.Status != service.AgentStatusWaiting {
-		screen, _ := env.tmux.Capture(agent.SessionName, 0, true)
+		screen, _ := env.tmux.Capture(session, 0, true)
 		t.Fatalf("with dialog on screen: status = %s, want waiting; screen:\n%s", info.Status, screen)
 	}
 	if info.Detail != "permission: run_command: echo gated" || info.Tool != "run_command" {
