@@ -16,25 +16,20 @@ type SQLiteStorage struct {
 
 // NewSQLiteStorage creates a new SQLite storage instance.
 func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
-	// busy_timeout goes in the DSN so every pooled connection gets it: backend
-	// hooks write status from several short-lived processes at once.
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)")
+	// Per-connection pragmas go in the DSN so every pooled connection gets
+	// them; a one-off db.Exec only reaches whichever connection runs it.
+	// busy_timeout: backend hooks write status from several short-lived
+	// processes at once. foreign_keys: cleanup relies on the agents → state
+	// and agents → logs cascades.
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	// Enable foreign keys and WAL mode for better performance
-	pragmas := []string{
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous = NORMAL",
-	}
-
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("executing %s: %w", pragma, err)
-		}
+	// journal_mode is stored in the database file, so once is enough.
+	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("executing PRAGMA journal_mode = WAL: %w", err)
 	}
 
 	s := &SQLiteStorage{db: db}

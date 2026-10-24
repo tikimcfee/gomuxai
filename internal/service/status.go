@@ -18,6 +18,10 @@ const (
 	StateKeyDetail    = "_detail"
 	StateKeyResult    = "_result"
 	StateKeySessionID = "_session_id"
+	// StateKeySpawnID identifies one spawn of an agent name. Hook commands
+	// carry it, so hooks from a previous agent with the same name (e.g. the
+	// SessionEnd fired while cleanup kills it) can't write into a respawn.
+	StateKeySpawnID = "_spawn_id"
 )
 
 // Status sources, from most to least authoritative.
@@ -81,11 +85,18 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 }
 
 // ReportHook records the status carried by a backend hook payload.
-// Events that carry no status change are ignored.
-func (s *AgentService) ReportHook(ctx context.Context, name string, payload []byte) error {
+// Events that carry no status change are ignored. spawnID is the id the hook
+// command was launched with; hooks from any other spawn of this agent name
+// are rejected. An empty spawnID skips the check (hooks wired by hand).
+func (s *AgentService) ReportHook(ctx context.Context, name, spawnID string, payload []byte) error {
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
 		return err
+	}
+	if spawnID != "" {
+		if current := s.stateValue(ctx, name, StateKeySpawnID); current != spawnID {
+			return fmt.Errorf("ignoring hook from spawn %s of %q (current spawn: %q)", spawnID, name, current)
+		}
 	}
 	provider, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
 	if err != nil {
@@ -130,7 +141,8 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 		return nil, err
 	}
 
-	if native, ok := s.nativeStatus(ctx, agent); ok {
+	native, found, queried := s.nativeStatus(ctx, agent)
+	if found {
 		info := &StatusInfo{Status: native, Source: StatusSourceNative}
 		// Hook detail is only trustworthy while it agrees with the backend;
 		// e.g. an interrupted permission prompt fires no hook at all.
@@ -140,6 +152,19 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 		return info, nil
 	}
 	if reported != nil {
+		// The backend answered but no longer knows the session, yet the last
+		// report says it's alive: the CLI died without its SessionEnd hook
+		// (crash, kill -9, OOM). Echoing the stale report would let the
+		// watcher type queued messages into the bare shell left behind.
+		if queried && reported.Status != AgentStatusExited {
+			return &StatusInfo{
+				Status:    AgentStatusExited,
+				Source:    StatusSourceNative,
+				Event:     reported.Event,
+				Detail:    "session not running (exited without a SessionEnd hook)",
+				UpdatedAt: reported.UpdatedAt,
+			}, nil
+		}
 		return reported, nil
 	}
 
@@ -170,24 +195,33 @@ func (s *AgentService) reportedStatus(ctx context.Context, name string) (*Status
 }
 
 // nativeStatus asks the backend CLI for the session's status, if it can.
-func (s *AgentService) nativeStatus(ctx context.Context, agent *storage.Agent) (AgentStatus, bool) {
+// queried reports whether the CLI answered at all; found, whether it knows
+// the session and gave a usable status.
+func (s *AgentService) nativeStatus(ctx context.Context, agent *storage.Agent) (status AgentStatus, found, queried bool) {
 	sessionID := s.stateValue(ctx, agent.Name, StateKeySessionID)
 	if sessionID == "" {
-		return "", false
+		return "", false, false
 	}
 	provider, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	np, ok := provider.(backend.NativeStatusProvider)
 	if !ok {
-		return "", false
+		return "", false, false
 	}
-	st, found, err := np.NativeStatus(ctx, sessionID)
-	if err != nil || !found || st == backend.StatusUnknown {
-		return "", false
+	st, known, err := np.NativeStatus(ctx, sessionID)
+	if err != nil {
+		return "", false, false
 	}
-	return fromBackendStatus(st), true
+	if !known {
+		return "", false, true
+	}
+	if st == backend.StatusUnknown {
+		// Listed, but in a state we don't map: alive, so not a crash.
+		return "", false, false
+	}
+	return fromBackendStatus(st), true, true
 }
 
 // scrapeStatus infers status from terminal output. Last resort for backends

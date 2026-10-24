@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -17,9 +18,14 @@ type fakeHookBackend struct {
 
 	reportCmd   string
 	sessionID   string
-	nativeFound bool
+	nativeFound bool // the CLI lists the session, with status native
+	nativeGone  bool // the CLI answers but doesn't list the session (it died)
 	native      backend.Status
 }
+
+// errNativeUnavailable is what the fake returns when the test set up neither
+// nativeFound nor nativeGone: as if the backend CLI couldn't be run.
+var errNativeUnavailable = errors.New("fake: native status unavailable")
 
 func (f *fakeHookBackend) Name() string { return "fakehooks" }
 
@@ -32,10 +38,13 @@ func (f *fakeHookBackend) LaunchCommandWithHooks(reportCmd, sessionID string) st
 }
 
 func (f *fakeHookBackend) NativeStatus(ctx context.Context, sessionID string) (backend.Status, bool, error) {
-	if sessionID != f.sessionID {
+	if !f.nativeFound && !f.nativeGone {
+		return backend.StatusUnknown, false, errNativeUnavailable
+	}
+	if f.nativeGone || sessionID != f.sessionID {
 		return backend.StatusUnknown, false, nil
 	}
-	return f.native, f.nativeFound, nil
+	return f.native, true, nil
 }
 
 // spawnFake registers a fake hook backend and spawns an agent on it.
@@ -59,12 +68,12 @@ func TestSpawn_WiresHooksToAgentBinary(t *testing.T) {
 
 	fake := spawnFake(t, env, "hooked")
 
-	wantCmd := `'/opt/gomux ai/agent' report --hook --as 'hooked'`
-	if fake.reportCmd != wantCmd {
-		t.Errorf("report command = %q, want %q", fake.reportCmd, wantCmd)
-	}
 	if fake.sessionID == "" {
 		t.Fatal("expected a session id to be assigned")
+	}
+	wantCmd := `'/opt/gomux ai/agent' report --hook --as 'hooked' --spawn-id '` + fake.sessionID + `'`
+	if fake.reportCmd != wantCmd {
+		t.Errorf("report command = %q, want %q", fake.reportCmd, wantCmd)
 	}
 	entry, err := env.store.GetState(ctx, "hooked", service.StateKeySessionID)
 	if err != nil || entry == nil || entry.Value != fake.sessionID {
@@ -95,7 +104,7 @@ func TestReportHook_UpdatesStatus(t *testing.T) {
 	spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"PermissionRequest","session_id":"s-2","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}`
-	if err := env.service.ReportHook(ctx, "worker", []byte(payload)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 
@@ -122,7 +131,7 @@ func TestReportHook_StopStoresResult(t *testing.T) {
 	spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"Found 3 issues."}`
-	if err := env.service.ReportHook(ctx, "worker", []byte(payload)); err != nil {
+	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 	entry, err := env.store.GetState(ctx, "worker", service.StateKeyResult)
@@ -135,7 +144,7 @@ func TestReportHook_UnknownAgent(t *testing.T) {
 	env := setupTestEnv(t)
 	defer env.cleanup()
 
-	err := env.service.ReportHook(context.Background(), "ghost", []byte(`{"hook_event_name":"Stop"}`))
+	err := env.service.ReportHook(context.Background(), "ghost", "", []byte(`{"hook_event_name":"Stop"}`))
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected not found error, got %v", err)
 	}

@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	reportAs   string
-	reportHook bool
+	reportAs      string
+	reportHook    bool
+	reportSpawnID string
 )
 
 var reportCmd = &cobra.Command{
@@ -40,6 +41,7 @@ Examples:
 func init() {
 	reportCmd.Flags().StringVar(&reportAs, "as", "", "Agent name (defaults to AGENT_NAME)")
 	reportCmd.Flags().BoolVar(&reportHook, "hook", false, "Read a backend hook payload from stdin")
+	reportCmd.Flags().StringVar(&reportSpawnID, "spawn-id", "", "With --hook: drop the report unless the agent is still this spawn (set by spawn)")
 }
 
 func runReport(cmd *cobra.Command, args []string) error {
@@ -80,5 +82,5 @@ func reportFromHook(name string) error {
 	if err != nil {
 		return fmt.Errorf("reading hook payload: %w", err)
 	}
-	return agentService.ReportHook(getContext(), name, payload)
+	return agentService.ReportHook(getContext(), name, reportSpawnID, payload)
 }

@@ -152,12 +152,16 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	// Launch the CLI tool, with status hooks when the backend supports them
 	launchCmd := provider.LaunchCommand()
 	if hp, ok := provider.(backend.HookProvider); ok && s.cfg.AgentBinary != "" {
+		// The spawn-time session id doubles as the spawn id: it is unique per
+		// spawn, while _session_id itself moves on /clear and /resume.
 		sessionID := uuid.NewString()
-		reportCmd := fmt.Sprintf("%s report --hook --as %s",
-			util.ShellQuote(s.cfg.AgentBinary), util.ShellQuote(opts.Name))
+		reportCmd := fmt.Sprintf("%s report --hook --as %s --spawn-id %s",
+			util.ShellQuote(s.cfg.AgentBinary), util.ShellQuote(opts.Name), util.ShellQuote(sessionID))
 		launchCmd = hp.LaunchCommandWithHooks(reportCmd, sessionID)
-		if err := s.setState(ctx, opts.Name, StateKeySessionID, sessionID); err != nil {
-			return abort(fmt.Errorf("storing session id: %w", err))
+		for _, key := range []string{StateKeySpawnID, StateKeySessionID} {
+			if err := s.setState(ctx, opts.Name, key, sessionID); err != nil {
+				return abort(fmt.Errorf("storing %s: %w", key, err))
+			}
 		}
 	}
 	if err := s.tmux.SendKeys(sessionName, launchCmd); err != nil {

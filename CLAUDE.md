@@ -500,12 +500,12 @@ The high-level commands (`spawn`, `send`, `queue`, `status`) are conveniences. T
 `AgentService.StatusInfo` (`internal/service/status.go`) resolves status from three sources, most authoritative first:
 
 1. **native**: the backend CLI's own session status (`NativeStatusProvider`). Claude: `claude agents --json`, matched on the `--session-id` spawn assigns.
-2. **report**: the last status written by hooks or `agent report`, stored in reserved state keys (`_status`, `_event`, `_detail`, `_result`, `_session_id`).
+2. **report**: the last status written by hooks or `agent report`, stored in reserved state keys (`_status`, `_event`, `_detail`, `_result`, `_session_id`, `_spawn_id`).
 3. **scrape**: regex over captured terminal output, for backends with neither.
 
-Native wins when it disagrees with the last report: an interrupted Claude permission prompt fires no hook at all, so the report would stay stuck at `waiting`.
+Native wins when it disagrees with the last report: an interrupted Claude permission prompt fires no hook at all, so the report would stay stuck at `waiting`. When the CLI answers but no longer lists the session while the last report still says it's alive, status is `exited`: the process died without its `SessionEnd` hook (crash, `kill -9`).
 
-**Claude hooks** (`internal/backend/namedagents/claude_hooks.go`) are injected at launch with `claude --settings '<json>'`, so nothing is written into the agent's project. Each hook runs `<agent binary> report --hook --as <name>`, which reads the payload on stdin, never writes stdout, and always exits 0. The event → status mapping and the observed payloads are in `exploration/claude-hooks-findings.md`. Hooks are only wired when `Config.AgentBinary` is set (it defaults to the running executable).
+**Claude hooks** (`internal/backend/namedagents/claude_hooks.go`) are injected at launch with `claude --settings '<json>'`, so nothing is written into the agent's project. Each hook runs `<agent binary> report --hook --as <name> --spawn-id <id>`, which reads the payload on stdin, never writes stdout, and exits 0 once the CLI has initialized (a broken DB dir still exits 1). `--spawn-id` drops reports from an earlier agent of the same name, e.g. the `SessionEnd` of the claude that `cleanup` just killed landing on a respawn. The event → status mapping and the observed payloads are in `exploration/claude-hooks-findings.md`. Hooks are only wired when `Config.AgentBinary` is set (it defaults to the running executable).
 
 **Scrape patterns** (legacy, `internal/backend/namedagents/*.go`):
 - Claude idle `^>\s*$` no longer matches Claude Code's `❯` prompt; it only matters for Claude sessions spawned without hooks.
