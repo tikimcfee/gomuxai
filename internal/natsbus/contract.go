@@ -1,10 +1,8 @@
-package natsbus
-
-// Cross-host bus contract (v1). See "Revision 2026-10" in
+// Package natsbus is the cross-host agent bus: one NATS server per host,
+// linked to the others as leaf nodes. See "Revision 2026-10" in
 // NATS_INTEGRATION_PLAN.md for the design.
 //
-// Each host runs one `agent bus`; hosts link as NATS leaf nodes. SQLite stays
-// each host's source of truth. The bus adds two things:
+// SQLite stays each host's source of truth. The bus adds two things:
 //
 //   - RPC: request/reply on gomux.<host>.rpc.<op>. The host's bus executes
 //     the op through its local AgentService and replies with an RPCResponse.
@@ -12,8 +10,8 @@ package natsbus
 //     gomux.<host>.agent.<name>.status as a StatusEvent (core NATS, not
 //     persisted), so watchers and `agent wait` need no polling.
 //
-// The subjects in subjects.go (agent.<name>.*) and the JetStream streams/KV
-// in streams.go and coordinator.go predate this design and are unused by v1.
+// This file is the contract between hosts: subjects, ops, and wire types.
+package natsbus
 
 import (
 	"encoding/json"
@@ -188,6 +186,5 @@ type StatusEvent struct {
 var ErrNoBus = errors.New("no agent bus running on this host (start one with `agent bus start`)")
 
 // LocalConnector opens a client connection to this host's bus, authenticated
-// as a local client. Implemented with the bus daemon (track A); until then
-// tests use natstest.
+// as a local client: ConnectLocal in production, natstest in tests.
 type LocalConnector func() (*nats.Conn, error)
