@@ -11,7 +11,8 @@ var cleanupCmd = &cobra.Command{
 	Use:   "cleanup <name> | --all",
 	Short: "Clean up an agent and its resources",
 	Long: `Cleanup removes an agent: it asks an idle agent to exit, kills its tmux
-session, and deletes its record, queued messages, state, and logs.
+session, and deletes its record, queued messages, and state. Its log file
+stays, for agent logs.
 
 --all cleans up every agent except the ones named by --as and --except, and
 needs at least one of them, so a caller doesn't remove itself by accident.

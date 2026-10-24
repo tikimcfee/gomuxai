@@ -21,7 +21,7 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 	// them; a one-off db.Exec only reaches whichever connection runs it.
 	// busy_timeout: backend hooks write status from several short-lived
 	// processes at once. foreign_keys: cleanup relies on the agents → state
-	// and agents → logs cascades.
+	// cascade.
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -73,18 +73,6 @@ func (s *SQLiteStorage) migrate() error {
 		source_file TEXT,
 		created_at TEXT NOT NULL
 	);
-
-	-- Log entries (ANSI-stripped, queryable)
-	CREATE TABLE IF NOT EXISTS logs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		agent_name TEXT NOT NULL,
-		content TEXT NOT NULL,
-		captured_at TEXT NOT NULL,
-		FOREIGN KEY (agent_name) REFERENCES agents(name) ON DELETE CASCADE
-	);
-
-	-- Index for log queries
-	CREATE INDEX IF NOT EXISTS idx_logs_agent_time ON logs(agent_name, captured_at DESC);
 
 	-- State as key-value store
 	CREATE TABLE IF NOT EXISTS state (
@@ -314,59 +302,6 @@ func (s *SQLiteStorage) ListTasks(ctx context.Context) ([]*Task, error) {
 // DeleteTask removes a task by name.
 func (s *SQLiteStorage) DeleteTask(ctx context.Context, name string) error {
 	return s.exec(ctx, "deleting task", `DELETE FROM tasks WHERE name = ?`, name)
-}
-
-const logColumns = `id, agent_name, content, captured_at`
-
-func scanLog(row scanner) (*LogEntry, error) {
-	var entry LogEntry
-	var capturedAt string
-	if err := row.Scan(&entry.ID, &entry.AgentName, &entry.Content, &capturedAt); err != nil {
-		return nil, err
-	}
-	entry.CapturedAt = parseTime(capturedAt)
-	return &entry, nil
-}
-
-// AppendLog adds a new log entry for an agent.
-func (s *SQLiteStorage) AppendLog(ctx context.Context, entry *LogEntry) error {
-	id, err := s.insert(ctx, "appending log",
-		`INSERT INTO logs (agent_name, content, captured_at) VALUES (?, ?, ?)`,
-		entry.AgentName, entry.Content, entry.CapturedAt.Format(time.RFC3339))
-	if err != nil {
-		return err
-	}
-	entry.ID = id
-	return nil
-}
-
-// GetLogs retrieves recent log entries for an agent, newest first.
-func (s *SQLiteStorage) GetLogs(ctx context.Context, agentName string, limit int) ([]*LogEntry, error) {
-	entries, err := queryAll(ctx, s.db, scanLog, `
-		SELECT `+logColumns+`
-		FROM logs
-		WHERE agent_name = ?
-		ORDER BY captured_at DESC
-		LIMIT ?
-	`, agentName, limit)
-	if err != nil {
-		return nil, fmt.Errorf("querying logs: %w", err)
-	}
-	return entries, nil
-}
-
-// GetLogsSince retrieves log entries since a specific time, oldest first.
-func (s *SQLiteStorage) GetLogsSince(ctx context.Context, agentName string, since time.Time) ([]*LogEntry, error) {
-	entries, err := queryAll(ctx, s.db, scanLog, `
-		SELECT `+logColumns+`
-		FROM logs
-		WHERE agent_name = ? AND captured_at >= ?
-		ORDER BY captured_at ASC
-	`, agentName, since.Format(time.RFC3339))
-	if err != nil {
-		return nil, fmt.Errorf("querying logs since: %w", err)
-	}
-	return entries, nil
 }
 
 const stateColumns = `agent_name, key, value, updated_at`

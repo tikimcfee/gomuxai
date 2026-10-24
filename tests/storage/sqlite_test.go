@@ -371,64 +371,6 @@ func TestListTasks(t *testing.T) {
 	}
 }
 
-func TestLogCRUD(t *testing.T) {
-	store, cleanup := setupTestDB(t)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	// First create an agent (logs have foreign key to agents)
-	agent := &storage.Agent{
-		Name:        "test-agent",
-		SessionName: "agent-test-agent",
-		Backend:     "claude",
-		CreatedAt:   time.Now(),
-	}
-	if err := store.CreateAgent(ctx, agent); err != nil {
-		t.Fatalf("creating agent: %v", err)
-	}
-
-	// Append log entries
-	baseTime := time.Now()
-	for i := 0; i < 5; i++ {
-		entry := &storage.LogEntry{
-			AgentName:  "test-agent",
-			Content:    "Log entry " + string(rune('A'+i)),
-			CapturedAt: baseTime.Add(time.Duration(i) * time.Second),
-		}
-		if err := store.AppendLog(ctx, entry); err != nil {
-			t.Fatalf("appending log %d: %v", i, err)
-		}
-		if entry.ID == 0 {
-			t.Error("expected log ID to be set")
-		}
-	}
-
-	// Get logs with limit
-	logs, err := store.GetLogs(ctx, "test-agent", 3)
-	if err != nil {
-		t.Fatalf("getting logs: %v", err)
-	}
-	if len(logs) != 3 {
-		t.Errorf("expected 3 logs, got %d", len(logs))
-	}
-	// Should be in reverse chronological order (most recent first)
-	if logs[0].Content != "Log entry E" {
-		t.Errorf("expected most recent log first, got %q", logs[0].Content)
-	}
-
-	// Get logs since a time
-	sinceTime := baseTime.Add(2 * time.Second)
-	logs, err = store.GetLogsSince(ctx, "test-agent", sinceTime)
-	if err != nil {
-		t.Fatalf("getting logs since: %v", err)
-	}
-	if len(logs) != 3 { // entries 2, 3, 4 (C, D, E)
-		t.Errorf("expected 3 logs since time, got %d", len(logs))
-	}
-
-}
-
 func TestStateCRUD(t *testing.T) {
 	store, cleanup := setupTestDB(t)
 	defer cleanup()
@@ -549,16 +491,6 @@ func TestCascadeDeleteOnAgentRemoval(t *testing.T) {
 		t.Fatalf("creating agent: %v", err)
 	}
 
-	// Add logs
-	log := &storage.LogEntry{
-		AgentName:  "cascade-test",
-		Content:    "Test log",
-		CapturedAt: time.Now(),
-	}
-	if err := store.AppendLog(ctx, log); err != nil {
-		t.Fatalf("appending log: %v", err)
-	}
-
 	// Add state
 	state := &storage.StateEntry{
 		AgentName: "cascade-test",
@@ -570,18 +502,9 @@ func TestCascadeDeleteOnAgentRemoval(t *testing.T) {
 		t.Fatalf("setting state: %v", err)
 	}
 
-	// Delete agent - should cascade delete logs and state (NOT tasks - they're standalone)
+	// Delete agent - should cascade delete state (NOT tasks - they're standalone)
 	if err := store.DeleteAgent(ctx, "cascade-test"); err != nil {
 		t.Fatalf("deleting agent: %v", err)
-	}
-
-	// Verify logs are deleted
-	logs, err := store.GetLogs(ctx, "cascade-test", 10)
-	if err != nil {
-		t.Fatalf("getting logs after cascade: %v", err)
-	}
-	if len(logs) != 0 {
-		t.Errorf("expected logs to be cascade deleted, got %d", len(logs))
 	}
 
 	// Verify state is deleted

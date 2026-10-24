@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"time"
 )
 
 // Storage defines the interface for persistent storage operations.
@@ -24,11 +23,6 @@ type Storage interface {
 	GetTask(ctx context.Context, name string) (*Task, error)
 	ListTasks(ctx context.Context) ([]*Task, error)
 	DeleteTask(ctx context.Context, name string) error
-
-	// Log operations
-	AppendLog(ctx context.Context, entry *LogEntry) error
-	GetLogs(ctx context.Context, agentName string, limit int) ([]*LogEntry, error)
-	GetLogsSince(ctx context.Context, agentName string, since time.Time) ([]*LogEntry, error)
 
 	// State operations
 	SetState(ctx context.Context, entry *StateEntry) error

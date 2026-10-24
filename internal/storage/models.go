@@ -41,14 +41,6 @@ type Task struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// LogEntry represents a captured log entry.
-type LogEntry struct {
-	ID         int64     `json:"id"`
-	AgentName  string    `json:"agent_name"`
-	Content    string    `json:"content"`
-	CapturedAt time.Time `json:"captured_at"`
-}
-
 // StateEntry represents a key-value state entry.
 type StateEntry struct {
 	AgentName string    `json:"agent_name"`
