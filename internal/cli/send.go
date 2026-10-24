@@ -18,9 +18,9 @@ var sendCmd = &cobra.Command{
 The message is typed in even while the agent is working (Claude and agy queue
 it). It is refused while the agent is at a dialog (a permission or workspace
 trust prompt), where the Enter would answer the dialog instead; answer those
-with approve/deny. --force overrides that check for a local agent. Use 'queue'
-to wait until the agent is idle. An agent on another host is addressed as
-name@host (needs a running bus).
+with approve/deny. --force overrides that check for a local agent, and only
+works for a person at a terminal. Use 'queue' to wait until the agent is idle.
+An agent on another host is addressed as name@host (needs a running bus).
 
 Examples:
   agent send researcher "analyze the codebase structure"
@@ -79,7 +79,12 @@ func fromAgent(message string) string {
 	if from == "" {
 		return message
 	}
-	return fmt.Sprintf("[from %s@%s] %s", from, cfg.Host, message)
+	return markSender(from, message)
+}
+
+// markSender prefixes message with its sender's address on this host.
+func markSender(sender, message string) string {
+	return fmt.Sprintf("[from %s@%s] %s", sender, cfg.Host, message)
 }
 
 // stdinIsTerminal is a real isatty check: /dev/null, which agents' commands

@@ -2,15 +2,19 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 var cleanupCmd = &cobra.Command{
-	Use:   "cleanup <name>",
+	Use:   "cleanup <name> | --all",
 	Short: "Clean up an agent and its resources",
-	Long: `Cleanup removes an agent, kills its tmux session, and deletes associated
-messages from the database.
+	Long: `Cleanup removes an agent: it asks an idle agent to exit, kills its tmux
+session, and deletes its record, queued messages, state, and logs.
+
+--all cleans up every agent except the ones named by --as and --except, and
+needs at least one of them, so a caller doesn't remove itself by accident.
 
 Examples:
   agent cleanup researcher
@@ -28,7 +32,7 @@ var (
 
 func init() {
 	cleanupCmd.Flags().BoolVar(&cleanupAll, "all", false, "Clean up all agents")
-	cleanupCmd.Flags().StringVar(&cleanupAs, "as", "", "Your agent name (required with --all to prevent self-termination)")
+	cleanupCmd.Flags().StringVar(&cleanupAs, "as", "", "Your agent name, which --all skips")
 	cleanupCmd.Flags().StringVar(&cleanupExcept, "except", "", "Comma-separated list of agents to exclude")
 }
 
@@ -61,14 +65,14 @@ func cleanupAllAgents() error {
 	if cleanupAs != "" {
 		exclude[cleanupAs] = true
 	}
-	if cleanupExcept != "" {
-		for _, name := range splitComma(cleanupExcept) {
+	for _, name := range strings.Split(cleanupExcept, ",") {
+		if name != "" {
 			exclude[name] = true
 		}
 	}
 
 	// Safety check
-	if cleanupAs == "" && len(exclude) == 0 {
+	if len(exclude) == 0 {
 		return fmt.Errorf("--all requires --as <your-name> to prevent self-termination")
 	}
 
@@ -90,24 +94,4 @@ func cleanupAllAgents() error {
 
 	fmt.Printf("Cleaned up %d agents\n", cleaned)
 	return nil
-}
-
-func splitComma(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var result []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == ',' {
-			if i > start {
-				result = append(result, s[start:i])
-			}
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		result = append(result, s[start:])
-	}
-	return result
 }

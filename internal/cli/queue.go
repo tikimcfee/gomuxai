@@ -11,12 +11,16 @@ import (
 var queueCmd = &cobra.Command{
 	Use:   "queue <name> <message>",
 	Short: "Queue a message for delivery when agent is idle",
-	Long: `Queue adds a message to the inbox for delivery when the agent becomes idle.
+	Long: `Queue adds a message to the inbox for delivery when the agent is ready.
 
-The watcher daemon monitors agents and delivers queued messages automatically
-when it detects the agent is ready (idle prompt visible).
+The watcher ("agent watch") delivers queued messages when the agent's status
+is idle, or error (a failed turn, back at its prompt). It holds them while the
+agent is processing or waiting, and fails them if the agent has exited.
+Without a running watcher, queued messages are never delivered.
 
 Use --from to specify the sender (defaults to AGENT_NAME env var or "user").
+A message from anyone but "user" is marked with the sender's address, as
+"agent send" marks messages from agents.
 
 Examples:
   agent queue researcher "when you're free, check the test results"
@@ -45,7 +49,7 @@ func runQueue(cmd *cobra.Command, args []string) error {
 	}
 
 	if sender != "user" {
-		message = fmt.Sprintf("[from %s@%s] %s", sender, cfg.Host, message)
+		message = markSender(sender, message)
 	}
 	if err := agentService.Queue(getContext(), sender, name, message); err != nil {
 		return err

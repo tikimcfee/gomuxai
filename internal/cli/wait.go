@@ -33,7 +33,7 @@ var (
 )
 
 var waitCmd = &cobra.Command{
-	Use:   "wait <name> --for <status[,status...]>",
+	Use:   "wait <name>[@host] --for <status[,status...]>",
 	Short: "Wait until an agent reaches a status",
 	Long: `Wait blocks until an agent's status is one of the given statuses, prints
 it, and exits 0. Statuses: idle, processing, waiting, error, exited, unknown.
@@ -49,6 +49,9 @@ bus it checks every 2s. --interval overrides either.
 A status reached after wait starts counts even if the agent has moved on by
 the time wait returns.
 
+An agent on another host is addressed as name@host (needs a running bus);
+its host's own status check confirms events, as for a local agent.
+
 Right after "agent send", the agent still looks idle from its previous turn
 until it picks the message up, so "--for idle" would return at once. Use
 --next: it ignores the given statuses until the agent has been seen in another
@@ -59,7 +62,8 @@ Examples:
   agent send helper "review auth.go" && agent wait helper --for idle --next
   agent wait helper --for idle
   agent wait helper --for idle,waiting --timeout 10m
-  agent wait helper --for exited`,
+  agent wait helper --for exited
+  agent wait helper@hub --for idle --timeout 10m`,
 	Args: cobra.ExactArgs(1),
 	RunE: runWait,
 }
@@ -78,7 +82,7 @@ func runWait(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	name, host := ref.Name, cfg.Host
-	remote := ref.Host != "" && ref.Host != cfg.Host
+	remote := isRemoteHost(ref.Host)
 	if remote {
 		host = ref.Host
 	}

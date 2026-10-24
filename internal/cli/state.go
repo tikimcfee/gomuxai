@@ -13,8 +13,9 @@ var stateCmd = &cobra.Command{
 	Short: "Manage agent state",
 	Long: `State provides operations for managing agent key-value state.
 
-State is stored in the database as key-value pairs per agent.
-This replaces filesystem-based state directories.`,
+State is stored in this host's database as key-value pairs per agent, and
+only for agents spawned here. Keys starting with "_" are written by status
+reports; e.g. "_result" holds a Claude agent's latest reply.`,
 }
 
 var stateSetCmd = &cobra.Command{

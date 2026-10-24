@@ -17,18 +17,22 @@ var (
 var spawnCmd = &cobra.Command{
 	Use:   "spawn <name> [task-file]",
 	Short: "Spawn a new agent",
-	Long: `Spawn creates a new agent in a tmux session.
+	Long: `Spawn creates a new agent in a tmux session, running the backend's CLI
+(built in: claude, aider, agy).
 
-The agent will run the specified backend CLI tool. You can provide initial work via:
-  - --task <name>  : Reference a task from the task repository (DB)
-  - [task-file]    : Path to a task file (read directly)
+Initial work, if given, is sent as the agent's first message:
+  - --task <name>  : the task's content, from the task repository (DB)
+  - [task-file]    : a request to read that file (claude/agy: "Please read and
+                     execute the task in <file>", aider: "/read <file>")
+Without either, send the first message yourself with "agent send".
 
 Examples:
   agent spawn researcher --backend claude
   agent spawn researcher --backend claude --task research-auth
   agent spawn builder --backend claude tasks/build.md
   agent spawn helper --backend aider
-  agent spawn auto-worker --backend claude --skip-permissions`,
+  agent spawn auto-worker --backend claude --skip-permissions
+  agent spawn reviewer --backend agy --trust-workspace`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: runSpawn,
 }

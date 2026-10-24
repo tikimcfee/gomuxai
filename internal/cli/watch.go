@@ -18,7 +18,8 @@ var watchCmd = &cobra.Command{
 	Long: `Watch starts a daemon that monitors agents and delivers queued messages.
 
 The watcher periodically checks each agent's status and delivers pending
-messages when agents become idle.
+messages when an agent is idle, or back at its prompt after a failed turn
+(error).
 
 Examples:
   agent watch

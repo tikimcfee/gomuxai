@@ -47,7 +47,7 @@ var (
 )
 
 var eventsCmd = &cobra.Command{
-	Use:   "events [name]",
+	Use:   "events [name[@host]]",
 	Short: "Stream agent status events from the bus",
 	Long: `Events prints each status event published on the agent bus, one line per
 event, until interrupted. Every recorded status report (hooks, "agent report",
