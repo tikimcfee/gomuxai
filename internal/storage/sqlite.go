@@ -51,7 +51,8 @@ func (s *SQLiteStorage) migrate() error {
 		backend TEXT NOT NULL,
 		task_file TEXT,
 		log_file TEXT,
-		created_at TEXT NOT NULL
+		created_at TEXT NOT NULL,
+		spawned_by TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS messages (
@@ -85,7 +86,29 @@ func (s *SQLiteStorage) migrate() error {
 	);
 	`
 
-	_, err := s.db.Exec(schema)
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	return s.addColumn("agents", "spawned_by", "TEXT")
+}
+
+// addColumn adds a column that databases created before it lack.
+func (s *SQLiteStorage) addColumn(table, column, def string) error {
+	has := func() (bool, error) {
+		var n int
+		err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
+		return n > 0, err
+	}
+	if ok, err := has(); err != nil || ok {
+		return err
+	}
+	_, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, def))
+	if err != nil {
+		// Another process may have added it first.
+		if ok, _ := has(); ok {
+			return nil
+		}
+	}
 	return err
 }
 
@@ -148,17 +171,18 @@ func parseTime(s string) time.Time {
 	return t
 }
 
-const agentColumns = `name, session_name, backend, task_file, log_file, created_at`
+const agentColumns = `name, session_name, backend, task_file, log_file, created_at, spawned_by`
 
 func scanAgent(row scanner) (*Agent, error) {
 	var agent Agent
 	var createdAt string
-	var taskFile, logFile sql.NullString
-	if err := row.Scan(&agent.Name, &agent.SessionName, &agent.Backend, &taskFile, &logFile, &createdAt); err != nil {
+	var taskFile, logFile, spawnedBy sql.NullString
+	if err := row.Scan(&agent.Name, &agent.SessionName, &agent.Backend, &taskFile, &logFile, &createdAt, &spawnedBy); err != nil {
 		return nil, err
 	}
 	agent.TaskFile = taskFile.String
 	agent.LogFile = logFile.String
+	agent.SpawnedBy = spawnedBy.String
 	agent.CreatedAt = parseTime(createdAt)
 	return &agent, nil
 }
@@ -166,9 +190,9 @@ func scanAgent(row scanner) (*Agent, error) {
 // CreateAgent creates a new agent record.
 func (s *SQLiteStorage) CreateAgent(ctx context.Context, agent *Agent) error {
 	return s.exec(ctx, "inserting agent",
-		`INSERT INTO agents (`+agentColumns+`) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO agents (`+agentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		agent.Name, agent.SessionName, agent.Backend, agent.TaskFile, agent.LogFile,
-		agent.CreatedAt.Format(time.RFC3339))
+		agent.CreatedAt.Format(time.RFC3339), agent.SpawnedBy)
 }
 
 // GetAgent retrieves an agent by name.

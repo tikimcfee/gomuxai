@@ -32,6 +32,7 @@ func (h rpcHandler) List(ctx context.Context) (*natsbus.ListResponse, error) {
 			Name:      a.Name,
 			Session:   a.SessionName,
 			Backend:   a.Backend,
+			SpawnedBy: a.SpawnedBy,
 			CreatedAt: a.CreatedAt,
 		})
 	}

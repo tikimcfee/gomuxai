@@ -50,7 +50,7 @@ func TestRPC_EndToEndThroughService(t *testing.T) {
 	defer env.cleanup()
 	env.cfg.SessionPrefix = "rpc-" + env.cfg.SessionPrefix
 	ctx := context.Background()
-	fake := spawnFake(t, env, "worker")
+	fake := spawnFakeWith(t, env, "worker", service.SpawnOptions{SpawnedBy: "lead"})
 	client := serveService(t, env)
 	ref := natsbus.AgentRef{Name: "worker", Host: "h1"}
 
@@ -58,7 +58,7 @@ func TestRPC_EndToEndThroughService(t *testing.T) {
 	if err != nil || len(agents) != 1 {
 		t.Fatalf("List = %+v, %v", agents, err)
 	}
-	if a := agents[0]; a.Name != "worker" || a.Backend != "fakehooks" || a.Session != env.cfg.SessionName("worker") {
+	if a := agents[0]; a.Name != "worker" || a.Backend != "fakehooks" || a.Session != env.cfg.SessionName("worker") || a.SpawnedBy != "lead" {
 		t.Errorf("listed %+v", a)
 	}
 

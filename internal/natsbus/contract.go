@@ -137,6 +137,7 @@ type AgentInfo struct {
 	Name      string    `json:"name"`
 	Session   string    `json:"session,omitempty"` // tmux session on the agent's host
 	Backend   string    `json:"backend"`
+	SpawnedBy string    `json:"spawned_by,omitempty"` // parent agent; "" when a person spawned it
 	CreatedAt time.Time `json:"created_at"`
 }
 

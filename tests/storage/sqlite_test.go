@@ -2,7 +2,10 @@ package storage_test
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -45,6 +48,7 @@ func TestAgentCRUD(t *testing.T) {
 		Backend:     "claude",
 		TaskFile:    "tasks/test.md",
 		LogFile:     "/tmp/test.log",
+		SpawnedBy:   "lead",
 		CreatedAt:   time.Now(),
 	}
 
@@ -66,6 +70,9 @@ func TestAgentCRUD(t *testing.T) {
 	}
 	if retrieved.Backend != "claude" {
 		t.Errorf("expected backend claude, got %s", retrieved.Backend)
+	}
+	if retrieved.SpawnedBy != "lead" {
+		t.Errorf("expected spawned_by lead, got %q", retrieved.SpawnedBy)
 	}
 
 	// List
@@ -89,6 +96,51 @@ func TestAgentCRUD(t *testing.T) {
 	}
 	if retrieved != nil {
 		t.Error("expected nil after delete")
+	}
+}
+
+// A database from before spawned_by gains the column on open, and its
+// agents read back with no parent.
+func TestMigrate_AddsSpawnedBy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE agents (
+			name TEXT PRIMARY KEY,
+			session_name TEXT NOT NULL,
+			backend TEXT NOT NULL,
+			task_file TEXT,
+			log_file TEXT,
+			created_at TEXT NOT NULL
+		);
+		INSERT INTO agents VALUES ('old', 'agent-old', 'claude', NULL, NULL, '2026-10-01T09:30:00Z');
+	`)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ { // the second open finds the column already there
+		store, err := storage.NewSQLiteStorage(path)
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		ctx := context.Background()
+		old, err := store.GetAgent(ctx, "old")
+		if err != nil || old == nil || old.SpawnedBy != "" {
+			t.Errorf("open %d: old agent = %+v, %v", i, old, err)
+		}
+		name := fmt.Sprintf("helper-%d", i)
+		if err := store.CreateAgent(ctx, &storage.Agent{Name: name, SessionName: "agent-" + name, Backend: "claude", SpawnedBy: "old", CreatedAt: time.Now()}); err != nil {
+			t.Fatalf("open %d: create: %v", i, err)
+		}
+		if h, _ := store.GetAgent(ctx, name); h == nil || h.SpawnedBy != "old" {
+			t.Errorf("open %d: helper = %+v", i, h)
+		}
+		store.Close()
 	}
 }
 

@@ -10,6 +10,7 @@ type Agent struct {
 	Backend     string    `json:"backend"`
 	TaskFile    string    `json:"task_file,omitempty"`
 	LogFile     string    `json:"log_file,omitempty"`
+	SpawnedBy   string    `json:"spawned_by,omitempty"` // agent that spawned it; "" for a person
 	CreatedAt   time.Time `json:"created_at"`
 }
 

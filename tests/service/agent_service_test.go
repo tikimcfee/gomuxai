@@ -148,8 +148,9 @@ func TestSpawn_FullFlow(t *testing.T) {
 	ctx := context.Background()
 
 	opts := service.SpawnOptions{
-		Name:    "test-spawn-agent",
-		Backend: "claude",
+		Name:      "test-spawn-agent",
+		Backend:   "claude",
+		SpawnedBy: "lead",
 	}
 
 	agent, err := env.service.Spawn(ctx, opts)
@@ -183,6 +184,9 @@ func TestSpawn_FullFlow(t *testing.T) {
 	}
 	if stored == nil {
 		t.Fatal("expected agent in database")
+	}
+	if stored.SpawnedBy != "lead" {
+		t.Errorf("expected parent lead, got %q", stored.SpawnedBy)
 	}
 }
 

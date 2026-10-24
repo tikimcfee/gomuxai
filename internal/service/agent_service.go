@@ -243,6 +243,7 @@ func (s *AgentService) storeAgent(ctx context.Context, opts SpawnOptions, sessio
 		Backend:     opts.Backend,
 		TaskFile:    opts.TaskFile,
 		LogFile:     s.cfg.LogPath(opts.Name),
+		SpawnedBy:   opts.SpawnedBy,
 		CreatedAt:   time.Now(),
 	}
 	if err := s.storage.CreateAgent(ctx, agent); err != nil {
