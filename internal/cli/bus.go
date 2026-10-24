@@ -95,7 +95,7 @@ var busInitCmd = &cobra.Command{
 var busExportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Print this host's public bundle",
-	Example: `  agent bus export > monolith.pub.json
+	Example: `  agent bus export > hub.pub.json
   agent bus export --url tls://hub.example:7422`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
