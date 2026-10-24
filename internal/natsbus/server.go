@@ -32,6 +32,10 @@ type BusConfig struct {
 // NewBus connects to an existing NATS server (via .gomuxai/nats.url) or starts
 // an embedded one. The first process to start becomes the server; subsequent
 // processes connect as clients.
+//
+// Legacy (2026-03 design): short-lived CLI processes can't host a server, so
+// the v1 bus is the long-lived daemon in daemon.go. NewBus remains only for
+// the JetStream coordinator code and its tests.
 func NewBus(cfg BusConfig) (*Bus, error) {
 	if cfg.StoreDir == "" {
 		return nil, fmt.Errorf("StoreDir is required")
@@ -89,9 +93,15 @@ func NewBus(cfg BusConfig) (*Bus, error) {
 
 // startEmbeddedServer starts a NATS server and connects to it.
 func startEmbeddedServer(cfg BusConfig, urlFile string) (*Bus, error) {
+	// BusConfig documents Port 0 as "random", but nats-server reads 0 as its
+	// default port 4222 (random is -1), which made concurrent buses collide.
+	port := cfg.Port
+	if port == 0 {
+		port = -1
+	}
 	opts := &natsserver.Options{
 		Host:           "127.0.0.1",
-		Port:           cfg.Port,
+		Port:           port,
 		StoreDir:       filepath.Join(cfg.StoreDir, "jetstream"),
 		JetStream:      true,
 		NoLog:          true,

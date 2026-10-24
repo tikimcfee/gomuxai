@@ -5,8 +5,10 @@ go 1.25.4
 require (
 	github.com/GianlucaP106/gotmux v0.5.0
 	github.com/google/uuid v1.6.0
+	github.com/nats-io/jwt/v2 v2.8.0
 	github.com/nats-io/nats-server/v2 v2.12.5
 	github.com/nats-io/nats.go v1.49.0
+	github.com/nats-io/nkeys v0.4.15
 	github.com/spf13/cobra v1.10.1
 	modernc.org/sqlite v1.40.1
 )
@@ -19,8 +21,6 @@ require (
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/minio/highwayhash v1.0.4-0.20251030100505-070ab1a87a76 // indirect
-	github.com/nats-io/jwt/v2 v2.8.0 // indirect
-	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

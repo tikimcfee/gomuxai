@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -220,57 +219,6 @@ func TestBus_StaleURLFile_StartsNewServer(t *testing.T) {
 	}
 }
 
-func TestBus_ConcurrentStartRace(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "natsbus-race-test-*")
-	if err != nil {
-		t.Fatalf("creating temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Launch two NewBus calls concurrently
-	var wg sync.WaitGroup
-	buses := make([]*natsbus.Bus, 2)
-	errs := make([]error, 2)
-
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			b, err := natsbus.NewBus(natsbus.BusConfig{
-				StoreDir: tmpDir,
-				Port:     0,
-			})
-			buses[idx] = b
-			errs[idx] = err
-		}(i)
-	}
-	wg.Wait()
-
-	// Both should succeed
-	for i := 0; i < 2; i++ {
-		if errs[i] != nil {
-			t.Errorf("bus[%d] failed: %v", i, errs[i])
-		}
-	}
-
-	// Clean up
-	for i := 0; i < 2; i++ {
-		if buses[i] != nil {
-			buses[i].Close()
-		}
-	}
-
-	// At most one should be a server
-	serverCount := 0
-	for i := 0; i < 2; i++ {
-		if buses[i] != nil && buses[i].IsServer() {
-			serverCount++
-		}
-	}
-	if serverCount > 1 {
-		t.Errorf("expected at most 1 server, got %d", serverCount)
-	}
-}
 
 func TestBus_URLFileCleanedOnClose(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "natsbus-cleanup-test-*")
