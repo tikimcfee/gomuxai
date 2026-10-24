@@ -48,6 +48,9 @@ Results go to stdout; a hint about what to do next may follow on stderr
 	Example: `  agent spawn helper --backend claude
   agent send helper "summarize README.md" && agent wait helper --for idle --next
   agent state get helper _result`,
+	// No Args: cobra then treats extra words as unknown commands, with
+	// suggestions.
+	RunE:              runOrient,
 	PersistentPreRunE: setup,
 	SilenceUsage:      true,
 }
