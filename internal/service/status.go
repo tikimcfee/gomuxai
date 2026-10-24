@@ -82,10 +82,8 @@ func fromBackendStatus(st backend.Status) AgentStatus {
 // Report records a status update for an agent. All keys are written in one
 // transaction, so concurrent reports can't leave a mix of both.
 func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) error {
-	if r.SpawnID != "" {
-		if current := s.stateValue(ctx, name, StateKeySpawnID); current != r.SpawnID {
-			return fmt.Errorf("ignoring report from spawn %s of %q (current spawn: %q)", r.SpawnID, name, current)
-		}
+	if err := s.checkSpawn(ctx, name, r.SpawnID, "report"); err != nil {
+		return err
 	}
 	values := map[string]string{
 		StateKeyStatus: string(r.Status),
@@ -111,6 +109,18 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 	return nil
 }
 
+// checkSpawn refuses a report (or hook, per what) sent by spawnID, unless
+// that is the agent's current spawn. An empty spawnID passes.
+func (s *AgentService) checkSpawn(ctx context.Context, name, spawnID, what string) error {
+	if spawnID == "" {
+		return nil
+	}
+	if current := s.stateValue(ctx, name, StateKeySpawnID); current != spawnID {
+		return fmt.Errorf("ignoring %s from spawn %s of %q (current spawn: %q)", what, spawnID, name, current)
+	}
+	return nil
+}
+
 // ReportHook records the status carried by a backend hook payload.
 // Events that carry no status change are ignored. spawnID is the id the hook
 // command was launched with; hooks from any other spawn of this agent name
@@ -120,12 +130,10 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 	if err != nil {
 		return err
 	}
-	if spawnID != "" {
-		if current := s.stateValue(ctx, name, StateKeySpawnID); current != spawnID {
-			return fmt.Errorf("ignoring hook from spawn %s of %q (current spawn: %q)", spawnID, name, current)
-		}
+	if err := s.checkSpawn(ctx, name, spawnID, "hook"); err != nil {
+		return err
 	}
-	provider, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
+	provider, err := s.provider(agent)
 	if err != nil {
 		return fmt.Errorf("getting backend: %w", err)
 	}
@@ -183,11 +191,6 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 	if err != nil {
 		return nil, nil, err
 	}
-	var raw *StatusInfo // the report as recorded, before any adjustment below
-	if reported != nil {
-		copied := *reported
-		raw = &copied
-	}
 
 	native, found, queried := s.nativeStatus(ctx, agent)
 	if found {
@@ -197,7 +200,7 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 		if reported != nil && reported.Status == native {
 			info.Event, info.Detail, info.Tool, info.UpdatedAt = reported.Event, reported.Detail, reported.Tool, reported.UpdatedAt
 		}
-		return info, raw, nil
+		return info, reported, nil
 	}
 	if reported != nil {
 		// The backend answered but no longer knows the session, yet the last
@@ -211,19 +214,21 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 				Event:     reported.Event,
 				Detail:    "session not running (exited without a SessionEnd hook)",
 				UpdatedAt: reported.UpdatedAt,
-			}, raw, nil
+			}, reported, nil
 		}
 		// Backends like agy fire PreToolUse before showing a permission
 		// dialog and fire nothing while the dialog is up. When the dialog
 		// is on screen after PreToolUse, surface the status as waiting so
 		// callers and approve/deny see the pending prompt.
 		if reported.Status == AgentStatusProcessing && reported.Event == "PreToolUse" && s.permissionPromptVisible(agent) {
-			reported.Status = AgentStatusWaiting
-			if reported.Detail != "" && !strings.HasPrefix(reported.Detail, "permission: ") {
-				reported.Detail = "permission: " + reported.Detail
+			waiting := *reported
+			waiting.Status = AgentStatusWaiting
+			if waiting.Detail != "" && !strings.HasPrefix(waiting.Detail, "permission: ") {
+				waiting.Detail = "permission: " + waiting.Detail
 			}
+			return &waiting, reported, nil
 		}
-		return reported, raw, nil
+		return reported, reported, nil
 	}
 
 	status, err := s.scrapeStatus(agent)
@@ -265,7 +270,7 @@ func (s *AgentService) nativeStatus(ctx context.Context, agent *storage.Agent) (
 	if sessionID == "" {
 		return "", false, false
 	}
-	provider, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
+	provider, err := s.provider(agent)
 	if err != nil {
 		return "", false, false
 	}
@@ -288,7 +293,7 @@ func (s *AgentService) nativeStatus(ctx context.Context, agent *storage.Agent) (
 }
 
 func (s *AgentService) permissionPromptVisible(agent *storage.Agent) bool {
-	provider, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
+	provider, err := s.provider(agent)
 	if err != nil {
 		return false
 	}
@@ -316,26 +321,24 @@ func (s *AgentService) scrapeStatus(agent *storage.Agent) (AgentStatus, error) {
 		return AgentStatusUnknown, fmt.Errorf("capturing output: %w", err)
 	}
 
-	if idlePattern := be.IdlePattern(); idlePattern != "" {
-		matched, err := regexp.MatchString(idlePattern, output)
+	for _, p := range []struct {
+		status  AgentStatus
+		pattern string
+	}{
+		{AgentStatusIdle, be.IdlePattern()},
+		{AgentStatusProcessing, be.ProcessingPattern()},
+	} {
+		if p.pattern == "" {
+			continue
+		}
+		matched, err := regexp.MatchString(p.pattern, output)
 		if err != nil {
-			return AgentStatusUnknown, fmt.Errorf("invalid idle pattern %q: %w", idlePattern, err)
+			return AgentStatusUnknown, fmt.Errorf("invalid %s pattern %q: %w", p.status, p.pattern, err)
 		}
 		if matched {
-			return AgentStatusIdle, nil
+			return p.status, nil
 		}
 	}
-
-	if procPattern := be.ProcessingPattern(); procPattern != "" {
-		matched, err := regexp.MatchString(procPattern, output)
-		if err != nil {
-			return AgentStatusUnknown, fmt.Errorf("invalid processing pattern %q: %w", procPattern, err)
-		}
-		if matched {
-			return AgentStatusProcessing, nil
-		}
-	}
-
 	return AgentStatusUnknown, nil
 }
 
@@ -367,7 +370,7 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 		return fmt.Errorf("agent %q is waiting on %q, not %q", name, info.Tool, opts.ExpectTool)
 	}
 
-	provider, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
+	provider, err := s.provider(agent)
 	if err != nil {
 		return fmt.Errorf("getting backend: %w", err)
 	}
@@ -411,6 +414,12 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 		report = StatusReport{Status: AgentStatusIdle, Event: "denied"}
 	}
 	return s.Report(ctx, name, report)
+}
+
+// provider returns an instance of agent's backend for the optional
+// capabilities it implements, or an error for a custom JSON backend.
+func (s *AgentService) provider(agent *storage.Agent) (backend.Provider, error) {
+	return s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
 }
 
 func (s *AgentService) getAgent(ctx context.Context, name string) (*storage.Agent, error) {
