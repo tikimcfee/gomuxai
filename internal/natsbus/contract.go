@@ -113,6 +113,7 @@ type ListResponse struct {
 
 type AgentInfo struct {
 	Name      string    `json:"name"`
+	Session   string    `json:"session,omitempty"` // tmux session on the agent's host
 	Backend   string    `json:"backend"`
 	CreatedAt time.Time `json:"created_at"`
 }
