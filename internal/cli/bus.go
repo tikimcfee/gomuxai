@@ -198,6 +198,9 @@ type busInfo struct {
 }
 
 func runBus(cmd *cobra.Command, args []string) error {
+	if spawned, err := runBusDisclaimed(); spawned {
+		return err
+	}
 	d, err := natsbus.StartDaemon(natsbus.DaemonConfig{
 		Dir:        cfg.BusDir(),
 		Host:       cfg.Host,
@@ -246,9 +249,13 @@ func runBus(cmd *cobra.Command, args []string) error {
 		fmt.Printf(", peer links on %s", addr)
 	}
 	fmt.Printf("; trusted peers: %s\n", strings.Join(trusted, ", "))
+	warnLocalNetwork(peers)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	watchBusParent(ctx, cancel)
 	<-ctx.Done()
 	fmt.Println("agent bus stopping")
 	return nil

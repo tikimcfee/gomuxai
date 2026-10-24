@@ -218,7 +218,11 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		launchCmd = pfp.AppendPromptFlag(launchCmd, initMsg)
 		promptInLaunch = true
 	}
-	if err := s.tmux.SendKeys(sessionName, launchCmd); err != nil {
+	runCmd, err := s.writeLaunchScript(opts.Name, launchCmd)
+	if err != nil {
+		return abort(err)
+	}
+	if err := s.tmux.SendKeys(sessionName, runCmd); err != nil {
 		return abort(fmt.Errorf("launching backend: %w", err))
 	}
 	if err := s.tmux.SendSpecialKey(sessionName, "Enter"); err != nil {

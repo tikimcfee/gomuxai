@@ -134,9 +134,11 @@ agent deny helper@hub
 agent keys helper@hub "y" --no-enter    # usually refused: buses don't serve keys to other hosts by default
 ```
 
-`status`, `capture`, `send`, `approve`, `deny`, and `keys` accept `name@host`; output and error messages are the same as for a local agent. A plain name, or `name@<this host>`, takes the local path and needs no bus. Any other host needs a running `agent bus` on this machine linked to that host; without one, the command fails saying so. "no bus answering for host X" means the host's bus is down, not linked, or doesn't serve that operation.
+`status`, `capture`, `send`, `wait`, `approve`, `deny`, and `keys` accept `name@host`; output and error messages are the same as for a local agent. A plain name, or `name@<this host>`, takes the local path and needs no bus. Any other host needs a running `agent bus` on this machine linked to that host; without one, the command fails saying so. "no bus answering for host X" means the host's bus is down, not linked, or doesn't serve that operation.
 
 For `keys`, a plain argument is a tmux session (as before), while `name@host` addresses a managed agent, on any host.
+
+`state` is kept per host and isn't served over the bus: `agent state get helper@hub _result` is refused. Ask the agent to send you what you need, or `capture` its screen.
 
 ### Running the Bus
 
@@ -167,6 +169,8 @@ agent bus stop
 - A machine links to one hub: only one trusted bundle may carry a `url` (`bus start` refuses more). Re-trust any other peer from a bundle without one.
 - Use `AGENT_HOST` to override this machine's host name. An identity is bound to the name it was created with.
 
+**On macOS**, the bus can't reach other machines on the LAN from inside tmux unless the `agent` binary holds its own Local Network permission: the link fails with `no route to host` in `.gomuxai/bus/bus.log`, and macOS shows no alert. Build it with `make macos` on the Mac. That embeds `cmd/agent/Info.plist` and signs the binary with the first code-signing identity in the keychain (`CODESIGN_IDENTITY=...` to pick one). An Apple Development or Developer ID certificate both work; ad hoc signing doesn't. On the first `agent bus start`, macOS asks to allow "gomuxai" to find devices on the local network: allow it. The grant follows the bundle identifier, so rebuilds keep it; a fresh build's first dial fails once and the link retries a second later. Over SSH the login keychain is locked, so run `make macos` in a terminal on the Mac (or `security unlock-keychain` first). Links that the Mac accepts, rather than dials, need none of this.
+
 ### Reporting Your Own Status
 
 `claude` and `agy` agents report automatically. Anything else can report by hand:
@@ -190,7 +194,7 @@ agent send helper "review auth.go" && agent wait helper --for idle --next
 
 **After `send`, use `--next`.** Until the agent picks the message up, it still shows `idle` from its previous turn, so a plain `--for idle` returns at once. `--next` ignores the `--for` statuses until the agent has been seen in another one, so it waits for the turn your message starts. Start it right after the send (or in the background before it): a turn that finishes before `wait` starts is missed, and `--next` then waits for the following one, so give it a `--timeout`.
 
-With an agent bus running, `wait` reacts to status events the moment they're reported, and re-checks `agent status` every 5s for changes no hook reports (e.g. an interrupted permission prompt). Without a bus it polls every 2s. `--interval` overrides both. `name@host` isn't supported yet.
+With an agent bus running, `wait` reacts to status events the moment they're reported, and re-checks `agent status` every 5s for changes no hook reports (e.g. an interrupted permission prompt). Without a bus it polls every 2s. `--interval` overrides both. `name@host` works the same way; it needs the bus.
 
 ### Watching Status Events
 
@@ -574,6 +578,19 @@ The tool is a coordination layer over tmux sessions. Each agent runs in its own 
 4. **Escape hatches** - Low-level control when abstractions fail
 
 The high-level commands (`spawn`, `send`, `queue`, `status`) are conveniences. The low-level commands (`session`, `keys`, `key`, `capture`) expose the underlying tmux operations for when you need direct control.
+
+`spawn` writes the backend's full launch command to `.gomuxai/agents/<name>/launch.sh` and types only `sh <path>` into the new session. Typed input is held in the terminal's canonical-mode buffer until the shell's line editor is up, and macOS caps that buffer at 1024 bytes (`MAX_CANON`): a slow-starting zsh would silently lose the end of Claude's inline hook settings.
+
+### The Bus on macOS
+
+macOS (15+) only lets a process reach the local network if its *responsible* code has the Local Network permission (Apple TN3179). Programs started from Terminal.app or over SSH are exempt, and a terminal app's grant covers what it launches directly. A tmux server detaches from the terminal that started it, though, so for processes inside tmux, responsibility resolves to nothing that can hold the grant: connections to LAN addresses fail with `EHOSTUNREACH`, with no alert. Loopback, the internet, and accepting incoming TCP connections are unaffected; dialing the hub's leaf port is what breaks.
+
+The fix (`internal/macos`, `internal/cli/bus_macos.go`) has two halves, and both were needed in testing:
+
+1. `make macos` builds with cgo and the system linker to embed `cmd/agent/Info.plist` (`__TEXT,__info_plist`: bundle identifier and `NSLocalNetworkUsageDescription`), then `codesign`s it with an Apple-issued identity. The bundle identifier becomes the code-signing identifier, and macOS keys the grant on it.
+2. `agent bus run` re-spawns itself with `responsibility_spawnattrs_setdisclaim` (a private libSystem call that Chromium and iTerm2 use for the same purpose), so the bus is its own responsible process and macOS asks about this binary. It only does so when the running executable embeds an Info.plist: a plain build stays in-process, which still works when run straight from a terminal tab. The parent waits for the child, exits with its status, and forwards SIGTERM/SIGHUP. Both share a process group, so Ctrl-C (and `bus stop`) reaches the child directly. The child exits if the parent dies.
+
+A signed build that isn't disclaimed fails under tmux, and so does a disclaimed build without an Info.plist (macOS can't show an alert for it). Cross-compiled darwin builds (`CGO_ENABLED=0`) have neither half.
 
 ### Status Detection Internals
 

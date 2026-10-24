@@ -315,15 +315,24 @@ func TestSpawn_BriefsTheAgent(t *testing.T) {
 		t.Errorf("instructions mode %o, want 600", info.Mode().Perm())
 	}
 
-	// The launch command loads them (the fake backend launches `true`).
+	// The launch command loads them (the fake backend launches `true`). It
+	// runs from launch.sh in the agent's directory, so the shell is only
+	// typed a short command.
+	launch, err := os.ReadFile(filepath.Join(env.cfg.AgentDir("worker"), "launch.sh"))
+	if err != nil {
+		t.Fatalf("launch script not written: %v", err)
+	}
+	if !strings.Contains(string(launch), "--append-system-prompt-file") || !strings.Contains(string(launch), "instructions.md") {
+		t.Errorf("launch command doesn't load the instructions:\n%s", launch)
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		out, _ := env.tmux.Capture(env.cfg.SessionName("worker"), 20, true)
-		if strings.Contains(out, "--append-system-prompt-file") && strings.Contains(out, "instructions.md") {
+		if strings.Contains(out, "launch.sh") {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("launch command didn't load the instructions:\n%s", out)
+			t.Fatalf("session didn't run launch.sh:\n%s", out)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

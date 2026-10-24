@@ -69,8 +69,25 @@ func init() {
 	stateCmd.AddCommand(stateClearCmd)
 }
 
+// stateAgent reads a state command's agent argument. State lives in each
+// host's own database and isn't served over the bus, so "name@<other host>"
+// is refused rather than read as a local agent that has no state.
+func stateAgent(arg string) (string, error) {
+	ref, remote, err := parseTarget(arg)
+	if err != nil {
+		return "", err
+	}
+	if remote {
+		return "", fmt.Errorf("state is kept per host, and %s's is on %q: read it there, or have the agent send it to you (agent capture %s shows its screen)", ref, ref.Host, ref)
+	}
+	return ref.Name, nil
+}
+
 func runStateSet(cmd *cobra.Command, args []string) error {
-	name := args[0]
+	name, err := stateAgent(args[0])
+	if err != nil {
+		return err
+	}
 	key := args[1]
 	value := args[2]
 
@@ -90,7 +107,10 @@ func runStateSet(cmd *cobra.Command, args []string) error {
 }
 
 func runStateGet(cmd *cobra.Command, args []string) error {
-	name := args[0]
+	name, err := stateAgent(args[0])
+	if err != nil {
+		return err
+	}
 	key := args[1]
 
 	entry, err := store.GetState(getContext(), name, key)
@@ -108,7 +128,10 @@ func runStateGet(cmd *cobra.Command, args []string) error {
 }
 
 func runStateList(cmd *cobra.Command, args []string) error {
-	name := args[0]
+	name, err := stateAgent(args[0])
+	if err != nil {
+		return err
+	}
 
 	entries, err := store.ListState(getContext(), name)
 	if err != nil {
@@ -135,7 +158,10 @@ func runStateList(cmd *cobra.Command, args []string) error {
 }
 
 func runStateClear(cmd *cobra.Command, args []string) error {
-	name := args[0]
+	name, err := stateAgent(args[0])
+	if err != nil {
+		return err
+	}
 
 	if err := store.DeleteState(getContext(), name); err != nil {
 		return err

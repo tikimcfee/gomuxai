@@ -1,4 +1,4 @@
-.PHONY: build test clean install lint fmt
+.PHONY: build test clean install lint fmt macos
 
 # Build variables
 BINARY_NAME=agent
@@ -30,6 +30,26 @@ build-darwin:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(MAIN_PATH)
 	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 $(MAIN_PATH)
+
+# macOS build that can hold its own Local Network permission, so the bus can
+# link to peers on the LAN from inside tmux (see internal/macos). Run it on a
+# Mac: cgo and the system linker embed cmd/agent/Info.plist, then codesign
+# signs with an Apple-issued identity (ad hoc signatures don't keep the
+# grant). CODESIGN_IDENTITY defaults to the first one in the keychain.
+MACOS_INFO_PLIST=$(CURDIR)/cmd/agent/Info.plist
+CODESIGN_IDENTITY?=
+
+macos:
+	@[ "$$(uname)" = Darwin ] || { echo "make macos runs on a Mac (it needs the system linker and codesign)"; exit 1; }
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=1 go build $(GOFLAGS) -ldflags "$(LDFLAGS) -linkmode=external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,$(MACOS_INFO_PLIST)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
+	@id="$(CODESIGN_IDENTITY)"; [ -n "$$id" ] || id=$$(security find-identity -v -p codesigning | awk 'NR==1{print $$2}'); \
+	[ -n "$$id" ] || { echo "no code-signing identity in the keychain (set CODESIGN_IDENTITY)"; exit 1; }; \
+	codesign --force --options runtime --sign "$$id" $(BUILD_DIR)/$(BINARY_NAME) || \
+	{ echo "codesign failed. Over SSH the login keychain is locked: run 'security unlock-keychain' first, or build in a terminal on the Mac."; exit 1; }
+	codesign --verify --strict $(BUILD_DIR)/$(BINARY_NAME)
+	@codesign -dv $(BUILD_DIR)/$(BINARY_NAME) 2>&1 | grep -E '^(Identifier|TeamIdentifier|Info.plist)'
+	@echo "Built and signed $(BUILD_DIR)/$(BINARY_NAME)"
 
 build-windows:
 	@mkdir -p $(BUILD_DIR)

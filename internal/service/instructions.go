@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
 // agentInstructions is the briefing every spawned agent gets, so it knows it
@@ -31,7 +33,7 @@ shell's PATH may not include it:
     agent send NAME "message"          # message an agent (NAME@HOST on another host)
     agent status NAME -v               # what an agent is doing right now
     agent wait NAME --for idle --next --timeout 10m   # wait for its next turn to finish
-    agent state get NAME _result       # its latest reply
+    agent state get NAME _result       # its latest reply (agents on this host only)
 
 Messages from other agents start with "[from NAME@HOST]". The sender can't see
 your terminal: to answer, send your reply back with `+"`agent send NAME@HOST \"...\"`"+`.
@@ -60,6 +62,26 @@ func (s *AgentService) writeInstructions(name, spawnedBy string) (string, error)
 		return "", fmt.Errorf("writing instructions: %w", err)
 	}
 	return path, nil
+}
+
+// writeLaunchScript saves the launch command in the agent's directory and
+// returns the short command that runs it. Typing the full command into the
+// new session's shell can lose its end: until the shell's line editor is up,
+// the terminal holds typed input in canonical mode, which macOS caps at 1024
+// bytes (MAX_CANON), and Claude's hook settings alone run past that.
+func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error) {
+	dir := s.cfg.AgentDir(name)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("creating agent dir: %w", err)
+	}
+	path, err := filepath.Abs(filepath.Join(dir, "launch.sh"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(launchCmd+"\n"), 0600); err != nil {
+		return "", fmt.Errorf("writing launch script: %w", err)
+	}
+	return "sh " + util.ShellQuote(path), nil
 }
 
 // agentSafeCommands are the agent subcommands a spawned agent may run without
