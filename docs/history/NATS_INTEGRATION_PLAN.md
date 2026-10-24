@@ -1,5 +1,13 @@
 # NATS Integration Plan for gomuxai
 
+> **History.** This is the bus's historical design and revision record, kept
+> as written. The March JetStream design it describes (embedded server in the
+> first CLI process, coordinator, streams, KV buckets, the subject hierarchy,
+> and the `streams.go`, `coordinator.go`, and `subjects.go` files) was
+> removed, and its MCP server and `agent ask` were never built; the v1 bus is
+> core NATS request/reply plus status events. The current design is in
+> [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md).
+
 ## Revision 2026-10: what changed, and what v1 actually builds
 
 The original plan (below, from March) still explains the motivation, but three things changed its design:
