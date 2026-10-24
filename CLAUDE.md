@@ -147,6 +147,30 @@ agent report idle
 
 The name defaults to `$AGENT_NAME`; use `--as <name>` otherwise.
 
+### Waiting for a Status
+
+```bash
+agent wait helper --for idle                         # prints "helper: idle", exits 0
+agent wait helper --for idle,waiting --timeout 10m   # exits 2 on timeout
+agent send helper "review auth.go" && agent wait helper --for idle --next
+```
+
+`wait` returns as soon as the agent reaches one of the `--for` statuses. It exits 1 on errors, including the agent exiting while you wait for something else.
+
+**After `send`, use `--next`.** Until the agent picks the message up, it still shows `idle` from its previous turn, so a plain `--for idle` returns at once. `--next` ignores the `--for` statuses until the agent has been seen in another one, so it waits for the turn your message starts. Start it right after the send (or in the background before it): a turn that finishes before `wait` starts is missed, and `--next` then waits for the following one, so give it a `--timeout`.
+
+With an agent bus running, `wait` reacts to status events the moment they're reported, and re-checks `agent status` every 5s for changes no hook reports (e.g. an interrupted permission prompt). Without a bus it polls every 2s. `--interval` overrides both. `name@host` isn't supported yet.
+
+### Watching Status Events
+
+```bash
+agent events                     # every agent on this host, one line per event
+agent events helper
+agent events --all-hosts --json
+```
+
+Needs a running agent bus. Events are the reports as recorded (hooks, `agent report`, approve/deny), not the resolved status: a change only the backend's native status shows has no event. For debugging and watching; use `wait` to coordinate.
+
 ---
 
 ## Data Storage (All in SQLite)
@@ -332,8 +356,8 @@ agent spawn analyzer --backend claude
 # 2. Give it work
 agent send analyzer "Analyze auth.go for security issues"
 
-# 3. Let it work, check periodically
-agent status analyzer  # idle? processing?
+# 3. Let it work: wait for the turn the message started
+agent wait analyzer --for idle --next --timeout 30m
 
 # 4. When idle, read results
 agent capture analyzer --lines 200
@@ -363,13 +387,11 @@ agent spawn db-analyzer --backend claude
 agent send api-analyzer "Analyze API routes, store findings in state"
 agent send db-analyzer "Analyze database queries, store findings in state"
 
-# Wait for both (poll state)
-while true; do
-  api_done=$(agent state get api-analyzer status)
-  db_done=$(agent state get db-analyzer status)
-  [[ "$api_done" == "done" && "$db_done" == "done" ]] && break
-  sleep 5
-done
+# Wait for both turns to finish. Start the waits right away and in
+# parallel: --next misses a turn that ended before its wait started.
+agent wait api-analyzer --for idle --next --timeout 30m & api=$!
+agent wait db-analyzer --for idle --next --timeout 30m & db=$!
+wait $api && wait $db || echo "a specialist failed or timed out"
 
 # Collect results
 agent state get api-analyzer findings
@@ -402,6 +424,8 @@ agent queue agent-b "Agent A is done. Read results from state."
 | No streaming capture | Poll with `capture` periodically |
 | Backend always required | Use `--backend claude` or config file |
 | Watch interval defaults to 2s | Use `agent watch --interval 5s` for less frequent polling |
+| Without a running bus, `wait` polls every 2s and `events` fails | Fine for local work; `--interval` tunes the polling |
+| `wait --next` misses a turn that finished before it started | Start it right after `send`, in parallel for several agents, with a `--timeout` |
 
 ---
 
@@ -537,6 +561,18 @@ Native wins when it disagrees with the last report: an interrupted Claude permis
 **Scrape patterns** (legacy, `internal/backend/namedagents/*.go`):
 - Claude idle `^>\s*$` no longer matches Claude Code's `❯` prompt; it only matters for Claude sessions spawned without hooks.
 - Aider idle `^aider>\s*$`; processing "Thinking", "Working", "Applying", "Generating", "Streaming".
+
+### Status Events
+
+Every status `Report` records also publishes a `natsbus.StatusEvent` on `gomux.<host>.agent.<name>.status` (core NATS, not persisted), through the `AgentService`'s optional `EventPublisher` (`internal/service/events.go`). Publishing is best-effort: the stored report is the source of truth, so a missing or failing bus never fails a report.
+
+The CLI's publisher (`internal/cli/events.go`) only connects on the first report, so commands that don't report never try the bus, and `report --hook` on an ignored hook event doesn't either. A publish only fills the NATS client's buffer, and a hook process exits within milliseconds, so `Execute` flushes before exit (bounded at 200ms) or the event would vanish with the process.
+
+`natsbus.Wait` (`internal/natsbus/events.go`) is the core of `agent wait`:
+
+1. Subscribe to the agent's status subject, then flush, so the server has the subscription before step 2.
+2. Check the current status through a callback (`StatusInfo` locally; an RPC for remote agents later). Subscribing first means a transition right after this check still arrives as an event.
+3. Loop on events and on a periodic re-check. The re-check is a backstop: Claude's native status can change with no hook firing (an interrupted permission prompt goes back to idle silently). With no bus, the re-check is all there is.
 
 ### Custom Backend Configuration
 
