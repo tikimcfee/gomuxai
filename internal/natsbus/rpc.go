@@ -173,6 +173,11 @@ func ServeRPC(nc *nats.Conn, host string, h RPCHandler, allowedOps []string) (st
 			stopped = true
 			mu.Unlock()
 			unsubscribe()
+			// As at start: once stop returns, the server has dropped the
+			// subscriptions, so requests fail fast with no responders
+			// instead of waiting out their timeout. Best effort: the
+			// connection may already be closed.
+			_ = nc.Flush()
 			cancel()
 			wg.Wait()
 		})
