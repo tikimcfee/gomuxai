@@ -11,16 +11,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
-// Regression tests from the status-from-hooks review. Tests for bugs that are
-// confirmed but not fixed yet skip unless GOMUXAI_KNOWN_BUGS=1, so the suite
-// stays green while the repro stays runnable.
-
-func skipUnlessKnownBugs(t *testing.T) {
-	t.Helper()
-	if os.Getenv("GOMUXAI_KNOWN_BUGS") == "" {
-		t.Skip("known bug, not fixed yet; run with GOMUXAI_KNOWN_BUGS=1 to reproduce")
-	}
-}
+// Regression tests from the status-from-hooks review.
 
 var spawnIDFlag = regexp.MustCompile(`--spawn-id '([^']+)'`)
 
@@ -145,7 +136,6 @@ func TestStatusInfo_NativeUnavailableKeepsReport(t *testing.T) {
 // and `agent approve --always` pressed "2", answering the question ("Blue")
 // on the user's behalf. approve should only answer real permission dialogs.
 func TestRespondPermission_RefusesQuestionDialogs(t *testing.T) {
-	skipUnlessKnownBugs(t)
 	env := setupTestEnv(t)
 	defer env.cleanup()
 	ctx := context.Background()
@@ -155,7 +145,7 @@ func TestRespondPermission_RefusesQuestionDialogs(t *testing.T) {
 	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
-	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, false); err == nil {
+	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{}); err == nil {
 		t.Error("approve answered an AskUserQuestion dialog; want a refusal without --force")
 	} else {
 		t.Logf("refused: %v", err)
@@ -168,7 +158,6 @@ func TestRespondPermission_RefusesQuestionDialogs(t *testing.T) {
 // trace. (Claude ran one session's hooks serially in probes, so in practice
 // this needs overlapping writers, e.g. a hook racing approve/deny.)
 func TestReport_ConcurrentReportsStayConsistent(t *testing.T) {
-	skipUnlessKnownBugs(t)
 	env := setupTestEnv(t)
 	defer env.cleanup()
 	ctx := context.Background()
@@ -193,5 +182,45 @@ func TestReport_ConcurrentReportsStayConsistent(t *testing.T) {
 		if (st.Value == string(service.AgentStatusWaiting)) != (ev.Value == "PermissionRequest") {
 			t.Fatalf("round %d: torn report: _status=%s _event=%s", round, st.Value, ev.Value)
 		}
+	}
+}
+
+func TestRespondPermission_ForceAnswersQuestionDialogs(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	spawnFake(t, env, "worker")
+
+	payload := `{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"AskUserQuestion","tool_input":{}}`
+	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+		t.Fatalf("ReportHook: %v", err)
+	}
+	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{Force: true}); err != nil {
+		t.Errorf("--force should answer the dialog: %v", err)
+	}
+}
+
+func TestRespondPermission_ExpectTool(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	spawnFake(t, env, "worker")
+
+	payload := `{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}`
+	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+		t.Fatalf("ReportHook: %v", err)
+	}
+	info, err := env.service.StatusInfo(ctx, "worker")
+	if err != nil || info.Tool != "Bash" {
+		t.Fatalf("pending tool = %q (err %v), want Bash", info.Tool, err)
+	}
+
+	// The prompt you inspected was replaced by a different one: refuse.
+	err = env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{ExpectTool: "Edit"})
+	if err == nil {
+		t.Fatal("approved a Bash prompt while expecting Edit")
+	}
+	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{ExpectTool: "Bash"}); err != nil {
+		t.Errorf("expected Bash approval to go through: %v", err)
 	}
 }

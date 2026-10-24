@@ -15,3 +15,6 @@ bin/
 # Test artifacts
 coverage.out
 *.test
+
+# Agent worktrees
+/.claude/worktrees/

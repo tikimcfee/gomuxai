@@ -5,11 +5,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/backend"
+	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
 var (
-	approveAlways   bool
-	permissionForce bool
+	approveAlways    bool
+	permissionForce  bool
+	permissionExpect string
 )
 
 var approveCmd = &cobra.Command{
@@ -18,10 +20,15 @@ var approveCmd = &cobra.Command{
 	Long: `Approve answers "yes" to the permission prompt an agent is waiting on.
 
 Check what it's asking first: "agent status <name> -v" shows the pending
-tool call. Refuses unless the agent's status is "waiting" (override with --force).
+tool call. Refuses unless the agent's status is "waiting", and refuses dialogs
+that are questions for the user rather than permission prompts (e.g. Claude's
+AskUserQuestion). --force overrides both.
+
+Use --expect with the tool you inspected, so a prompt that replaced it in the
+meantime isn't approved blind.
 
 Examples:
-  agent approve helper
+  agent approve helper --expect Bash
   agent approve helper --always   # Claude's "yes, don't ask again" option`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -51,12 +58,17 @@ Examples:
 
 func init() {
 	approveCmd.Flags().BoolVar(&approveAlways, "always", false, "Approve and stop asking for this kind of action")
-	approveCmd.Flags().BoolVar(&permissionForce, "force", false, "Send even if the agent isn't reported as waiting")
-	denyCmd.Flags().BoolVar(&permissionForce, "force", false, "Send even if the agent isn't reported as waiting")
+	for _, cmd := range []*cobra.Command{approveCmd, denyCmd} {
+		cmd.Flags().BoolVar(&permissionForce, "force", false, "Send even if the agent isn't waiting on a permission prompt")
+		cmd.Flags().StringVar(&permissionExpect, "expect", "", "Refuse unless the pending prompt is for this tool (see status -v)")
+	}
 }
 
 func respondPermission(name string, resp backend.PermissionResponse, verb string) error {
-	if err := agentService.RespondPermission(getContext(), name, resp, permissionForce); err != nil {
+	if err := agentService.RespondPermission(getContext(), name, resp, service.PermissionOptions{
+		Force:      permissionForce,
+		ExpectTool: permissionExpect,
+	}); err != nil {
 		return err
 	}
 	fmt.Printf("%s: %s\n", name, verb)

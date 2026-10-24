@@ -51,7 +51,11 @@ type NativeStatusProvider interface {
 // PermissionResponder is implemented by backends that can answer a pending
 // permission prompt with a keypress.
 type PermissionResponder interface {
-	PermissionKey(resp PermissionResponse) (string, error)
+	// PermissionKey returns the key that answers the prompt for tool. It
+	// errors for tools whose dialogs aren't yes/no permission prompts (e.g. a
+	// question to the user), where a "yes" key would pick an answer instead.
+	// An empty tool means "treat it as a plain permission prompt".
+	PermissionKey(resp PermissionResponse, tool string) (string, error)
 }
 
 // Provider defines the interface for AI CLI tool backends.

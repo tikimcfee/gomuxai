@@ -219,7 +219,7 @@ func TestRespondPermission_RequiresWaiting(t *testing.T) {
 	spawnFake(t, env, "worker")
 	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusProcessing})
 
-	err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, false)
+	err := env.service.RespondPermission(ctx, "worker", backend.PermissionApprove, service.PermissionOptions{})
 	if err == nil || !strings.Contains(err.Error(), "not waiting") {
 		t.Errorf("expected refusal, got %v", err)
 	}
@@ -240,7 +240,7 @@ func TestRespondPermission_ApproveAndDeny(t *testing.T) {
 	}
 	for _, tt := range tests {
 		env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusWaiting})
-		if err := env.service.RespondPermission(ctx, "worker", tt.resp, false); err != nil {
+		if err := env.service.RespondPermission(ctx, "worker", tt.resp, service.PermissionOptions{}); err != nil {
 			t.Fatalf("RespondPermission(%v): %v", tt.resp, err)
 		}
 		if st, _ := env.service.Status(ctx, "worker"); st != tt.want {

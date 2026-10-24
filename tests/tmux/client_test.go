@@ -813,3 +813,48 @@ func TestCapture_NonExistentSession(t *testing.T) {
 		t.Error("expected error when capturing from non-existent session")
 	}
 }
+
+// TestPaneTargeting_IgnoresActiveWindow checks that typed text, special keys,
+// and captures all reach the agent's pane when another window is active.
+func TestPaneTargeting_IgnoresActiveWindow(t *testing.T) {
+	requireTmux(t)
+
+	client, err := tmux.NewClient()
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+
+	sessionName := uniqueSessionName(t)
+	defer cleanupSession(sessionName)
+
+	if err := client.CreateSession(sessionName, nil); err != nil {
+		t.Fatalf("creating session: %v", err)
+	}
+	// A second window becomes the active one, e.g. a human poking around.
+	if out, err := exec.Command("tmux", "new-window", "-t", sessionName).CombinedOutput(); err != nil {
+		t.Fatalf("new-window: %v: %s", err, out)
+	}
+
+	if err := client.SendKeys(sessionName, "echo marker-$((40+2))"); err != nil {
+		t.Fatalf("sending keys: %v", err)
+	}
+	if err := client.SendSpecialKey(sessionName, "Enter"); err != nil {
+		t.Fatalf("sending enter: %v", err)
+	}
+
+	// The command only runs if Enter reached the same pane as the text.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		output, err := client.Capture(sessionName, 20, true)
+		if err != nil {
+			t.Fatalf("capturing: %v", err)
+		}
+		if strings.Contains(output, "marker-42") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("command never ran in the agent pane; capture:\n%s", output)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}

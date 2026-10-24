@@ -36,6 +36,7 @@ type HookReport struct {
 	Status    Status
 	Event     string // backend's event name, e.g. "PreToolUse"
 	Detail    string // short human-readable context, e.g. "Bash: go test ./..."
+	Tool      string // tool the event concerns, if any
 	Result    string // final assistant message, when the event carries one
 	SessionID string // backend's session id, when the event carries one
 }

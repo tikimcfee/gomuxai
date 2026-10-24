@@ -33,6 +33,7 @@ type Storage interface {
 
 	// State operations
 	SetState(ctx context.Context, entry *StateEntry) error
+	SetStates(ctx context.Context, entries []*StateEntry) error // atomic
 	GetState(ctx context.Context, agentName, key string) (*StateEntry, error)
 	ListState(ctx context.Context, agentName string) ([]*StateEntry, error)
 	DeleteState(ctx context.Context, agentName string) error

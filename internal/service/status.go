@@ -18,6 +18,7 @@ const (
 	StateKeyDetail    = "_detail"
 	StateKeyResult    = "_result"
 	StateKeySessionID = "_session_id"
+	StateKeyTool      = "_tool" // tool the last event concerned, e.g. the one awaiting permission
 	// StateKeySpawnID identifies one spawn of an agent name. Hook commands
 	// carry it, so hooks from a previous agent with the same name (e.g. the
 	// SessionEnd fired while cleanup kills it) can't write into a respawn.
@@ -36,6 +37,7 @@ type StatusReport struct {
 	Status    AgentStatus
 	Event     string
 	Detail    string
+	Tool      string
 	Result    string // only stored when non-empty
 	SessionID string // only stored when non-empty
 }
@@ -46,6 +48,7 @@ type StatusInfo struct {
 	Source    string
 	Event     string
 	Detail    string
+	Tool      string
 	UpdatedAt time.Time // time of the last report; zero for other sources
 }
 
@@ -63,25 +66,27 @@ func fromBackendStatus(st backend.Status) AgentStatus {
 	return AgentStatus(st.String())
 }
 
-// Report records a status update for an agent.
+// Report records a status update for an agent. All keys are written in one
+// transaction, so concurrent reports can't leave a mix of both.
 func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) error {
-	entries := map[string]string{
+	values := map[string]string{
 		StateKeyStatus: string(r.Status),
 		StateKeyEvent:  r.Event,
 		StateKeyDetail: r.Detail,
+		StateKeyTool:   r.Tool,
 	}
 	if r.Result != "" {
-		entries[StateKeyResult] = r.Result
+		values[StateKeyResult] = r.Result
 	}
 	if r.SessionID != "" {
-		entries[StateKeySessionID] = r.SessionID
+		values[StateKeySessionID] = r.SessionID
 	}
-	for key, value := range entries {
-		if err := s.setState(ctx, name, key, value); err != nil {
-			return fmt.Errorf("storing %s: %w", key, err)
-		}
+	now := time.Now()
+	entries := make([]*storage.StateEntry, 0, len(values))
+	for key, value := range values {
+		entries = append(entries, &storage.StateEntry{AgentName: name, Key: key, Value: value, UpdatedAt: now})
 	}
-	return nil
+	return s.storage.SetStates(ctx, entries)
 }
 
 // ReportHook records the status carried by a backend hook payload.
@@ -114,6 +119,7 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID string, pay
 		Status:    fromBackendStatus(hr.Status),
 		Event:     hr.Event,
 		Detail:    hr.Detail,
+		Tool:      hr.Tool,
 		Result:    hr.Result,
 		SessionID: hr.SessionID,
 	})
@@ -147,7 +153,7 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 		// Hook detail is only trustworthy while it agrees with the backend;
 		// e.g. an interrupted permission prompt fires no hook at all.
 		if reported != nil && reported.Status == native {
-			info.Event, info.Detail, info.UpdatedAt = reported.Event, reported.Detail, reported.UpdatedAt
+			info.Event, info.Detail, info.Tool, info.UpdatedAt = reported.Event, reported.Detail, reported.Tool, reported.UpdatedAt
 		}
 		return info, nil
 	}
@@ -176,21 +182,26 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 }
 
 // reportedStatus returns the last reported status, or nil if none was reported.
+// It reads all keys in one query so it sees a single report, not a mix.
 func (s *AgentService) reportedStatus(ctx context.Context, name string) (*StatusInfo, error) {
-	entry, err := s.storage.GetState(ctx, name, StateKeyStatus)
+	entries, err := s.storage.ListState(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("reading reported status: %w", err)
 	}
-	if entry == nil {
+	values := make(map[string]string, len(entries))
+	var info *StatusInfo
+	for _, e := range entries {
+		values[e.Key] = e.Value
+		if e.Key == StateKeyStatus {
+			info = &StatusInfo{Status: AgentStatus(e.Value), Source: StatusSourceReport, UpdatedAt: e.UpdatedAt}
+		}
+	}
+	if info == nil {
 		return nil, nil
 	}
-	info := &StatusInfo{
-		Status:    AgentStatus(entry.Value),
-		Source:    StatusSourceReport,
-		UpdatedAt: entry.UpdatedAt,
-	}
-	info.Event = s.stateValue(ctx, name, StateKeyEvent)
-	info.Detail = s.stateValue(ctx, name, StateKeyDetail)
+	info.Event = values[StateKeyEvent]
+	info.Detail = values[StateKeyDetail]
+	info.Tool = values[StateKeyTool]
 	return info, nil
 }
 
@@ -260,21 +271,31 @@ func (s *AgentService) scrapeStatus(agent *storage.Agent) (AgentStatus, error) {
 	return AgentStatusUnknown, nil
 }
 
-// RespondPermission answers an agent's pending permission prompt. Unless
-// force is set, the agent must currently be waiting.
-func (s *AgentService) RespondPermission(ctx context.Context, name string, resp backend.PermissionResponse, force bool) error {
+// PermissionOptions guards RespondPermission against answering the wrong prompt.
+type PermissionOptions struct {
+	// Force sends the key even if the agent isn't waiting, or is waiting on
+	// a dialog the backend won't treat as a permission prompt.
+	Force bool
+	// ExpectTool, if set, refuses unless the pending prompt is for this tool,
+	// so a prompt that replaced the one you inspected isn't answered blind.
+	ExpectTool string
+}
+
+// RespondPermission answers an agent's pending permission prompt.
+func (s *AgentService) RespondPermission(ctx context.Context, name string, resp backend.PermissionResponse, opts PermissionOptions) error {
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
 		return err
 	}
-	if !force {
-		info, err := s.StatusInfo(ctx, name)
-		if err != nil {
-			return err
-		}
-		if info.Status != AgentStatusWaiting {
-			return fmt.Errorf("agent %q is %s, not waiting on a permission prompt (use --force to send anyway)", name, info.Status)
-		}
+	info, err := s.StatusInfo(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !opts.Force && info.Status != AgentStatusWaiting {
+		return fmt.Errorf("agent %q is %s, not waiting on a permission prompt (use --force to send anyway)", name, info.Status)
+	}
+	if opts.ExpectTool != "" && info.Tool != opts.ExpectTool {
+		return fmt.Errorf("agent %q is waiting on %q, not %q", name, info.Tool, opts.ExpectTool)
 	}
 
 	provider, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
@@ -285,9 +306,13 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 	if !ok {
 		return fmt.Errorf("backend %q does not support answering permission prompts", agent.Backend)
 	}
-	key, err := pr.PermissionKey(resp)
+	tool := info.Tool
+	if opts.Force {
+		tool = "" // answer whatever is on screen as a plain permission prompt
+	}
+	key, err := pr.PermissionKey(resp, tool)
 	if err != nil {
-		return err
+		return fmt.Errorf("agent %q: %w", name, err)
 	}
 	if err := s.tmux.SendSpecialKey(agent.SessionName, key); err != nil {
 		return fmt.Errorf("sending %q: %w", key, err)
@@ -295,7 +320,7 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 
 	// Record the expected outcome now: a denied prompt fires no hook, and an
 	// approved one only reports once the tool finishes.
-	report := StatusReport{Status: AgentStatusProcessing, Event: "approved"}
+	report := StatusReport{Status: AgentStatusProcessing, Event: "approved", Tool: info.Tool}
 	if resp == backend.PermissionDeny {
 		report = StatusReport{Status: AgentStatusIdle, Event: "denied"}
 	}

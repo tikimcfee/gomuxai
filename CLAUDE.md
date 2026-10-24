@@ -106,13 +106,13 @@ agent state get helper _result
 ### Answering Permission Prompts
 
 ```bash
-agent status helper -v      # detail: permission: Bash: rm -rf build
-agent approve helper        # yes, once
-agent approve helper --always   # yes, and don't ask again for this kind of action
-agent deny helper           # no (for Claude this cancels the turn; follow up with send)
+agent status helper -v                  # detail: permission: Bash: rm -rf build / tool: Bash
+agent approve helper --expect Bash      # yes, once, only if it's still the Bash prompt
+agent approve helper --always           # yes, and don't ask again (meaning varies by dialog)
+agent deny helper                       # no (for Claude this cancels the turn; follow up with send)
 ```
 
-`approve`/`deny` refuse unless the agent is `waiting`. **Read the detail before approving.**
+**Read the detail before approving.** `approve`/`deny` refuse unless the agent is `waiting`, and refuse dialogs that are questions for the user rather than permission prompts (Claude's `AskUserQuestion`, `ExitPlanMode`): answer those with `send`/`keys`. `--expect <tool>` guards against a different prompt having replaced the one you inspected. `--force` overrides the checks.
 
 ### Reporting Your Own Status
 
@@ -500,7 +500,7 @@ The high-level commands (`spawn`, `send`, `queue`, `status`) are conveniences. T
 `AgentService.StatusInfo` (`internal/service/status.go`) resolves status from three sources, most authoritative first:
 
 1. **native**: the backend CLI's own session status (`NativeStatusProvider`). Claude: `claude agents --json`, matched on the `--session-id` spawn assigns.
-2. **report**: the last status written by hooks or `agent report`, stored in reserved state keys (`_status`, `_event`, `_detail`, `_result`, `_session_id`, `_spawn_id`).
+2. **report**: the last status written by hooks or `agent report`, stored in reserved state keys (`_status`, `_event`, `_detail`, `_tool`, `_result`, `_session_id`, `_spawn_id`), written in one transaction per report.
 3. **scrape**: regex over captured terminal output, for backends with neither.
 
 Native wins when it disagrees with the last report: an interrupted Claude permission prompt fires no hook at all, so the report would stay stuck at `waiting`. When the CLI answers but no longer lists the session while the last report still says it's alive, status is `exited`: the process died without its `SessionEnd` hook (crash, `kill -9`).

@@ -231,9 +231,22 @@ func TestClaudePermissionKey(t *testing.T) {
 		backend.PermissionDeny:          "Escape",
 	}
 	for resp, key := range want {
-		got, err := provider.PermissionKey(resp)
+		got, err := provider.PermissionKey(resp, "Bash")
 		if err != nil || got != key {
 			t.Errorf("PermissionKey(%v) = %q, %v; want %q", resp, got, err, key)
 		}
+	}
+}
+
+// Question dialogs also raise PermissionRequest, but "1" would pick an answer.
+func TestClaudePermissionKey_RefusesQuestionDialogs(t *testing.T) {
+	provider := namedagents.NewClaudeBackend()
+	for _, tool := range []string{"AskUserQuestion", "ExitPlanMode"} {
+		if key, err := provider.PermissionKey(backend.PermissionApprove, tool); err == nil {
+			t.Errorf("PermissionKey(approve, %s) = %q; want an error", tool, key)
+		}
+	}
+	if _, err := provider.PermissionKey(backend.PermissionApprove, ""); err != nil {
+		t.Errorf("empty tool should be treated as a plain prompt: %v", err)
 	}
 }

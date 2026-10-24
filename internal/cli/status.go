@@ -48,6 +48,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if info.Detail != "" {
 			fmt.Printf("  detail: %s\n", info.Detail)
 		}
+		if info.Tool != "" {
+			fmt.Printf("  tool:   %s\n", info.Tool)
+		}
 	}
 	return nil
 }

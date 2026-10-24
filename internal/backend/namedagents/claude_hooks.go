@@ -84,7 +84,7 @@ func (b *ClaudeBackend) ParseHookEvent(payload []byte) (types.HookReport, bool, 
 		return types.HookReport{}, false, fmt.Errorf("decoding hook payload: %w", err)
 	}
 
-	r := types.HookReport{Event: p.Event, SessionID: p.SessionID}
+	r := types.HookReport{Event: p.Event, SessionID: p.SessionID, Tool: p.ToolName}
 	switch p.Event {
 	case "SessionStart":
 		r.Status = types.StatusIdle
@@ -180,9 +180,19 @@ func ParseClaudeAgentsJSON(data []byte, sessionID string) (types.Status, bool, e
 	return types.StatusUnknown, false, nil
 }
 
+// claudeDialogTools raise a PermissionRequest whose dialog is a question to
+// the user rather than a yes/no prompt; "1" would pick an answer.
+var claudeDialogTools = map[string]bool{
+	"AskUserQuestion": true,
+	"ExitPlanMode":    true,
+}
+
 // PermissionKey returns the key that answers Claude's permission dialog:
 // "1" is "Yes", "2" is the "don't ask again" variant, Escape cancels the turn.
-func (b *ClaudeBackend) PermissionKey(resp types.PermissionResponse) (string, error) {
+func (b *ClaudeBackend) PermissionKey(resp types.PermissionResponse, tool string) (string, error) {
+	if claudeDialogTools[tool] {
+		return "", fmt.Errorf("%s is a question for the user, not a permission prompt; answer it with send/keys (or --force)", tool)
+	}
 	switch resp {
 	case types.PermissionApprove:
 		return "1", nil

@@ -502,25 +502,42 @@ func (s *SQLiteStorage) DeleteLogs(ctx context.Context, agentName string) error 
 
 // SetState creates or updates a state entry for an agent.
 func (s *SQLiteStorage) SetState(ctx context.Context, entry *StateEntry) error {
-	query := `
-		INSERT INTO state (agent_name, key, value, updated_at)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(agent_name, key) DO UPDATE SET
-			value = excluded.value,
-			updated_at = excluded.updated_at
-	`
-
-	_, err := s.db.ExecContext(ctx, query,
-		entry.AgentName,
-		entry.Key,
-		entry.Value,
-		entry.UpdatedAt.Format(time.RFC3339),
-	)
-	if err != nil {
+	if _, err := s.db.ExecContext(ctx, setStateQuery, stateArgs(entry)...); err != nil {
 		return fmt.Errorf("setting state: %w", err)
 	}
-
 	return nil
+}
+
+// SetStates creates or updates several state entries atomically, so readers
+// never see a mix of two concurrent writes.
+func (s *SQLiteStorage) SetStates(ctx context.Context, entries []*StateEntry) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, entry := range entries {
+		if _, err := tx.ExecContext(ctx, setStateQuery, stateArgs(entry)...); err != nil {
+			return fmt.Errorf("setting state %s: %w", entry.Key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing state: %w", err)
+	}
+	return nil
+}
+
+const setStateQuery = `
+	INSERT INTO state (agent_name, key, value, updated_at)
+	VALUES (?, ?, ?, ?)
+	ON CONFLICT(agent_name, key) DO UPDATE SET
+		value = excluded.value,
+		updated_at = excluded.updated_at
+`
+
+func stateArgs(entry *StateEntry) []any {
+	return []any{entry.AgentName, entry.Key, entry.Value, entry.UpdatedAt.Format(time.RFC3339)}
 }
 
 // GetState retrieves a single state entry.

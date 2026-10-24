@@ -159,6 +159,17 @@ func (c *Client) getFirstPane(sessionName string) (*gotmux.Pane, error) {
 	return panes[0], nil
 }
 
+// paneTarget returns the id of the pane SendKeys types into. Every
+// session-level operation targets it, so keys, captures, and logs all hit the
+// agent's pane even when another window or pane is active.
+func (c *Client) paneTarget(sessionName string) (string, error) {
+	pane, err := c.getFirstPane(sessionName)
+	if err != nil {
+		return "", err
+	}
+	return pane.Id, nil
+}
+
 // SendKeys sends text to a tmux session.
 func (c *Client) SendKeys(session string, text string) error {
 	pane, err := c.getFirstPane(session)
@@ -175,8 +186,12 @@ func (c *Client) SendKeys(session string, text string) error {
 
 // SendSpecialKey sends a special key to a session.
 func (c *Client) SendSpecialKey(session string, key string) error {
+	target, err := c.paneTarget(session)
+	if err != nil {
+		return err
+	}
 	// Use raw tmux command for special keys
-	_, err := c.tmux.Command("send-keys", "-t", session, key)
+	_, err = c.tmux.Command("send-keys", "-t", target, key)
 	if err != nil {
 		return fmt.Errorf("sending key %q: %w", key, err)
 	}
@@ -185,11 +200,16 @@ func (c *Client) SendSpecialKey(session string, key string) error {
 
 // Capture captures pane content.
 func (c *Client) Capture(session string, lines int, stripANSI bool) (string, error) {
+	target, err := c.paneTarget(session)
+	if err != nil {
+		return "", err
+	}
+
 	// Use raw tmux command for capture with line range
 	startLine := -lines
 	args := []string{
 		"capture-pane",
-		"-t", session,
+		"-t", target,
 		"-p",                           // print to stdout
 		"-S", strconv.Itoa(startLine),  // start line
 	}
@@ -214,7 +234,11 @@ func (c *Client) PipePane(session string, logPath string) error {
 	paneCmd := fmt.Sprintf("cat >> %s", safePath)
 
 	// Use raw tmux command for pipe-pane
-	_, err := c.tmux.Command("pipe-pane", "-t", session, paneCmd)
+	target, err := c.paneTarget(session)
+	if err != nil {
+		return err
+	}
+	_, err = c.tmux.Command("pipe-pane", "-t", target, paneCmd)
 	if err != nil {
 		return fmt.Errorf("piping pane: %w", err)
 	}
@@ -224,7 +248,11 @@ func (c *Client) PipePane(session string, logPath string) error {
 // StopPipePane stops piping pane output.
 func (c *Client) StopPipePane(session string) error {
 	// Pass empty command to stop piping
-	_, err := c.tmux.Command("pipe-pane", "-t", session)
+	target, err := c.paneTarget(session)
+	if err != nil {
+		return err
+	}
+	_, err = c.tmux.Command("pipe-pane", "-t", target)
 	if err != nil {
 		return fmt.Errorf("stopping pipe: %w", err)
 	}
@@ -242,7 +270,11 @@ func (c *Client) Clear(session string) error {
 	}
 
 	// Clear tmux scrollback buffer
-	_, err := c.tmux.Command("clear-history", "-t", session)
+	target, err := c.paneTarget(session)
+	if err != nil {
+		return err
+	}
+	_, err = c.tmux.Command("clear-history", "-t", target)
 	if err != nil {
 		return fmt.Errorf("clearing history: %w", err)
 	}
