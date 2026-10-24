@@ -65,6 +65,11 @@ type PermissionResponder interface {
 	// question to the user), where a "yes" key would pick an answer instead.
 	// An empty tool means "treat it as a plain permission prompt".
 	PermissionKey(resp PermissionResponse, tool string) (string, error)
+
+	// PermissionPromptVisible reports whether a permission prompt is showing
+	// on screen (the visible pane, ANSI-stripped). Checked right before the
+	// keypress, since reported status can lag a prompt that was just answered.
+	PermissionPromptVisible(screen string) bool
 }
 
 // Provider defines the interface for AI CLI tool backends.

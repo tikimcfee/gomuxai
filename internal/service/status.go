@@ -273,8 +273,9 @@ func (s *AgentService) scrapeStatus(agent *storage.Agent) (AgentStatus, error) {
 
 // PermissionOptions guards RespondPermission against answering the wrong prompt.
 type PermissionOptions struct {
-	// Force sends the key even if the agent isn't waiting, or is waiting on
-	// a dialog the backend won't treat as a permission prompt.
+	// Force sends the key even if the agent isn't waiting, is waiting on a
+	// dialog the backend won't treat as a permission prompt, or shows no
+	// prompt on screen.
 	Force bool
 	// ExpectTool, if set, refuses unless the pending prompt is for this tool,
 	// so a prompt that replaced the one you inspected isn't answered blind.
@@ -313,6 +314,23 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 	key, err := pr.PermissionKey(resp, tool)
 	if err != nil {
 		return fmt.Errorf("agent %q: %w", name, err)
+	}
+	// The status above can be hundreds of ms old (native status runs the
+	// backend CLI), and the prompt may have been answered since. For Claude
+	// that turns deny's Escape into an interrupt of the now-running turn, and
+	// no key means "No" without that risk (the "No" option acts like Escape,
+	// and its number varies). So confirm the prompt is on screen right before
+	// the keypress. This narrows the race to the gap between the capture and
+	// the keypress (a few tmux calls, milliseconds) but can't close it: a
+	// prompt answered inside that gap still gets the key.
+	if !opts.Force {
+		screen, err := s.tmux.Capture(agent.SessionName, 0, true)
+		if err != nil {
+			return fmt.Errorf("capturing screen: %w", err)
+		}
+		if !pr.PermissionPromptVisible(screen) {
+			return fmt.Errorf("agent %q has no permission prompt on screen; it may have just been answered (use --force to send anyway)", name)
+		}
 	}
 	if err := s.tmux.SendSpecialKey(agent.SessionName, key); err != nil {
 		return fmt.Errorf("sending %q: %w", key, err)

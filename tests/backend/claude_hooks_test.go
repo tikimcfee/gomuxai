@@ -257,3 +257,74 @@ func TestClaudePermissionKey_RefusesQuestionDialogs(t *testing.T) {
 		t.Errorf("empty tool should be treated as a plain prompt: %v", err)
 	}
 }
+
+// Screens trimmed from Claude Code v2.1.310 (visible pane, ANSI stripped).
+const (
+	claudeBashDialog = `● Bash(touch fx-a.txt)
+
+────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ touch fx-a.txt
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to fx1 from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+
+`
+	claudeWriteDialog = `● Write(fx-b.txt)
+
+────────────────────────────────────────────────────────────────────────────────
+ Create file
+ fx-b.txt
+ Do you want to create fx-b.txt?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file edits and common file
+      commands) for this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend
+`
+	claudeRunning = `● Bash(touch fx-a.txt)
+  ⎿  Running…
+
+✻ Cogitating… (3s · esc to interrupt)
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts
+`
+	claudeIdleAfterList = `● Options:
+  1. Yes, refactor it
+  2. No, leave it
+  Esc to cancel is what the dialog says.
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts
+`
+)
+
+// deny's Escape cancels a running turn, so it is only sent while the dialog
+// is actually on screen.
+func TestClaudePermissionPromptVisible(t *testing.T) {
+	b := namedagents.NewClaudeBackend()
+	for name, tt := range map[string]struct {
+		screen string
+		want   bool
+	}{
+		"bash dialog, No is 4":         {claudeBashDialog, true},
+		"write dialog, No is 3":        {claudeWriteDialog, true},
+		"running turn":                 {claudeRunning, false},
+		"idle, reply mentions options": {claudeIdleAfterList, false},
+		"empty":                        {"", false},
+	} {
+		if got := b.PermissionPromptVisible(tt.screen); got != tt.want {
+			t.Errorf("%s: visible = %v, want %v", name, got, tt.want)
+		}
+	}
+}

@@ -21,7 +21,12 @@ type fakeHookBackend struct {
 	nativeFound bool // the CLI lists the session, with status native
 	nativeGone  bool // the CLI answers but doesn't list the session (it died)
 	native      backend.Status
+	promptGone  bool // no permission dialog on screen (the test shell shows none)
 }
+
+// PermissionPromptVisible stands in for the screen check: the test session
+// is a plain shell, so the real check would never see a dialog.
+func (f *fakeHookBackend) PermissionPromptVisible(string) bool { return !f.promptGone }
 
 // errNativeUnavailable is what the fake returns when the test set up neither
 // nativeFound nor nativeGone: as if the backend CLI couldn't be run.

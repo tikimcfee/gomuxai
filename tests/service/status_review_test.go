@@ -224,3 +224,30 @@ func TestRespondPermission_ExpectTool(t *testing.T) {
 		t.Errorf("expected Bash approval to go through: %v", err)
 	}
 }
+
+// Repro (race): the agent is waiting on a Bash prompt; someone else answers
+// it while `agent deny` is between its status check and the keypress. deny
+// then sent Escape into the turn now running, cancelling the work that was
+// just approved. deny must re-check the screen and refuse.
+func TestRespondPermission_RefusesWhenPromptLeftScreen(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	fake := spawnFake(t, env, "worker")
+
+	payload := `{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"Bash","tool_input":{"command":"go test ./..."}}`
+	if err := env.service.ReportHook(ctx, "worker", "", []byte(payload)); err != nil {
+		t.Fatalf("ReportHook: %v", err)
+	}
+	fake.promptGone = true // answered meanwhile; status still says waiting
+
+	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionDeny, service.PermissionOptions{}); err == nil {
+		t.Fatal("deny sent Escape with no prompt on screen; it would cancel the running turn")
+	}
+	if ev, _ := env.store.GetState(ctx, "worker", service.StateKeyEvent); ev == nil || ev.Value != "PermissionRequest" {
+		t.Errorf("_event = %+v, want PermissionRequest (a refused deny must not record itself)", ev)
+	}
+	if err := env.service.RespondPermission(ctx, "worker", backend.PermissionDeny, service.PermissionOptions{Force: true}); err != nil {
+		t.Errorf("--force should skip the screen check: %v", err)
+	}
+}

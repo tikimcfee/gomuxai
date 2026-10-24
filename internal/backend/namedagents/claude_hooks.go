@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -210,6 +211,32 @@ func (b *ClaudeBackend) PermissionKey(resp types.PermissionResponse, tool string
 	default:
 		return "", fmt.Errorf("unsupported permission response %d", resp)
 	}
+}
+
+// claudeDialogNoOption matches the "No" line of a permission dialog. Its
+// number varies with the dialog (3 for Write, 4 for Bash in v2.1.310), and
+// it behaves exactly like Escape, so it is only used for detection.
+var claudeDialogNoOption = regexp.MustCompile(`(?m)^[\s❯]*\d+\.\s+No\b`)
+
+// claudeDialogTailLines bounds the detection to the bottom of the screen,
+// where the dialog sits, so a numbered "No" in an older reply can't match.
+const claudeDialogTailLines = 12
+
+// PermissionPromptVisible reports whether Claude's permission dialog is on
+// screen: a numbered "No" option above the "Esc to cancel" footer. A running
+// turn shows "esc to interrupt" instead, and the idle prompt neither.
+func (b *ClaudeBackend) PermissionPromptVisible(screen string) bool {
+	var tail []string
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0 && len(tail) < claudeDialogTailLines; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			tail = append(tail, lines[i])
+		}
+	}
+	if len(tail) == 0 || !strings.Contains(tail[0], "Esc to cancel") {
+		return false
+	}
+	return claudeDialogNoOption.MatchString(strings.Join(tail, "\n"))
 }
 
 func truncate(s string) string {

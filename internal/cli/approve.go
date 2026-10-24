@@ -46,7 +46,9 @@ var denyCmd = &cobra.Command{
 	Long: `Deny rejects the permission prompt an agent is waiting on. For Claude this
 cancels the current turn; follow up with "agent send" to redirect it.
 
-Refuses unless the agent's status is "waiting" (override with --force).
+Refuses unless the agent's status is "waiting" and the prompt is still on
+screen (override with --force): for Claude the deny key is Escape, which
+would cancel the turn if the prompt was answered in the meantime.
 
 Examples:
   agent deny helper`,
