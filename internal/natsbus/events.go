@@ -27,8 +27,8 @@ func PublishStatus(nc *nats.Conn, ev StatusEvent) error {
 	if err := ValidateHost(ev.Host); err != nil {
 		return err
 	}
-	if !namePattern.MatchString(ev.Agent) {
-		return fmt.Errorf("invalid agent name %q", ev.Agent)
+	if err := validateAgent(ev.Agent); err != nil {
+		return err
 	}
 	data, err := json.Marshal(ev)
 	if err != nil {

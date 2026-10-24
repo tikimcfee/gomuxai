@@ -49,15 +49,12 @@ var ErrNoIdentity = errors.New("no bus identity on this host (run `agent bus ini
 
 // Identity is a host's bus credentials.
 type Identity struct {
-	Host      string
-	HostKey   nkeys.KeyPair // signs leaf connections to peers
-	LocalKey  nkeys.KeyPair // authenticates local clients
-	Cert      tls.Certificate
-	CertSHA   string // hex SHA-256 of the certificate's SubjectPublicKeyInfo
-	certPEM   []byte
-	keyPEM    []byte
-	hostSeed  []byte
-	localSeed []byte
+	Host     string
+	HostKey  nkeys.KeyPair // signs leaf connections to peers
+	LocalKey nkeys.KeyPair // authenticates local clients
+	Cert     tls.Certificate
+	CertSHA  string // hex SHA-256 of the certificate's SubjectPublicKeyInfo
+	hostSeed []byte // remoteLeaf hands the seed itself to nats-server
 }
 
 // PeerBundle is the public half of a host's identity: everything another
@@ -163,22 +160,25 @@ func LoadIdentity(dir, host string) (*Identity, error) {
 	if id.hostSeed, err = read(hostSeedFile, true); err != nil {
 		return nil, err
 	}
-	if id.localSeed, err = read(localSeedFile, true); err != nil {
+	localSeed, err := read(localSeedFile, true)
+	if err != nil {
 		return nil, err
 	}
-	if id.keyPEM, err = read(tlsKeyFile, true); err != nil {
+	keyPEM, err := read(tlsKeyFile, true)
+	if err != nil {
 		return nil, err
 	}
-	if id.certPEM, err = read(tlsCertFile, false); err != nil {
+	certPEM, err := read(tlsCertFile, false)
+	if err != nil {
 		return nil, err
 	}
 	if id.HostKey, err = nkeys.FromSeed(id.hostSeed); err != nil {
 		return nil, fmt.Errorf("reading %s: %w", hostSeedFile, err)
 	}
-	if id.LocalKey, err = nkeys.FromSeed(id.localSeed); err != nil {
+	if id.LocalKey, err = nkeys.FromSeed(localSeed); err != nil {
 		return nil, fmt.Errorf("reading %s: %w", localSeedFile, err)
 	}
-	if id.Cert, err = tls.X509KeyPair(id.certPEM, id.keyPEM); err != nil {
+	if id.Cert, err = tls.X509KeyPair(certPEM, keyPEM); err != nil {
 		return nil, fmt.Errorf("loading TLS key pair: %w", err)
 	}
 	leaf, err := x509.ParseCertificate(id.Cert.Certificate[0])

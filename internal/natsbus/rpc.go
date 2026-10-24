@@ -9,13 +9,6 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// Permission responses carried by RespondRequest.Response.
-const (
-	ResponseApprove       = "approve"
-	ResponseApproveAlways = "approve_always"
-	ResponseDeny          = "deny"
-)
-
 // RPCHandler executes RPC ops on the local host, one method per op.
 // Implemented over service.AgentService; natsbus can't import service.
 type RPCHandler interface {
@@ -33,57 +26,43 @@ type opFunc func(ctx context.Context, h RPCHandler, data []byte) (any, error)
 
 var rpcOps = map[string]opFunc{
 	OpList: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
-		if _, err := decode[ListRequest](OpList, data); err != nil {
+		var req ListRequest
+		if err := decode(OpList, data, &req); err != nil {
 			return nil, err
 		}
 		return h.List(ctx)
 	},
 	OpStatus: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
-		req, err := decode[StatusRequest](OpStatus, data)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateAgent(req.Agent); err != nil {
+		var req StatusRequest
+		if err := decodeAgent(OpStatus, data, &req, &req.Agent); err != nil {
 			return nil, err
 		}
 		return h.Status(ctx, req)
 	},
 	OpCapture: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
-		req, err := decode[CaptureRequest](OpCapture, data)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateAgent(req.Agent); err != nil {
+		var req CaptureRequest
+		if err := decodeAgent(OpCapture, data, &req, &req.Agent); err != nil {
 			return nil, err
 		}
 		return h.Capture(ctx, req)
 	},
 	OpSend: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
-		req, err := decode[SendRequest](OpSend, data)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateAgent(req.Agent); err != nil {
+		var req SendRequest
+		if err := decodeAgent(OpSend, data, &req, &req.Agent); err != nil {
 			return nil, err
 		}
 		return nil, h.Send(ctx, req)
 	},
 	OpRespond: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
-		req, err := decode[RespondRequest](OpRespond, data)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateAgent(req.Agent); err != nil {
+		var req RespondRequest
+		if err := decodeAgent(OpRespond, data, &req, &req.Agent); err != nil {
 			return nil, err
 		}
 		return nil, h.Respond(ctx, req)
 	},
 	OpKeys: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
-		req, err := decode[KeysRequest](OpKeys, data)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateAgent(req.Agent); err != nil {
+		var req KeysRequest
+		if err := decodeAgent(OpKeys, data, &req, &req.Agent); err != nil {
 			return nil, err
 		}
 		if req.Text == "" && req.Key == "" {
@@ -93,23 +72,24 @@ var rpcOps = map[string]opFunc{
 	},
 }
 
-// decode parses an op's request. An empty body is the zero request.
-func decode[T any](op string, data []byte) (T, error) {
-	var req T
+// decode parses an op's request into req. An empty body is the zero request.
+func decode(op string, data []byte, req any) error {
 	if len(data) == 0 {
-		return req, nil
+		return nil
 	}
-	if err := json.Unmarshal(data, &req); err != nil {
-		return req, fmt.Errorf("malformed %s request: %w", op, err)
-	}
-	return req, nil
-}
-
-func validateAgent(name string) error {
-	if !namePattern.MatchString(name) {
-		return fmt.Errorf("invalid agent name %q", name)
+	if err := json.Unmarshal(data, req); err != nil {
+		return fmt.Errorf("malformed %s request: %w", op, err)
 	}
 	return nil
+}
+
+// decodeAgent is decode for a request naming an agent: agent points at the
+// decoded request's name, which is checked before the request runs.
+func decodeAgent(op string, data []byte, req any, agent *string) error {
+	if err := decode(op, data, req); err != nil {
+		return err
+	}
+	return validateAgent(*agent)
 }
 
 // MaxInFlight bounds the requests a bus serves at once; more get a "busy" reply.

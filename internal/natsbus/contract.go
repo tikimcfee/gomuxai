@@ -38,6 +38,9 @@ const (
 	OpKeys    = "keys"    // KeysRequest -> (no data): raw keys, local-only by default
 )
 
+// AllOps lists every RPC op a bus serves to local clients.
+var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys}
+
 // DefaultRemoteOps are the ops a bus serves to other hosts unless configured otherwise.
 var DefaultRemoteOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond}
 
@@ -50,6 +53,14 @@ var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 func ValidateHost(host string) error {
 	if !namePattern.MatchString(host) {
 		return fmt.Errorf("invalid host name %q: use letters, digits, '-' and '_'", host)
+	}
+	return nil
+}
+
+// validateAgent reports whether name can be used as an agent name on the bus.
+func validateAgent(name string) error {
+	if !namePattern.MatchString(name) {
+		return fmt.Errorf("invalid agent name %q", name)
 	}
 	return nil
 }
@@ -75,6 +86,13 @@ func SubjectAllStatus(host string) string {
 	return fmt.Sprintf("%s.%s.agent.*.status", SubjectRoot, host)
 }
 
+// InboxPrefix is where host's clients receive replies. Each host has its
+// own, so the hub can forward a peer the replies to its requests without
+// also forwarding everyone else's (capture output, status details).
+func InboxPrefix(host string) string {
+	return "_INBOX." + host
+}
+
 // AgentRef addresses an agent, optionally on another host.
 type AgentRef struct {
 	Name string
@@ -89,8 +107,8 @@ func ParseAgentRef(s string) (AgentRef, error) {
 			return AgentRef{}, err
 		}
 	}
-	if !namePattern.MatchString(name) {
-		return AgentRef{}, fmt.Errorf("invalid agent name %q", name)
+	if err := validateAgent(name); err != nil {
+		return AgentRef{}, err
 	}
 	return AgentRef{Name: name, Host: host}, nil
 }
@@ -158,10 +176,17 @@ type SendRequest struct {
 // RespondRequest answers a permission prompt (agent approve / deny).
 type RespondRequest struct {
 	Agent      string `json:"agent"`
-	Response   string `json:"response"` // "approve", "approve_always", or "deny"
+	Response   string `json:"response"` // one of the Response* values
 	Force      bool   `json:"force,omitempty"`
 	ExpectTool string `json:"expect_tool,omitempty"`
 }
+
+// Permission responses carried by RespondRequest.Response.
+const (
+	ResponseApprove       = "approve"
+	ResponseApproveAlways = "approve_always"
+	ResponseDeny          = "deny"
+)
 
 type KeysRequest struct {
 	Agent string `json:"agent"`

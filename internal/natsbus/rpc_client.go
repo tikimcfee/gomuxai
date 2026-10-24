@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/tikimcfee/gomuxai/internal/util"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
 // DefaultRPCTimeout bounds each request. Status can run the backend CLI on

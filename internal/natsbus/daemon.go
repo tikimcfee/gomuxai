@@ -30,8 +30,6 @@ const (
 
 	// DefaultClientPort is where the bus listens for local clients (127.0.0.1 only).
 	DefaultClientPort = 7420
-	// DefaultLeafPort is where a hub accepts links from peers.
-	DefaultLeafPort = 7422
 )
 
 // DaemonConfig configures a host's bus.
@@ -46,8 +44,6 @@ type DaemonConfig struct {
 // Daemon is a running bus.
 type Daemon struct {
 	cfg    DaemonConfig
-	id     *Identity
-	peers  []PeerBundle
 	server *natsserver.Server
 }
 
@@ -81,7 +77,7 @@ func StartDaemon(cfg DaemonConfig) (*Daemon, error) {
 		ns.Shutdown()
 		return nil, fmt.Errorf("recording bus URL: %w", err)
 	}
-	return &Daemon{cfg: cfg, id: id, peers: peers, server: ns}, nil
+	return &Daemon{cfg: cfg, server: ns}, nil
 }
 
 // Shutdown stops the bus and removes its URL file.
@@ -124,9 +120,8 @@ func ConnectLocal(dir, host string, opts ...nats.Option) (*nats.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	pub := id.LocalPublicKey()
 	opts = append([]nats.Option{
-		nats.Nkey(pub, id.LocalKey.Sign),
+		nats.Nkey(id.LocalPublicKey(), id.LocalKey.Sign),
 		nats.Timeout(500 * time.Millisecond),
 		nats.Name("agent " + host),
 		nats.CustomInboxPrefix(InboxPrefix(host)), // peers' links only carry their own
@@ -238,9 +233,6 @@ func serverOptions(cfg DaemonConfig, id *Identity, peers []PeerBundle) (*natsser
 	return opts, nil
 }
 
-// AllOps lists every RPC op a bus serves to local clients.
-var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys}
-
 // peerPermissions limits what a linked peer can do on the hub. A leaf
 // connection's permissions are from the hub's point of view of that link:
 // Publish is what the peer may send into the hub, Subscribe what the hub
@@ -279,13 +271,6 @@ func peerPermissions(self, peer string, knownPeers []string, remoteOps []string)
 			},
 		},
 	}
-}
-
-// InboxPrefix is where host's clients receive replies. Each host has its
-// own, so the hub can forward a peer the replies to its requests without
-// also forwarding everyone else's (capture output, status details).
-func InboxPrefix(host string) string {
-	return "_INBOX." + host
 }
 
 // remoteLeaf configures this host's link to a peer hub: TLS pinned to the
