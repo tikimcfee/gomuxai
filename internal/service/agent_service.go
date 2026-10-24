@@ -62,6 +62,7 @@ type AgentService struct {
 	storage  storage.Storage
 	tmux     tmux.TmuxOps
 	backends *backend.Registry
+	events   EventPublisher // nil: no bus
 }
 
 // NewAgentService creates a new agent service.

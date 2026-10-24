@@ -89,7 +89,11 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 	for key, value := range values {
 		entries = append(entries, &storage.StateEntry{AgentName: name, Key: key, Value: value, UpdatedAt: now})
 	}
-	return s.storage.SetStates(ctx, entries)
+	if err := s.storage.SetStates(ctx, entries); err != nil {
+		return err
+	}
+	s.publishStatus(name, r, now)
+	return nil
 }
 
 // ReportHook records the status carried by a backend hook payload.
