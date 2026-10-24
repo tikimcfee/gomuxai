@@ -1,6 +1,6 @@
 module github.com/tikimcfee/gomuxai
 
-go 1.25.4
+go 1.26.0
 
 require (
 	github.com/GianlucaP106/gotmux v0.5.0
@@ -10,6 +10,7 @@ require (
 	github.com/nats-io/nats.go v1.49.0
 	github.com/nats-io/nkeys v0.4.15
 	github.com/spf13/cobra v1.10.1
+	golang.org/x/term v0.40.0
 	modernc.org/sqlite v1.40.1
 )
 

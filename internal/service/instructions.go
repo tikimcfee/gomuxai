@@ -61,3 +61,23 @@ func (s *AgentService) writeInstructions(name, spawnedBy string) (string, error)
 	}
 	return path, nil
 }
+
+// agentSafeCommands are the agent subcommands a spawned agent may run without
+// a permission prompt: they read status or deliver messages that the
+// recipient's own permission prompts still guard. approve/deny, keys, and
+// send --force are left out: they would let one agent answer another
+// agent's prompts, which is the user's call.
+var agentSafeCommands = []string{"send", "list", "status", "wait", "events", "state get"}
+
+// allowedCommandPrefixes are agentSafeCommands as the agent may type them:
+// bare (on PATH) or by the full path the briefing gives.
+func (s *AgentService) allowedCommandPrefixes() []string {
+	var prefixes []string
+	for _, sub := range agentSafeCommands {
+		prefixes = append(prefixes, "agent "+sub)
+		if s.cfg.AgentBinary != "" {
+			prefixes = append(prefixes, s.cfg.AgentBinary+" "+sub)
+		}
+	}
+	return prefixes
+}

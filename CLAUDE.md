@@ -116,6 +116,8 @@ agent approve helper --always           # yes, and don't ask again (meaning vari
 agent deny helper                       # no (for Claude/agy this cancels the turn; follow up with send)
 ```
 
+Spawned Claude agents may run `agent send`, `list`, `status`, `wait`, `events`, and `state get` without a permission prompt (allowed for that session only, via `--allowedTools`). `approve`, `deny`, `keys`, and `send --force` are never pre-allowed, since they would let one agent answer another agent's prompts. `send --force` is refused outright without a person at a terminal.
+
 **Read the detail before approving.** `approve`/`deny` refuse unless the agent is `waiting`, and refuse dialogs that are questions for the user rather than permission prompts (Claude's `AskUserQuestion`, `ExitPlanMode`; agy's `ask_question`): answer those with `send`/`keys`. `--expect <tool>` guards against a different prompt having replaced the one you inspected. Right before the keypress they also check that the prompt is still on screen, because Claude's and agy's deny key is Escape, and Escape on a turn that is already running (someone else answered the prompt first) cancels it. A prompt answered within the last few milliseconds before the keypress can still slip through. `--force` overrides the checks.
 
 ### Agents on Other Hosts

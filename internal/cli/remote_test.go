@@ -288,3 +288,22 @@ func TestFromAgent(t *testing.T) {
 		t.Errorf("agent message = %q", got)
 	}
 }
+
+// --force skips send's dialog check, so it's refused inside agents (and to
+// anything without a terminal, as agents' commands are).
+func TestSendForce_RefusedForAgents(t *testing.T) {
+	old := cfg
+	t.Cleanup(func() { cfg = old; sendForce = false })
+	cfg = &config.Config{Host: "h1"}
+	sendForce = true
+	t.Setenv("AGENT_NAME", "lead")
+	err := runSend(sendCmd, []string{"worker", "y"})
+	if err == nil || !strings.Contains(err.Error(), "needs a person") {
+		t.Errorf("err = %v, want refusal", err)
+	}
+	t.Setenv("AGENT_NAME", "") // tests run without a terminal on stdin
+	err = runSend(sendCmd, []string{"worker", "y"})
+	if err == nil || !strings.Contains(err.Error(), "needs a person") {
+		t.Errorf("without a terminal: err = %v, want refusal", err)
+	}
+}

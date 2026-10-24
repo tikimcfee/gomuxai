@@ -51,6 +51,14 @@ type InstructionsProvider interface {
 	WithInstructions(launchCmd, path string) string
 }
 
+// CommandAllower is implemented by backends that can pre-approve shell
+// commands for one agent at launch, without changing user or project settings.
+type CommandAllower interface {
+	// AllowCommands returns launchCmd changed so shell commands starting with
+	// any of prefixes run without a permission prompt.
+	AllowCommands(launchCmd string, prefixes []string) string
+}
+
 // TrustPrompter is implemented by backends whose CLI asks whether to trust a
 // new workspace before it starts.
 type TrustPrompter interface {

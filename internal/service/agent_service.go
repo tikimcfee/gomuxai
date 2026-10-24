@@ -210,6 +210,9 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		}
 		launchCmd = ip.WithInstructions(launchCmd, path)
 	}
+	if ca, ok := provider.(backend.CommandAllower); ok {
+		launchCmd = ca.AllowCommands(launchCmd, s.allowedCommandPrefixes())
+	}
 	promptInLaunch := false
 	if pfp, ok := provider.(backend.PromptFlagProvider); ok && initMsg != "" {
 		launchCmd = pfp.AppendPromptFlag(launchCmd, initMsg)

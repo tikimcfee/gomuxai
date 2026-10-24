@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var sendCmd = &cobra.Command{
@@ -43,6 +44,13 @@ func runSend(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	message = fromAgent(message)
+	if sendForce && (os.Getenv("AGENT_NAME") != "" || !stdinIsTerminal()) {
+		// Agents may send without a prompt; --force would let one press Enter
+		// on another agent's permission dialog, which is a person's call. An
+		// agent's commands never have a terminal on stdin, even if it clears
+		// AGENT_NAME.
+		return fmt.Errorf("--force needs a person at a terminal; agents answer dialogs through a person (agent approve/deny)")
+	}
 	if remote {
 		if sendForce {
 			return fmt.Errorf("--force only applies to local agents")
@@ -75,4 +83,10 @@ func fromAgent(message string) string {
 		return message
 	}
 	return fmt.Sprintf("[from %s@%s] %s", from, cfg.Host, message)
+}
+
+// stdinIsTerminal is a real isatty check: /dev/null, which agents' commands
+// often have on stdin, is also a character device.
+func stdinIsTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }

@@ -279,6 +279,19 @@ func (b *ClaudeBackend) PermissionPromptVisible(screen string) bool {
 	return claudeDialogNoOption.MatchString(strings.Join(tail, "\n"))
 }
 
+// AllowCommands pre-approves Bash commands by prefix for this session only,
+// via --allowedTools rules like Bash(agent status:*).
+func (b *ClaudeBackend) AllowCommands(launchCmd string, prefixes []string) string {
+	if len(prefixes) == 0 {
+		return launchCmd
+	}
+	rules := make([]string, len(prefixes))
+	for i, p := range prefixes {
+		rules[i] = util.ShellQuote("Bash(" + p + ":*)")
+	}
+	return launchCmd + " --allowedTools " + strings.Join(rules, " ")
+}
+
 // TrustKeys accepts Claude's folder trust dialog. Its highlighted option is
 // "No, exit", so a bare Enter would quit: move to "Yes" first if needed.
 func (b *ClaudeBackend) TrustKeys(screen string) []string {

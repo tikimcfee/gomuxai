@@ -402,3 +402,16 @@ func TestClaudeTrustKeys(t *testing.T) {
 		t.Errorf("TrustKeys at the prompt = %v, want nil", got)
 	}
 }
+
+func TestClaudeAllowCommands(t *testing.T) {
+	cmd := namedagents.NewClaudeBackend().AllowCommands("claude", []string{"agent status", "/opt/x/agent send"})
+	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.TrimPrefix(cmd, "claude ")).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(out)), "\n")
+	want := []string{"--allowedTools", "Bash(agent status:*)", "Bash(/opt/x/agent send:*)"}
+	if strings.Join(args, "|") != strings.Join(want, "|") {
+		t.Errorf("args = %q, want %q", args, want)
+	}
+}
