@@ -1,0 +1,20 @@
+{"type":"permission-mode","permissionMode":"default","sessionId":"00000000-0000-0000-0000-00000000c1a0"}
+{this is not json
+{"type":"user","isSidechain":true,"cwd":"/side/land","timestamp":"2026-08-01T10:00:00.000Z","message":{"role":"user","content":"sidechain prompt"}}
+{"type":"assistant","isSidechain":true,"timestamp":"2026-08-01T10:00:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-side","name":"Bash","input":{"command":"rm -rf /"}}]}}
+{"type":"user","sessionId":"00000000-0000-0000-0000-00000000c1a0","cwd":"/home/user/proj","version":"2.1.400","gitBranch":"main","timestamp":"2026-08-01T10:00:00.000Z","message":{"role":"user","content":"run the tests"}}
+{"type":"ai-title","aiTitle":"Run the tests","sessionId":"00000000-0000-0000-0000-00000000c1a0"}
+{"type":"assistant","timestamp":"2026-08-01T10:00:01.000Z","message":{"id":"m1","role":"assistant","model":"claude-test-1","content":[{"type":"thinking","thinking":"go test should do it"}]}}
+{"type":"assistant","timestamp":"2026-08-01T10:00:01.000Z","message":{"id":"m1","role":"assistant","model":"claude-test-1","content":[{"type":"tool_use","id":"tu-bash","name":"Bash","input":{"command":"go test ./...","description":"Run tests"}}]}}
+{"type":"api-request-blob","hash":"h1","sessionId":"00000000-0000-0000-0000-00000000c1a0","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-bash","name":"Bash","input":{"command":"go test ./..."}}]}}
+{"type":"api-request-blob","hash":"h2","sessionId":"00000000-0000-0000-0000-00000000c1a0","message":{"role":"user","content":"run the tests"}}
+{"type":"assistant","timestamp":"2026-08-01T10:00:02.000Z","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"   \n  "},{"type":"tool_use","id":"tu-read","name":"Read","input":{"file_path":"/home/user/proj/go.mod"}}]}}
+{"type":"user","timestamp":"2026-08-01T10:00:05.000Z","toolUseResult":{"stdout":"ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s","stderr":"","interrupted":false},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-bash","content":"ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s","is_error":false}]}}
+{"type":"user","timestamp":"2026-08-01T10:00:06.000Z","toolUseResult":{"type":"text","file":{"filePath":"/home/user/proj/go.mod","content":"module example.com/proj\n","numLines":1}},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-read","content":[{"type":"text","text":"1\tmodule example.com/proj"}]}]}}
+{"type":"assistant","timestamp":"2026-08-01T10:00:07.000Z","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"All tests pass."}]}}
+{"type":"user","isMeta":true,"timestamp":"2026-08-01T10:01:00.000Z","message":{"role":"user","content":"<local-command-caveat>Caveat: not a prompt</local-command-caveat>"}}
+{"type":"user","timestamp":"2026-08-01T10:01:00.000Z","message":{"role":"user","content":"<command-name>/review</command-name>\n<command-message>review</command-message>\n<command-args>high</command-args>"}}
+{"type":"assistant","timestamp":"2026-08-01T10:01:02.000Z","message":{"id":"m3","role":"assistant","content":[{"type":"tool_use","id":"tu-fail","name":"Bash","input":{"command":"make lint"}}]}}
+{"type":"user","timestamp":"2026-08-01T10:01:03.000Z","toolUseResult":"Error: Exit code 2\nlint: 1 issue","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-fail","content":"Exit code 2\nlint: 1 issue","is_error":true}]}}
+{"type":"user","timestamp":"2026-08-01T10:01:04.000Z","message":{"role":"user","content":"<task-notification>background task finished</task-notification>"}}
+{"type":"assistant","timestamp":"2026-08-01T10:01:05.000Z","message":{"id":"m4","role":"assistant","content":[{"type":"text","text":"One lint issue.\nSee above."},{"type":"tool_use","id":"tu-open","name":"Grep","input":{"pattern":"TODO"}}]}}
