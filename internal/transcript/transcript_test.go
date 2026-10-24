@@ -15,7 +15,7 @@ import (
 // eventSummary renders an event compactly for comparisons.
 func eventSummary(e Event) string {
 	if e.Tool != nil {
-		return fmt.Sprintf("%d tool %s(%s) %s %q", e.Turn, e.Tool.Name, e.Tool.Detail(), e.Tool.Status, e.Tool.Output)
+		return fmt.Sprintf("%d tool %s(%s) %s %q", e.Turn, e.Tool.Name, e.Tool.Detail(""), e.Tool.Status, e.Tool.Output)
 	}
 	return fmt.Sprintf("%d %s %q", e.Turn, e.Kind, e.Text)
 }
@@ -204,6 +204,12 @@ func TestReadFile(t *testing.T) {
 	}
 	if len(s.Events()) != 9 || s.Partial || s.Path != path || s.SessionID != "00000000-0000-0000-0000-00000000c1a0" {
 		t.Errorf("got %d events, partial %v, path %q, session %q", len(s.Events()), s.Partial, s.Path, s.SessionID)
+	}
+
+	// Without a reader, the format is detected.
+	path = writeFile(t, "transcript_full.jsonl", string(readFixture(t, "agy.jsonl")))
+	if s, err := ReadFile(path, nil, 50); err != nil || s.Harness != "agy" || len(s.Events()) != 10 {
+		t.Errorf("detected: %+v, %v", s, err)
 	}
 }
 

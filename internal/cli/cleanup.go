@@ -17,7 +17,7 @@ var cleanupCmd = &cobra.Command{
 	Short: "Stop agents and delete their records",
 	Long: `Cleanup removes the named agents: it asks each idle one to exit, kills its
 tmux session, and deletes its record, queued messages, state, and files. Its
-log file stays, for agent logs. It prints one line per name ("cleaned up",
+log file and list of transcripts stay, for agent logs. It prints one line per name ("cleaned up",
 "refused", or "failed"), and exits 1 if any of them wasn't cleaned up.
 
 Inside an agent (AGENT_NAME set), you can clean up only your own helpers

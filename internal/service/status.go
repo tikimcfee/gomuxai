@@ -159,7 +159,7 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 	if err != nil || !ok {
 		return err
 	}
-	return s.Report(ctx, name, StatusReport{
+	err = s.Report(ctx, name, StatusReport{
 		Status:    fromBackendStatus(hr.Status),
 		Event:     hr.Event,
 		Detail:    hr.Detail,
@@ -171,6 +171,10 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 		Transcript:  hr.Transcript,
 		ClearResult: hr.ClearResult,
 	})
+	if err != nil || hr.Transcript == "" {
+		return err
+	}
+	return s.recordTranscript(name, agent.Backend, hr.Transcript)
 }
 
 // Status checks the current status of an agent.

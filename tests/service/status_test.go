@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +173,32 @@ func TestReportHook_StoresTranscript(t *testing.T) {
 	}
 	if entry, _ := env.store.GetState(ctx, "worker", service.StateKeyTranscript); entry == nil || entry.Value != path {
 		t.Errorf("transcript = %+v, want %s", entry, path)
+	}
+}
+
+// The transcripts an agent used are listed beside its log, so they outlive
+// cleanup like the log does.
+func TestTranscripts_OutliveCleanup(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	spawnFake(t, env, "worker")
+
+	for _, path := range []string{"/t/one.jsonl", "/t/one.jsonl", "/t/two.jsonl"} {
+		payload := `{"hook_event_name":"PostToolUse","transcript_path":"` + path + `"}`
+		if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
+			t.Fatalf("ReportHook: %v", err)
+		}
+	}
+	want := []service.TranscriptRef{{Backend: "fakehooks", Path: "/t/one.jsonl"}, {Backend: "fakehooks", Path: "/t/two.jsonl"}}
+	if got := env.service.Transcripts(ctx, "worker"); !slices.Equal(got, want) {
+		t.Errorf("transcripts = %v, want %v", got, want)
+	}
+	if err := env.service.Cleanup(ctx, "worker"); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if got := env.service.Transcripts(ctx, "worker"); !slices.Equal(got, want) {
+		t.Errorf("after cleanup: transcripts = %v, want %v", got, want)
 	}
 }
 

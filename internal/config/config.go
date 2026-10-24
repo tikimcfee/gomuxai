@@ -161,6 +161,12 @@ func (c *Config) LogPath(agentName string) string {
 	return filepath.Join(c.LogDir, agentName+".log")
 }
 
+// TranscriptsPath returns the file, beside the agent's log, listing the
+// CLI transcripts its sessions were recorded in.
+func (c *Config) TranscriptsPath(agentName string) string {
+	return filepath.Join(c.LogDir, agentName+".transcripts")
+}
+
 // BusDir returns the agent bus directory (identity, trusted peers, runtime
 // files), alongside the database.
 func (c *Config) BusDir() string {

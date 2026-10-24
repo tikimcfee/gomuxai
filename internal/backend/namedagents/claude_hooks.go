@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
@@ -160,6 +161,12 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		return types.HookReport{}, false, nil
 	}
 	return r, true, nil
+}
+
+// TranscriptReader reads the session JSONL whose path hooks report as
+// transcript_path.
+func (b *ClaudeBackend) TranscriptReader() transcript.Reader {
+	return transcript.Claude{}
 }
 
 // claudeToolInputKeys are the tool_input fields that best describe a tool

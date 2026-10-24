@@ -104,15 +104,20 @@ var detailKeys = []string{
 }
 
 // Detail returns the most telling input of the call (its command, file,
-// pattern, ...), or "".
-func (c *ToolCall) Detail() string {
+// pattern, ...), or "". A path under cwd is made relative to it, as
+// glyph3d-js toolRegistry.js relativize does.
+func (c *ToolCall) Detail(cwd string) string {
 	var fields map[string]any
 	if json.Unmarshal(c.Input, &fields) != nil {
 		return ""
 	}
 	for _, key := range detailKeys {
 		if v, ok := fields[key].(string); ok && strings.TrimSpace(v) != "" {
-			return unquote(strings.TrimSpace(v))
+			v = unquote(strings.TrimSpace(v))
+			if rel, ok := strings.CutPrefix(v, strings.TrimSuffix(cwd, "/")+"/"); ok && cwd != "" && rel != "" {
+				return rel
+			}
+			return v
 		}
 	}
 	return ""
@@ -279,7 +284,8 @@ const (
 // ReadFile reads the transcript at path with r. It reads the end of the
 // file first, doubling the window until it holds at least minEvents
 // events or the whole file, so the last events of a large transcript cost
-// a fraction of it. A trailing line still being written is left out.
+// a fraction of it. A trailing line still being written is left out. A nil
+// r detects the format from the file's first lines.
 func ReadFile(path string, r Reader, minEvents int) (*Session, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -291,6 +297,13 @@ func ReadFile(path string, r Reader, minEvents int) (*Session, error) {
 		return nil, err
 	}
 	size := info.Size()
+	if r == nil {
+		head, err := readLines(f, 0, min(headChunk, size))
+		if err != nil {
+			return nil, err
+		}
+		r = Detect(head)
+	}
 
 	var s *Session
 	off := size

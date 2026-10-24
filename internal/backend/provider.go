@@ -5,6 +5,7 @@ import (
 	"context"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // Re-export Status type and constants for convenience
@@ -94,6 +95,13 @@ type PermissionResponder interface {
 	// on screen (the visible pane, ANSI-stripped). Checked right before the
 	// keypress, since reported status can lag a prompt that was just answered.
 	PermissionPromptVisible(screen string) bool
+}
+
+// TranscriptProvider is implemented by backends whose CLI keeps a transcript
+// of each session, at the path its hooks report (HookReport.Transcript).
+type TranscriptProvider interface {
+	// TranscriptReader returns the reader for the CLI's transcript format.
+	TranscriptReader() transcript.Reader
 }
 
 // Provider defines the interface for the built-in AI CLI tool backends.

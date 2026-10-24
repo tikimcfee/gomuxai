@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
@@ -276,6 +277,12 @@ func (b *AgyBackend) ParseHookEvent(event string, payload []byte) (types.HookRep
 		return types.HookReport{}, false, nil
 	}
 	return r, true, nil
+}
+
+// TranscriptReader reads the conversation transcript whose path hooks
+// report as transcriptPath.
+func (b *AgyBackend) TranscriptReader() transcript.Reader {
+	return transcript.Agy{}
 }
 
 func isAgyErrorTermination(reason string) bool {
