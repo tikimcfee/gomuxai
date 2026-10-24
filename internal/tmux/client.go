@@ -214,8 +214,8 @@ func (c *Client) Capture(session string, lines int, stripANSI bool) (string, err
 	args := []string{
 		"capture-pane",
 		"-t", target,
-		"-p",                           // print to stdout
-		"-S", strconv.Itoa(startLine),  // start line
+		"-p",                          // print to stdout
+		"-S", strconv.Itoa(startLine), // start line
 	}
 
 	output, err := c.tmux.Command(args...)

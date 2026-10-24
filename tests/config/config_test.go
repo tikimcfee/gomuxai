@@ -25,11 +25,11 @@ func TestLoadFromFile_Success(t *testing.T) {
 	defer os.Remove(tmpFile.Name())
 
 	validConfig := map[string]interface{}{
-		"backend":           "claude",
-		"database_path":     "/tmp/test.db",
-		"log_dir":           "/tmp/logs",
-		"state_dir":         "/tmp/state",
-		"session_prefix":    "test-",
+		"backend":            "claude",
+		"database_path":      "/tmp/test.db",
+		"log_dir":            "/tmp/logs",
+		"state_dir":          "/tmp/state",
+		"session_prefix":     "test-",
 		"default_scrollback": 1000,
 	}
 
@@ -225,7 +225,7 @@ func TestEnsureDirs_CreatesAllDirectories(t *testing.T) {
 
 	// Check directories exist
 	dirs := []string{
-		filepath.Join(tmpDir, "db"),    // Parent of database
+		filepath.Join(tmpDir, "db"), // Parent of database
 		filepath.Join(tmpDir, "logs"),
 		filepath.Join(tmpDir, "state"),
 	}
@@ -576,9 +576,9 @@ func TestLoadFromFile_WithTimeouts(t *testing.T) {
 	// Create config with custom timeouts (as nanoseconds in JSON)
 	configData := map[string]interface{}{
 		"backend":         "claude",
-		"spawn_timeout":   60000000000,  // 60s in nanoseconds
-		"capture_timeout": 20000000000,  // 20s in nanoseconds
-		"status_timeout":  15000000000,  // 15s in nanoseconds
+		"spawn_timeout":   60000000000, // 60s in nanoseconds
+		"capture_timeout": 20000000000, // 20s in nanoseconds
+		"status_timeout":  15000000000, // 15s in nanoseconds
 	}
 
 	data, _ := json.Marshal(configData)
