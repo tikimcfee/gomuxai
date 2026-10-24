@@ -24,6 +24,10 @@ var (
 	tmuxClient   tmux.TmuxOps
 	backends     *backend.Registry
 	agentService *service.AgentService
+
+	// backendConfigErr is why --backend-config didn't load as a custom
+	// backend, for spawn's errors: the file may be an app config instead.
+	backendConfigErr error
 )
 
 // rootCmd is the base command.
@@ -95,11 +99,12 @@ func setup(cmd *cobra.Command, args []string) error {
 	if backendName != "" {
 		cfg.Backend = backendName
 	}
+	setupBackends()
 
 	// Only spawn needs a backend
 	if cmd.Name() == "spawn" {
 		if err := cfg.Validate(); err != nil {
-			return err
+			return withBackendConfigErr(err)
 		}
 	}
 
@@ -121,20 +126,41 @@ func setup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("initializing tmux: %w", err)
 	}
 
-	// Initialize backend registry
-	backends = backend.NewRegistry()
-
-	// Load custom backend if provided. The file may be an app config
-	// instead, so an invalid backend config isn't an error.
-	if backendConfig != "" {
-		_ = backends.LoadFromFile(backendConfig)
-	}
-
 	// Initialize agent service
 	agentService = service.NewAgentService(cfg, store, tmuxClient, backends)
 	agentService.SetEventPublisher(warnPublisher{busPublisher})
 
 	return nil
+}
+
+// setupBackends creates the backend registry, with the custom backend
+// --backend-config configures, if it does. The file may be an app config
+// instead (or both), so one that isn't a backend config is no error here; a
+// custom backend is the default for spawn when neither the app config nor
+// --backend names one.
+func setupBackends() {
+	backends = backend.NewRegistry()
+	backendConfigErr = nil
+	if backendConfig == "" {
+		return
+	}
+	b, err := backends.LoadFromFile(backendConfig)
+	if err != nil {
+		backendConfigErr = err
+		return
+	}
+	if cfg.Backend == "" {
+		cfg.Backend = b.Name()
+	}
+}
+
+// withBackendConfigErr adds why --backend-config didn't load as a custom
+// backend, if it didn't, to err, an error about spawn's backend.
+func withBackendConfigErr(err error) error {
+	if backendConfigErr == nil {
+		return err
+	}
+	return fmt.Errorf("%w (%s didn't load as a backend config: %v)", err, backendConfig, backendConfigErr)
 }
 
 func getContext() context.Context {

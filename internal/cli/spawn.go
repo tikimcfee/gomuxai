@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
@@ -81,6 +83,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	agent, err := agentService.Spawn(getContext(), opts)
+	if errors.Is(err, backend.ErrNotFound) {
+		return withBackendConfigErr(err)
+	}
 	if err != nil {
 		return err
 	}

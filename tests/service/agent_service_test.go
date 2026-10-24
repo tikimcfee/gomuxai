@@ -282,7 +282,7 @@ func TestSpawn_CustomBackend(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.backends.LoadFromFile(cfgPath); err != nil {
+	if _, err := env.backends.LoadFromFile(cfgPath); err != nil {
 		t.Fatalf("loading backend config: %v", err)
 	}
 

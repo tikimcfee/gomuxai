@@ -2,6 +2,7 @@ package backend
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -67,6 +68,9 @@ func (r *Registry) Register(b Backend) {
 	r.backends[b.Name()] = b
 }
 
+// ErrNotFound is wrapped by Get's error for a name with no backend.
+var ErrNotFound = errors.New("not found")
+
 // Get retrieves a backend by name.
 func (r *Registry) Get(name string) (Backend, error) {
 	r.mu.RLock()
@@ -74,7 +78,7 @@ func (r *Registry) Get(name string) (Backend, error) {
 
 	b, ok := r.backends[name]
 	if !ok {
-		return nil, fmt.Errorf("backend %q not found", name)
+		return nil, fmt.Errorf("backend %q %w", name, ErrNotFound)
 	}
 	return b, nil
 }
@@ -99,26 +103,28 @@ func (r *Registry) CreateProvider(name string, cfg ProviderConfig) (Provider, er
 	return factory(cfg), nil
 }
 
-// LoadFromFile loads a backend configuration from a JSON file.
-func (r *Registry) LoadFromFile(path string) error {
+// LoadFromFile registers the custom backend a JSON file configures, and
+// returns it.
+func (r *Registry) LoadFromFile(path string) (Backend, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("reading backend config: %w", err)
+		return nil, fmt.Errorf("reading backend config: %w", err)
 	}
 
 	var cfg GenericConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("parsing backend config: %w", err)
+		return nil, fmt.Errorf("parsing backend config: %w", err)
 	}
 
 	if cfg.Name == "" {
-		return fmt.Errorf("backend config must have a name")
+		return nil, fmt.Errorf("backend config must have a name")
 	}
 
 	if cfg.LaunchCommand == "" {
-		return fmt.Errorf("backend config must have a launch_command")
+		return nil, fmt.Errorf("backend config must have a launch_command")
 	}
 
-	r.Register(NewGenericBackend(cfg))
-	return nil
+	b := NewGenericBackend(cfg)
+	r.Register(b)
+	return b, nil
 }
