@@ -44,7 +44,10 @@ Run "agent" alone for a short orientation (who you are, your agents, the bus);
 "agent help <command>" has each command's details and examples.
 
 Results go to stdout; a hint about what to do next may follow on stderr
-(-q drops it). Exit codes: 0 done, 1 failed; wait exits 2 when it times out.`,
+(-q drops it). Exit codes: 0 done, 1 failed; wait exits 2 when it times out,
+and friction add exits 3 when it finds a similar entry instead of filing.
+
+If agent gets in your way, "agent friction add" tells the people who fix it.`,
 	Example: `  agent spawn helper --backend claude
   agent send helper "summarize README.md" && agent wait helper --for idle --next
   agent state get helper _result`,

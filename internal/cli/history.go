@@ -126,10 +126,8 @@ line: time, who ran it (an agent's name, or "-" for a person), exit code, the
 command line, and for a failure, its error after "#".
 
 Every run is recorded, help included, except hook reports and the bus daemon.
-The newest 20000 are kept.
-
-Examples:
-  agent history
+The newest 20000 are kept.`,
+	Example: `  agent history
   agent history --agent lead --failed
   agent history --agent - -n 50      # a person's commands
   agent history --json`,
@@ -169,7 +167,11 @@ func runHistory(cmd *cobra.Command, args []string) error {
 		return json.NewEncoder(out).Encode(recs)
 	}
 	if len(recs) == 0 {
-		fmt.Fprintln(out, "No commands recorded.")
+		if f.ByAgent || f.Failed {
+			fmt.Fprintln(out, "No recorded commands match (agent history without --agent or --failed lists them all).")
+		} else {
+			fmt.Fprintf(out, "No commands recorded on host %s yet.\n", cfg.Host)
+		}
 		return nil
 	}
 	fmt.Fprint(out, formatHistory(recs))

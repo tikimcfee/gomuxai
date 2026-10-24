@@ -57,14 +57,13 @@ original).
 Check "agent friction list" first, and +1 an entry that's already there.
 add won't file a summary close to an open or accepted entry's: it lists
 the matches and exits 3, and --new files it anyway. add and +1 attach your
-last failed agent command from the past 15 minutes; --no-command skips it.
-
-Examples:
-  agent friction list
+last failed agent command from the past 15 minutes; --no-command skips it.`,
+	Example: `  agent friction list
   agent friction add "wait --timeout doesn't say what status it last saw" --kind error
   agent friction +1 12 "hit it again with --next"
   agent friction show 12
   agent friction resolve 12 --note "wait names the last status (abc1234)"`,
+	RunE: runGroup,
 }
 
 var (
@@ -94,10 +93,8 @@ says so; --no-command skips it.
 
 If the summary is close to an open or accepted entry's, add doesn't file:
 it lists the matches and exits 3. "agent friction +1 ID" adds your vote to
-one of them; --new files yours anyway.
-
-Examples:
-  agent friction add "send's help doesn't say the message is typed into the terminal" --kind help
+one of them; --new files yours anyway.`,
+	Example: `  agent friction add "send's help doesn't say the message is typed into the terminal" --kind help
   agent friction add "no way to wait for several agents at once" --kind missing --detail "..."
   agent friction add "status says unknown for aider agents" --kind bug --detail-file notes.md --new`,
 	Args: cobra.ExactArgs(1),
@@ -110,10 +107,8 @@ var frictionVoteCmd = &cobra.Command{
 	Short:   "Add your vote to a friction entry",
 	Long: `+1 records that an entry got in your way too, with an optional note, and
 your last failed agent command from the past 15 minutes (--no-command skips
-it). A vote on a duplicate goes to its original.
-
-Examples:
-  agent friction +1 12
+it). A vote on a duplicate goes to its original.`,
+	Example: `  agent friction +1 12
   agent friction +1 12 "same with --next"`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: runFrictionVote,
@@ -127,10 +122,8 @@ votes, age, who filed it, and the summary. Most votes first, then newest.
 By default it lists open and accepted entries.
 
 --status takes open, accepted, resolved, wontfix, duplicate, or all, or
-several separated by commas.
-
-Examples:
-  agent friction list
+several separated by commas.`,
+	Example: `  agent friction list
   agent friction list --status all --kind help
   agent friction list --by lead --json`,
 	Args: cobra.NoArgs,
@@ -141,10 +134,8 @@ var frictionShowCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show everything about a friction entry",
 	Long: `Show prints a friction entry in full: who filed it, where, and with which
-build, its detail, attached command, votes, duplicates, and resolution.
-
-Examples:
-  agent friction show 12
+build, its detail, attached command, votes, duplicates, and resolution.`,
+	Example: `  agent friction show 12
   agent friction show 12 --json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runFrictionShow,
@@ -154,12 +145,10 @@ var frictionAcceptCmd = &cobra.Command{
 	Use:   "accept <id>",
 	Short: "Mark an open friction entry as accepted",
 	Long: `Accept marks an open entry as accepted: someone means to fix it. It records
-who accepted it, and an optional note.
-
-Examples:
-  agent friction accept 12 --note "will fold into the wait rework"`,
-	Args: cobra.ExactArgs(1),
-	RunE: runFrictionAccept,
+who accepted it, and an optional note.`,
+	Example: `  agent friction accept 12 --note "will fold into the wait rework"`,
+	Args:    cobra.ExactArgs(1),
+	RunE:    runFrictionAccept,
 }
 
 var frictionResolveCmd = &cobra.Command{
@@ -170,10 +159,8 @@ var frictionResolveCmd = &cobra.Command{
   --note TEXT              fixed; the note says how (a commit, a command)
   --wontfix --note TEXT    not going to change; the note says why
   --dup OTHER_ID           the same as another entry, whose votes then
-                           include this one's
-
-Examples:
-  agent friction resolve 12 --note "wait names the last status (abc1234)"
+                           include this one's`,
+	Example: `  agent friction resolve 12 --note "wait names the last status (abc1234)"
   agent friction resolve 13 --wontfix --note "keys is raw by design; use send"
   agent friction resolve 14 --dup 12`,
 	Args: cobra.ExactArgs(1),
@@ -186,10 +173,8 @@ var frictionExportCmd = &cobra.Command{
 	Long: `Export writes friction entries as Markdown to stdout, one section per
 entry, grouped by status. The resolved section is the tool's record of what
 changed and who asked. By default it writes every entry; --status as for
-list.
-
-Examples:
-  agent friction export
+list.`,
+	Example: `  agent friction export
   agent friction export --status resolved`,
 	Args: cobra.NoArgs,
 	RunE: runFrictionExport,
@@ -307,7 +292,7 @@ func runFrictionAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("the summary must be one line; put the rest in --detail or --detail-file")
 	}
 	if !slices.Contains(frictionKinds, frictionAddKind) {
-		return fmt.Errorf("unknown kind %q (want %s)", frictionAddKind, strings.Join(frictionKinds, ", "))
+		return unknownChoice("kind", frictionAddKind, frictionKinds)
 	}
 	detail := frictionDetail
 	if frictionDetailFile != "" {
@@ -422,11 +407,51 @@ func runFrictionList(cmd *cobra.Command, args []string) error {
 		return json.NewEncoder(out).Encode(entries)
 	}
 	if len(entries) == 0 {
-		fmt.Fprintln(out, "No friction entries match.")
+		all, err := store.ListFriction(getContext(), storage.FrictionFilter{})
+		if err != nil {
+			return err
+		}
+		if len(all) == 0 {
+			fmt.Fprintf(out, "The friction box on host %s is empty.\n", cfg.Host)
+			hint(`if agent gets in your way, file it: agent friction add "what happened" --kind help|error|missing|bug|docs`)
+			return nil
+		}
+		in := "1 entry in all"
+		if len(all) != 1 {
+			in = fmt.Sprintf("%d entries in all", len(all))
+		}
+		fmt.Fprintf(out, "No %s (%s: agent friction list --status all).\n", describeFrictionFilter(), in)
 		return nil
 	}
 	fmt.Fprint(out, formatFrictionList(entries, time.Now()))
 	return nil
+}
+
+// describeFrictionFilter names the entries list's flags select, e.g. "open
+// or accepted help entries filed by lead".
+func describeFrictionFilter() string {
+	statuses := "open or accepted"
+	if frictionStatus != "" {
+		statuses = util.OrList(strings.Split(frictionStatus, ","), nil)
+	}
+	s := statuses + " "
+	if frictionKind != "" {
+		s += frictionKind + " "
+	}
+	s += "entries"
+	if frictionBy != "" {
+		s += " filed by " + frictionBy
+	}
+	return s
+}
+
+// unknownChoice is the error for a flag value that isn't one of choices,
+// suggesting close ones.
+func unknownChoice(what, value string, choices []string) error {
+	if similar := util.Similar(value, choices); len(similar) > 0 {
+		return fmt.Errorf("unknown %s %q; did you mean %s? (want %s)", what, value, util.OrList(similar, nil), strings.Join(choices, ", "))
+	}
+	return fmt.Errorf("unknown %s %q (want %s)", what, value, strings.Join(choices, ", "))
 }
 
 // listFriction returns the entries the list and export flags select, with
@@ -440,7 +465,7 @@ func listFriction(defaultStatuses []string) ([]*storage.Friction, error) {
 		}
 	}
 	if frictionKind != "" && !slices.Contains(frictionKinds, frictionKind) {
-		return nil, fmt.Errorf("unknown kind %q (want %s)", frictionKind, strings.Join(frictionKinds, ", "))
+		return nil, unknownChoice("kind", frictionKind, frictionKinds)
 	}
 	return store.ListFriction(getContext(), storage.FrictionFilter{Statuses: statuses, Kind: frictionKind, FiledBy: frictionBy})
 }
@@ -458,7 +483,7 @@ func parseFrictionStatuses(s string) ([]string, error) {
 		case slices.Contains(frictionStatuses, part):
 			statuses = append(statuses, part)
 		default:
-			return nil, fmt.Errorf("unknown status %q (want %s, or all)", part, strings.Join(frictionStatuses, ", "))
+			return nil, unknownChoice("status", part, append(slices.Clone(frictionStatuses), "all"))
 		}
 	}
 	return statuses, nil

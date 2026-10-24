@@ -215,8 +215,11 @@ func TestFrictionLifecycle(t *testing.T) {
 		t.Errorf("+1 on a resolved entry: err = %v", err)
 	}
 
-	if out := mustRun(t, "friction", "list"); out != "No friction entries match.\n" {
+	if out := mustRun(t, "friction", "list"); out != "No open or accepted entries (3 entries in all: agent friction list --status all).\n" {
 		t.Errorf("list with nothing open printed %q", out)
+	}
+	if _, err := runAgent(t, "friction", "list", "--kind", "halp"); err == nil || !strings.Contains(err.Error(), `unknown kind "halp"; did you mean help?`) {
+		t.Errorf("list --kind halp: err = %v", err)
 	}
 	out := mustRun(t, "friction", "list", "--status", "all")
 	if lines := strings.Split(strings.TrimSpace(out), "\n"); len(lines) != 4 || !strings.HasPrefix(lines[1], "#2 wontfix") {
@@ -255,6 +258,25 @@ func TestFrictionIDErrors(t *testing.T) {
 	}
 	if _, err := runAgent(t, "friction", "show", "twelve"); err == nil || !strings.Contains(err.Error(), "ids are numbers") {
 		t.Errorf("show twelve: err = %v", err)
+	}
+}
+
+// An empty box says so, and how to file; an unknown subcommand suggests one.
+func TestFrictionListOnAnEmptyBox(t *testing.T) {
+	setupStore(t)
+	var hints strings.Builder
+	oldOut := hintOut
+	t.Cleanup(func() { hintOut, hinted = oldOut, false })
+	hintOut, hinted = &hints, false
+
+	if out := mustRun(t, "friction", "list"); out != "The friction box on host local is empty.\n" {
+		t.Errorf("list on an empty box printed %q", out)
+	}
+	if !strings.HasPrefix(hints.String(), `hint: if agent gets in your way, file it: agent friction add "what happened"`) {
+		t.Errorf("hints = %q", hints.String())
+	}
+	if err := runGroup(frictionCmd, []string{"lst"}); err == nil || !strings.Contains(err.Error(), `unknown command "lst" for "agent friction"; did you mean list?`) {
+		t.Errorf("friction lst: err = %v", err)
 	}
 }
 

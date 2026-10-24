@@ -14,10 +14,9 @@ var versionCmd = &cobra.Command{
 tag), the VCS revision ("-dirty" if built with uncommitted changes), the
 commit time, the Go version, and the platform. Builds without VCS info (e.g.
 go test, or outside the checkout) say "(no VCS info)". "agent --version"
-prints the same line.
-
-Examples:
-  agent version`,
+prints the same line.`,
+	Example: `  agent version
+  agent --version`,
 	Args: cobra.NoArgs,
 	// Needs no database: it must work even when nothing else does.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
