@@ -242,6 +242,29 @@ func TestEnsureDirs_CreatesAllDirectories(t *testing.T) {
 	}
 }
 
+// The data dir holds terminal logs, captured output, and agent state, so
+// other local users must not be able to read it.
+func TestEnsureDirs_PrivateToUser(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		DatabasePath: filepath.Join(tmpDir, ".gomuxai", "gomuxai.db"),
+		LogDir:       filepath.Join(tmpDir, ".gomuxai", "logs"),
+		StateDir:     filepath.Join(tmpDir, ".gomuxai", "state"),
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs failed: %v", err)
+	}
+	for _, dir := range []string{".gomuxai", ".gomuxai/logs", ".gomuxai/state"} {
+		info, err := os.Stat(filepath.Join(tmpDir, dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm&0077 != 0 {
+			t.Errorf("%s mode %o: readable by other users", dir, perm)
+		}
+	}
+}
+
 func TestEnsureDirs_ExistingDirectories(t *testing.T) {
 	// Create temp directories that already exist
 	tmpDir, err := os.MkdirTemp("", "config-existing-*")
