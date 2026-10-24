@@ -22,7 +22,8 @@ type Config struct {
 	// LogDir is the directory for agent log files.
 	LogDir string `json:"log_dir"`
 
-	// StateDir is the directory for agent state files.
+	// StateDir is created by EnsureDirs, but agent state lives in the
+	// database; AgentDir takes the data directory from its parent.
 	StateDir string `json:"state_dir"`
 
 	// SessionPrefix is the prefix for tmux session names.
@@ -31,17 +32,11 @@ type Config struct {
 	// DefaultScrollback is the default number of lines to capture.
 	DefaultScrollback int `json:"default_scrollback"`
 
-	// SpawnTimeout is the maximum time to wait for agent spawn operations.
-	// Default: 30s
-	SpawnTimeout time.Duration `json:"spawn_timeout"`
-
-	// CaptureTimeout is the maximum time to wait for capture operations.
-	// Default: 10s
+	// SpawnTimeout, CaptureTimeout, and StatusTimeout are read from config
+	// files and defaulted, but no operation applies them yet.
+	SpawnTimeout   time.Duration `json:"spawn_timeout"`
 	CaptureTimeout time.Duration `json:"capture_timeout"`
-
-	// StatusTimeout is the maximum time to wait for status queries.
-	// Default: 5s
-	StatusTimeout time.Duration `json:"status_timeout"`
+	StatusTimeout  time.Duration `json:"status_timeout"`
 
 	// StartupDelay is the time to wait after launching a CLI before sending init message.
 	// Default: 2s (can be set to 0 for testing)
@@ -68,24 +63,19 @@ const (
 // StorageDirName is the name of the data directory.
 const StorageDirName = ".gomuxai"
 
-// getStorageDir returns the base directory for all gomuxai data.
-// Priority:
-//  1. Directory where the binary lives (truly portable)
-//  2. Current working directory (fallback)
-//
-// This ensures the tool is portable - no files in ~/
+// getStorageDir returns the base directory for all gomuxai data: next to the
+// binary, so the tool keeps nothing in ~/, or in the working directory if
+// the binary's path is unknown.
 func getStorageDir() string {
-	// Try to get the directory where the binary is located
 	if exe := agentBinaryPath(); exe != "" {
 		return filepath.Join(filepath.Dir(exe), StorageDirName)
 	}
-
-	// Fallback: use current working directory
 	return StorageDirName
 }
 
-// defaultHost returns $AGENT_HOST if set, else the short hostname with characters that can't appear in
-// a bus subject token replaced, e.g. "Ivans-Air.local" -> "Ivans-Air".
+// defaultHost returns $AGENT_HOST if set, else the short hostname with
+// characters that can't appear in a bus subject token replaced, e.g.
+// "Ivans-Air.local" -> "Ivans-Air".
 func defaultHost() string {
 	if host := os.Getenv("AGENT_HOST"); host != "" {
 		return host
@@ -183,11 +173,6 @@ func (c *Config) SessionName(agentName string) string {
 // LogPath returns the log file path for an agent.
 func (c *Config) LogPath(agentName string) string {
 	return filepath.Join(c.LogDir, agentName+".log")
-}
-
-// StatePath returns the state directory path for an agent.
-func (c *Config) StatePath(agentName string) string {
-	return filepath.Join(c.StateDir, agentName)
 }
 
 // BusDir returns the agent bus directory (identity, trusted peers, runtime

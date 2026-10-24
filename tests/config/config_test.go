@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,7 +72,7 @@ func TestLoadFromFile_MissingFile(t *testing.T) {
 	}
 
 	// Should contain helpful message about reading the file
-	if !containsSubstring(err.Error(), "reading config file") {
+	if !strings.Contains(err.Error(), "reading config file") {
 		t.Errorf("error should mention 'reading config file', got: %v", err)
 	}
 }
@@ -94,7 +95,7 @@ func TestLoadFromFile_InvalidJSON(t *testing.T) {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
 
-	if !containsSubstring(err.Error(), "parsing config file") {
+	if !strings.Contains(err.Error(), "parsing config file") {
 		t.Errorf("error should mention 'parsing config file', got: %v", err)
 	}
 }
@@ -166,13 +167,13 @@ func TestValidate_BackendRequired(t *testing.T) {
 	}
 
 	// Error should mention backend and provide helpful guidance
-	if !containsSubstring(err.Error(), "backend") {
+	if !strings.Contains(err.Error(), "backend") {
 		t.Errorf("error should mention 'backend', got: %v", err)
 	}
-	if !containsSubstring(err.Error(), "--backend") {
+	if !strings.Contains(err.Error(), "--backend") {
 		t.Errorf("error should suggest '--backend' flag, got: %v", err)
 	}
-	if !containsSubstring(err.Error(), "--backend-config") {
+	if !strings.Contains(err.Error(), "--backend-config") {
 		t.Errorf("error should suggest '--backend-config' flag, got: %v", err)
 	}
 }
@@ -410,44 +411,6 @@ func TestLogPath(t *testing.T) {
 	}
 }
 
-func TestStatePath(t *testing.T) {
-	testCases := []struct {
-		name      string
-		stateDir  string
-		agentName string
-		expected  string
-	}{
-		{
-			name:      "simple path",
-			stateDir:  "/var/lib/gomuxai/state",
-			agentName: "researcher",
-			expected:  "/var/lib/gomuxai/state/researcher",
-		},
-		{
-			name:      "relative path",
-			stateDir:  ".state",
-			agentName: "builder",
-			expected:  ".state/builder",
-		},
-		{
-			name:      "agent name with dashes",
-			stateDir:  "/tmp/state",
-			agentName: "sub-agent-1",
-			expected:  "/tmp/state/sub-agent-1",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &config.Config{StateDir: tc.stateDir}
-			result := cfg.StatePath(tc.agentName)
-			if result != tc.expected {
-				t.Errorf("StatePath(%q) = %q, want %q", tc.agentName, result, tc.expected)
-			}
-		})
-	}
-}
-
 // ===========================================================================
 // DefaultConfig Tests
 // ===========================================================================
@@ -508,7 +471,7 @@ func TestDefaultConfig_PortableStorage(t *testing.T) {
 	}
 
 	// All paths should contain the storage dir name
-	if !containsSubstring(cfg.DatabasePath, config.StorageDirName) {
+	if !strings.Contains(cfg.DatabasePath, config.StorageDirName) {
 		t.Errorf("DatabasePath should contain %q, got %q", config.StorageDirName, cfg.DatabasePath)
 	}
 }
@@ -636,23 +599,6 @@ func TestLoadFromFile_DefaultTimeoutsWhenNotSpecified(t *testing.T) {
 	if cfg.StatusTimeout != config.DefaultStatusTimeout {
 		t.Errorf("expected default StatusTimeout, got %v", cfg.StatusTimeout)
 	}
-}
-
-// ===========================================================================
-// Helpers
-// ===========================================================================
-
-func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstringImpl(s, substr))
-}
-
-func containsSubstringImpl(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 // The default host becomes a bus subject token, so it must be subject-safe.
