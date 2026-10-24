@@ -59,9 +59,6 @@ func setupTestEnv(t *testing.T) *testEnv {
 		SessionPrefix:     fmt.Sprintf("test-%d-", time.Now().UnixNano()),
 		DefaultScrollback: 100,
 		StartupDelay:      0, // No delay in tests for speed
-		SpawnTimeout:      5 * time.Second,
-		CaptureTimeout:    2 * time.Second,
-		StatusTimeout:     2 * time.Second,
 	}
 
 	if err := cfg.EnsureDirs(); err != nil {

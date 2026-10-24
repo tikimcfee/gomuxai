@@ -32,12 +32,6 @@ type Config struct {
 	// DefaultScrollback is the default number of lines to capture.
 	DefaultScrollback int `json:"default_scrollback"`
 
-	// SpawnTimeout, CaptureTimeout, and StatusTimeout are read from config
-	// files and defaulted, but no operation applies them yet.
-	SpawnTimeout   time.Duration `json:"spawn_timeout"`
-	CaptureTimeout time.Duration `json:"capture_timeout"`
-	StatusTimeout  time.Duration `json:"status_timeout"`
-
 	// StartupDelay is the time to wait after launching a CLI before sending init message.
 	// Default: 2s (can be set to 0 for testing)
 	StartupDelay time.Duration `json:"startup_delay"`
@@ -52,13 +46,8 @@ type Config struct {
 	Host string `json:"host"`
 }
 
-// Default timeout values.
-const (
-	DefaultSpawnTimeout   = 30 * time.Second
-	DefaultCaptureTimeout = 10 * time.Second
-	DefaultStatusTimeout  = 5 * time.Second
-	DefaultStartupDelay   = 2 * time.Second
-)
+// DefaultStartupDelay is the default StartupDelay.
+const DefaultStartupDelay = 2 * time.Second
 
 // StorageDirName is the name of the data directory.
 const StorageDirName = ".gomuxai"
@@ -115,9 +104,6 @@ func DefaultConfig() *Config {
 		StateDir:          filepath.Join(baseDir, "state"),
 		SessionPrefix:     "agent-",
 		DefaultScrollback: 500,
-		SpawnTimeout:      DefaultSpawnTimeout,
-		CaptureTimeout:    DefaultCaptureTimeout,
-		StatusTimeout:     DefaultStatusTimeout,
 		StartupDelay:      DefaultStartupDelay,
 		AgentBinary:       agentBinaryPath(),
 		Host:              defaultHost(),

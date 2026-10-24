@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
@@ -473,131 +472,6 @@ func TestDefaultConfig_PortableStorage(t *testing.T) {
 	// All paths should contain the storage dir name
 	if !strings.Contains(cfg.DatabasePath, config.StorageDirName) {
 		t.Errorf("DatabasePath should contain %q, got %q", config.StorageDirName, cfg.DatabasePath)
-	}
-}
-
-// ===========================================================================
-// Timeout Configuration Tests
-// ===========================================================================
-
-func TestDefaultTimeouts(t *testing.T) {
-	cfg := config.DefaultConfig()
-
-	// SpawnTimeout should be set to default (30s)
-	if cfg.SpawnTimeout != config.DefaultSpawnTimeout {
-		t.Errorf("expected SpawnTimeout %v, got %v", config.DefaultSpawnTimeout, cfg.SpawnTimeout)
-	}
-	if cfg.SpawnTimeout != 30*time.Second {
-		t.Errorf("SpawnTimeout should be 30s, got %v", cfg.SpawnTimeout)
-	}
-
-	// CaptureTimeout should be set to default (10s)
-	if cfg.CaptureTimeout != config.DefaultCaptureTimeout {
-		t.Errorf("expected CaptureTimeout %v, got %v", config.DefaultCaptureTimeout, cfg.CaptureTimeout)
-	}
-	if cfg.CaptureTimeout != 10*time.Second {
-		t.Errorf("CaptureTimeout should be 10s, got %v", cfg.CaptureTimeout)
-	}
-
-	// StatusTimeout should be set to default (5s)
-	if cfg.StatusTimeout != config.DefaultStatusTimeout {
-		t.Errorf("expected StatusTimeout %v, got %v", config.DefaultStatusTimeout, cfg.StatusTimeout)
-	}
-	if cfg.StatusTimeout != 5*time.Second {
-		t.Errorf("StatusTimeout should be 5s, got %v", cfg.StatusTimeout)
-	}
-}
-
-func TestTimeoutConstants(t *testing.T) {
-	// Verify timeout constants have sensible values
-	if config.DefaultSpawnTimeout <= 0 {
-		t.Error("DefaultSpawnTimeout should be positive")
-	}
-	if config.DefaultCaptureTimeout <= 0 {
-		t.Error("DefaultCaptureTimeout should be positive")
-	}
-	if config.DefaultStatusTimeout <= 0 {
-		t.Error("DefaultStatusTimeout should be positive")
-	}
-
-	// SpawnTimeout should be the longest (operations can take time)
-	if config.DefaultSpawnTimeout < config.DefaultCaptureTimeout {
-		t.Error("SpawnTimeout should be >= CaptureTimeout")
-	}
-	if config.DefaultSpawnTimeout < config.DefaultStatusTimeout {
-		t.Error("SpawnTimeout should be >= StatusTimeout")
-	}
-}
-
-func TestLoadFromFile_WithTimeouts(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "config-timeouts-*.json")
-	if err != nil {
-		t.Fatalf("creating temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	// Create config with custom timeouts (as nanoseconds in JSON)
-	configData := map[string]interface{}{
-		"backend":         "claude",
-		"spawn_timeout":   60000000000, // 60s in nanoseconds
-		"capture_timeout": 20000000000, // 20s in nanoseconds
-		"status_timeout":  15000000000, // 15s in nanoseconds
-	}
-
-	data, _ := json.Marshal(configData)
-	if _, err := tmpFile.Write(data); err != nil {
-		t.Fatalf("writing config: %v", err)
-	}
-	tmpFile.Close()
-
-	cfg, err := config.LoadFromFile(tmpFile.Name())
-	if err != nil {
-		t.Fatalf("LoadFromFile failed: %v", err)
-	}
-
-	if cfg.SpawnTimeout != 60*time.Second {
-		t.Errorf("expected SpawnTimeout 60s, got %v", cfg.SpawnTimeout)
-	}
-	if cfg.CaptureTimeout != 20*time.Second {
-		t.Errorf("expected CaptureTimeout 20s, got %v", cfg.CaptureTimeout)
-	}
-	if cfg.StatusTimeout != 15*time.Second {
-		t.Errorf("expected StatusTimeout 15s, got %v", cfg.StatusTimeout)
-	}
-}
-
-func TestLoadFromFile_DefaultTimeoutsWhenNotSpecified(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "config-no-timeouts-*.json")
-	if err != nil {
-		t.Fatalf("creating temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	// Config without timeouts - should use defaults
-	configData := map[string]interface{}{
-		"backend": "claude",
-	}
-
-	data, _ := json.Marshal(configData)
-	if _, err := tmpFile.Write(data); err != nil {
-		t.Fatalf("writing config: %v", err)
-	}
-	tmpFile.Close()
-
-	cfg, err := config.LoadFromFile(tmpFile.Name())
-	if err != nil {
-		t.Fatalf("LoadFromFile failed: %v", err)
-	}
-
-	// Should have default timeout values
-	if cfg.SpawnTimeout != config.DefaultSpawnTimeout {
-		t.Errorf("expected default SpawnTimeout, got %v", cfg.SpawnTimeout)
-	}
-	if cfg.CaptureTimeout != config.DefaultCaptureTimeout {
-		t.Errorf("expected default CaptureTimeout, got %v", cfg.CaptureTimeout)
-	}
-	if cfg.StatusTimeout != config.DefaultStatusTimeout {
-		t.Errorf("expected default StatusTimeout, got %v", cfg.StatusTimeout)
 	}
 }
 
