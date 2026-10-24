@@ -150,6 +150,11 @@ func (w *Watcher) processAgent(ctx context.Context, agent *storage.Agent) {
 
 	msgLogger = msgLogger.With("status", status)
 
+	// unknownThreshold counts unknowns in a row: any known status ends a run.
+	if status != service.AgentStatusUnknown {
+		w.resetUnknownCount(msg.ID)
+	}
+
 	switch status {
 	case service.AgentStatusIdle, service.AgentStatusError:
 		// error means the last turn failed, not that the agent is gone: for
@@ -202,7 +207,6 @@ func (w *Watcher) handleDeliveryFailure(ctx context.Context, msg *storage.Messag
 	state := w.getOrCreateState(msg.ID)
 	state.retryCount++
 	state.lastAttempt = time.Now()
-	state.unknownCount = 0 // Reset unknown count on delivery attempt
 
 	if state.retryCount >= maxRetries {
 		logger.Warn("max retries exceeded, marking message as failed",
@@ -268,6 +272,14 @@ func (w *Watcher) getOrCreateState(msgID int64) *messageState {
 		w.states[msgID] = state
 	}
 	return state
+}
+
+func (w *Watcher) resetUnknownCount(msgID int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if state, exists := w.states[msgID]; exists {
+		state.unknownCount = 0
+	}
 }
 
 func (w *Watcher) clearState(msgID int64) {
