@@ -84,9 +84,12 @@ func getStorageDir() string {
 	return StorageDirName
 }
 
-// defaultHost returns the short hostname with characters that can't appear in
+// defaultHost returns $AGENT_HOST if set, else the short hostname with characters that can't appear in
 // a bus subject token replaced, e.g. "Ivans-Air.local" -> "Ivans-Air".
 func defaultHost() string {
+	if host := os.Getenv("AGENT_HOST"); host != "" {
+		return host
+	}
 	name, err := os.Hostname()
 	if err != nil || name == "" {
 		return "localhost"

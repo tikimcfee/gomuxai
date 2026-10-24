@@ -77,10 +77,11 @@ func runWait(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if ref.Host != "" && ref.Host != cfg.Host {
-		return fmt.Errorf("waiting on an agent on another host (%s) is not supported yet", ref)
+	name, host := ref.Name, cfg.Host
+	remote := ref.Host != "" && ref.Host != cfg.Host
+	if remote {
+		host = ref.Host
 	}
-	name := ref.Name
 
 	targets, err := parseWaitStatuses(waitFor)
 	if err != nil {
@@ -93,6 +94,9 @@ func runWait(cmd *cobra.Command, args []string) error {
 	}
 
 	nc, err := busConnect()
+	if err != nil && remote {
+		return fmt.Errorf("waiting on %s needs a running agent bus: %w", ref, err)
+	}
 	if err != nil {
 		if !errors.Is(err, natsbus.ErrNoBus) {
 			fmt.Fprintf(os.Stderr, "agent wait: can't use the bus (%v); polling instead\n", err)
@@ -117,19 +121,32 @@ func runWait(cmd *cobra.Command, args []string) error {
 		defer cancel()
 	}
 
-	status, err := natsbus.Wait(ctx, nc, natsbus.WaitOptions{
-		Host:  cfg.Host,
-		Agent: name,
-		For:   targets,
-		Fail:  fail,
-		Next:  waitNext,
-		Current: func(ctx context.Context) (string, error) {
-			info, err := agentService.StatusInfo(ctx, name)
+	current := func(ctx context.Context) (string, error) {
+		info, err := agentService.StatusInfo(ctx, name)
+		if err != nil {
+			return "", err
+		}
+		return string(info.Status), nil
+	}
+	if remote {
+		// The remote host's own status check confirms events, as locally.
+		client := natsbus.NewRPCClient(nc, 0)
+		current = func(ctx context.Context) (string, error) {
+			resp, err := client.Status(ctx, ref)
 			if err != nil {
 				return "", err
 			}
-			return string(info.Status), nil
-		},
+			return resp.Status, nil
+		}
+	}
+
+	status, err := natsbus.Wait(ctx, nc, natsbus.WaitOptions{
+		Host:     host,
+		Agent:    name,
+		For:      targets,
+		Fail:     fail,
+		Next:     waitNext,
+		Current:  current,
 		Interval: interval,
 	})
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -138,7 +155,7 @@ func runWait(cmd *cobra.Command, args []string) error {
 			last = "unknown"
 		}
 		fmt.Fprintf(os.Stderr, "Error: timed out after %s waiting for %s to be %s (last status: %s)\n",
-			waitTimeout, name, strings.Join(targets, " or "), last)
+			waitTimeout, ref, strings.Join(targets, " or "), last)
 		if nc != nil {
 			nc.Close()
 		}
@@ -147,7 +164,7 @@ func runWait(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", name, status)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", ref, status)
 	return nil
 }
 

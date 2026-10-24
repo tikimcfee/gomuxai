@@ -149,7 +149,7 @@ func TestBus_OpsNotAllowedRemotelyAreBlockedBothWays(t *testing.T) {
 
 func TestBus_RemoteOpsAreConfigurablePerHost(t *testing.T) {
 	_, _, hubConn, leafConn := linkedPair(t,
-		[]string{natsbus.OpStatus},                // hub: status only
+		[]string{natsbus.OpStatus},                 // hub: status only
 		[]string{natsbus.OpStatus, natsbus.OpKeys}) // leaf: also allows keys
 	serve(t, hubConn, "hub")
 	serve(t, leafConn, "leaf")
@@ -342,3 +342,17 @@ func TestTrustPeer_Validates(t *testing.T) {
 	}
 }
 
+// An identity is bound to its host name: loading it as another host would
+// sign links and publish events under a name peers don't expect.
+func TestIdentity_BoundToItsHostName(t *testing.T) {
+	h := newBusHost(t, "box")
+	if _, err := natsbus.LoadIdentity(h.dir, "other"); err == nil || !strings.Contains(err.Error(), `for host "box"`) {
+		t.Errorf("loading as another host: err = %v", err)
+	}
+	if _, err := natsbus.ConnectLocal(h.dir, "other"); errors.Is(err, natsbus.ErrNoBus) {
+		// No bus is running, so ConnectLocal reports that first; fine.
+	}
+	if _, err := natsbus.LoadIdentity(h.dir, "box"); err != nil {
+		t.Errorf("loading as its own host: %v", err)
+	}
+}

@@ -136,6 +136,31 @@ agent keys helper@hub "y" --no-enter    # usually refused: buses don't serve key
 
 For `keys`, a plain argument is a tmux session (as before), while `name@host` addresses a managed agent, on any host.
 
+### Running the Bus
+
+One `agent bus` runs per machine; one machine (the hub) accepts links from the others. Pairing works like SSH keys, and only public material is copied between machines:
+
+```bash
+# once, on each machine
+agent bus init                             # on the hub: agent bus init --url tls://<hub-address>:7422
+scp <this-host>.pub.json other-machine:    # printed by init; also: agent bus export
+agent bus trust <other-host>.pub.json      # compare the printed key/pin with the other side's
+
+# start (runs in tmux session "gomux-bus")
+agent bus start --listen 0.0.0.0:7422      # hub
+agent bus start                            # every other machine
+agent bus status                           # running? linked peers? allowed ops?
+agent bus stop
+```
+
+**Security model:**
+- Links between machines use TLS 1.3, with each side's certificate pinned by key.
+- Each machine authenticates with its own nkey; no shared secrets.
+- A machine serves other machines only the ops in `--remote-ops` (default: `list,status,capture,send,respond`; raw `keys` is local-only). Peers can't publish events as another host.
+- Local clients on `127.0.0.1` authenticate with a key in `.gomuxai/bus/local.nk` (mode 0600).
+- The hub routes all cross-machine traffic, so run it on the machine you trust most. Status events are hints: `agent wait` confirms them with a real status check.
+- Use `AGENT_HOST` to override this machine's host name. An identity is bound to the name it was created with.
+
 ### Reporting Your Own Status
 
 `claude` and `agy` agents report automatically. Anything else can report by hand:

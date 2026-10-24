@@ -219,7 +219,6 @@ func TestBus_StaleURLFile_StartsNewServer(t *testing.T) {
 	}
 }
 
-
 func TestBus_URLFileCleanedOnClose(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "natsbus-cleanup-test-*")
 	if err != nil {

@@ -61,6 +61,12 @@ func SubjectRPC(host, op string) string {
 	return fmt.Sprintf("%s.%s.rpc.%s", SubjectRoot, host, op)
 }
 
+// SubjectLocal is a subject only local clients of host can reach: peer links
+// never carry gomux.<host>.local.> (see serverOptions and remoteLeaf).
+func SubjectLocal(host, name string) string {
+	return fmt.Sprintf("%s.%s.local.%s", SubjectRoot, host, name)
+}
+
 // SubjectStatus is where host publishes agent's status events.
 func SubjectStatus(host, agent string) string {
 	return fmt.Sprintf("%s.%s.agent.%s.status", SubjectRoot, host, agent)

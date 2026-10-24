@@ -67,6 +67,7 @@ func init() {
 	rootCmd.AddCommand(stateCmd)
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(reportCmd)
+	rootCmd.AddCommand(busCmd)
 	rootCmd.AddCommand(approveCmd)
 	rootCmd.AddCommand(denyCmd)
 	rootCmd.AddCommand(waitCmd)

@@ -139,6 +139,9 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	// Create tmux session
 	env := map[string]string{
 		"AGENT_NAME": opts.Name,
+		// Hooks publish status events under this host; without it they'd
+		// fall back to the hostname, which AGENT_HOST may override.
+		"AGENT_HOST": s.cfg.Host,
 	}
 	if err := s.tmux.CreateSession(sessionName, env); err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)
@@ -267,6 +270,9 @@ func (s *AgentService) spawnWithBackend(ctx context.Context, opts SpawnOptions, 
 	// Create tmux session
 	env := map[string]string{
 		"AGENT_NAME": opts.Name,
+		// Hooks publish status events under this host; without it they'd
+		// fall back to the hostname, which AGENT_HOST may override.
+		"AGENT_HOST": s.cfg.Host,
 	}
 	if err := s.tmux.CreateSession(sessionName, env); err != nil {
 		return nil, fmt.Errorf("creating session: %w", err)

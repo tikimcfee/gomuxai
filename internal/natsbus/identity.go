@@ -24,6 +24,7 @@ import (
 
 // A host's bus identity lives in its bus dir (.gomuxai/bus):
 //
+//	host       the host name the identity was created for
 //	host.nk    nkey seed this host signs with when it links to a peer   0600
 //	local.nk   nkey seed local CLIs and hooks authenticate with         0600
 //	tls.key    private key for the host's self-signed TLS certificate   0600
@@ -35,6 +36,7 @@ import (
 // the peer's public bundle. There is no CA, and secrets never leave a host.
 
 const (
+	hostNameFile  = "host"
 	hostSeedFile  = "host.nk"
 	localSeedFile = "local.nk"
 	tlsKeyFile    = "tls.key"
@@ -62,8 +64,8 @@ type Identity struct {
 // host needs to trust it, and nothing secret.
 type PeerBundle struct {
 	Host    string `json:"host"`
-	NKey    string `json:"nkey"`       // public user nkey ("U...")
-	CertSHA string `json:"cert_sha256"` // pinned TLS public key
+	NKey    string `json:"nkey"`          // public user nkey ("U...")
+	CertSHA string `json:"cert_sha256"`   // pinned TLS public key
 	URL     string `json:"url,omitempty"` // leaf URL if the host accepts links, e.g. tls://box:7422
 }
 
@@ -117,6 +119,7 @@ func InitIdentity(dir, host string) (*Identity, error) {
 		data []byte
 		mode os.FileMode
 	}{
+		{hostNameFile, []byte(host + "\n"), 0644},
 		{tlsCertFile, certPEM, 0644},
 		{tlsKeyFile, keyPEM, 0600},
 		{localSeedFile, localSeed, 0600},
@@ -146,8 +149,17 @@ func LoadIdentity(dir, host string) (*Identity, error) {
 		return os.ReadFile(path)
 	}
 
+	// The identity belongs to one host name. Loading it under another would
+	// sign links and publish events as a host the peers don't know.
+	name, err := read(hostNameFile, false)
+	if err != nil {
+		return nil, err
+	}
+	if recorded := strings.TrimSpace(string(name)); recorded != host {
+		return nil, fmt.Errorf("bus identity in %s is for host %q, not %q (set AGENT_HOST=%s, or init a new identity)", dir, recorded, host, recorded)
+	}
+
 	id := &Identity{Host: host}
-	var err error
 	if id.hostSeed, err = read(hostSeedFile, true); err != nil {
 		return nil, err
 	}
