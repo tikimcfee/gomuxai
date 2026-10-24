@@ -118,6 +118,24 @@ agent deny helper                       # no (for Claude/agy this cancels the tu
 
 **Read the detail before approving.** `approve`/`deny` refuse unless the agent is `waiting`, and refuse dialogs that are questions for the user rather than permission prompts (Claude's `AskUserQuestion`, `ExitPlanMode`; agy's `ask_question`): answer those with `send`/`keys`. `--expect <tool>` guards against a different prompt having replaced the one you inspected. Right before the keypress they also check that the prompt is still on screen, because Claude's deny key is Escape, and Escape on a turn that is already running (someone else answered the prompt first) cancels it. A prompt answered within the last few milliseconds before the keypress can still slip through. `--force` overrides the checks. Note: `agy` has no `PermissionRequest`/`waiting` hook event (its status remains `processing` after `PreToolUse`), so `agent approve`/`agent deny` on an `agy` agent requires `--force`.
 
+### Agents on Other Hosts
+
+Each machine has a host name on the agent bus (`host` in the config; default: the short hostname). Address an agent on another host as `name@host`:
+
+```bash
+agent list --host hub                   # agents on host "hub"
+agent status helper@hub -v
+agent capture helper@hub --lines 100
+agent send helper@hub "run the tests"
+agent approve helper@hub --expect Bash  # same checks as local, run on hub
+agent deny helper@hub
+agent keys helper@hub "y" --no-enter    # usually refused: buses don't serve keys to other hosts by default
+```
+
+`status`, `capture`, `send`, `approve`, `deny`, and `keys` accept `name@host`; output and error messages are the same as for a local agent. A plain name, or `name@<this host>`, takes the local path and needs no bus. Any other host needs a running `agent bus` on this machine linked to that host; without one, the command fails saying so. "no bus answering for host X" means the host's bus is down, not linked, or doesn't serve that operation.
+
+For `keys`, a plain argument is a tmux session (as before), while `name@host` addresses a managed agent, on any host.
+
 ### Reporting Your Own Status
 
 `claude` and `agy` agents report automatically. Anything else can report by hand:
@@ -231,6 +249,7 @@ agent session list                 # List all sessions
 
 agent keys <session> "text"        # Send text + Enter
 agent keys <session> "text" --no-enter  # Send text only
+agent keys <name>@<host> "text"    # Send to a managed agent's session, on any host
 agent key <session> c-c            # Send Ctrl+C
 agent key <session> Enter          # Send Enter
 
@@ -297,6 +316,7 @@ if [[ "$status" == "done" ]]; then ...
 
 ```bash
 agent list
+agent list --host <host>   # agents on another host (needs a running bus)
 ```
 
 Is there already an agent doing what you need? Reuse it instead of spawning duplicates.
