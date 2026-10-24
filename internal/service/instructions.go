@@ -36,7 +36,8 @@ shell's PATH may not include it:
 Messages from other agents start with "[from NAME@HOST]". The sender can't see
 your terminal: to answer, send your reply back with `+"`agent send NAME@HOST \"...\"`"+`.
 Keep messages short and self-contained, and reply once per message unless asked
-for more, so agents don't talk past each other.
+for more, so agents don't talk past each other. Never report another agent's
+answer before its message has actually arrived; wait for it (or use agent wait).
 
 Your status (idle, working, waiting on a permission prompt) is reported
 automatically. Use `+"`agent`"+` rather than tmux to reach other agents.

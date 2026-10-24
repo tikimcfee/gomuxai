@@ -386,3 +386,19 @@ func TestClaudeWithInstructions(t *testing.T) {
 		t.Errorf("args = %q", args)
 	}
 }
+
+// Claude's trust dialog highlights "No, exit": Enter alone would quit.
+func TestClaudeTrustKeys(t *testing.T) {
+	b := namedagents.NewClaudeBackend()
+	noHighlighted := " Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel"
+	if got := b.TrustKeys(noHighlighted); strings.Join(got, ",") != "Down,Enter" {
+		t.Errorf("TrustKeys = %v, want Down,Enter", got)
+	}
+	yesHighlighted := "   No, exit\n ❯ Yes, I trust this folder\n"
+	if got := b.TrustKeys(yesHighlighted); strings.Join(got, ",") != "Enter" {
+		t.Errorf("TrustKeys = %v, want Enter", got)
+	}
+	if got := b.TrustKeys("❯ Try \"refactor <filepath>\""); got != nil {
+		t.Errorf("TrustKeys at the prompt = %v, want nil", got)
+	}
+}

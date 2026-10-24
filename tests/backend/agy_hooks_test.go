@@ -190,7 +190,8 @@ func TestAgyLaunchCommandWithHooks(t *testing.T) {
 	reportCmd := `'/opt/my tools/it'\''s/agent' report --hook --as 'helper' --spawn-id '11111111-2222-3333-4444-555555555555'`
 
 	cmd := provider.LaunchCommandWithHooks(reportCmd, "11111111-2222-3333-4444-555555555555")
-	if !strings.HasPrefix(cmd, "agy --add-dir ") {
+	// agy must launch without SSH_* vars, or it ignores the saved login.
+	if !strings.HasPrefix(cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --add-dir ") {
 		t.Fatalf("unexpected launch command: %s", cmd)
 	}
 	wantExit := `; '/opt/my tools/it'\''s/agent' report exited --as 'helper' --spawn-id '11111111-2222-3333-4444-555555555555'`
@@ -200,7 +201,7 @@ func TestAgyLaunchCommandWithHooks(t *testing.T) {
 
 	// Let a real shell split the agy invocation arguments (before ';').
 	agyPart := strings.TrimSuffix(cmd, wantExit)
-	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.TrimPrefix(agyPart, "agy ")).Output()
+	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.TrimPrefix(agyPart, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy ")).Output()
 	if err != nil {
 		t.Fatalf("shell parsing launch command: %v", err)
 	}
@@ -274,7 +275,7 @@ func TestAgyLaunchCommandWithHooks_KeepsSkipPermissions(t *testing.T) {
 		AgentDir:        t.TempDir(),
 	})
 	cmd := provider.LaunchCommandWithHooks("agent report --hook", "sid")
-	if !strings.HasPrefix(cmd, "agy --dangerously-skip-permissions --add-dir ") {
+	if !strings.HasPrefix(cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --dangerously-skip-permissions --add-dir ") {
 		t.Errorf("unexpected launch command: %s", cmd)
 	}
 }
@@ -358,5 +359,41 @@ func TestAgyPermissionPromptVisible(t *testing.T) {
 	scrolledPast := cmdPrompt + "\n" + strings.Repeat("output line\n", 15) + "? for shortcuts"
 	if provider.PermissionPromptVisible(scrolledPast) {
 		t.Error("dialog scrolled off the bottom of the screen should not match")
+	}
+}
+
+// The briefing reaches agy as AGENTS.md at the root of an --add-dir directory,
+// which is where agy looks (verified against agy 1.4.x: not .agents/rules).
+func TestAgyWithInstructions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "instructions.md")
+	os.WriteFile(path, []byte("# briefing\n"), 0600)
+
+	// Hooks already added the agent's dir: no second --add-dir, wrapper kept.
+	provider := namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{AgentDir: dir})
+	withHooks := provider.LaunchCommandWithHooks("agent report --hook", "sid")
+	cmd := provider.WithInstructions(withHooks, path)
+	if strings.Count(cmd, "--add-dir") != 1 || !strings.HasSuffix(cmd, "; agent report exited") {
+		t.Errorf("with hooks: %s", cmd)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md")); err != nil || string(data) != "# briefing\n" {
+		t.Errorf("AGENTS.md = %q, %v", data, err)
+	}
+
+	// Without hooks, the directory is added, before nothing else.
+	plain := namedagents.NewAgyBackend()
+	cmd = plain.WithInstructions(plain.LaunchCommand(), path)
+	if !strings.HasSuffix(cmd, " --add-dir '"+dir+"'") {
+		t.Errorf("without hooks: %s", cmd)
+	}
+}
+
+func TestAgyTrustKeys(t *testing.T) {
+	b := namedagents.NewAgyBackend()
+	if got := b.TrustKeys("Do you trust the contents of this project?\n> Yes, I trust this folder"); strings.Join(got, ",") != "Enter" {
+		t.Errorf("TrustKeys = %v, want Enter", got)
+	}
+	if got := b.TrustKeys("? for shortcuts"); got != nil {
+		t.Errorf("TrustKeys at the prompt = %v, want nil", got)
 	}
 }

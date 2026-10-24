@@ -51,6 +51,14 @@ type InstructionsProvider interface {
 	WithInstructions(launchCmd, path string) string
 }
 
+// TrustPrompter is implemented by backends whose CLI asks whether to trust a
+// new workspace before it starts.
+type TrustPrompter interface {
+	// TrustKeys returns the keys that answer "trust" to the prompt on screen
+	// (visible pane, ANSI-stripped), or nil if no trust prompt is showing.
+	TrustKeys(screen string) []string
+}
+
 // PromptFlagProvider is implemented by backends whose CLI can accept the
 // initial task prompt via a launch flag (e.g. agy -i <prompt>).
 type PromptFlagProvider interface {

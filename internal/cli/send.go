@@ -13,9 +13,12 @@ var sendCmd = &cobra.Command{
 	Short: "Send a message to an agent immediately",
 	Long: `Send delivers a message to an agent's terminal immediately.
 
-The message is sent regardless of the agent's current state. Use 'queue'
-if you want to wait until the agent is idle. An agent on another host is
-addressed as name@host (needs a running bus).
+The message is typed in even while the agent is working (Claude and agy queue
+it). It is refused while the agent is at a dialog (a permission or workspace
+trust prompt), where the Enter would answer the dialog instead; answer those
+with approve/deny. --force overrides that check for a local agent. Use 'queue'
+to wait until the agent is idle. An agent on another host is addressed as
+name@host (needs a running bus).
 
 Examples:
   agent send researcher "analyze the codebase structure"
@@ -23,6 +26,12 @@ Examples:
   agent send builder@hub "run the tests"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: runSend,
+}
+
+var sendForce bool
+
+func init() {
+	sendCmd.Flags().BoolVar(&sendForce, "force", false, "Send even if the agent is at a dialog (local agents only)")
 }
 
 func runSend(cmd *cobra.Command, args []string) error {
@@ -35,12 +44,19 @@ func runSend(cmd *cobra.Command, args []string) error {
 	}
 	message = fromAgent(message)
 	if remote {
+		if sendForce {
+			return fmt.Errorf("--force only applies to local agents")
+		}
 		client, closeFn, err := dialRemote(ref.Host)
 		if err != nil {
 			return err
 		}
 		defer closeFn()
 		if err := client.Send(getContext(), ref, message); err != nil {
+			return err
+		}
+	} else if sendForce {
+		if err := agentService.SendUnchecked(getContext(), ref.Name, message); err != nil {
 			return err
 		}
 	} else if err := agentService.Send(getContext(), ref.Name, message); err != nil {

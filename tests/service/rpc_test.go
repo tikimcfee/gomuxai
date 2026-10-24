@@ -50,7 +50,7 @@ func TestRPC_EndToEndThroughService(t *testing.T) {
 	defer env.cleanup()
 	env.cfg.SessionPrefix = "rpc-" + env.cfg.SessionPrefix
 	ctx := context.Background()
-	spawnFake(t, env, "worker")
+	fake := spawnFake(t, env, "worker")
 	client := serveService(t, env)
 	ref := natsbus.AgentRef{Name: "worker", Host: "h1"}
 
@@ -71,6 +71,14 @@ func TestRPC_EndToEndThroughService(t *testing.T) {
 		t.Errorf("status = %+v", st)
 	}
 
+	// send refuses while the agent waits on a prompt: its Enter would answer
+	// the prompt, so a remote message can't be used to approve one.
+	if err := client.Send(ctx, ref, "echo nope"); err == nil || !strings.Contains(err.Error(), "waiting on a prompt") {
+		t.Errorf("send to a waiting agent: err = %v, want a refusal", err)
+	}
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusIdle})
+	fake.promptGone = true // the dialog is answered
+
 	// send and capture: the shell runs what was sent, and the output shows remotely.
 	if err := client.Send(ctx, ref, "echo rpc-send-$((40+2))"); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -83,6 +91,8 @@ func TestRPC_EndToEndThroughService(t *testing.T) {
 	waitForScreen(t, client, ref, "rpc-keys-55")
 
 	// respond: the service's own checks apply, and their errors come back.
+	fake.promptGone = false
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusWaiting, Event: "PermissionRequest", Detail: "permission: Bash: ls", Tool: "Bash"})
 	err = client.Respond(ctx, ref, natsbus.RespondRequest{Response: natsbus.ResponseApprove, ExpectTool: "Write"})
 	if err == nil || !strings.Contains(err.Error(), `waiting on "Bash", not "Write"`) {
 		t.Errorf("approve with wrong --expect: err = %v", err)

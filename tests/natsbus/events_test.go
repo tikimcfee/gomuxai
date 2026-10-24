@@ -444,11 +444,12 @@ func TestWait_NextWaitsForTheNextArrival(t *testing.T) {
 		goBackground(t, func() {
 			time.Sleep(50 * time.Millisecond)
 			publish(t, pub, "worker", "idle") // still the old turn
+			// As Report does: record the status, then publish it.
+			src.record("processing")
 			publish(t, pub, "worker", "processing")
-			src.set("processing")
 			time.Sleep(50 * time.Millisecond)
 			cameBack.Store(true)
-			src.set("idle")
+			src.record("idle")
 			publish(t, pub, "worker", "idle")
 		})
 	}

@@ -489,8 +489,8 @@ func TestRegistryCreateProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProvider(agy) error = %v", err)
 	}
-	if cmd := pAgy.LaunchCommand(); cmd != "agy --dangerously-skip-permissions" {
-		t.Errorf("agy LaunchCommand() = %q, want %q", cmd, "agy --dangerously-skip-permissions")
+	if cmd := pAgy.LaunchCommand(); cmd != "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --dangerously-skip-permissions" {
+		t.Errorf("agy LaunchCommand() = %q, want %q", cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --dangerously-skip-permissions")
 	}
 }
 

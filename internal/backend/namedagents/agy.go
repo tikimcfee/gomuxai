@@ -124,11 +124,49 @@ func (b *AgyBackend) ExtractLastMessage(output string) string {
 
 // Commands
 
+// agyEnv clears the variables agy uses to decide it's in a remote SSH session.
+// When they're set, agy skips the OS keyring and every launch comes up "not
+// signed in", even with a valid saved login. A tmux session created from an
+// SSH connection inherits them, so spawned agents would too.
+const agyEnv = "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY "
+
 func (b *AgyBackend) LaunchCommand() string {
 	if b.config.SkipPermissions {
-		return "agy --dangerously-skip-permissions"
+		return agyEnv + "agy --dangerously-skip-permissions"
 	}
-	return "agy"
+	return agyEnv + "agy"
+}
+
+// TrustKeys accepts agy's workspace trust prompt, whose default is "Yes".
+func (b *AgyBackend) TrustKeys(screen string) []string {
+	if strings.Contains(screen, "Do you trust the contents of this project?") {
+		return []string{"Enter"}
+	}
+	return nil
+}
+
+// WithInstructions delivers the briefing as AGENTS.md in a directory passed
+// with --add-dir: agy loads AGENTS.md (and GEMINI.md) from the root of added
+// directories, not from .agents/rules. The briefing already lives in the
+// agent's own directory, which doubles as the hooks bundle, so usually the
+// --add-dir is already there.
+func (b *AgyBackend) WithInstructions(launchCmd, path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return launchCmd
+	}
+	dir := filepath.Dir(path)
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), data, 0600); err != nil {
+		return launchCmd
+	}
+	addDir := " --add-dir " + util.ShellQuote(dir)
+	if strings.Contains(launchCmd, addDir) {
+		return launchCmd
+	}
+	if b.exitSuffix != "" && strings.HasSuffix(launchCmd, b.exitSuffix) {
+		return strings.TrimSuffix(launchCmd, b.exitSuffix) + addDir + b.exitSuffix
+	}
+	return launchCmd + addDir
 }
 
 // AppendPromptFlag delivers the initial task via agy's -i (--prompt-interactive)

@@ -232,18 +232,30 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	}
 
 	// Confirm the workspace trust prompt only when opted in via --trust-workspace
-	// (trusting a repo also enables any .agents hooks inside that repo).
-	if opts.TrustWorkspace {
-		if captured, err := s.tmux.Capture(sessionName, 30, true); err == nil && isWorkspaceTrustPrompt(captured) {
-			if err := s.tmux.SendSpecialKey(sessionName, "Enter"); err != nil {
-				return abort(fmt.Errorf("confirming workspace trust: %w", err))
-			}
-			if s.cfg.StartupDelay > 0 {
-				select {
-				case <-ctx.Done():
-					return abort(ctx.Err())
-				case <-time.After(s.cfg.StartupDelay):
+	// (trusting a repo also enables its own hooks and settings). The prompt can
+	// take a few seconds to appear, and each CLI answers it differently.
+	if tp, ok := provider.(backend.TrustPrompter); ok && opts.TrustWorkspace {
+		for attempt := 0; attempt < trustPromptAttempts; attempt++ {
+			screen, err := s.tmux.Capture(sessionName, 0, true)
+			if keys := tp.TrustKeys(screen); err == nil && keys != nil {
+				for _, key := range keys {
+					if err := s.tmux.SendSpecialKey(sessionName, key); err != nil {
+						return abort(fmt.Errorf("confirming workspace trust: %w", err))
+					}
 				}
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return abort(ctx.Err())
+			case <-time.After(trustPromptPoll):
+			}
+		}
+		if s.cfg.StartupDelay > 0 {
+			select {
+			case <-ctx.Done():
+				return abort(ctx.Err())
+			case <-time.After(s.cfg.StartupDelay):
 			}
 		}
 	}
@@ -261,10 +273,14 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	return agent, nil
 }
 
-func isWorkspaceTrustPrompt(output string) bool {
-	return strings.Contains(output, "Do you trust the contents of this project?") ||
-		strings.Contains(output, "Yes, I trust this folder")
-}
+// cleanupExitGrace is how long cleanup lets an idle agent exit on its own.
+const cleanupExitGrace = 1500 * time.Millisecond
+
+// How long spawn looks for a workspace trust prompt with --trust-workspace.
+const (
+	trustPromptAttempts = 8
+	trustPromptPoll     = 500 * time.Millisecond
+)
 
 // spawnWithBackend spawns an agent using the legacy Backend interface.
 func (s *AgentService) spawnWithBackend(ctx context.Context, opts SpawnOptions, be backend.Backend) (*storage.Agent, error) {
@@ -366,14 +382,50 @@ func (s *AgentService) spawnWithBackend(ctx context.Context, opts SpawnOptions, 
 	return agent, nil
 }
 
-// Send sends a message directly to an agent.
+// Send types a message into an agent, followed by Enter. It refuses while
+// the agent is at a dialog: Enter there answers the dialog rather than
+// sending a message (it approves a permission prompt, or picks "No, exit" at
+// Claude's trust prompt), so a message must never be how a dialog gets
+// answered. Use approve/deny, or SendUnchecked to override.
 func (s *AgentService) Send(ctx context.Context, name string, message string) error {
-	agent, err := s.storage.GetAgent(ctx, name)
+	agent, err := s.getAgent(ctx, name)
 	if err != nil {
-		return fmt.Errorf("getting agent: %w", err)
+		return err
 	}
-	if agent == nil {
-		return fmt.Errorf("agent %q not found", name)
+	if err := s.checkNotAtDialog(ctx, agent); err != nil {
+		return err
+	}
+	return s.SendUnchecked(ctx, name, message)
+}
+
+// checkNotAtDialog fails if the agent is waiting on a prompt or shows a
+// permission or trust dialog on screen.
+func (s *AgentService) checkNotAtDialog(ctx context.Context, agent *storage.Agent) error {
+	if info, err := s.StatusInfo(ctx, agent.Name); err == nil && info.Status == AgentStatusWaiting {
+		return fmt.Errorf("agent %q is waiting on a prompt (%s); answer it with approve/deny first, or use --force", agent.Name, info.Detail)
+	}
+	provider, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
+	if err != nil {
+		return nil // legacy backend: nothing to recognize dialogs with
+	}
+	screen, err := s.tmux.Capture(agent.SessionName, 0, true)
+	if err != nil {
+		return nil // SendUnchecked reports a missing session
+	}
+	if pr, ok := provider.(backend.PermissionResponder); ok && pr.PermissionPromptVisible(screen) {
+		return fmt.Errorf("agent %q has a permission prompt on screen; answer it with approve/deny first, or use --force", agent.Name)
+	}
+	if tp, ok := provider.(backend.TrustPrompter); ok && tp.TrustKeys(screen) != nil {
+		return fmt.Errorf("agent %q is at a workspace trust prompt; answer it (or respawn with --trust-workspace) before sending", agent.Name)
+	}
+	return nil
+}
+
+// SendUnchecked types a message into an agent without checking for dialogs.
+func (s *AgentService) SendUnchecked(ctx context.Context, name string, message string) error {
+	agent, err := s.getAgent(ctx, name)
+	if err != nil {
+		return err
 	}
 
 	// Check session exists
@@ -453,6 +505,19 @@ func (s *AgentService) Cleanup(ctx context.Context, name string) error {
 	}
 
 	cleanupErrs := &CleanupError{}
+
+	// Ask an idle agent to exit cleanly before the session is killed: its
+	// hooks then record the exit, and some CLIs lose saved state when killed
+	// (agy's maintainers advise /exit). Only when idle: typed into a dialog,
+	// the exit command's Enter would answer the dialog instead.
+	if info, err := s.StatusInfo(ctx, name); err == nil && info.Status == AgentStatusIdle {
+		if p, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{}); err == nil && p.ExitCommand() != "" {
+			if s.tmux.SendKeys(agent.SessionName, p.ExitCommand()) == nil &&
+				s.tmux.SendSpecialKey(agent.SessionName, "Enter") == nil {
+				time.Sleep(cleanupExitGrace)
+			}
+		}
+	}
 
 	// Stop log piping
 	if err := s.tmux.StopPipePane(agent.SessionName); err != nil {

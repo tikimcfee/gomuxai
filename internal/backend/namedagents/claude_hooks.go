@@ -279,6 +279,18 @@ func (b *ClaudeBackend) PermissionPromptVisible(screen string) bool {
 	return claudeDialogNoOption.MatchString(strings.Join(tail, "\n"))
 }
 
+// TrustKeys accepts Claude's folder trust dialog. Its highlighted option is
+// "No, exit", so a bare Enter would quit: move to "Yes" first if needed.
+func (b *ClaudeBackend) TrustKeys(screen string) []string {
+	if !strings.Contains(screen, "Yes, I trust this folder") || !strings.Contains(screen, "No, exit") {
+		return nil
+	}
+	if strings.Contains(screen, "❯ Yes, I trust this folder") {
+		return []string{"Enter"}
+	}
+	return []string{"Down", "Enter"}
+}
+
 func truncate(s string) string {
 	runes := []rune(strings.Join(strings.Fields(s), " "))
 	if len(runes) > maxDetailLen {

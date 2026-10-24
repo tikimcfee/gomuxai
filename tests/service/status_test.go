@@ -336,3 +336,42 @@ func TestSpawn_BriefsTheAgent(t *testing.T) {
 		t.Errorf("instructions survived cleanup: %v", err)
 	}
 }
+
+// A message's Enter answers whatever dialog is on screen (Yes at a permission
+// prompt, "No, exit" at Claude's trust prompt), so send refuses at dialogs.
+func TestSend_RefusesAtDialogs(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	fake := spawnFake(t, env, "worker")
+
+	// A permission dialog on screen.
+	fake.promptGone = false
+	if err := env.service.Send(ctx, "worker", "hello"); err == nil || !strings.Contains(err.Error(), "permission prompt on screen") {
+		t.Errorf("send at a permission dialog: err = %v", err)
+	}
+	fake.promptGone = true
+
+	// Claude's trust dialog on screen (shown here by the shell echoing it).
+	if err := env.service.SendUnchecked(ctx, "worker", "printf ' ❯ No, exit\\n   Yes, I trust this folder\\n'"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := env.service.Send(ctx, "worker", "hello")
+		if err != nil && strings.Contains(err.Error(), "trust prompt") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("send at a trust dialog: err = %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// No dialog: send goes through.
+	env.tmux.Clear(env.cfg.SessionName("worker"))
+	time.Sleep(200 * time.Millisecond)
+	if err := env.service.Send(ctx, "worker", "echo ok"); err != nil {
+		t.Errorf("send with no dialog: %v", err)
+	}
+}
