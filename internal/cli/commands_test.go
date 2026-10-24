@@ -28,9 +28,9 @@ func TestCommandArgs(t *testing.T) {
 		{listCmd, []string{"unexpected"}, false},
 		{statusCmd, []string{"agent"}, true},
 		{statusCmd, []string{"a", "b"}, false},
-		{cleanupCmd, nil, true}, // with --all; without, runCleanup refuses
+		{cleanupCmd, nil, false},
 		{cleanupCmd, []string{"agent"}, true},
-		{cleanupCmd, []string{"a", "b"}, false},
+		{cleanupCmd, []string{"a", "b"}, true},
 		{watchCmd, []string{"unexpected"}, false},
 		{sessionNewCmd, []string{"my-session"}, true},
 		{sessionKillCmd, nil, false},

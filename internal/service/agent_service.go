@@ -480,16 +480,14 @@ func (s *AgentService) Cleanup(ctx context.Context, name string) error {
 		}
 	}
 
-	// Stop log piping
-	if err := s.tmux.StopPipePane(agent.SessionName); err != nil {
-		cleanupErrs.Add(fmt.Errorf("stopping pipe pane: %w", err))
-	}
-
-	// Kill session
+	// Stop log piping and kill the session, unless it's already gone
 	exists, err := s.tmux.SessionExists(agent.SessionName)
 	if err != nil {
 		cleanupErrs.Add(fmt.Errorf("checking session exists: %w", err))
 	} else if exists {
+		if err := s.tmux.StopPipePane(agent.SessionName); err != nil {
+			cleanupErrs.Add(fmt.Errorf("stopping pipe pane: %w", err))
+		}
 		if err := s.tmux.KillSession(agent.SessionName); err != nil {
 			cleanupErrs.Add(fmt.Errorf("killing session: %w", err))
 		}
