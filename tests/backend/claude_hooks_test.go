@@ -1,0 +1,239 @@
+package backend_test
+
+import (
+	"encoding/json"
+	"os/exec"
+	"strings"
+	"testing"
+
+	"github.com/tikimcfee/gomuxai/internal/backend"
+	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
+)
+
+// Payloads trimmed from real Claude Code v2.1.310 hook invocations
+// (see exploration/claude-hooks-findings.md).
+func TestClaudeParseHookEvent(t *testing.T) {
+	provider := namedagents.NewClaudeBackend()
+
+	tests := []struct {
+		name       string
+		payload    string
+		wantOK     bool
+		wantStatus backend.Status
+		wantDetail string
+		wantResult string
+	}{
+		{
+			name:       "session start",
+			payload:    `{"hook_event_name":"SessionStart","session_id":"s1","source":"startup"}`,
+			wantOK:     true,
+			wantStatus: backend.StatusIdle,
+			wantDetail: "session startup",
+		},
+		{
+			name:       "prompt submitted",
+			payload:    `{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"hi"}`,
+			wantOK:     true,
+			wantStatus: backend.StatusProcessing,
+			wantDetail: "prompt received",
+		},
+		{
+			name:       "pre tool use summarizes the command",
+			payload:    `{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"echo probe","description":"Echo"}}`,
+			wantOK:     true,
+			wantStatus: backend.StatusProcessing,
+			wantDetail: "Bash: echo probe",
+		},
+		{
+			name:       "permission request waits on a human",
+			payload:    `{"hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"Edit","tool_input":{"file_path":"/tmp/x.go"}}`,
+			wantOK:     true,
+			wantStatus: backend.StatusWaiting,
+			wantDetail: "permission: Edit: /tmp/x.go",
+		},
+		{
+			name:    "delayed permission notification is ignored",
+			payload: `{"hook_event_name":"Notification","session_id":"s1","notification_type":"permission_prompt","message":"Claude needs your permission"}`,
+			wantOK:  false,
+		},
+		{
+			name:       "idle notification",
+			payload:    `{"hook_event_name":"Notification","session_id":"s1","notification_type":"idle_prompt"}`,
+			wantOK:     true,
+			wantStatus: backend.StatusIdle,
+			wantDetail: "waiting for input",
+		},
+		{
+			name:       "stop carries the result",
+			payload:    `{"hook_event_name":"Stop","session_id":"s1","last_assistant_message":"done","stop_hook_active":false}`,
+			wantOK:     true,
+			wantStatus: backend.StatusIdle,
+			wantDetail: "turn finished",
+			wantResult: "done",
+		},
+		{
+			name:       "session end",
+			payload:    `{"hook_event_name":"SessionEnd","session_id":"s1","reason":"prompt_input_exit"}`,
+			wantOK:     true,
+			wantStatus: backend.StatusExited,
+			wantDetail: "prompt_input_exit",
+		},
+		{
+			name:    "unknown events are ignored",
+			payload: `{"hook_event_name":"SubagentStart","session_id":"s1"}`,
+			wantOK:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, ok, err := provider.ParseHookEvent([]byte(tt.payload))
+			if err != nil {
+				t.Fatalf("ParseHookEvent: %v", err)
+			}
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if r.Status != tt.wantStatus {
+				t.Errorf("status = %v, want %v", r.Status, tt.wantStatus)
+			}
+			if r.Detail != tt.wantDetail {
+				t.Errorf("detail = %q, want %q", r.Detail, tt.wantDetail)
+			}
+			if r.Result != tt.wantResult {
+				t.Errorf("result = %q, want %q", r.Result, tt.wantResult)
+			}
+			if r.SessionID != "s1" {
+				t.Errorf("session id = %q, want s1", r.SessionID)
+			}
+		})
+	}
+}
+
+func TestClaudeParseHookEvent_InvalidJSON(t *testing.T) {
+	_, _, err := namedagents.NewClaudeBackend().ParseHookEvent([]byte("not json"))
+	if err == nil {
+		t.Fatal("expected error for invalid payload")
+	}
+}
+
+func TestClaudeParseHookEvent_TruncatesLongDetail(t *testing.T) {
+	payload := `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"` + strings.Repeat("é", 300) + `"}}`
+	r, _, err := namedagents.NewClaudeBackend().ParseHookEvent([]byte(payload))
+	if err != nil {
+		t.Fatalf("ParseHookEvent: %v", err)
+	}
+	if n := len([]rune(r.Detail)); n != 120 {
+		t.Errorf("detail is %d runes, want 120", n)
+	}
+	if !strings.HasSuffix(r.Detail, "…") {
+		t.Errorf("detail should end with an ellipsis: %q", r.Detail)
+	}
+}
+
+// The launch command is typed into a shell, so its --settings JSON must
+// survive shell quoting, including awkward characters in the binary path.
+func TestClaudeLaunchCommandWithHooks(t *testing.T) {
+	provider := namedagents.NewClaudeBackend()
+	reportCmd := `'/opt/my tools/it'\''s/agent' report --hook --as 'helper'`
+
+	cmd := provider.LaunchCommandWithHooks(reportCmd, "11111111-2222-3333-4444-555555555555")
+	if !strings.HasPrefix(cmd, "claude --session-id ") {
+		t.Fatalf("unexpected launch command: %s", cmd)
+	}
+
+	// Let a real shell split the arguments.
+	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.TrimPrefix(cmd, "claude ")).Output()
+	if err != nil {
+		t.Fatalf("shell parsing launch command: %v", err)
+	}
+	args := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(args) != 4 || args[0] != "--session-id" || args[2] != "--settings" {
+		t.Fatalf("unexpected args: %q", args)
+	}
+	if args[1] != "11111111-2222-3333-4444-555555555555" {
+		t.Errorf("session id = %q", args[1])
+	}
+
+	var settings struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(args[3]), &settings); err != nil {
+		t.Fatalf("settings JSON: %v\n%s", err, args[3])
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop", "SessionEnd"} {
+		matchers := settings.Hooks[event]
+		if len(matchers) != 1 || len(matchers[0].Hooks) != 1 {
+			t.Errorf("%s: expected one hook, got %+v", event, matchers)
+			continue
+		}
+		if got := matchers[0].Hooks[0].Command; got != reportCmd {
+			t.Errorf("%s: command = %q, want %q", event, got, reportCmd)
+		}
+	}
+}
+
+func TestClaudeLaunchCommandWithHooks_KeepsSkipPermissions(t *testing.T) {
+	provider := namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{SkipPermissions: true})
+	cmd := provider.LaunchCommandWithHooks("agent report --hook", "sid")
+	if !strings.HasPrefix(cmd, "claude --dangerously-skip-permissions --session-id ") {
+		t.Errorf("unexpected launch command: %s", cmd)
+	}
+}
+
+func TestParseClaudeAgentsJSON(t *testing.T) {
+	// Shape from `claude agents --json`: interactive sessions use "status",
+	// background sessions use "state".
+	data := []byte(`[
+		{"pid":1,"kind":"interactive","sessionId":"idle-1","status":"idle"},
+		{"pid":2,"kind":"interactive","sessionId":"busy-1","status":"busy"},
+		{"pid":3,"kind":"interactive","sessionId":"wait-1","status":"waiting"},
+		{"id":"x","kind":"background","sessionId":"bg-1","state":"blocked"},
+		{"pid":4,"kind":"interactive","sessionId":"new-1","status":"something-new"}
+	]`)
+
+	tests := []struct {
+		sessionID  string
+		wantStatus backend.Status
+		wantFound  bool
+	}{
+		{"idle-1", backend.StatusIdle, true},
+		{"busy-1", backend.StatusProcessing, true},
+		{"wait-1", backend.StatusWaiting, true},
+		{"bg-1", backend.StatusWaiting, true},
+		{"new-1", backend.StatusUnknown, true},
+		{"missing", backend.StatusUnknown, false},
+	}
+	for _, tt := range tests {
+		st, found, err := namedagents.ParseClaudeAgentsJSON(data, tt.sessionID)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.sessionID, err)
+		}
+		if st != tt.wantStatus || found != tt.wantFound {
+			t.Errorf("%s: got (%v, %v), want (%v, %v)", tt.sessionID, st, found, tt.wantStatus, tt.wantFound)
+		}
+	}
+}
+
+func TestClaudePermissionKey(t *testing.T) {
+	provider := namedagents.NewClaudeBackend()
+	want := map[backend.PermissionResponse]string{
+		backend.PermissionApprove:       "1",
+		backend.PermissionApproveAlways: "2",
+		backend.PermissionDeny:          "Escape",
+	}
+	for resp, key := range want {
+		got, err := provider.PermissionKey(resp)
+		if err != nil || got != key {
+			t.Errorf("PermissionKey(%v) = %q, %v; want %q", resp, got, err, key)
+		}
+	}
+}

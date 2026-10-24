@@ -65,6 +65,9 @@ func init() {
 	rootCmd.AddCommand(taskCmd)
 	rootCmd.AddCommand(stateCmd)
 	rootCmd.AddCommand(logsCmd)
+	rootCmd.AddCommand(reportCmd)
+	rootCmd.AddCommand(approveCmd)
+	rootCmd.AddCommand(denyCmd)
 }
 
 func setup(cmd *cobra.Command, args []string) error {

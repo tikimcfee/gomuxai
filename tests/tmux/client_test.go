@@ -120,6 +120,28 @@ func TestCreateSession_WithEnv(t *testing.T) {
 	if !exists {
 		t.Error("session should exist after creation")
 	}
+
+	// The session's first shell must see the variable, not just later panes
+	if err := client.SendKeys(sessionName, `echo "TEST_VAR=[$TEST_VAR]"`); err != nil {
+		t.Fatalf("sending keys: %v", err)
+	}
+	if err := client.SendSpecialKey(sessionName, "Enter"); err != nil {
+		t.Fatalf("sending enter: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		output, err := client.Capture(sessionName, 20, true)
+		if err != nil {
+			t.Fatalf("capturing: %v", err)
+		}
+		if strings.Contains(output, "TEST_VAR=[test_value]") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("shell did not see TEST_VAR; output:\n%s", output)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // TestKillSession tests session termination

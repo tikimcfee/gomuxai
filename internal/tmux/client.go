@@ -3,6 +3,7 @@ package tmux
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -74,25 +75,20 @@ func (c *Client) CreateSession(name string, env map[string]string) error {
 		return fmt.Errorf("session %q already exists", name)
 	}
 
-	// Create session options
-	opts := gotmux.SessionOptions{
-		Name: name,
+	// Pass env with -e so the session's first shell starts with it;
+	// set-environment after creation only reaches panes created later.
+	args := []string{"new-session", "-d", "-s", name}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		args = append(args, "-e", key+"="+env[key])
 	}
 
-	// Create the session
-	_, err := c.tmux.NewSession(&opts)
-	if err != nil {
+	if _, err := c.tmux.Command(args...); err != nil {
 		return fmt.Errorf("creating session %q: %w", name, err)
-	}
-
-	// Set environment variables if provided (using raw tmux command)
-	if len(env) > 0 {
-		for key, value := range env {
-			cmd := fmt.Sprintf("set-environment -t %s %s %s", name, key, value)
-			if _, err := c.tmux.Command(strings.Fields(cmd)...); err != nil {
-				// Non-fatal, continue
-			}
-		}
 	}
 
 	return nil

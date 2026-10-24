@@ -15,7 +15,44 @@ const (
 	StatusIdle       = types.StatusIdle
 	StatusProcessing = types.StatusProcessing
 	StatusError      = types.StatusError
+	StatusWaiting    = types.StatusWaiting
+	StatusExited     = types.StatusExited
 )
+
+type HookReport = types.HookReport
+type PermissionResponse = types.PermissionResponse
+
+const (
+	PermissionApprove       = types.PermissionApprove
+	PermissionApproveAlways = types.PermissionApproveAlways
+	PermissionDeny          = types.PermissionDeny
+)
+
+// HookProvider is implemented by backends whose CLI reports its own status
+// through lifecycle hooks. Hooks run reportCmd with the event payload on stdin.
+type HookProvider interface {
+	// LaunchCommandWithHooks returns the launch command with hooks wired to
+	// reportCmd and the backend session pinned to sessionID.
+	LaunchCommandWithHooks(reportCmd, sessionID string) string
+
+	// ParseHookEvent maps a hook payload to a status report.
+	// ok is false for events that carry no status change.
+	ParseHookEvent(payload []byte) (report HookReport, ok bool, err error)
+}
+
+// NativeStatusProvider is implemented by backends whose CLI can report the
+// status of a running session directly (no terminal scraping).
+type NativeStatusProvider interface {
+	// NativeStatus returns the session's status. found is false when the CLI
+	// doesn't know the session (not started yet, exited, or unsupported).
+	NativeStatus(ctx context.Context, sessionID string) (status Status, found bool, err error)
+}
+
+// PermissionResponder is implemented by backends that can answer a pending
+// permission prompt with a keypress.
+type PermissionResponder interface {
+	PermissionKey(resp PermissionResponse) (string, error)
+}
 
 // Provider defines the interface for AI CLI tool backends.
 // Unlike the simpler Backend interface, Provider does status analysis internally

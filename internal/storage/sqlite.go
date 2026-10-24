@@ -16,7 +16,9 @@ type SQLiteStorage struct {
 
 // NewSQLiteStorage creates a new SQLite storage instance.
 func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	// busy_timeout goes in the DSN so every pooled connection gets it: backend
+	// hooks write status from several short-lived processes at once.
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}

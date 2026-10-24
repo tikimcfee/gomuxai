@@ -4,14 +4,15 @@ package service
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
 // AgentStatus represents the current state of an agent.
@@ -20,6 +21,9 @@ type AgentStatus string
 const (
 	AgentStatusIdle       AgentStatus = "idle"
 	AgentStatusProcessing AgentStatus = "processing"
+	AgentStatusWaiting    AgentStatus = "waiting" // blocked on a human, e.g. a permission prompt
+	AgentStatusError      AgentStatus = "error"
+	AgentStatusExited     AgentStatus = "exited"
 	AgentStatusUnknown    AgentStatus = "unknown"
 )
 
@@ -119,28 +123,55 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		return nil, fmt.Errorf("creating session: %w", err)
 	}
 
-	// Start log piping
+	// Create the agent record before launching: backend hooks report status
+	// against it as soon as the CLI starts.
 	logPath := s.cfg.LogPath(opts.Name)
+	agent := &storage.Agent{
+		Name:        opts.Name,
+		SessionName: sessionName,
+		Backend:     opts.Backend,
+		TaskFile:    opts.TaskFile,
+		LogFile:     logPath,
+		CreatedAt:   time.Now(),
+	}
+	if err := s.storage.CreateAgent(ctx, agent); err != nil {
+		s.tmux.KillSession(sessionName)
+		return nil, fmt.Errorf("storing agent: %w", err)
+	}
+	abort := func(err error) (*storage.Agent, error) {
+		s.tmux.KillSession(sessionName)
+		s.storage.DeleteAgent(ctx, opts.Name)
+		return nil, err
+	}
+
+	// Start log piping
 	if err := s.tmux.PipePane(sessionName, logPath); err != nil {
 		// Non-fatal, continue without logging
 	}
 
-	// Launch the CLI tool
-	if err := s.tmux.SendKeys(sessionName, provider.LaunchCommand()); err != nil {
-		s.tmux.KillSession(sessionName)
-		return nil, fmt.Errorf("launching backend: %w", err)
+	// Launch the CLI tool, with status hooks when the backend supports them
+	launchCmd := provider.LaunchCommand()
+	if hp, ok := provider.(backend.HookProvider); ok && s.cfg.AgentBinary != "" {
+		sessionID := uuid.NewString()
+		reportCmd := fmt.Sprintf("%s report --hook --as %s",
+			util.ShellQuote(s.cfg.AgentBinary), util.ShellQuote(opts.Name))
+		launchCmd = hp.LaunchCommandWithHooks(reportCmd, sessionID)
+		if err := s.setState(ctx, opts.Name, StateKeySessionID, sessionID); err != nil {
+			return abort(fmt.Errorf("storing session id: %w", err))
+		}
+	}
+	if err := s.tmux.SendKeys(sessionName, launchCmd); err != nil {
+		return abort(fmt.Errorf("launching backend: %w", err))
 	}
 	if err := s.tmux.SendSpecialKey(sessionName, "Enter"); err != nil {
-		s.tmux.KillSession(sessionName)
-		return nil, fmt.Errorf("sending enter: %w", err)
+		return abort(fmt.Errorf("sending enter: %w", err))
 	}
 
 	// Wait for CLI to start (configurable delay)
 	if s.cfg.StartupDelay > 0 {
 		select {
 		case <-ctx.Done():
-			s.tmux.KillSession(sessionName)
-			return nil, ctx.Err()
+			return abort(ctx.Err())
 		case <-time.After(s.cfg.StartupDelay):
 		}
 	}
@@ -151,41 +182,22 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		// Send the content as the initial message
 		initMsg := opts.TaskContent
 		if err := s.tmux.SendKeys(sessionName, initMsg); err != nil {
-			s.tmux.KillSession(sessionName)
-			return nil, fmt.Errorf("sending task content: %w", err)
+			return abort(fmt.Errorf("sending task content: %w", err))
 		}
 		if err := s.tmux.SendSpecialKey(sessionName, "Enter"); err != nil {
-			s.tmux.KillSession(sessionName)
-			return nil, fmt.Errorf("sending enter: %w", err)
+			return abort(fmt.Errorf("sending enter: %w", err))
 		}
 	} else if opts.TaskFile != "" {
 		// Task file path provided - use backend's init message format
 		initMsg := provider.InitMessage(opts.TaskFile)
 		if initMsg != "" {
 			if err := s.tmux.SendKeys(sessionName, initMsg); err != nil {
-				s.tmux.KillSession(sessionName)
-				return nil, fmt.Errorf("sending init message: %w", err)
+				return abort(fmt.Errorf("sending init message: %w", err))
 			}
 			if err := s.tmux.SendSpecialKey(sessionName, "Enter"); err != nil {
-				s.tmux.KillSession(sessionName)
-				return nil, fmt.Errorf("sending init enter: %w", err)
+				return abort(fmt.Errorf("sending init enter: %w", err))
 			}
 		}
-	}
-
-	// Create agent record
-	agent := &storage.Agent{
-		Name:        opts.Name,
-		SessionName: sessionName,
-		Backend:     opts.Backend,
-		TaskFile:    opts.TaskFile,
-		LogFile:     logPath,
-		CreatedAt:   time.Now(),
-	}
-
-	if err := s.storage.CreateAgent(ctx, agent); err != nil {
-		s.tmux.KillSession(sessionName)
-		return nil, fmt.Errorf("storing agent: %w", err)
 	}
 
 	return agent, nil
@@ -352,55 +364,6 @@ func (s *AgentService) Capture(ctx context.Context, name string, lines int, raw 
 
 	// Capture with ANSI stripping by default (raw=false means strip)
 	return s.tmux.Capture(agent.SessionName, lines, !raw)
-}
-
-// Status checks the current status of an agent.
-func (s *AgentService) Status(ctx context.Context, name string) (AgentStatus, error) {
-	agent, err := s.storage.GetAgent(ctx, name)
-	if err != nil {
-		return AgentStatusUnknown, fmt.Errorf("getting agent: %w", err)
-	}
-	if agent == nil {
-		return AgentStatusUnknown, fmt.Errorf("agent %q not found", name)
-	}
-
-	// Get backend for patterns
-	be, err := s.backends.Get(agent.Backend)
-	if err != nil {
-		return AgentStatusUnknown, fmt.Errorf("getting backend: %w", err)
-	}
-
-	// Capture recent output
-	output, err := s.tmux.Capture(agent.SessionName, 50, true)
-	if err != nil {
-		return AgentStatusUnknown, fmt.Errorf("capturing output: %w", err)
-	}
-
-	// Check for idle pattern
-	idlePattern := be.IdlePattern()
-	if idlePattern != "" {
-		matched, err := regexp.MatchString(idlePattern, output)
-		if err != nil {
-			return AgentStatusUnknown, fmt.Errorf("invalid idle pattern %q: %w", idlePattern, err)
-		}
-		if matched {
-			return AgentStatusIdle, nil
-		}
-	}
-
-	// Check for processing pattern
-	procPattern := be.ProcessingPattern()
-	if procPattern != "" {
-		matched, err := regexp.MatchString(procPattern, output)
-		if err != nil {
-			return AgentStatusUnknown, fmt.Errorf("invalid processing pattern %q: %w", procPattern, err)
-		}
-		if matched {
-			return AgentStatusProcessing, nil
-		}
-	}
-
-	return AgentStatusUnknown, nil
 }
 
 // List returns all managed agents.

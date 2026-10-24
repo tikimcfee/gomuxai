@@ -89,12 +89,41 @@ Returns terminal output, ANSI codes stripped. Use `--raw` to keep them.
 ### Checking Status
 
 ```bash
-agent status <name>
+agent status <name>        # e.g. "helper: waiting"
+agent status <name> -v     # also: source, last event, detail
 ```
 
-Returns: `idle`, `processing`, or `unknown`
+Returns: `idle`, `processing`, `waiting` (blocked on a human, e.g. a permission prompt), `error`, `exited`, or `unknown`.
 
-**Wart:** Status detection uses regex patterns. It can be wrong. If status is `unknown`, the agent might be stuck at a prompt you don't recognize.
+For `claude` agents, status comes from Claude Code itself: spawn wires its lifecycle hooks to `agent report --hook`, and `agent status` checks `claude agents --json`. No terminal scraping. Other backends still fall back to regex scraping, which can say `unknown`.
+
+When a Claude agent finishes a turn, its final reply is stored for you:
+
+```bash
+agent state get helper _result
+```
+
+### Answering Permission Prompts
+
+```bash
+agent status helper -v      # detail: permission: Bash: rm -rf build
+agent approve helper        # yes, once
+agent approve helper --always   # yes, and don't ask again for this kind of action
+agent deny helper           # no (for Claude this cancels the turn; follow up with send)
+```
+
+`approve`/`deny` refuse unless the agent is `waiting`. **Read the detail before approving.**
+
+### Reporting Your Own Status
+
+Claude agents report automatically. Anything else can report by hand:
+
+```bash
+agent report processing "running the test suite"
+agent report idle
+```
+
+The name defaults to `$AGENT_NAME`; use `--as <name>` otherwise.
 
 ---
 
@@ -343,7 +372,7 @@ agent queue agent-b "Agent A is done. Read results from state."
 | Issue | Workaround |
 |-------|------------|
 | `queue` needs watcher running | Start `agent watch` in background (use `--interval` to tune) |
-| `status` can return `unknown` | Check state instead, or capture output |
+| `status` can return `unknown` (non-Claude backends) | Check state instead, or capture output |
 | Spawn doesn't auto-send task | Use `send` after spawn |
 | No streaming capture | Poll with `capture` periodically |
 | Backend always required | Use `--backend claude` or config file |
@@ -468,23 +497,19 @@ The high-level commands (`spawn`, `send`, `queue`, `status`) are conveniences. T
 
 ### Status Detection Internals
 
-Status detection works by capturing terminal output and matching regex patterns:
+`AgentService.StatusInfo` (`internal/service/status.go`) resolves status from three sources, most authoritative first:
 
-**Claude backend patterns** (`internal/backend/namedagents/claude.go`):
-- Idle: `^>\s*$` (prompt at line start)
-- Processing: spinner chars (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`), "Thinking", "Using tool", "Writing to", "Reading"
-- Error: "Permission denied", "Rate limit", "Error:", "API Error", "failed", "could not"
+1. **native**: the backend CLI's own session status (`NativeStatusProvider`). Claude: `claude agents --json`, matched on the `--session-id` spawn assigns.
+2. **report**: the last status written by hooks or `agent report`, stored in reserved state keys (`_status`, `_event`, `_detail`, `_result`, `_session_id`).
+3. **scrape**: regex over captured terminal output, for backends with neither.
 
-**Aider backend patterns** (`internal/backend/namedagents/aider.go`):
-- Idle: `^aider>\s*$`
-- Processing: "Thinking", "Working", "Applying", "Generating", "Streaming"
+Native wins when it disagrees with the last report: an interrupted Claude permission prompt fires no hook at all, so the report would stay stuck at `waiting`.
 
-**Why `unknown` happens:**
-- Output doesn't match any pattern (unusual prompt state)
-- Capturing during transition between states
-- Backend CLI changed its output format
+**Claude hooks** (`internal/backend/namedagents/claude_hooks.go`) are injected at launch with `claude --settings '<json>'`, so nothing is written into the agent's project. Each hook runs `<agent binary> report --hook --as <name>`, which reads the payload on stdin, never writes stdout, and always exits 0. The event → status mapping and the observed payloads are in `exploration/claude-hooks-findings.md`. Hooks are only wired when `Config.AgentBinary` is set (it defaults to the running executable).
 
-When status is unreliable, use explicit state coordination instead.
+**Scrape patterns** (legacy, `internal/backend/namedagents/*.go`):
+- Claude idle `^>\s*$` no longer matches Claude Code's `❯` prompt; it only matters for Claude sessions spawned without hooks.
+- Aider idle `^aider>\s*$`; processing "Thinking", "Working", "Applying", "Generating", "Streaming".
 
 ### Custom Backend Configuration
 

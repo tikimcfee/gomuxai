@@ -44,6 +44,11 @@ type Config struct {
 	// StartupDelay is the time to wait after launching a CLI before sending init message.
 	// Default: 2s (can be set to 0 for testing)
 	StartupDelay time.Duration `json:"startup_delay"`
+
+	// AgentBinary is the absolute path of the agent binary that backend hooks
+	// call to report status. Empty disables hook-based status reporting.
+	// Default: the running executable.
+	AgentBinary string `json:"agent_binary"`
 }
 
 // Default timeout values.
@@ -65,17 +70,24 @@ const StorageDirName = ".gomuxai"
 // This ensures the tool is portable - no files in ~/
 func getStorageDir() string {
 	// Try to get the directory where the binary is located
-	exe, err := os.Executable()
-	if err == nil {
-		// Resolve any symlinks to get the real path
-		exe, err = filepath.EvalSymlinks(exe)
-		if err == nil {
-			return filepath.Join(filepath.Dir(exe), StorageDirName)
-		}
+	if exe := agentBinaryPath(); exe != "" {
+		return filepath.Join(filepath.Dir(exe), StorageDirName)
 	}
 
 	// Fallback: use current working directory
 	return StorageDirName
+}
+
+// agentBinaryPath returns the resolved path of the running executable, or "".
+func agentBinaryPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved
+	}
+	return exe
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -95,6 +107,7 @@ func DefaultConfig() *Config {
 		CaptureTimeout:    DefaultCaptureTimeout,
 		StatusTimeout:     DefaultStatusTimeout,
 		StartupDelay:      DefaultStartupDelay,
+		AgentBinary:       agentBinaryPath(),
 	}
 }
 
