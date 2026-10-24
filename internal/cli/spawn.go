@@ -9,9 +9,9 @@ import (
 )
 
 var (
-	skipPermissions bool
-	trustWorkspace  bool
-	taskName        string
+	spawnSkipPermissions bool
+	spawnTrustWorkspace  bool
+	spawnTask            string
 )
 
 var spawnCmd = &cobra.Command{
@@ -38,11 +38,11 @@ Examples:
 }
 
 func init() {
-	spawnCmd.Flags().BoolVar(&skipPermissions, "skip-permissions", false,
+	spawnCmd.Flags().BoolVar(&spawnSkipPermissions, "skip-permissions", false,
 		"Pass --dangerously-skip-permissions to Claude or Agy (use with caution)")
-	spawnCmd.Flags().BoolVar(&trustWorkspace, "trust-workspace", false,
+	spawnCmd.Flags().BoolVar(&spawnTrustWorkspace, "trust-workspace", false,
 		"Confirm the CLI's workspace trust prompt on launch (use with caution)")
-	spawnCmd.Flags().StringVar(&taskName, "task", "",
+	spawnCmd.Flags().StringVar(&spawnTask, "task", "",
 		"Reference a task from the repository by name")
 }
 
@@ -52,14 +52,14 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	var taskContent string
 
 	// Priority: --task flag > positional task-file argument
-	if taskName != "" {
+	if spawnTask != "" {
 		// Fetch task from DB
-		task, err := store.GetTask(getContext(), taskName)
+		task, err := store.GetTask(getContext(), spawnTask)
 		if err != nil {
 			return fmt.Errorf("fetching task: %w", err)
 		}
 		if task == nil {
-			return fmt.Errorf("task %q not found", taskName)
+			return fmt.Errorf("task %q not found", spawnTask)
 		}
 		taskContent = task.Content
 		// Use source file if available for reference
@@ -75,8 +75,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		Backend:         cfg.Backend,
 		TaskFile:        taskFile,
 		TaskContent:     taskContent,
-		SkipPermissions: skipPermissions,
-		TrustWorkspace:  trustWorkspace,
+		SkipPermissions: spawnSkipPermissions,
+		TrustWorkspace:  spawnTrustWorkspace,
 		SpawnedBy:       os.Getenv("AGENT_NAME"),
 	}
 

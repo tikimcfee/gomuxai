@@ -90,11 +90,11 @@ var busExportCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		data, err := json.MarshalIndent(id.PublicBundle(busURL), "", "  ")
+		data, err := bundleJSON(id, busURL)
 		if err != nil {
 			return err
 		}
-		fmt.Println(string(data))
+		fmt.Print(string(data))
 		return nil
 	},
 }
@@ -179,12 +179,21 @@ func init() {
 
 // writeBundle saves this host's public bundle next to its identity.
 func writeBundle(id *natsbus.Identity, url string) (string, error) {
-	data, err := json.MarshalIndent(id.PublicBundle(url), "", "  ")
+	data, err := bundleJSON(id, url)
 	if err != nil {
 		return "", err
 	}
 	path := filepath.Join(cfg.BusDir(), id.Host+".pub.json")
-	return path, os.WriteFile(path, append(data, '\n'), 0644)
+	return path, os.WriteFile(path, data, 0644)
+}
+
+// bundleJSON encodes this host's public bundle as "agent bus trust" reads it.
+func bundleJSON(id *natsbus.Identity, url string) ([]byte, error) {
+	data, err := json.MarshalIndent(id.PublicBundle(url), "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
 }
 
 // busInfo is the bus's answer on its local-only status subject.

@@ -52,16 +52,23 @@ func runReport(cmd *cobra.Command, args []string) error {
 	if name == "" {
 		name = os.Getenv("AGENT_NAME")
 	}
+	var err error
+	if name == "" {
+		err = fmt.Errorf("agent name required: use --as <name> or set AGENT_NAME")
+	}
 
 	if reportHook {
-		if err := reportFromHook(name); err != nil {
+		if err == nil {
+			err = reportFromHook(name)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent report: %v\n", err)
 		}
 		return nil
 	}
 
-	if name == "" {
-		return fmt.Errorf("agent name required: use --as <name> or set AGENT_NAME")
+	if err != nil {
+		return err
 	}
 	if len(args) == 0 {
 		return fmt.Errorf("status required")
@@ -78,9 +85,6 @@ func runReport(cmd *cobra.Command, args []string) error {
 }
 
 func reportFromHook(name string) error {
-	if name == "" {
-		return fmt.Errorf("agent name required: use --as <name> or set AGENT_NAME")
-	}
 	payload, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return fmt.Errorf("reading hook payload: %w", err)

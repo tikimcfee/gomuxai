@@ -2,9 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
 var logsCmd = &cobra.Command{
@@ -35,46 +37,36 @@ func init() {
 func runLogs(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
+	var entries []*storage.LogEntry
 	if logsSince != "" {
-		// Parse duration and get logs since that time
 		duration, err := time.ParseDuration(logsSince)
 		if err != nil {
 			return fmt.Errorf("invalid duration %q: %w", logsSince, err)
 		}
-
-		since := time.Now().Add(-duration)
-		entries, err := store.GetLogsSince(getContext(), name, since)
+		entries, err = store.GetLogsSince(getContext(), name, time.Now().Add(-duration))
 		if err != nil {
 			return err
 		}
-
 		if len(entries) == 0 {
 			fmt.Printf("No logs found for agent %q since %s\n", name, logsSince)
 			return nil
 		}
-
-		for _, entry := range entries {
-			fmt.Printf("[%s] %s\n", entry.CapturedAt.Format(time.RFC3339), entry.Content)
+	} else {
+		var err error
+		entries, err = store.GetLogs(getContext(), name, logsLines)
+		if err != nil {
+			return err
 		}
-		return nil
+		if len(entries) == 0 {
+			fmt.Printf("No logs found for agent %q\n", name)
+			return nil
+		}
+		// GetLogs returns the most recent first
+		slices.Reverse(entries)
 	}
 
-	// Get recent logs by count
-	entries, err := store.GetLogs(getContext(), name, logsLines)
-	if err != nil {
-		return err
-	}
-
-	if len(entries) == 0 {
-		fmt.Printf("No logs found for agent %q\n", name)
-		return nil
-	}
-
-	// Print in chronological order (entries are returned most recent first)
-	for i := len(entries) - 1; i >= 0; i-- {
-		entry := entries[i]
+	for _, entry := range entries {
 		fmt.Printf("[%s] %s\n", entry.CapturedAt.Format(time.RFC3339), entry.Content)
 	}
-
 	return nil
 }

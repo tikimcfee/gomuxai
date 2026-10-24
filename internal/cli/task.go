@@ -66,10 +66,10 @@ Examples:
 	RunE: runTaskClear,
 }
 
-var taskFile string
+var taskSetFile string
 
 func init() {
-	taskSetCmd.Flags().StringVarP(&taskFile, "file", "f", "", "Read content from file")
+	taskSetCmd.Flags().StringVarP(&taskSetFile, "file", "f", "", "Read content from file")
 
 	taskCmd.AddCommand(taskSetCmd)
 	taskCmd.AddCommand(taskGetCmd)
@@ -82,14 +82,14 @@ func runTaskSet(cmd *cobra.Command, args []string) error {
 	var content string
 	var sourceFile string
 
-	if taskFile != "" {
+	if taskSetFile != "" {
 		// Read from file
-		data, err := os.ReadFile(taskFile)
+		data, err := os.ReadFile(taskSetFile)
 		if err != nil {
 			return fmt.Errorf("reading file: %w", err)
 		}
 		content = string(data)
-		sourceFile = taskFile
+		sourceFile = taskSetFile
 	} else if len(args) > 1 {
 		// Content provided directly
 		content = args[1]
