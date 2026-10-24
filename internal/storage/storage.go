@@ -35,6 +35,15 @@ type Storage interface {
 	LogCommand(ctx context.Context, rec *CommandRecord) error
 	ListCommands(ctx context.Context, f CommandFilter) ([]*CommandRecord, error) // newest first
 
+	// Friction box
+	AddFriction(ctx context.Context, f *Friction) error
+	GetFriction(ctx context.Context, id int64) (*Friction, error)            // nil if none
+	ListFriction(ctx context.Context, f FrictionFilter) ([]*Friction, error) // most votes, then newest, first
+	LastFrictionID(ctx context.Context) (int64, error)                       // 0 if none
+	UpdateFriction(ctx context.Context, f *Friction) error
+	AddFrictionVote(ctx context.Context, v *FrictionVote) error
+	ListFrictionVotes(ctx context.Context, frictionID int64) ([]*FrictionVote, error) // oldest first
+
 	// Lifecycle
 	Close() error
 }

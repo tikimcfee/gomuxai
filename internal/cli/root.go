@@ -83,6 +83,7 @@ func init() {
 	rootCmd.AddCommand(eventsCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(historyCmd)
+	rootCmd.AddCommand(frictionCmd)
 }
 
 func setup(cmd *cobra.Command, args []string) error {

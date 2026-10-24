@@ -67,6 +67,76 @@ type CommandFilter struct {
 	Limit   int // the newest Limit records, if set
 }
 
+// Friction statuses: open → accepted → resolved, wontfix, or duplicate.
+const (
+	FrictionOpen      = "open"
+	FrictionAccepted  = "accepted"
+	FrictionResolved  = "resolved"
+	FrictionWontfix   = "wontfix"
+	FrictionDuplicate = "duplicate"
+)
+
+// Friction is an entry in the friction box: something about the agent tool
+// that got in someone's way.
+type Friction struct {
+	ID          int64            `json:"id"`
+	UID         string           `json:"uid"` // unique across hosts, for merging boxes
+	Host        string           `json:"host"`
+	FiledBy     string           `json:"filed_by"` // agent name, or "user"
+	Parent      string           `json:"parent,omitempty"`
+	Cwd         string           `json:"cwd,omitempty"`
+	Build       string           `json:"build"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+	Kind        string           `json:"kind"`
+	Summary     string           `json:"summary"`
+	Detail      string           `json:"detail,omitempty"`
+	Command     *AttachedCommand `json:"command,omitempty"`
+	Status      string           `json:"status"`
+	AcceptedBy  string           `json:"accepted_by,omitempty"`
+	AcceptedAt  time.Time        `json:"accepted_at,omitzero"`
+	AcceptNote  string           `json:"accept_note,omitempty"`
+	ResolvedBy  string           `json:"resolved_by,omitempty"` // also for wontfix and duplicate
+	ResolvedAt  time.Time        `json:"resolved_at,omitzero"`
+	Resolution  string           `json:"resolution,omitempty"` // the note: how it was fixed, or why not
+	DuplicateOf int64            `json:"duplicate_of,omitempty"`
+
+	// Votes counts +1s, read only: the entry's own, its duplicates', and
+	// one for each duplicate's filing.
+	Votes int `json:"votes"`
+}
+
+// AttachedCommand is a failed agent command, copied from the command log
+// into a friction entry or vote (the log is pruned).
+type AttachedCommand struct {
+	Args     []string  `json:"args"`
+	ExitCode int       `json:"exit_code"`
+	Error    string    `json:"error,omitempty"`
+	At       time.Time `json:"at"`
+}
+
+// FrictionVote is a +1 on a friction entry.
+type FrictionVote struct {
+	ID         int64            `json:"id"`
+	FrictionID int64            `json:"friction_id"`
+	UID        string           `json:"uid"`
+	Host       string           `json:"host"`
+	Voter      string           `json:"voter"` // agent name, or "user"
+	Parent     string           `json:"parent,omitempty"`
+	Build      string           `json:"build"`
+	CreatedAt  time.Time        `json:"created_at"`
+	Note       string           `json:"note,omitempty"`
+	Command    *AttachedCommand `json:"command,omitempty"`
+}
+
+// FrictionFilter selects friction entries. The zero value selects all.
+type FrictionFilter struct {
+	Statuses    []string // any of these, if set
+	Kind        string
+	FiledBy     string
+	DuplicateOf int64
+}
+
 // StateEntry represents a key-value state entry.
 type StateEntry struct {
 	AgentName string    `json:"agent_name"`
