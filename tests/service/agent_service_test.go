@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -248,6 +249,58 @@ func TestSpawn_WithTaskFile(t *testing.T) {
 
 	if agent.TaskFile != taskFile.Name() {
 		t.Errorf("expected task file %q, got %q", taskFile.Name(), agent.TaskFile)
+	}
+}
+
+// Custom JSON backends (--backend-config) have no Provider factory: their
+// command is typed into the session as is, and their status comes from
+// their patterns.
+func TestSpawn_CustomBackend(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+
+	cfgPath := filepath.Join(t.TempDir(), "backend.json")
+	cfgJSON := `{"name": "custom", "launch_command": "echo custom-launched", "init_message_format": "echo task %s", "idle_pattern": "custom-launched"}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.backends.LoadFromFile(cfgPath); err != nil {
+		t.Fatalf("loading backend config: %v", err)
+	}
+
+	agent, err := env.service.Spawn(ctx, service.SpawnOptions{Name: "custom-worker", Backend: "custom", TaskFile: "plan.md"})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+	if agent.Backend != "custom" || agent.TaskFile != "plan.md" {
+		t.Errorf("agent = %+v", agent)
+	}
+	if stored, err := env.store.GetAgent(ctx, "custom-worker"); err != nil || stored == nil {
+		t.Fatalf("agent not stored: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		out, _ := env.tmux.Capture(agent.SessionName, 20, true)
+		if strings.Contains(out, "echo custom-launched") && strings.Contains(out, "echo task plan.md") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session didn't get the launch command and task:\n%s", out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(env.cfg.AgentDir("custom-worker"), "launch.sh")); !os.IsNotExist(err) {
+		t.Errorf("custom backend should launch without a script: %v", err)
+	}
+
+	info, err := env.service.StatusInfo(ctx, "custom-worker")
+	if err != nil {
+		t.Fatalf("StatusInfo: %v", err)
+	}
+	if info.Status != service.AgentStatusIdle || info.Source != service.StatusSourceScrape {
+		t.Errorf("got %s from %s, want idle from scrape", info.Status, info.Source)
 	}
 }
 
