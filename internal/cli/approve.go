@@ -95,14 +95,12 @@ func remoteRespond(ref natsbus.AgentRef, resp backend.PermissionResponse) error 
 	if err != nil {
 		return err
 	}
-	client, closeFn, err := dialRemote(ref.Host)
-	if err != nil {
-		return err
-	}
-	defer closeFn()
-	return client.Respond(getContext(), ref, natsbus.RespondRequest{
+	req := natsbus.RespondRequest{
 		Response:   response,
 		Force:      permissionForce,
 		ExpectTool: permissionExpect,
+	}
+	return callRemote(ref.Host, func(c *natsbus.RPCClient) error {
+		return c.Respond(getContext(), ref, req)
 	})
 }

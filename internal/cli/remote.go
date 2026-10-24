@@ -31,15 +31,16 @@ func isRemoteHost(host string) bool {
 	return host != "" && host != cfg.Host
 }
 
-// dialRemote connects to this host's bus for a request to another host.
-// The caller must call closeFn when done.
-func dialRemote(host string) (client *natsbus.RPCClient, closeFn func(), err error) {
+// callRemote runs fn with an RPC client connected through this host's bus,
+// for a request to an agent on another host.
+func callRemote(host string, fn func(*natsbus.RPCClient) error) error {
 	nc, err := busConnect()
 	if errors.Is(err, natsbus.ErrNoBus) {
-		return nil, nil, fmt.Errorf("%q is not this host (%q); reaching agents on other hosts needs a running agent bus: %w", host, cfg.Host, err)
+		return fmt.Errorf("%q is not this host (%q); reaching agents on other hosts needs a running agent bus: %w", host, cfg.Host, err)
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("connecting to the agent bus: %w", err)
+		return fmt.Errorf("connecting to the agent bus: %w", err)
 	}
-	return natsbus.NewRPCClient(nc, 0), nc.Close, nil
+	defer nc.Close()
+	return fn(natsbus.NewRPCClient(nc, 0))
 }

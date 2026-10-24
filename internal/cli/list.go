@@ -2,10 +2,10 @@ package cli
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
+	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
 var listCmd = &cobra.Command{
@@ -13,8 +13,8 @@ var listCmd = &cobra.Command{
 	Short: "List all managed agents",
 	Long: `List shows all agents currently being managed.
 
-This displays agents tracked in the database along with their backend
-and creation time. --host lists another host's agents through the bus.
+This displays agents tracked in the database along with their tmux session,
+backend, and creation time. --host lists another host's agents through the bus.
 
 Examples:
   agent list
@@ -26,15 +26,11 @@ Examples:
 var listHost string
 
 func init() {
-	listCmd.Flags().StringVar(&listHost, "host", "", "List the agents on this host (default: this machine)")
+	listCmd.Flags().StringVar(&listHost, "host", "", "Host whose agents to list (default: this host)")
 }
 
 func runList(cmd *cobra.Command, args []string) error {
-	if isRemoteHost(listHost) {
-		return runRemoteList(listHost)
-	}
-
-	agents, err := agentService.List(getContext())
+	agents, err := listAgents(listHost)
 	if err != nil {
 		return err
 	}
@@ -44,50 +40,36 @@ func runList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	printAgentHeader()
-	for _, agent := range agents {
-		printAgentRow(agent.Name, agent.SessionName, agent.Backend, agent.CreatedAt)
-	}
-
-	return nil
-}
-
-func runRemoteList(host string) error {
-	if err := natsbus.ValidateHost(host); err != nil {
-		return err
-	}
-	client, closeFn, err := dialRemote(host)
-	if err != nil {
-		return err
-	}
-	defer closeFn()
-	agents, err := client.List(getContext(), host)
-	if err != nil {
-		return err
-	}
-
-	if len(agents) == 0 {
-		fmt.Println("No agents found")
-		return nil
-	}
-
-	printAgentHeader()
-	for _, agent := range agents {
-		printAgentRow(agent.Name, agent.Session, agent.Backend, agent.CreatedAt)
-	}
-	return nil
-}
-
-func printAgentHeader() {
 	fmt.Printf("%-20s %-25s %-10s %s\n", "NAME", "SESSION", "BACKEND", "CREATED")
 	fmt.Println("------------------------------------------------------------")
+	for _, agent := range agents {
+		fmt.Printf("%-20s %-25s %-10s %s\n",
+			agent.Name,
+			agent.Session,
+			agent.Backend,
+			agent.CreatedAt.Format("2006-01-02 15:04:05"),
+		)
+	}
+	return nil
 }
 
-func printAgentRow(name, session, backend string, created time.Time) {
-	fmt.Printf("%-20s %-25s %-10s %s\n",
-		name,
-		session,
-		backend,
-		created.Format("2006-01-02 15:04:05"),
-	)
+// listAgents returns host's agents, in the form the bus serves them for
+// both local and remote hosts, so both print the same.
+func listAgents(host string) ([]natsbus.AgentInfo, error) {
+	if !isRemoteHost(host) {
+		resp, err := service.NewRPCHandler(agentService).List(getContext())
+		if err != nil {
+			return nil, err
+		}
+		return resp.Agents, nil
+	}
+	if err := natsbus.ValidateHost(host); err != nil {
+		return nil, err
+	}
+	var agents []natsbus.AgentInfo
+	err := callRemote(host, func(c *natsbus.RPCClient) (err error) {
+		agents, err = c.List(getContext(), host)
+		return err
+	})
+	return agents, err
 }

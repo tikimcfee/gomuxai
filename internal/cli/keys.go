@@ -70,7 +70,9 @@ func agentKeys(target, text string) error {
 		key = ""
 	}
 	if remote {
-		err = remoteKeys(ref, text, key)
+		err = callRemote(ref.Host, func(c *natsbus.RPCClient) error {
+			return c.Keys(getContext(), ref, text, key)
+		})
 	} else {
 		err = agentService.Keys(getContext(), ref.Name, text, key)
 	}
@@ -79,13 +81,4 @@ func agentKeys(target, text string) error {
 	}
 	fmt.Printf("Sent to %q\n", target)
 	return nil
-}
-
-func remoteKeys(ref natsbus.AgentRef, text, key string) error {
-	client, closeFn, err := dialRemote(ref.Host)
-	if err != nil {
-		return err
-	}
-	defer closeFn()
-	return client.Keys(getContext(), ref, text, key)
 }

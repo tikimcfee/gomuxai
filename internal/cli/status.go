@@ -70,12 +70,11 @@ func runStatus(cmd *cobra.Command, args []string) error {
 }
 
 func remoteStatus(ref natsbus.AgentRef) (*service.StatusInfo, error) {
-	client, closeFn, err := dialRemote(ref.Host)
-	if err != nil {
-		return nil, err
-	}
-	defer closeFn()
-	resp, err := client.Status(getContext(), ref)
+	var resp *natsbus.StatusResponse
+	err := callRemote(ref.Host, func(c *natsbus.RPCClient) (err error) {
+		resp, err = c.Status(getContext(), ref)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}

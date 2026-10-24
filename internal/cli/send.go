@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"golang.org/x/term"
 )
 
@@ -51,23 +52,19 @@ func runSend(cmd *cobra.Command, args []string) error {
 		// AGENT_NAME.
 		return fmt.Errorf("--force needs a person at a terminal; agents answer dialogs through a person (agent approve/deny)")
 	}
-	if remote {
-		if sendForce {
-			return fmt.Errorf("--force only applies to local agents")
-		}
-		client, closeFn, err := dialRemote(ref.Host)
-		if err != nil {
-			return err
-		}
-		defer closeFn()
-		if err := client.Send(getContext(), ref, message); err != nil {
-			return err
-		}
-	} else if sendForce {
-		if err := agentService.SendUnchecked(getContext(), ref.Name, message); err != nil {
-			return err
-		}
-	} else if err := agentService.Send(getContext(), ref.Name, message); err != nil {
+	switch {
+	case remote && sendForce:
+		return fmt.Errorf("--force only applies to local agents")
+	case remote:
+		err = callRemote(ref.Host, func(c *natsbus.RPCClient) error {
+			return c.Send(getContext(), ref, message)
+		})
+	case sendForce:
+		err = agentService.SendUnchecked(getContext(), ref.Name, message)
+	default:
+		err = agentService.Send(getContext(), ref.Name, message)
+	}
+	if err != nil {
 		return err
 	}
 

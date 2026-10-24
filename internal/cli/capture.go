@@ -43,7 +43,10 @@ func runCapture(cmd *cobra.Command, args []string) error {
 
 	var output string
 	if remote {
-		output, err = remoteCapture(ref)
+		err = callRemote(ref.Host, func(c *natsbus.RPCClient) (err error) {
+			output, err = c.Capture(getContext(), ref, captureLines, captureRaw)
+			return err
+		})
 	} else {
 		output, err = agentService.Capture(getContext(), ref.Name, captureLines, captureRaw)
 	}
@@ -53,13 +56,4 @@ func runCapture(cmd *cobra.Command, args []string) error {
 
 	fmt.Print(output)
 	return nil
-}
-
-func remoteCapture(ref natsbus.AgentRef) (string, error) {
-	client, closeFn, err := dialRemote(ref.Host)
-	if err != nil {
-		return "", err
-	}
-	defer closeFn()
-	return client.Capture(getContext(), ref, captureLines, captureRaw)
 }
