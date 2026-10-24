@@ -42,6 +42,7 @@ orchestrator and as the tool agents use for inter-agent communication.`,
 
 // Execute runs the CLI.
 func Execute() error {
+	defer closeBusPublisher()
 	return rootCmd.Execute()
 }
 
@@ -68,6 +69,8 @@ func init() {
 	rootCmd.AddCommand(reportCmd)
 	rootCmd.AddCommand(approveCmd)
 	rootCmd.AddCommand(denyCmd)
+	rootCmd.AddCommand(waitCmd)
+	rootCmd.AddCommand(eventsCmd)
 }
 
 func setup(cmd *cobra.Command, args []string) error {
@@ -133,6 +136,7 @@ func setup(cmd *cobra.Command, args []string) error {
 
 	// Initialize agent service
 	agentService = service.NewAgentService(cfg, store, tmuxClient, backends)
+	agentService.SetEventPublisher(warnPublisher{busPublisher})
 
 	return nil
 }
