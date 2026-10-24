@@ -18,6 +18,10 @@ is idle, or error (a failed turn, back at its prompt). It holds them while the
 agent is processing or waiting, and fails them if the agent has exited.
 Without a running watcher, queued messages are never delivered.
 
+The agent must be on this host: name@<this host> works, while an agent on
+another host is refused, since queueing isn't served over the bus (use
+"agent send name@host").
+
 Use --from to specify the sender (defaults to AGENT_NAME env var or "user").
 A message from anyone but "user" is marked with the sender's address, as
 "agent send" marks messages from agents.
@@ -36,7 +40,14 @@ func init() {
 }
 
 func runQueue(cmd *cobra.Command, args []string) error {
-	name := args[0]
+	ref, remote, err := parseTarget(args[0])
+	if err != nil {
+		return err
+	}
+	if remote {
+		return fmt.Errorf("queued messages are kept per host, and %s is on %q: queueing isn't served over the bus, so use agent send %s instead", ref, ref.Host, ref)
+	}
+	name := ref.Name
 	message := strings.Join(args[1:], " ")
 
 	// Determine sender

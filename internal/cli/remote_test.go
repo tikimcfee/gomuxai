@@ -307,3 +307,33 @@ func TestSendForce_RefusedForAgents(t *testing.T) {
 		t.Errorf("without a terminal: err = %v, want refusal", err)
 	}
 }
+
+// Queueing isn't served over the bus: name@<this host> queues locally, and
+// another host is refused without dialing it.
+func TestQueueTargets(t *testing.T) {
+	setupCLI(t)
+	forbidBus(t)
+	t.Setenv("AGENT_NAME", "")
+
+	for _, target := range []string{"worker", "worker@local"} {
+		out, err := stdout(t, func() error { return runQueue(queueCmd, []string{target, "hi"}) })
+		if err != nil || out != "Queued message from \"user\" to \"worker\"\n" {
+			t.Errorf("queue %s = %q, %v", target, out, err)
+		}
+	}
+	err := runQueue(queueCmd, []string{"worker@h1", "hi"})
+	if err == nil || !strings.Contains(err.Error(), "agent send worker@h1") {
+		t.Errorf("queue worker@h1: err = %v, want a refusal suggesting agent send", err)
+	}
+	if err := runQueue(queueCmd, []string{"worker@", "hi"}); err == nil {
+		t.Error("queue worker@: want an error")
+	}
+
+	pending, err := store.GetPendingMessages(context.Background(), "worker", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 {
+		t.Errorf("pending messages = %d, want 2 (one per local target)", len(pending))
+	}
+}
