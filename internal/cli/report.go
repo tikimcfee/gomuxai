@@ -43,7 +43,7 @@ Examples:
 func init() {
 	reportCmd.Flags().StringVar(&reportAs, "as", "", "Agent name (defaults to AGENT_NAME)")
 	reportCmd.Flags().BoolVar(&reportHook, "hook", false, "Read a backend hook payload from stdin")
-	reportCmd.Flags().StringVar(&reportSpawnID, "spawn-id", "", "With --hook: drop the report unless the agent is still this spawn (set by spawn)")
+	reportCmd.Flags().StringVar(&reportSpawnID, "spawn-id", "", "Drop the report unless the agent is still this spawn (set by spawn)")
 	reportCmd.Flags().StringVar(&reportEvent, "event", "", "Hook event name (for backends whose payload omits it)")
 }
 
@@ -70,7 +70,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	r := service.StatusReport{Status: status, Event: "report"}
+	r := service.StatusReport{Status: status, Event: "report", SpawnID: reportSpawnID}
 	if len(args) > 1 {
 		r.Detail = args[1]
 	}

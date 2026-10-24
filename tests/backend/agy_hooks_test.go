@@ -187,21 +187,32 @@ func TestAgyLaunchCommandWithHooks(t *testing.T) {
 	provider := namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{
 		AgentDir: agentDir,
 	})
-	reportCmd := `'/opt/my tools/it'\''s/agent' report --hook --as 'helper'`
+	reportCmd := `'/opt/my tools/it'\''s/agent' report --hook --as 'helper' --spawn-id '11111111-2222-3333-4444-555555555555'`
 
 	cmd := provider.LaunchCommandWithHooks(reportCmd, "11111111-2222-3333-4444-555555555555")
 	if !strings.HasPrefix(cmd, "agy --add-dir ") {
 		t.Fatalf("unexpected launch command: %s", cmd)
 	}
+	wantExit := `; '/opt/my tools/it'\''s/agent' report exited --as 'helper' --spawn-id '11111111-2222-3333-4444-555555555555'`
+	if !strings.HasSuffix(cmd, wantExit) {
+		t.Fatalf("launch command missing exit wrapper:\ngot:  %s\nwant suffix: %s", cmd, wantExit)
+	}
 
-	// Let a real shell split the arguments.
-	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.TrimPrefix(cmd, "agy ")).Output()
+	// Let a real shell split the agy invocation arguments (before ';').
+	agyPart := strings.TrimSuffix(cmd, wantExit)
+	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.TrimPrefix(agyPart, "agy ")).Output()
 	if err != nil {
 		t.Fatalf("shell parsing launch command: %v", err)
 	}
 	args := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
 	if len(args) != 2 || args[0] != "--add-dir" || args[1] != agentDir {
 		t.Fatalf("unexpected args: %q", args)
+	}
+
+	// AppendPromptFlag must place -i before the '; ... report exited' suffix.
+	withPrompt := provider.AppendPromptFlag(cmd, "Run task")
+	if !strings.HasSuffix(withPrompt, " -i 'Run task'"+wantExit) {
+		t.Errorf("AppendPromptFlag with exit wrapper = %s", withPrompt)
 	}
 
 	// Verify .agents/hooks.json was generated in agentDir.
@@ -299,5 +310,53 @@ func TestAgyPermissionKey_RefusesQuestionDialogs(t *testing.T) {
 	}
 	if _, err := provider.PermissionKey(backend.PermissionApprove, ""); err != nil {
 		t.Errorf("empty tool should be treated as a plain prompt: %v", err)
+	}
+}
+
+func TestAgyPermissionPromptVisible(t *testing.T) {
+	provider := namedagents.NewAgyBackend()
+
+	cmdPrompt := strings.Join([]string{
+		"Requesting permission for:",
+		"   echo interactive-approval-test",
+		"Run this command?",
+		"> 1. Yes, run command",
+		"  2. Yes, and always allow in this conversation for commands that start with 'echo'",
+		"  3. Yes, and always allow for commands that start with 'echo' (Persist to settings.json)",
+		"  4. No, cancel",
+		"  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command",
+		"esc to cancel                                                     Gemini 3.8 Flash · low",
+	}, "\n")
+	if !provider.PermissionPromptVisible(cmdPrompt) {
+		t.Error("expected command permission dialog to be visible")
+	}
+
+	editPrompt := strings.Join([]string{
+		"Accept this file edit?",
+		"  1. Yes, accept this change",
+		"> 2. Yes, and always allow in this conversation",
+		"  3. No, reject this change",
+		"esc to cancel",
+	}, "\n")
+	if !provider.PermissionPromptVisible(editPrompt) {
+		t.Error("expected file edit permission dialog to be visible")
+	}
+
+	idleScreen := strings.Join([]string{
+		">",
+		"? for shortcuts                                                   Gemini 3.8 Flash · low",
+	}, "\n")
+	if provider.PermissionPromptVisible(idleScreen) {
+		t.Error("idle screen should not match permission dialog")
+	}
+
+	generatingScreen := "Generating... (Enter/Esc to cancel)\nesc to cancel"
+	if provider.PermissionPromptVisible(generatingScreen) {
+		t.Error("generating spinner without Yes/No options should not match")
+	}
+
+	scrolledPast := cmdPrompt + "\n" + strings.Repeat("output line\n", 15) + "? for shortcuts"
+	if provider.PermissionPromptVisible(scrolledPast) {
+		t.Error("dialog scrolled off the bottom of the screen should not match")
 	}
 }

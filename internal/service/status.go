@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
@@ -43,6 +44,10 @@ type StatusReport struct {
 	// ClearResult empties the stored result (a new turn started), so a
 	// reader never takes the previous turn's reply for this one's.
 	ClearResult bool
+	// SpawnID, when non-empty, drops the report unless the agent's
+	// current _spawn_id matches, so a stale exit wrapper can't overwrite
+	// a respawned agent.
+	SpawnID string
 }
 
 // StatusInfo describes an agent's status and where it came from.
@@ -72,6 +77,11 @@ func fromBackendStatus(st backend.Status) AgentStatus {
 // Report records a status update for an agent. All keys are written in one
 // transaction, so concurrent reports can't leave a mix of both.
 func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) error {
+	if r.SpawnID != "" {
+		if current := s.stateValue(ctx, name, StateKeySpawnID); current != r.SpawnID {
+			return fmt.Errorf("ignoring report from spawn %s of %q (current spawn: %q)", r.SpawnID, name, current)
+		}
+	}
 	values := map[string]string{
 		StateKeyStatus: string(r.Status),
 		StateKeyEvent:  r.Event,
@@ -180,6 +190,16 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 				UpdatedAt: reported.UpdatedAt,
 			}, nil
 		}
+		// Backends like agy fire PreToolUse before showing a permission
+		// dialog and fire nothing while the dialog is up. When the dialog
+		// is on screen after PreToolUse, surface the status as waiting so
+		// callers and approve/deny see the pending prompt.
+		if reported.Status == AgentStatusProcessing && reported.Event == "PreToolUse" && s.permissionPromptVisible(agent) {
+			reported.Status = AgentStatusWaiting
+			if reported.Detail != "" && !strings.HasPrefix(reported.Detail, "permission: ") {
+				reported.Detail = "permission: " + reported.Detail
+			}
+		}
 		return reported, nil
 	}
 
@@ -242,6 +262,22 @@ func (s *AgentService) nativeStatus(ctx context.Context, agent *storage.Agent) (
 		return "", false, false
 	}
 	return fromBackendStatus(st), true, true
+}
+
+func (s *AgentService) permissionPromptVisible(agent *storage.Agent) bool {
+	provider, err := s.backends.CreateProvider(agent.Backend, backend.ProviderConfig{})
+	if err != nil {
+		return false
+	}
+	pr, ok := provider.(backend.PermissionResponder)
+	if !ok {
+		return false
+	}
+	screen, err := s.tmux.Capture(agent.SessionName, 0, true)
+	if err != nil {
+		return false
+	}
+	return pr.PermissionPromptVisible(screen)
 }
 
 // scrapeStatus infers status from terminal output. Last resort for backends

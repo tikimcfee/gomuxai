@@ -41,7 +41,8 @@ type AgyConfig struct {
 // AgyBackend implements Provider, HookProvider, PermissionResponder, and
 // PromptFlagProvider for the Antigravity CLI (agy).
 type AgyBackend struct {
-	config AgyConfig
+	config     AgyConfig
+	exitSuffix string
 }
 
 // NewAgyBackend creates a new Agy backend with default config.
@@ -132,10 +133,15 @@ func (b *AgyBackend) LaunchCommand() string {
 
 // AppendPromptFlag delivers the initial task via agy's -i (--prompt-interactive)
 // flag so the session starts interactively and runs the initial prompt once
-// workspace trust is confirmed.
+// workspace trust is confirmed. If LaunchCommandWithHooks attached an exit
+// report command ("; <agent> report exited ..."), -i is placed before it.
 func (b *AgyBackend) AppendPromptFlag(launchCmd, prompt string) string {
 	if prompt == "" {
 		return launchCmd
+	}
+	if b.exitSuffix != "" && strings.HasSuffix(launchCmd, b.exitSuffix) {
+		base := strings.TrimSuffix(launchCmd, b.exitSuffix)
+		return fmt.Sprintf("%s -i %s%s", base, util.ShellQuote(prompt), b.exitSuffix)
 	}
 	return fmt.Sprintf("%s -i %s", launchCmd, util.ShellQuote(prompt))
 }
@@ -168,13 +174,21 @@ func (b *AgyBackend) ProcessingPattern() string {
 // it via --add-dir so nothing is written into the project directory.
 // Because agy runs hooks with cwd set to the bundle dir and omits the event
 // name from stdin JSON, each hook command uses the absolute reportCmd and
-// passes --event <Event>.
+// passes --event <Event>. Since agy has no SessionEnd hook or native session
+// list, the command is followed by "; <agent> report exited ..." so the parent
+// shell records exit (including crashes and SIGKILL) with --spawn-id guarding
+// against stale respawns.
 func (b *AgyBackend) LaunchCommandWithHooks(reportCmd, sessionID string) string {
 	bundleDir := b.bundleDir(sessionID)
 	if err := WriteAgyHooksBundle(bundleDir, reportCmd); err != nil {
 		return b.LaunchCommand()
 	}
-	return fmt.Sprintf("%s --add-dir %s", b.LaunchCommand(), util.ShellQuote(bundleDir))
+	b.exitSuffix = "; " + agyExitReportCmd(reportCmd)
+	return fmt.Sprintf("%s --add-dir %s%s", b.LaunchCommand(), util.ShellQuote(bundleDir), b.exitSuffix)
+}
+
+func agyExitReportCmd(reportCmd string) string {
+	return strings.Replace(reportCmd, " report --hook", " report exited", 1)
 }
 
 func (b *AgyBackend) bundleDir(sessionID string) string {
@@ -279,6 +293,7 @@ func (b *AgyBackend) ParseHookEvent(event string, payload []byte) (types.HookRep
 	case "PreInvocation":
 		r.Status = types.StatusProcessing
 		r.Detail = "prompt received"
+		r.ClearResult = p.InvocationNum == 0
 	case "PreToolUse":
 		r.Status = types.StatusProcessing
 		r.Detail = agyToolSummary(p.ToolCall.Name, p.ToolCall.Args)
@@ -362,10 +377,32 @@ func (b *AgyBackend) PermissionKey(resp types.PermissionResponse, tool string) (
 	}
 }
 
-// PermissionPromptVisible never confirms a prompt: agy fires no hook while its
-// dialog is up, so its status never reads "waiting" and approve/deny already
-// need --force, which skips this check. Recognizing the dialog on screen would
-// let a stale status through without --force, so stay conservative.
+// agyDialogYesOption and agyDialogNoOption match the numbered "1. Yes" and
+// "N. No" lines of agy's permission dialog.
+var (
+	agyDialogYesOption = regexp.MustCompile(`(?m)^[\s>❯]*1\.\s+Yes\b`)
+	agyDialogNoOption  = regexp.MustCompile(`(?m)^[\s>❯]*\d+\.\s+No\b`)
+)
+
+// agyDialogTailLines bounds detection to the bottom of the screen so a
+// numbered list in an older reply cannot match.
+const agyDialogTailLines = 12
+
+// PermissionPromptVisible reports whether agy's permission dialog is on
+// screen: numbered "1. Yes" and "N. No" options above the "esc to cancel"
+// statusline footer. An idle prompt shows "? for shortcuts" instead, and
+// a question dialog (ask_question) shows "esc to discard".
 func (b *AgyBackend) PermissionPromptVisible(screen string) bool {
-	return false
+	var tail []string
+	lines := strings.Split(screen, "\n")
+	for i := len(lines) - 1; i >= 0 && len(tail) < agyDialogTailLines; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			tail = append(tail, lines[i])
+		}
+	}
+	if len(tail) == 0 || !strings.Contains(strings.ToLower(tail[0]), "esc to cancel") {
+		return false
+	}
+	joined := strings.Join(tail, "\n")
+	return agyDialogYesOption.MatchString(joined) && agyDialogNoOption.MatchString(joined)
 }

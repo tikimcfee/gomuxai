@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
@@ -112,5 +113,138 @@ func TestAgySpawn_GeneratesHooksBundleAndReportsLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(env.cfg.AgentDir("agy-worker")); !os.IsNotExist(err) {
 		t.Errorf("expected agent dir %s to be removed on cleanup, err = %v", env.cfg.AgentDir("agy-worker"), err)
+	}
+}
+
+// Non-hook `agent report exited --as <name> --spawn-id <id>` is run by the
+// shell wrapper after agy exits. If the agent was cleaned up and respawned
+// with the same name in the meantime, the old wrapper must not mark the new
+// spawn exited.
+func TestReport_RejectsStaleSpawnID(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/bin/agent"
+	ctx := context.Background()
+
+	old := spawnFake(t, env, "worker")
+	oldSpawn := spawnIDOf(t, old.reportCmd)
+	if err := env.service.Cleanup(ctx, "worker"); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	fresh := spawnFake(t, env, "worker")
+	newSpawn := spawnIDOf(t, fresh.reportCmd)
+	if err := env.service.Report(ctx, "worker", service.StatusReport{
+		Status: service.AgentStatusIdle,
+		Event:  "Stop",
+	}); err != nil {
+		t.Fatalf("Report(idle): %v", err)
+	}
+
+	// Late exit wrapper from the previous spawn arrives: must be rejected.
+	_ = env.service.Report(ctx, "worker", service.StatusReport{
+		Status:  service.AgentStatusExited,
+		Event:   "report",
+		SpawnID: oldSpawn,
+	})
+	if st, _ := env.service.Status(ctx, "worker"); st != service.AgentStatusIdle {
+		t.Fatalf("status = %s, want idle (stale exit report overwrote respawn)", st)
+	}
+
+	// Current spawn's exit wrapper succeeds.
+	if err := env.service.Report(ctx, "worker", service.StatusReport{
+		Status:  service.AgentStatusExited,
+		Event:   "report",
+		SpawnID: newSpawn,
+	}); err != nil {
+		t.Fatalf("Report(exited, current spawn): %v", err)
+	}
+	if st, _ := env.service.Status(ctx, "worker"); st != service.AgentStatusExited {
+		t.Errorf("status = %s, want exited", st)
+	}
+}
+
+// agy fires PreToolUse before showing its permission dialog and fires nothing
+// while the dialog is up. When the dialog is visible at the bottom of the
+// pane after PreToolUse, StatusInfo should report waiting and RespondPermission
+// should work without --force.
+func TestAgyWaitingAndApprove_WhenPermissionDialogVisible(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/opt/gomuxai/agent"
+	ctx := context.Background()
+
+	var fake *fakeAgyBackend
+	env.backends.RegisterFactory("fakeagy", func(cfg backend.ProviderConfig) backend.Provider {
+		fake = &fakeAgyBackend{
+			AgyBackend: namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{
+				SkipPermissions: cfg.SkipPermissions,
+				AgentDir:        cfg.AgentDir,
+			}),
+		}
+		return fake
+	})
+
+	agent, err := env.service.Spawn(ctx, service.SpawnOptions{
+		Name:    "agy-perm",
+		Backend: "fakeagy",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	env.backends.RegisterProvider(fake)
+	spawnID := spawnIDOf(t, fake.reportCmd)
+
+	// PreToolUse fires while no dialog is on screen: status is processing,
+	// and approve without --force refuses.
+	prePayload := `{"conversationId":"conv-1","stepIdx":1,"toolCall":{"name":"run_command","args":{"CommandLine":"echo gated"}}}`
+	if err := env.service.ReportHook(ctx, "agy-perm", spawnID, "PreToolUse", []byte(prePayload)); err != nil {
+		t.Fatalf("ReportHook(PreToolUse): %v", err)
+	}
+	if st, _ := env.service.Status(ctx, "agy-perm"); st != service.AgentStatusProcessing {
+		t.Fatalf("without dialog on screen: status = %s, want processing", st)
+	}
+	if err := env.service.RespondPermission(ctx, "agy-perm", backend.PermissionApprove, service.PermissionOptions{}); err == nil {
+		t.Fatal("approve succeeded without dialog on screen")
+	}
+
+	// Render agy's permission dialog at the bottom of the agent's pane and
+	// block on read so the shell prompt doesn't appear below "esc to cancel".
+	dialogCmd := `printf '\nRun this command?\n> 1. Yes, run command\n  2. Yes, and always allow\n  4. No, cancel\nesc to cancel\n'; read -r -n 1 _`
+	if err := env.tmux.SendKeys(agent.SessionName, dialogCmd); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	if err := env.tmux.SendSpecialKey(agent.SessionName, "Enter"); err != nil {
+		t.Fatalf("SendSpecialKey: %v", err)
+	}
+
+	// Wait briefly for the shell to print the dialog lines.
+	var info *service.StatusInfo
+	for i := 0; i < 40; i++ {
+		info, err = env.service.StatusInfo(ctx, "agy-perm")
+		if err != nil {
+			t.Fatalf("StatusInfo: %v", err)
+		}
+		if info.Status == service.AgentStatusWaiting {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if info.Status != service.AgentStatusWaiting {
+		screen, _ := env.tmux.Capture(agent.SessionName, 0, true)
+		t.Fatalf("with dialog on screen: status = %s, want waiting; screen:\n%s", info.Status, screen)
+	}
+	if info.Detail != "permission: run_command: echo gated" || info.Tool != "run_command" {
+		t.Errorf("got detail=%q tool=%q, want \"permission: run_command: echo gated\" / \"run_command\"", info.Detail, info.Tool)
+	}
+
+	// Approve without --force (and with --expect run_command) now succeeds.
+	if err := env.service.RespondPermission(ctx, "agy-perm", backend.PermissionApprove, service.PermissionOptions{
+		ExpectTool: "run_command",
+	}); err != nil {
+		t.Fatalf("RespondPermission without --force failed: %v", err)
+	}
+	if st, _ := env.service.Status(ctx, "agy-perm"); st != service.AgentStatusProcessing {
+		t.Errorf("after approve: status = %s, want processing", st)
 	}
 }
