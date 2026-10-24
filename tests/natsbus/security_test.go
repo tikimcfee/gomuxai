@@ -10,10 +10,12 @@ package natsbus_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -266,7 +268,6 @@ func TestSecurity_EventBodyMustMatchSubject(t *testing.T) {
 // forged "processing" followed by the agent's still-idle status (its
 // previous turn) releases the wait before the agent ever started.
 func TestSecurity_ForgedEventCantArmNext(t *testing.T) {
-	knownBug(t, "an unconfirmed event arms --next")
 	nc := natstest.Start(t)
 	pub := natstest.Connect(t, nc.ConnectedUrl())
 	src := &statusSource{status: "idle"} // never leaves idle
@@ -290,7 +291,6 @@ func TestSecurity_ForgedEventCantArmNext(t *testing.T) {
 // binds its port gets every hook's events and every CLI request (message
 // text included), and can answer them.
 func TestSecurity_LocalClientsVerifyTheBus(t *testing.T) {
-	knownBug(t, "local clients don't authenticate the bus")
 	h := newBusHost(t, "solo")
 
 	// An impostor that speaks just enough NATS to accept any nkey.
@@ -341,4 +341,114 @@ func TestSecurity_LocalClientsVerifyTheBus(t *testing.T) {
 			return
 		}
 	}
+}
+
+// Text from another host is printed in the user's terminal; escape sequences
+// in it must not reach the terminal (raw capture excepted: it's asked for).
+func TestRPCClient_SanitizesRemoteText(t *testing.T) {
+	nc := natstest.Start(t)
+	evil := "ok\x1b]0;pwned\x07\x1b[2J\rover\u009bwrite\x00"
+	stop, err := natsbus.ServeRPC(nc, "h1", evilHandler{text: evil}, natsbus.AllOps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	client := natsbus.NewRPCClient(nc, 0)
+	ref := natsbus.AgentRef{Name: "w", Host: "h1"}
+	ctx := context.Background()
+
+	st, err := client.Status(ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(st.Detail, "\x1b\x07\r\x00\u009b") {
+		t.Errorf("status detail not sanitized: %q", st.Detail)
+	}
+	if out, _ := client.Capture(ctx, ref, 10, false); strings.ContainsAny(out, "\x1b\x07\r") {
+		t.Errorf("capture not sanitized: %q", out)
+	}
+	if out, _ := client.Capture(ctx, ref, 10, true); out != evil {
+		t.Errorf("raw capture should be untouched, got %q", out)
+	}
+	if err := client.Send(ctx, ref, "x"); err == nil || strings.ContainsAny(err.Error(), "\x1b\x07") {
+		t.Errorf("remote error not sanitized: %v", err)
+	}
+}
+
+type evilHandler struct{ text string }
+
+func (h evilHandler) List(context.Context) (*natsbus.ListResponse, error) {
+	return &natsbus.ListResponse{Agents: []natsbus.AgentInfo{{Name: h.text}}}, nil
+}
+func (h evilHandler) Status(context.Context, natsbus.StatusRequest) (*natsbus.StatusResponse, error) {
+	return &natsbus.StatusResponse{Status: "idle", Detail: h.text}, nil
+}
+func (h evilHandler) Capture(context.Context, natsbus.CaptureRequest) (*natsbus.CaptureResponse, error) {
+	return &natsbus.CaptureResponse{Output: h.text}, nil
+}
+func (h evilHandler) Send(context.Context, natsbus.SendRequest) error { return errors.New(h.text) }
+func (h evilHandler) Respond(context.Context, natsbus.RespondRequest) error {
+	return nil
+}
+func (h evilHandler) Keys(context.Context, natsbus.KeysRequest) error { return nil }
+
+// A flood of slow requests gets "busy" replies past the in-flight limit
+// instead of unbounded concurrent work.
+func TestServeRPC_BoundsInFlightRequests(t *testing.T) {
+	nc := natstest.Start(t)
+	release := make(chan struct{})
+	h := &blockingHandler{release: release}
+	stop, err := natsbus.ServeRPC(nc, "h1", h, natsbus.AllOps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	t.Cleanup(func() { close(release) })
+
+	client := natsbus.NewRPCClient(nc, 2*time.Second)
+	busy := make(chan bool, natsbus.MaxInFlight+10)
+	for i := 0; i < natsbus.MaxInFlight+10; i++ {
+		go func() {
+			_, err := client.Status(context.Background(), natsbus.AgentRef{Name: "w", Host: "h1"})
+			busy <- err != nil && strings.Contains(err.Error(), "busy")
+		}()
+	}
+	deadline := time.After(3 * time.Second)
+	got := 0
+	for got < 10 {
+		select {
+		case b := <-busy:
+			if b {
+				got++
+			}
+		case <-deadline:
+			t.Fatalf("only %d busy replies; want at least 10", got)
+		}
+	}
+	if n := h.peak.Load(); n > natsbus.MaxInFlight {
+		t.Errorf("%d requests ran at once; limit is %d", n, natsbus.MaxInFlight)
+	}
+}
+
+type blockingHandler struct {
+	evilHandler
+	release <-chan struct{}
+	running atomic.Int64
+	peak    atomic.Int64
+}
+
+func (h *blockingHandler) Status(ctx context.Context, _ natsbus.StatusRequest) (*natsbus.StatusResponse, error) {
+	n := h.running.Add(1)
+	defer h.running.Add(-1)
+	for {
+		p := h.peak.Load()
+		if n <= p || h.peak.CompareAndSwap(p, n) {
+			break
+		}
+	}
+	select {
+	case <-h.release:
+	case <-ctx.Done():
+	}
+	return &natsbus.StatusResponse{Status: "idle"}, nil
 }

@@ -121,22 +121,30 @@ func runWait(cmd *cobra.Command, args []string) error {
 		defer cancel()
 	}
 
-	current := func(ctx context.Context) (string, error) {
+	current := func(ctx context.Context) (natsbus.Observation, error) {
 		info, err := agentService.StatusInfo(ctx, name)
 		if err != nil {
-			return "", err
+			return natsbus.Observation{}, err
 		}
-		return string(info.Status), nil
+		return natsbus.Observation{
+			Status:         string(info.Status),
+			ReportedStatus: string(info.ReportedStatus),
+			ReportedAt:     info.ReportedAt,
+		}, nil
 	}
 	if remote {
 		// The remote host's own status check confirms events, as locally.
 		client := natsbus.NewRPCClient(nc, 0)
-		current = func(ctx context.Context) (string, error) {
+		current = func(ctx context.Context) (natsbus.Observation, error) {
 			resp, err := client.Status(ctx, ref)
 			if err != nil {
-				return "", err
+				return natsbus.Observation{}, err
 			}
-			return resp.Status, nil
+			return natsbus.Observation{
+				Status:         resp.Status,
+				ReportedStatus: resp.ReportedStatus,
+				ReportedAt:     resp.ReportedAt,
+			}, nil
 		}
 	}
 

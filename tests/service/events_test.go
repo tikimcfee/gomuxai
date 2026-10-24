@@ -146,12 +146,8 @@ func TestWait_LocalAgentReportsIdle(t *testing.T) {
 	nc := natstest.Start(t)
 	env.service.SetEventPublisher(busPublisher(t, nc))
 
-	current := func(ctx context.Context) (string, error) {
-		info, err := env.service.StatusInfo(ctx, "worker")
-		if err != nil {
-			return "", err
-		}
-		return string(info.Status), nil
+	current := func(ctx context.Context) (natsbus.Observation, error) {
+		return observe(ctx, env, "worker")
 	}
 	reported := make(chan error, 1)
 	go func() {
@@ -185,9 +181,8 @@ func TestWait_LocalAgentWithoutBus(t *testing.T) {
 
 	status, err := natsbus.Wait(ctx, nil, natsbus.WaitOptions{
 		Host: eventsHost, Agent: "worker", For: []string{"idle"}, Interval: 20 * time.Millisecond,
-		Current: func(ctx context.Context) (string, error) {
-			st, err := env.service.Status(ctx, "worker")
-			return string(st), err
+		Current: func(ctx context.Context) (natsbus.Observation, error) {
+			return observe(ctx, env, "worker")
 		},
 	})
 	if err != nil || status != "idle" {
@@ -196,4 +191,17 @@ func TestWait_LocalAgentWithoutBus(t *testing.T) {
 	if err := <-reported; err != nil {
 		t.Fatalf("Report: %v", err)
 	}
+}
+
+// observe is what `agent wait` checks for a local agent.
+func observe(ctx context.Context, env *testEnv, name string) (natsbus.Observation, error) {
+	info, err := env.service.StatusInfo(ctx, name)
+	if err != nil {
+		return natsbus.Observation{}, err
+	}
+	return natsbus.Observation{
+		Status:         string(info.Status),
+		ReportedStatus: string(info.ReportedStatus),
+		ReportedAt:     info.ReportedAt,
+	}, nil
 }

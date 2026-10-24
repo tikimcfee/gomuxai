@@ -179,6 +179,9 @@ type statusSource struct {
 	mu     sync.Mutex
 	status string
 	calls  int
+	// The last recorded report, as StatusInfo exposes it.
+	reported   string
+	reportedAt time.Time
 	// onFirst runs inside the first call, after the status is read.
 	onFirst func()
 }
@@ -189,7 +192,21 @@ func (s *statusSource) set(status string) {
 	s.mu.Unlock()
 }
 
-func (s *statusSource) current(context.Context) (string, error) {
+// record simulates a new status report that is also the current status.
+func (s *statusSource) record(status string) {
+	s.mu.Lock()
+	s.status, s.reported, s.reportedAt = status, status, time.Now()
+	s.mu.Unlock()
+}
+
+func (s *statusSource) current(ctx context.Context) (natsbus.Observation, error) {
+	status, err := s.currentStatus(ctx)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return natsbus.Observation{Status: status, ReportedStatus: s.reported, ReportedAt: s.reportedAt}, err
+}
+
+func (s *statusSource) currentStatus(context.Context) (string, error) {
 	s.mu.Lock()
 	status := s.status
 	s.calls++
@@ -408,7 +425,7 @@ func TestWait_CurrentErrorEndsWait(t *testing.T) {
 	_, err := natsbus.Wait(testCtx(t), nil, natsbus.WaitOptions{
 		Agent:    "worker",
 		For:      []string{"idle"},
-		Current:  func(context.Context) (string, error) { return "", boom },
+		Current:  func(context.Context) (natsbus.Observation, error) { return natsbus.Observation{}, boom },
 		Interval: time.Hour,
 	})
 	if !errors.Is(err, boom) {
@@ -461,5 +478,40 @@ func TestWait_NextArmedByCurrentStatus(t *testing.T) {
 	status, err := natsbus.Wait(testCtx(t), nil, opts)
 	if err != nil || status != "idle" {
 		t.Fatalf("Wait = %q, %v; want idle", status, err)
+	}
+}
+
+// A turn can start and finish between two checks (no events, or events
+// lost): --next never sees the agent leave idle, but the newer idle report
+// shows a turn happened, which is what --next waits for.
+func TestWait_NextArmedByNewerReportBetweenChecks(t *testing.T) {
+	src := &statusSource{}
+	src.record("idle") // the previous turn's report
+	src.onFirst = func() {
+		goBackground(t, func() {
+			time.Sleep(50 * time.Millisecond)
+			src.record("idle") // a whole new turn, already finished
+		})
+	}
+	opts := waitOpts(src, 30*time.Millisecond, "idle")
+	opts.Next = true
+
+	status, err := natsbus.Wait(testCtx(t), nil, opts)
+	if err != nil || status != "idle" {
+		t.Fatalf("Wait = %q, %v; want idle after the newer report", status, err)
+	}
+}
+
+// The same idle report seen again is not a new turn.
+func TestWait_NextNotArmedBySameReport(t *testing.T) {
+	src := &statusSource{}
+	src.record("idle")
+	opts := waitOpts(src, 20*time.Millisecond, "idle")
+	opts.Next = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if status, err := natsbus.Wait(ctx, nil, opts); err == nil {
+		t.Fatalf("Wait returned %q without any new turn", status)
 	}
 }

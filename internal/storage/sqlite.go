@@ -537,7 +537,9 @@ const setStateQuery = `
 `
 
 func stateArgs(entry *StateEntry) []any {
-	return []any{entry.AgentName, entry.Key, entry.Value, entry.UpdatedAt.Format(time.RFC3339)}
+	// Nanoseconds: `agent wait --next` tells reports apart by timestamp, and
+	// a whole agent turn can fit inside one second.
+	return []any{entry.AgentName, entry.Key, entry.Value, entry.UpdatedAt.Format(time.RFC3339Nano)}
 }
 
 // GetState retrieves a single state entry.

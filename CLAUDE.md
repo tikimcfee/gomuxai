@@ -158,7 +158,10 @@ agent bus stop
 - Each machine authenticates with its own nkey; no shared secrets.
 - A machine serves other machines only the ops in `--remote-ops` (default: `list,status,capture,send,respond`; raw `keys` is local-only). Peers can't publish events as another host.
 - Local clients on `127.0.0.1` authenticate with a key in `.gomuxai/bus/local.nk` (mode 0600).
-- The hub routes all cross-machine traffic, so run it on the machine you trust most. Status events are hints: `agent wait` confirms them with a real status check.
+- The local client port also serves TLS with the host's own certificate, and clients pin it. A stale `bus.url`, or another user holding the port, can't impersonate the bus.
+- Each host's replies come back on its own inbox prefix, and a peer can only subscribe to its own, so it can't read other hosts' replies. Peers can still publish to reply subjects. Forging a reply would need the requester's random reply subject, which peers can't observe, so replies aren't signed in v1.
+- Text from other hosts (status, capture, errors) is stripped of terminal control sequences before printing. `capture --raw` keeps them, since you asked for raw.
+- The hub routes all cross-machine traffic, so run it on the machine you trust most. Status events are hints: `agent wait` confirms them with a real status check, and `--next` arms only on real checks.
 - A machine links to one hub: only one trusted bundle may carry a `url` (`bus start` refuses more). Re-trust any other peer from a bundle without one.
 - Use `AGENT_HOST` to override this machine's host name. An identity is bound to the name it was created with.
 

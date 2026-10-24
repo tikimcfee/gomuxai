@@ -50,6 +50,9 @@ func (h rpcHandler) Status(ctx context.Context, req natsbus.StatusRequest) (*nat
 		Detail:    info.Detail,
 		Tool:      info.Tool,
 		UpdatedAt: info.UpdatedAt,
+
+		ReportedStatus: string(info.ReportedStatus),
+		ReportedAt:     info.ReportedAt,
 	}, nil
 }
 

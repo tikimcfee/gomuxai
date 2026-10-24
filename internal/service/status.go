@@ -58,6 +58,11 @@ type StatusInfo struct {
 	Detail    string
 	Tool      string
 	UpdatedAt time.Time // time of the last report; zero for other sources
+
+	// The last recorded report, whatever Status was resolved from. Status can
+	// lag it (native status trails hooks) or override it (interrupts).
+	ReportedStatus AgentStatus
+	ReportedAt     time.Time
 }
 
 // ParseAgentStatus validates a status name.
@@ -156,14 +161,32 @@ func (s *AgentService) Status(ctx context.Context, name string) (AgentStatus, er
 // StatusInfo resolves an agent's status from, in order: the backend's native
 // session status, the last reported status, and terminal scraping.
 func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo, error) {
-	agent, err := s.getAgent(ctx, name)
+	info, reported, err := s.resolveStatus(ctx, name)
 	if err != nil {
 		return nil, err
+	}
+	if reported != nil {
+		info.ReportedStatus, info.ReportedAt = reported.Status, reported.UpdatedAt
+	}
+	return info, nil
+}
+
+// resolveStatus returns the resolved status and the last report as recorded
+// (nil if none).
+func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusInfo, *StatusInfo, error) {
+	agent, err := s.getAgent(ctx, name)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	reported, err := s.reportedStatus(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	var raw *StatusInfo // the report as recorded, before any adjustment below
+	if reported != nil {
+		copied := *reported
+		raw = &copied
 	}
 
 	native, found, queried := s.nativeStatus(ctx, agent)
@@ -174,7 +197,7 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 		if reported != nil && reported.Status == native {
 			info.Event, info.Detail, info.Tool, info.UpdatedAt = reported.Event, reported.Detail, reported.Tool, reported.UpdatedAt
 		}
-		return info, nil
+		return info, raw, nil
 	}
 	if reported != nil {
 		// The backend answered but no longer knows the session, yet the last
@@ -188,7 +211,7 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 				Event:     reported.Event,
 				Detail:    "session not running (exited without a SessionEnd hook)",
 				UpdatedAt: reported.UpdatedAt,
-			}, nil
+			}, raw, nil
 		}
 		// Backends like agy fire PreToolUse before showing a permission
 		// dialog and fire nothing while the dialog is up. When the dialog
@@ -200,14 +223,14 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 				reported.Detail = "permission: " + reported.Detail
 			}
 		}
-		return reported, nil
+		return reported, raw, nil
 	}
 
 	status, err := s.scrapeStatus(agent)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &StatusInfo{Status: status, Source: StatusSourceScrape}, nil
+	return &StatusInfo{Status: status, Source: StatusSourceScrape}, nil, nil
 }
 
 // reportedStatus returns the last reported status, or nil if none was reported.

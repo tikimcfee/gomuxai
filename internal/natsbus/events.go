@@ -137,14 +137,26 @@ type WaitOptions struct {
 	// message up, it still looks idle from its previous turn.
 	Next bool
 
-	// Current returns the agent's status now. Wait calls it once right after
-	// subscribing and then every Interval, as a backstop for status changes
-	// that publish no event (e.g. Claude's native status moving back to idle
-	// after an interrupted permission prompt). Without a bus it is the only
-	// source. A remote agent can be waited on by passing an RPC status call.
-	Current func(context.Context) (string, error)
+	// Current observes the agent's status now. Wait calls it once right
+	// after subscribing, every Interval as a backstop for status changes that
+	// publish no event (e.g. Claude's native status moving back to idle after
+	// an interrupted permission prompt), and to confirm events. Without a
+	// bus it is the only source. A remote agent can be waited on by passing
+	// an RPC status call.
+	Current func(context.Context) (Observation, error)
 	// Interval between calls to Current.
 	Interval time.Duration
+}
+
+// Observation is one real status check.
+type Observation struct {
+	Status string // the agent's status, which ends the wait
+
+	// The agent's latest recorded report, if known. A report newer than the
+	// first one Wait saw that is already back in a For status means a whole
+	// turn happened between checks, which arms Next.
+	ReportedStatus string
+	ReportedAt     time.Time
 }
 
 // subscribeFlushTimeout bounds the round trip that confirms the subscription
@@ -192,6 +204,7 @@ func Wait(ctx context.Context, nc *nats.Conn, opts WaitOptions) (string, error) 
 
 	last := ""
 	armed := !opts.Next
+	var first *Observation // the initial check, for spotting newer reports
 	// settle reports whether status ends the wait, and with what error.
 	settle := func(status string) (bool, error) {
 		last = status
@@ -204,15 +217,22 @@ func Wait(ctx context.Context, nc *nats.Conn, opts WaitOptions) (string, error) 
 		armed = true
 		return false, nil
 	}
+	// check is the only thing that arms Next: events are hints (the hub can
+	// forge them, see remoteLeaf in daemon.go), so they only trigger checks.
 	check := func() (bool, error) {
-		status, err := opts.Current(ctx)
+		obs, err := opts.Current(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return true, fmt.Errorf("waiting for %s: %w", opts.Agent, ctx.Err())
 			}
 			return true, err
 		}
-		return settle(status)
+		if first == nil {
+			first = &obs
+		} else if !armed && obs.ReportedAt.After(first.ReportedAt) && slices.Contains(opts.For, obs.ReportedStatus) {
+			armed = true // a turn started and finished between two checks
+		}
+		return settle(obs.Status)
 	}
 
 	if done, err := check(); done {
@@ -242,7 +262,13 @@ func Wait(ctx context.Context, nc *nats.Conn, opts WaitOptions) (string, error) 
 				recheck = time.After(eventRecheckDelay)
 				continue
 			}
-			settle(ev.Status) // can only arm --next, never end the wait
+			// Any other event matters only to an unarmed Next, and only if a
+			// real check backs it up.
+			if !armed {
+				if done, err := check(); done {
+					return last, err
+				}
+			}
 		case <-recheck:
 			recheck = nil
 			if done, err := check(); done {

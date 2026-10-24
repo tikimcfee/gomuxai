@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tikimcfee/gomuxai/internal/util"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -45,6 +46,10 @@ func (c *RPCClient) List(ctx context.Context, host string) ([]AgentInfo, error) 
 	if err := c.call(ctx, host, OpList, ListRequest{}, &resp); err != nil {
 		return nil, err
 	}
+	for i := range resp.Agents {
+		a := &resp.Agents[i]
+		a.Name, a.Session, a.Backend = clean(a.Name), clean(a.Session), clean(a.Backend)
+	}
 	return resp.Agents, nil
 }
 
@@ -53,6 +58,9 @@ func (c *RPCClient) Status(ctx context.Context, ref AgentRef) (*StatusResponse, 
 	var resp StatusResponse
 	if err := c.callAgent(ctx, ref, OpStatus, StatusRequest{Agent: ref.Name}, &resp); err != nil {
 		return nil, err
+	}
+	for _, f := range []*string{&resp.Status, &resp.Source, &resp.Event, &resp.Detail, &resp.Tool, &resp.ReportedStatus} {
+		*f = clean(*f)
 	}
 	return &resp, nil
 }
@@ -63,6 +71,9 @@ func (c *RPCClient) Capture(ctx context.Context, ref AgentRef, lines int, raw bo
 	req := CaptureRequest{Agent: ref.Name, Lines: lines, Raw: raw}
 	if err := c.callAgent(ctx, ref, OpCapture, req, &resp); err != nil {
 		return "", err
+	}
+	if !raw { // raw was asked for explicitly; it keeps escape sequences
+		return clean(resp.Output), nil
 	}
 	return resp.Output, nil
 }
@@ -119,7 +130,7 @@ func (c *RPCClient) call(ctx context.Context, host, op string, req, out any) err
 		return fmt.Errorf("malformed %s reply from host %q: %w", op, host, err)
 	}
 	if resp.Error != "" {
-		return &RemoteError{Host: host, Op: op, Msg: resp.Error}
+		return &RemoteError{Host: host, Op: op, Msg: clean(resp.Error)}
 	}
 	if out == nil {
 		return nil
@@ -132,3 +143,7 @@ func (c *RPCClient) call(ctx context.Context, host, op string, req, out any) err
 	}
 	return nil
 }
+
+// clean strips terminal controls from text another host sent: it ends up
+// printed in the user's terminal, and the other host may be hostile.
+func clean(s string) string { return util.SanitizeTerminal(s) }

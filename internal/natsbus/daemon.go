@@ -130,6 +130,14 @@ func ConnectLocal(dir, host string, opts ...nats.Option) (*nats.Conn, error) {
 		nats.Timeout(500 * time.Millisecond),
 		nats.Name("agent " + host),
 		nats.CustomInboxPrefix(InboxPrefix(host)), // peers' links only carry their own
+		// Authenticate the bus too: a stale bus.url or another local user
+		// holding the port must not receive hook events and requests. The
+		// client port serves the host's own certificate; pin it.
+		nats.Secure(&tls.Config{
+			InsecureSkipVerify:    true, // self-signed; trust comes from the pin
+			VerifyPeerCertificate: pinVerifier(host+" (local bus)", id.CertSHA),
+			MinVersion:            tls.VersionTLS13,
+		}),
 	}, opts...)
 	nc, err := nats.Connect(strings.TrimSpace(string(data)), opts...)
 	if errors.Is(err, nats.ErrNoServers) {
@@ -164,6 +172,12 @@ func serverOptions(cfg DaemonConfig, id *Identity, peers []PeerBundle) (*natsser
 		// account is on by default and answers $SYS.REQ.* (connection
 		// details, peer addresses) for every account.
 		NoSystemAccount: true,
+		// Local clients pin this certificate (see ConnectLocal).
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{id.Cert},
+			MinVersion:   tls.VersionTLS13,
+		},
+		TLSTimeout: 2,
 		Nkeys: []*natsserver.NkeyUser{{
 			Nkey:                   id.LocalPublicKey(),
 			AllowedConnectionTypes: connTypes(jwt.ConnectionTypeStandard),

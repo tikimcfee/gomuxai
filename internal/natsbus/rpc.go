@@ -112,6 +112,9 @@ func validateAgent(name string) error {
 	return nil
 }
 
+// MaxInFlight bounds the requests a bus serves at once; more get a "busy" reply.
+const MaxInFlight = 32
+
 // ServeRPC answers requests for each op in allowedOps on SubjectRPC(host, op),
 // running them through h. Each request runs in its own goroutine, so a slow
 // status query doesn't hold up the next request. Which peers may reach which
@@ -142,19 +145,30 @@ func ServeRPC(nc *nats.Conn, host string, h RPCHandler, allowedOps []string) (st
 		}
 	}
 
+	// Bound concurrent requests: some ops run the backend CLI, and a peer
+	// flooding requests mustn't be able to start unbounded processes.
+	inflight := make(chan struct{}, MaxInFlight)
 	for _, op := range allowedOps {
 		run := rpcOps[op]
 		sub, err := nc.Subscribe(SubjectRPC(host, op), func(msg *nats.Msg) {
+			select {
+			case inflight <- struct{}{}:
+			default:
+				reply(msg, RPCResponse{Error: fmt.Sprintf("busy: %d requests already in flight", MaxInFlight)})
+				return
+			}
 			// Registering under the lock keeps wg.Add from racing stop's wg.Wait.
 			mu.Lock()
 			if stopped {
 				mu.Unlock()
+				<-inflight
 				return
 			}
 			wg.Add(1)
 			mu.Unlock()
 			go func() {
 				defer wg.Done()
+				defer func() { <-inflight }()
 				reply(msg, serveOne(ctx, h, op, run, msg.Data))
 			}()
 		})

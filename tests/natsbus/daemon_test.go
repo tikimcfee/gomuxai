@@ -258,7 +258,7 @@ func TestBus_LocalClientsMustAuthenticate(t *testing.T) {
 	h := newBusHost(t, "solo")
 	d := h.start(t, "", nil)
 
-	if !strings.HasPrefix(d.ClientURL(), "nats://127.0.0.1:") {
+	if !strings.Contains(d.ClientURL(), "://127.0.0.1:") {
 		t.Errorf("client listener should be loopback-only, got %s", d.ClientURL())
 	}
 	if nc, err := nats.Connect(d.ClientURL(), nats.Timeout(time.Second)); err == nil {
