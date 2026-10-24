@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/GianlucaP106/gotmux/gotmux"
 	"github.com/tikimcfee/gomuxai/internal/util"
@@ -70,7 +69,6 @@ func NewClient() (*Client, error) {
 
 // CreateSession creates a new tmux session.
 func (c *Client) CreateSession(name string, env map[string]string) error {
-	// Check if session already exists
 	if c.tmux.HasSession(name) {
 		return fmt.Errorf("session %q already exists", name)
 	}
@@ -96,12 +94,9 @@ func (c *Client) CreateSession(name string, env map[string]string) error {
 
 // KillSession terminates a tmux session.
 func (c *Client) KillSession(name string) error {
-	session, err := c.tmux.GetSessionByName(name)
+	session, err := c.getSession(name)
 	if err != nil {
-		return fmt.Errorf("getting session %q: %w", name, err)
-	}
-	if session == nil {
-		return fmt.Errorf("session %q not found", name)
+		return err
 	}
 
 	if err := session.Kill(); err != nil {
@@ -137,14 +132,23 @@ func (c *Client) ListSessions() ([]Session, error) {
 	return result, nil
 }
 
-// getFirstPane gets the first pane of a session.
-func (c *Client) getFirstPane(sessionName string) (*gotmux.Pane, error) {
-	session, err := c.tmux.GetSessionByName(sessionName)
+// getSession looks up a session by name, failing if it doesn't exist.
+func (c *Client) getSession(name string) (*gotmux.Session, error) {
+	session, err := c.tmux.GetSessionByName(name)
 	if err != nil {
-		return nil, fmt.Errorf("getting session %q: %w", sessionName, err)
+		return nil, fmt.Errorf("getting session %q: %w", name, err)
 	}
 	if session == nil {
-		return nil, fmt.Errorf("session %q not found", sessionName)
+		return nil, fmt.Errorf("session %q not found", name)
+	}
+	return session, nil
+}
+
+// getFirstPane gets the first pane of a session.
+func (c *Client) getFirstPane(sessionName string) (*gotmux.Pane, error) {
+	session, err := c.getSession(sessionName)
+	if err != nil {
+		return nil, err
 	}
 
 	panes, err := session.ListPanes()
@@ -194,9 +198,7 @@ func (c *Client) SendSpecialKey(session string, key string) error {
 	if err != nil {
 		return err
 	}
-	// Use raw tmux command for special keys
-	_, err = c.tmux.Command("send-keys", "-t", target, "--", key)
-	if err != nil {
+	if _, err := c.tmux.Command("send-keys", "-t", target, "--", key); err != nil {
 		return fmt.Errorf("sending key %q: %w", key, err)
 	}
 	return nil
@@ -209,16 +211,9 @@ func (c *Client) Capture(session string, lines int, stripANSI bool) (string, err
 		return "", err
 	}
 
-	// Use raw tmux command for capture with line range
-	startLine := -lines
-	args := []string{
-		"capture-pane",
-		"-t", target,
-		"-p",                          // print to stdout
-		"-S", strconv.Itoa(startLine), // start line
-	}
-
-	output, err := c.tmux.Command(args...)
+	// -p prints to stdout; -S starts that many lines back into the
+	// scrollback (0 is the top of the visible pane).
+	output, err := c.tmux.Command("capture-pane", "-t", target, "-p", "-S", strconv.Itoa(-lines))
 	if err != nil {
 		return "", fmt.Errorf("capturing pane: %w", err)
 	}
@@ -232,18 +227,13 @@ func (c *Client) Capture(session string, lines int, stripANSI bool) (string, err
 
 // PipePane starts piping pane output to a file.
 func (c *Client) PipePane(session string, logPath string) error {
-	// Shell-safe quoting: use single quotes and escape any single quotes in path
-	// This prevents shell injection via backticks, $(), etc.
-	safePath := "'" + strings.ReplaceAll(logPath, "'", "'\"'\"'") + "'"
-	paneCmd := fmt.Sprintf("cat >> %s", safePath)
-
-	// Use raw tmux command for pipe-pane
 	target, err := c.paneTarget(session)
 	if err != nil {
 		return err
 	}
-	_, err = c.tmux.Command("pipe-pane", "-t", target, paneCmd)
-	if err != nil {
+	// tmux runs the command through a shell: quote the path so it can't
+	// inject one.
+	if _, err := c.tmux.Command("pipe-pane", "-t", target, "cat >> "+util.ShellQuote(logPath)); err != nil {
 		return fmt.Errorf("piping pane: %w", err)
 	}
 	return nil
@@ -251,13 +241,12 @@ func (c *Client) PipePane(session string, logPath string) error {
 
 // StopPipePane stops piping pane output.
 func (c *Client) StopPipePane(session string) error {
-	// Pass empty command to stop piping
 	target, err := c.paneTarget(session)
 	if err != nil {
 		return err
 	}
-	_, err = c.tmux.Command("pipe-pane", "-t", target)
-	if err != nil {
+	// pipe-pane without a command stops the current pipe.
+	if _, err := c.tmux.Command("pipe-pane", "-t", target); err != nil {
 		return fmt.Errorf("stopping pipe: %w", err)
 	}
 	return nil
@@ -265,7 +254,6 @@ func (c *Client) StopPipePane(session string) error {
 
 // Clear clears the terminal screen and scrollback.
 func (c *Client) Clear(session string) error {
-	// Send clear command
 	if err := c.SendKeys(session, "clear"); err != nil {
 		return err
 	}
@@ -273,13 +261,12 @@ func (c *Client) Clear(session string) error {
 		return err
 	}
 
-	// Clear tmux scrollback buffer
+	// clear only wipes the screen; tmux keeps its own scrollback.
 	target, err := c.paneTarget(session)
 	if err != nil {
 		return err
 	}
-	_, err = c.tmux.Command("clear-history", "-t", target)
-	if err != nil {
+	if _, err := c.tmux.Command("clear-history", "-t", target); err != nil {
 		return fmt.Errorf("clearing history: %w", err)
 	}
 
