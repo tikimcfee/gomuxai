@@ -176,16 +176,32 @@ func (w *Watcher) processAgent(ctx context.Context, agent *storage.Agent) {
 	msgLogger = msgLogger.With("status", status)
 
 	switch status {
-	case service.AgentStatusIdle:
+	case service.AgentStatusIdle, service.AgentStatusError:
+		// error means the last turn failed, not that the agent is gone: for
+		// Claude it comes from StopFailure (API error, rate limit), after
+		// which the CLI is back at its prompt and takes input like idle. It is
+		// also sticky: no hook fires again until the next prompt arrives, so
+		// holding messages for it would hold them forever.
 		w.deliverMessage(ctx, agent.Name, msg, msgLogger)
-	case service.AgentStatusProcessing:
-		msgLogger.Debug("agent is processing, skipping delivery")
+	case service.AgentStatusExited:
+		// The CLI is gone; typing into the shell left behind would run the
+		// message as a command. Nothing restarts it, so fail now.
+		msgLogger.Warn("agent exited, marking message as failed")
+		w.failMessage(ctx, msg, msgLogger)
 	case service.AgentStatusUnknown:
 		w.handleUnknownStatus(ctx, msg, msgLogger)
 	default:
-		// AgentStatusError or other - skip delivery
-		msgLogger.Debug("agent status not suitable for delivery")
+		// processing, or waiting on a human: deliver once it's idle again
+		msgLogger.Debug("agent busy, skipping delivery")
 	}
+}
+
+func (w *Watcher) failMessage(ctx context.Context, msg *storage.Message, logger *slog.Logger) {
+	if err := w.storage.UpdateMessageStatus(ctx, msg.ID, storage.MessageStatusFailed); err != nil {
+		logger.Error("failed to update message status", "error", err)
+		return
+	}
+	w.clearState(msg.ID)
 }
 
 func (w *Watcher) deliverMessage(ctx context.Context, agentName string, msg *storage.Message, logger *slog.Logger) {

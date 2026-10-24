@@ -79,6 +79,13 @@ func TestClaudeParseHookEvent(t *testing.T) {
 			wantDetail: "prompt_input_exit",
 		},
 		{
+			// Observed: /clear fires SessionEnd (reason clear), then SessionStart
+			// (source clear). Reporting exited in between would fail queued messages.
+			name:    "session end on /clear is not an exit",
+			payload: `{"hook_event_name":"SessionEnd","session_id":"s1","reason":"clear"}`,
+			wantOK:  false,
+		},
+		{
 			name:    "unknown events are ignored",
 			payload: `{"hook_event_name":"SubagentStart","session_id":"s1"}`,
 			wantOK:  false,

@@ -76,6 +76,8 @@ agent queue helper --from coordinator "Priority task incoming"
 **Queue flags:**
 - `--from <sender>` - Sender ID. Defaults to `AGENT_NAME` env var, then "user"
 
+**Delivery by status:** `idle` and `error` deliver (`error` is a failed turn, e.g. a rate limit; the agent is back at its prompt). `processing` and `waiting` hold the message. `exited` fails it, as does `unknown` after 5 checks in a row.
+
 **Wart:** `queue` requires `agent watch` running somewhere. If the watcher isn't running, messages sit forever.
 
 ### Reading Output

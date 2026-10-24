@@ -123,6 +123,10 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		r.Status = types.StatusError
 		r.Detail = truncate(firstNonEmpty(p.Error, "turn failed"))
 	case "SessionEnd":
+		// /clear ends the session but not the CLI; SessionStart follows.
+		if p.Reason == "clear" {
+			return types.HookReport{}, false, nil
+		}
 		r.Status = types.StatusExited
 		r.Detail = p.Reason
 	default:

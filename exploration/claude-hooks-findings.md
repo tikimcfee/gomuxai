@@ -23,7 +23,7 @@ Method: a logging hook (`hook.sh` → one JSON line per call: time, `$AGENT_NAME
 | `Notification` | ~6s after the dialog, `notification_type: permission_prompt`, `message: "Claude needs your permission"` | `notification_type`, `message` | `waiting` (redundant w/ above, delayed) |
 | `PostToolUse` | after tool succeeds | `tool_response`, `duration_ms` | `busy` |
 | `Stop` | turn finished | `last_assistant_message`, `background_tasks`, `session_crons`, `stop_hook_active` | `idle` (+ result) |
-| `SessionEnd` | `/exit` (`reason: prompt_input_exit`); also fired on tmux kill-session | `reason` | `exited` |
+| `SessionEnd` | `/exit` (`reason: prompt_input_exit`); also fired on tmux kill-session. `/clear` fires it too (`reason: clear`), followed by `SessionStart` (`source: clear`) | `reason` | `exited` (ignored for `clear`) |
 
 Registered but not triggered by these probes (settings accepted them without error): `PostToolUseFailure`, `StopFailure`, `SubagentStart`, `SubagentStop`, `PreCompact`.
 
