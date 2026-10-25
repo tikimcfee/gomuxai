@@ -64,13 +64,12 @@ failed and what to try. Most read commands take `--json`.
 ### What a spawned Claude agent may run without asking
 
 Spawn pre-allows these for the agent's session: `send`, `list`, `status`,
-`wait`, `events`, `capture`, `state get`, `history`, `friction add`,
+`wait`, `events`, `capture`, `logs`, `state get`, `history`, `friction add`,
 `friction +1`, `friction list`, `friction show`.
 
 Everything else prompts the person, on purpose: `spawn` and `cleanup` start
 and stop agents; `approve`, `deny`, `keys`, and `send --force` would let one
-agent answer another's prompts; `state set` and `logs` aren't on the list
-either. The rules match `agent <cmd>` and the binary's full path,
+agent answer another's prompts; `state set` isn't on the list either. The rules match `agent <cmd>` and the binary's full path,
 not a variable: `$A send ...` still prompts.
 
 ## The Core Loop

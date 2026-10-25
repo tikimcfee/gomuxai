@@ -29,7 +29,7 @@ func TestBriefingCoversFriction(t *testing.T) {
 	}
 
 	prefixes := s.allowedCommandPrefixes()
-	for _, want := range []string{"agent friction add", "/opt/x/agent friction +1", "agent friction list", "agent friction show", "agent history", "agent capture", "/opt/x/agent capture"} {
+	for _, want := range []string{"agent friction add", "/opt/x/agent friction +1", "agent friction list", "agent friction show", "agent history", "agent capture", "/opt/x/agent capture", "agent logs", "/opt/x/agent logs"} {
 		if !slices.Contains(prefixes, want) {
 			t.Errorf("pre-allowed commands lack %q", want)
 		}

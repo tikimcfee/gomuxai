@@ -140,7 +140,7 @@ Notes on each:
   how to run helpers, and how to file friction. It uses the binary's full
   path, since the agent's shell may not have it on `PATH`.
 - **Pre-allowed commands** (`agentSafeCommands`): `send`, `list`, `status`,
-  `wait`, `events`, `capture`, `state get`, `history`, `friction add`,
+  `wait`, `events`, `capture`, `logs`, `state get`, `history`, `friction add`,
   `friction +1`, `friction list`, `friction show`. Each becomes two rules, `agent <cmd>` and
   `<full binary path> <cmd>`, for that Claude session only. Left out on
   purpose: `approve`, `deny`, `keys`, and `send --force` (one agent answering
