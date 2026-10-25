@@ -95,32 +95,15 @@ type ToolCall struct {
 	Output string          `json:"output,omitempty"`
 }
 
-// detailKeys are the input fields that best describe a tool call, most
-// telling first: Claude Code's, then agy's.
-var detailKeys = []string{
-	"command", "CommandLine", "file_path", "notebook_path", "AbsolutePath", "TargetFile",
-	"pattern", "Pattern", "Query", "query", "url", "Url", "skill", "subagent_type",
-	"description", "path", "Path", "SearchPath", "prompt", "toolSummary",
-}
-
-// Detail returns the most telling input of the call (its command, file,
-// pattern, ...), or "". A path under cwd is made relative to it, as
-// glyph3d-js toolRegistry.js relativize does.
+// Detail returns what the call is about, from the tool table
+// (SummarizeTool): its file, else its most telling input (command,
+// pattern, ...), or "". A path under cwd is made relative to it.
 func (c *ToolCall) Detail(cwd string) string {
-	var fields map[string]any
-	if json.Unmarshal(c.Input, &fields) != nil {
-		return ""
+	s := SummarizeTool(c.Name, c.Input, nil, cwd)
+	if s.Target != "" {
+		return s.Target
 	}
-	for _, key := range detailKeys {
-		if v, ok := fields[key].(string); ok && strings.TrimSpace(v) != "" {
-			v = unquote(strings.TrimSpace(v))
-			if rel, ok := strings.CutPrefix(v, strings.TrimSuffix(cwd, "/")+"/"); ok && cwd != "" && rel != "" {
-				return rel
-			}
-			return v
-		}
-	}
-	return ""
+	return s.Detail
 }
 
 // unquote decodes a value agy sometimes stores JSON-encoded a second time

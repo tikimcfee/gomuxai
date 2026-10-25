@@ -309,13 +309,7 @@ func isAgyErrorTermination(reason string) bool {
 	}
 }
 
-// agyToolArgKeys are the toolCall.args fields that best describe a tool
-// call, most telling first; Claude-style names follow agy's own.
-var agyToolArgKeys = append([]string{
-	"CommandLine", "Path", "TargetFile", "SearchPath", "Query", "Pattern", "Url", "ToolName", "toolSummary",
-}, claudeToolInputKeys...)
-
-// agyToolSummary renders an agy tool call as "tool: <most telling arg>".
+// agyToolSummary renders an agy tool call as "tool: <what it's about>".
 func agyToolSummary(tool string, args json.RawMessage) string {
 	if tool == "" {
 		return "tool"
@@ -323,7 +317,7 @@ func agyToolSummary(tool string, args json.RawMessage) string {
 	if tool == "ask_question" {
 		return agyQuestionSummary(tool, args)
 	}
-	return toolSummary(tool, args, agyToolArgKeys)
+	return toolSummary(tool, args)
 }
 
 // agyQuestionSummary renders an ask_question call as "ask_question: <first

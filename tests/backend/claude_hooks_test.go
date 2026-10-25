@@ -52,6 +52,13 @@ func TestClaudeParseHookEvent(t *testing.T) {
 			wantDetail: "permission: Edit: /tmp/x.go",
 		},
 		{
+			name:       "pre tool use summarizes from the tool table",
+			payload:    `{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/tmp","tool_name":"Skill","tool_input":{"skill":"pdf"}}`,
+			wantOK:     true,
+			wantStatus: backend.StatusProcessing,
+			wantDetail: "Skill: pdf",
+		},
+		{
 			name:    "delayed permission notification is ignored",
 			payload: `{"hook_event_name":"Notification","session_id":"s1","notification_type":"permission_prompt","message":"Claude needs your permission"}`,
 			wantOK:  false,

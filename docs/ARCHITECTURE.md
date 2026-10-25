@@ -513,7 +513,7 @@ What the code maps them to:
 |---|---|---|
 | `SessionStart` | idle | clears `_result`, except after `compact` |
 | `UserPromptSubmit` | processing | clears `_result` |
-| `PreToolUse`, `PostToolUse` | processing | detail `Tool: <most telling input>`; `PostToolUse` ends the call's pending prompt. `PreToolUse` for Bash carries the command and `cwd`, and prints an allow for a safe `agent` command (see [Spawning](#spawning-an-agent)) |
+| `PreToolUse`, `PostToolUse` | processing | detail `Tool: <its file, else its most telling input>`, from the tool table (`transcript.SummarizeTool`), paths absolute; `PostToolUse` ends the call's pending prompt. `PreToolUse` for Bash carries the command and `cwd`, and prints an allow for a safe `agent` command (see [Spawning](#spawning-an-agent)) |
 | `PostToolUseFailure` | processing | detail `failed: ...`; ends the call's pending prompt |
 | `PermissionRequest` | waiting | detail `permission: ...` (plus `(from the <type> agent)` for a subagent's); stores `_tool_input` and a pending prompt |
 | `PreCompact` | processing | |
