@@ -100,7 +100,10 @@ agent send helper "review internal/auth for injection bugs"
 `send` types the message into the agent's terminal now, even mid-turn
 (Claude and agy queue it), and says the status it saw: `Sent to helper (it
 was idle).` "Sent" means typed, not read. Messages from an agent start with
-`[from name@host]`, so the recipient knows where to reply. It refuses an
+`[from name@host]`, so the recipient knows where to reply. Messages from
+anyone without `AGENT_NAME` (a person, or a coordinator a person started)
+start with `[from a person on host]`, which the recipient answers in its
+reply; a slash command like `/compact` is left unmarked. It refuses an
 agent at a dialog (the Enter would answer it; use `approve`/`deny`) and an
 agent that has exited.
 

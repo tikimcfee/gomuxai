@@ -8,6 +8,16 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/config"
 )
 
+func TestBriefingExplainsSenderTags(t *testing.T) {
+	s := &AgentService{cfg: &config.Config{Host: "h"}}
+	brief := s.agentInstructions("lead", "")
+	for _, want := range []string{`"[from NAME@HOST]"`, `"[from a person on HOST]"`} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("briefing lacks %s", want)
+		}
+	}
+}
+
 func TestBriefingCoversFriction(t *testing.T) {
 	s := &AgentService{cfg: &config.Config{Host: "h", AgentBinary: "/opt/x/agent"}}
 	brief := s.agentInstructions("lead", "")

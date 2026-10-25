@@ -174,7 +174,10 @@ stay.
 ## Messages
 
 `agent send` (`AgentService.Send`) types the message and Enter. A message
-from an agent (`AGENT_NAME` set) is prefixed `[from <name>@<host>] `. Before
+from an agent (`AGENT_NAME` set) is prefixed `[from <name>@<host>] `, and
+one from a person `[from a person on <host>] `, which names no agent to reply
+to (a person's slash command stays unmarked, or it would no longer be one;
+`markSender`). Before
 typing, `checkCanSend` refuses an `exited` agent (the text would run in the
 shell left behind), a `waiting` agent, and any agent with a permission or
 trust dialog on screen (the Enter would answer it). `--force` skips the

@@ -284,14 +284,17 @@ func TestRemoteHostNotAnswering(t *testing.T) {
 }
 
 // Messages an agent sends carry its address so the recipient can reply;
-// messages typed by a user don't.
+// a person's say so, except slash commands, which a prefix would break.
 func TestFromAgent(t *testing.T) {
 	old := cfg
 	t.Cleanup(func() { cfg = old })
 	cfg = &config.Config{Host: "h1"}
 	t.Setenv("AGENT_NAME", "")
-	if got := fromAgent("hi"); got != "hi" {
-		t.Errorf("user message changed: %q", got)
+	if got := fromAgent("hi"); got != "[from a person on h1] hi" {
+		t.Errorf("person's message = %q", got)
+	}
+	if got := fromAgent("/compact"); got != "/compact" {
+		t.Errorf("person's slash command changed: %q", got)
 	}
 	t.Setenv("AGENT_NAME", "lead")
 	if got := fromAgent("hi"); got != "[from lead@h1] hi" {

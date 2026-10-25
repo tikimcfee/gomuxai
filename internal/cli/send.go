@@ -27,7 +27,8 @@ wait until the agent is idle. An agent on another host is addressed as
 name@host (needs a running bus).
 
 A message sent by an agent (AGENT_NAME set) starts with "[from name@host]",
-so the recipient knows where to reply.
+so the recipient knows where to reply. One sent by a person starts with
+"[from a person on host]", unless it is a slash command like "/compact".
 
 "Sent" means the message was typed into the agent's terminal, not that the
 agent has read it: right after a send, the agent still looks idle until it
@@ -97,18 +98,23 @@ func runSend(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// fromAgent marks a message sent by an agent with its address, so the
-// recipient knows who to reply to. Messages typed by a user are unmarked.
+// fromAgent marks a message with who sent it: AGENT_NAME, or a person.
 func fromAgent(message string) string {
-	from := os.Getenv("AGENT_NAME")
-	if from == "" {
-		return message
-	}
-	return markSender(from, message)
+	return markSender(os.Getenv("AGENT_NAME"), message)
 }
 
-// markSender prefixes message with its sender's address on this host.
+// markSender prefixes message with its sender's address on this host, so
+// the recipient knows who to reply to, or for a person (sender ""), with
+// "[from a person on host]": a person has no agent record to reply to with
+// agent send. A person's slash command ("/compact") stays unmarked, since a
+// prefix would turn it into a plain message.
 func markSender(sender, message string) string {
+	if sender == "" {
+		if strings.HasPrefix(message, "/") {
+			return message
+		}
+		return fmt.Sprintf("[from a person on %s] %s", cfg.Host, message)
+	}
 	return fmt.Sprintf("[from %s@%s] %s", sender, cfg.Host, message)
 }
 

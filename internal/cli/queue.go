@@ -25,8 +25,8 @@ another host is refused, since queueing isn't served over the bus (use
 "agent send name@host").
 
 Use --from to specify the sender (defaults to AGENT_NAME env var or "user").
-A message from anyone but "user" is marked with the sender's address, as
-"agent send" marks messages from agents.`,
+Messages are marked with the sender as "agent send" marks them: an agent's
+address, or "[from a person on host]" for "user".`,
 	Example: `  agent queue researcher "when you're free, check the test results"
   agent queue builder --from coordinator "priority: fix the auth bug"`,
 	Args: cobra.MinimumNArgs(2),
@@ -59,7 +59,9 @@ func runQueue(cmd *cobra.Command, args []string) error {
 		sender = "user"
 	}
 
-	if sender != "user" {
+	if sender == "user" {
+		message = markSender("", message)
+	} else {
 		message = markSender(sender, message)
 	}
 	ctx := getContext()
