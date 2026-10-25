@@ -300,6 +300,104 @@ func TestAgyTaskCanceled(t *testing.T) {
 	}
 }
 
+// A GENERIC step answers the call its distance from the PLANNER_RESPONSE
+// names, so a GENERIC agy never wrote leaves its call unanswered rather
+// than shifting every later result onto the wrong call.
+func TestAgyMissingResult(t *testing.T) {
+	_, events := parse(Agy{}, []byte(strings.Join([]string{
+		`{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","content":"<USER_REQUEST>\ngo\n</USER_REQUEST>"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"pkill srv"}},{"name":"run_command","args":{"CommandLine":"ps"}}]}`,
+		// Step 2, pkill's result, was never written.
+		`{"step_index":3,"type":"GENERIC","status":"DONE","content":"srv not running"}`,
+		`{"step_index":4,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"make"}}]}`,
+		`{"step_index":5,"type":"GENERIC","status":"DONE","content":"built"}`,
+	}, "\n")+"\n"))
+	want := []string{
+		`1 add prompt(human) "go"`,
+		`1 add tool run_command(pkill srv) pending ""`,
+		`1 add tool run_command(ps) pending ""`,
+		`1 update tool run_command(ps) ok "srv not running"`,
+		// The next model response abandons the call no step answered.
+		`1 add tool run_command(make) pending ""`,
+		`1 update tool run_command(pkill srv) interrupted ""`,
+		`1 update tool run_command(make) ok "built"`,
+	}
+	if got := summaries(events); !slices.Equal(got, want) {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// agy can rewrite steps it already wrote: the steps whose index went back
+// carry which time it is in their ids, so no two events share an id.
+func TestAgyRewind(t *testing.T) {
+	_, events := parse(Agy{}, []byte(strings.Join([]string{
+		`{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","content":"<USER_REQUEST>\nfirst\n</USER_REQUEST>"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"ls"}}]}`,
+		`{"step_index":2,"type":"GENERIC","status":"DONE","content":"a"}`,
+		`{"step_index":1,"type":"USER_INPUT","source":"USER_EXPLICIT","content":"<USER_REQUEST>\nagain\n</USER_REQUEST>"}`,
+		`{"step_index":2,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"ls -a"}}]}`,
+		`{"step_index":3,"type":"GENERIC","status":"DONE","content":"b"}`,
+	}, "\n")+"\n"))
+	var got []string
+	for _, e := range events {
+		got = append(got, fmt.Sprintf("%s %s turn %s", e.Op, e.ID, e.Turn.ID))
+	}
+	want := []string{
+		"add step_0#0 turn step_0#0",
+		"add step_1_tool_0 turn step_0#0",
+		"update step_1_tool_0 turn step_0#0",
+		"add step_1.2#0 turn step_1.2#0",
+		"add step_2.2_tool_0 turn step_1.2#0",
+		// Past the highest index so far, ids are plain again.
+		"update step_2.2_tool_0 turn step_1.2#0",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if n := len(Latest(events)); n != 4 {
+		t.Errorf("Latest folds %d events, want 4: both prompts and both calls", n)
+	}
+}
+
+// Background calls end however agy records it; messages from agy itself
+// and from a hook say so.
+func TestAgyBackgroundEnds(t *testing.T) {
+	msg := func(step int, sender, content string) string {
+		body, _ := json.Marshal("<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-04T12:00:00Z sender=" + sender + " priority=MESSAGE_PRIORITY_HIGH content=" + content + "\n</SYSTEM_MESSAGE>")
+		return fmt.Sprintf(`{"step_index":%d,"type":"SYSTEM_MESSAGE","source":"SYSTEM","content":%s}`, step, body)
+	}
+	running := func(step int, task string) string {
+		return fmt.Sprintf(`{"step_index":%d,"type":"GENERIC","status":"RUNNING","content":"Tool is running as a background task with task id: %s"}`, step, task)
+	}
+	_, events := parse(Agy{}, []byte(strings.Join([]string{
+		`{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","content":"<USER_REQUEST>\ngo\n</USER_REQUEST>"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"schedule","args":{"DurationSeconds":60,"Prompt":"Check the build"}},{"name":"run_command","args":{"CommandLine":"make serve"}},{"name":"run_command","args":{"CommandLine":"make watch"}},{"name":"run_command","args":{"CommandLine":"make docs"}}]}`,
+		running(2, "c/task-2"), running(3, "c/task-3"), running(4, "c/task-4"), running(5, "c/task-5"),
+		// A timer fires: its message is the schedule's Prompt.
+		msg(6, "c/task-2", "Check the build"),
+		`{"step_index":7,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"manage_task","args":{"Action":"kill","TaskId":"c/task-3"}}]}`,
+		`{"step_index":8,"type":"GENERIC","status":"DONE","content":"Task \"c/task-3\" cancelled."}`,
+		msg(9, "system", "Subagent c-2 has gone idle."),
+		msg(10, "system", "[Notice] All your subagents and background tasks have been stopped due to server restart."),
+		`{"step_index":11,"type":"SYSTEM_MESSAGE","source":"SYSTEM_SDK","content":"The following is a <SYSTEM_MESSAGE> not actually sent by the user.\n\n<SYSTEM_MESSAGE>\nThe following system message was injected by a PreInvocation hook:\n[from lead@hub] also lint\n</SYSTEM_MESSAGE>"}`,
+	}, "\n")+"\n"))
+	want := []string{
+		`1 add prompt(task-notification) "Check the build"`,
+		`1 update tool schedule(timer: Check the build) ok "Check the build"`,
+		`1 add tool manage_task(kill c/task-3) pending ""`,
+		`1 update tool manage_task(kill c/task-3) ok "Task \"c/task-3\" cancelled."`,
+		`1 update tool run_command(make serve) interrupted ""`,
+		`1 add prompt(system) "Subagent c-2 has gone idle."`,
+		`1 add prompt(system) "[Notice] All your subagents and background tasks have been stopped due to server restart."`,
+		`1 update tool run_command(make watch) interrupted ""`,
+		`1 update tool run_command(make docs) interrupted ""`,
+		`1 add prompt(delivered) "[from lead@hub] also lint"`,
+	}
+	if got := summaries(events[9:]); !slices.Equal(got, want) {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // agyResponse rebuilds the structured response the tool table reads from
 // a result agy keeps only as text.
 func TestAgyResponse(t *testing.T) {
@@ -393,6 +491,22 @@ func TestAgySubagent(t *testing.T) {
 		}
 	}
 
+	// The parent's calls are read once while its transcript is unchanged,
+	// and again once it grows.
+	if len(agySpawnCalls(filepath.Join(brain, "parent"))) != 2 {
+		t.Error("spawn calls before the parent grows")
+	}
+	f2, err := os.OpenFile(filepath.Join(brain, "parent", logs), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f2.WriteString(`{"step_index":5,"source":"MODEL","type":"PLANNER_RESPONSE","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"Role":"ui"}]}}]}` + "\n" +
+		`{"step_index":6,"source":"MODEL","type":"GENERIC","content":"{\"conversationId\": \"child-ui\"}"}` + "\n")
+	f2.Close()
+	if call, ok := agySpawnCalls(filepath.Join(brain, "parent"))["child-ui"]; !ok || call.ID != "step_5_tool_0" {
+		t.Errorf("after the parent grew: %+v, %v", call, ok)
+	}
+
 	// A conversation no other started is no subagent.
 	if opts := FileOptions("agy", filepath.Join(brain, "parent", logs)); opts.Session.ParentSession != nil || opts.Turn != nil {
 		t.Errorf("parent's options: %+v", opts)
@@ -437,6 +551,42 @@ func TestKimiParse(t *testing.T) {
 	}
 }
 
+// Kimi's fields are read one by one: one of an unexpected type reads as
+// absent and costs nothing else. A call reuses a toolCallId (Kimi numbers
+// calls per response); a call with none is named by its uuid.
+func TestKimiLenient(t *testing.T) {
+	wire := strings.Join([]string{
+		`{"type":"turn.prompt","time":1792490400000.5,"input":"  as a string  "}`,
+		`{"type":"llm.request","time":1792490401000,"model":{"name":"k3"}}`,
+		`{"type":"context.append_loop_event","time":"soon","event":{"type":"tool.call","toolCallId":"functions.Bash:0","name":"Bash","args":{"command":"ls"},"display":"inline"}}`,
+		`{"type":"context.append_loop_event","time":1792490403000,"event":{"type":"tool.result","toolCallId":"functions.Bash:0","result":{"output":"a\n","isError":"no"}}}`,
+		`{"type":"context.append_loop_event","time":1792490404000,"event":{"type":"tool.call","toolCallId":"functions.Bash:0","name":"Bash","args":{"command":"pwd"}}}`,
+		`{"type":"context.append_loop_event","time":1792490405000,"event":{"type":"tool.result","toolCallId":"functions.Bash:0","result":{"output":"/w\n"}}}`,
+		`{"type":"context.append_loop_event","time":1792490406000,"event":{"type":"tool.call","uuid":"u-7","name":"Glob","args":{"pattern":"*.go"}}}`,
+		`{"type":"context.append_loop_event","time":1792490407000,"event":{"type":"tool.result","uuid":"r-1","toolCallId":"u-7","result":{"output":"a.go\n"}}}`,
+	}, "\n") + "\n"
+	p, events := parse(Kimi{}, []byte(wire))
+	var got []string
+	for _, e := range events {
+		got = append(got, e.ID+" "+e.TS+" "+summary(e))
+	}
+	want := []string{
+		`L0#0 2026-10-20T10:00:00.000Z 1 add prompt(human) "as a string"`,
+		`functions.Bash:0  1 add tool Bash(ls) pending ""`,
+		`functions.Bash:0 2026-10-20T10:00:03.000Z 1 update tool Bash(ls) ok "a\n"`,
+		`functions.Bash:0@L4 2026-10-20T10:00:04.000Z 1 add tool Bash(pwd) pending ""`,
+		`functions.Bash:0@L4 2026-10-20T10:00:05.000Z 1 update tool Bash(pwd) ok "/w\n"`,
+		`u-7 2026-10-20T10:00:06.000Z 1 add tool Glob(*.go) pending ""`,
+		`u-7 2026-10-20T10:00:07.000Z 1 update tool Glob(*.go) ok "a.go\n"`,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if p.Skipped != 0 || p.Session().Model != "" {
+		t.Errorf("skipped %d, model %q", p.Skipped, p.Session().Model)
+	}
+}
+
 // A Kimi subagent's log is its own session, named as agent sessions names
 // it, and its events say whose they are.
 func TestKimiSubagent(t *testing.T) {
@@ -461,35 +611,52 @@ func TestKimiSubagent(t *testing.T) {
 }
 
 func TestAgyArgs(t *testing.T) {
-	tests := []struct{ name, args, want string }{
+	tests := []struct {
+		name, args, want string
+		encoded          bool
+	}{
 		{
-			name: "transcript.jsonl: every value is its JSON in a string",
+			name: "transcript.jsonl: every value is its JSON in a string", encoded: true,
 			args: `{"CommandLine":"\"echo hi\\nls\"","WaitMsBeforeAsync":"500","AllowMultiple":"false","questions":"[{\"question\":\"Q?\"}]","toolSummary":"\"Run\""}`,
 			want: `{"AllowMultiple":false,"CommandLine":"echo hi\nls","WaitMsBeforeAsync":500,"questions":[{"question":"Q?"}],"toolSummary":"Run"}`,
 		},
 		{
-			name: "transcript_full.jsonl: plain values stay, a quoted search's quotes too",
-			args: `{"query":"\"exact phrase\"","toolSummary":"Search the web"}`,
-			want: `{"query":"\"exact phrase\"","toolSummary":"Search the web"}`,
+			name: "transcript.jsonl: a value agy cut short stays as written", encoded: true,
+			args: `{"CommandLine":"\"make bui","Cwd":"\"/p\"","toolSummary":"\"Build\""}`,
+			want: `{"CommandLine":"\"make bui","Cwd":"/p","toolSummary":"Build"}`,
 		},
 		{
-			name: "a value that isn't a string means plain",
+			name: "transcript_full.jsonl: a quoted search keeps its quotes",
+			args: `{"query":"\"exact phrase\""}`,
+			want: `{"query":"\"exact phrase\""}`,
+		},
+		{
+			name: "transcript_full.jsonl: plain values stay",
 			args: `{"CommandLine":"\"ls\"","WaitMsBeforeAsync":500}`,
 			want: `{"CommandLine":"\"ls\"","WaitMsBeforeAsync":500}`,
 		},
-		{name: "no args", args: `{}`, want: `{}`},
-		{name: "not an object", args: `null`, want: `null`},
+		{name: "no args", args: `{}`, want: `{}`, encoded: true},
+		{name: "not an object", args: `null`, want: `null`, encoded: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := agyArgs(json.RawMessage(tt.args)); string(got) != tt.want {
+			if got := agyArgs(json.RawMessage(tt.args), tt.encoded); string(got) != tt.want {
 				t.Errorf("agyArgs = %s, want %s", got, tt.want)
 			}
 		})
 	}
 
+	// The parser takes the encoding from the file's name.
+	line := `{"step_index":0,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"search_web","args":{"query":"\"exact phrase\""}}]}` + "\n"
+	for file, want := range map[string]string{"transcript.jsonl": "exact phrase", "transcript_full.jsonl": `"exact phrase"`, "": `"exact phrase"`} {
+		events := Agy{}.NewParser(Options{Session: Session{Path: filepath.Join("/c", file)}}).Feed([]byte(line))
+		if got := events[0].Tool.Detail; got != want {
+			t.Errorf("%q: detail %s, want %s", file, got, want)
+		}
+	}
+
 	// Decoded, an encoded replacement's lines count.
-	args := agyArgs(json.RawMessage(`{"TargetFile":"\"/p/d.go\"","TargetContent":"\"a\\nb\"","ReplacementContent":"\"a\\nc\\nd\\ne\"","AllowMultiple":"false"}`))
+	args := agyArgs(json.RawMessage(`{"TargetFile":"\"/p/d.go\"","TargetContent":"\"a\\nb\"","ReplacementContent":"\"a\\nc\\nd\\ne\"","AllowMultiple":"false"}`), true)
 	if s := SummarizeTool("replace_file_content", args, nil, ""); s.Target != "/p/d.go" || string(s.Meta) != `{"added":3,"removed":1}` {
 		t.Errorf("encoded replace_file_content: %+v, meta %s; want /p/d.go, +3 -1", s, s.Meta)
 	}
@@ -704,6 +871,7 @@ func TestSessionIDFromPath(t *testing.T) {
 		"/home/user/.claude/projects/-p/0000-aa.jsonl":                                              "0000-aa",
 		"/home/user/.claude/projects/-p/0000-aa/subagents/agent-a1b2.jsonl":                         "agent-a1b2",
 		"/home/user/.gemini/antigravity-cli/brain/c-1/.system_generated/logs/transcript_full.jsonl": "c-1",
+		"/home/user/.gemini/antigravity-cli/brain/c-2/transcript_full.jsonl":                        "c-2",
 		"/home/user/.kimi-code/sessions/wd_w_1/session_f0aa/agents/main/wire.jsonl":                 "f0aa",
 		"/home/user/.kimi-code/sessions/wd_w_1/session_f0aa/agents/agent-1/wire.jsonl":              "f0aa:agent-1",
 		"/tmp/transcript.jsonl": "",

@@ -219,8 +219,8 @@ func linesBefore(f *os.File, n int64) (int, error) {
 
 // sessionIDFromPath names a session after its transcript, as agent
 // sessions does: Claude Code's is <session id>.jsonl (a subagent's,
-// agent-<agent id>.jsonl); agy's lives in brain/<conversation
-// id>/.system_generated/logs; Kimi Code's session_<uuid>/agents/main/wire.jsonl
+// agent-<agent id>.jsonl); agy's lives in brain/<conversation id>/ or its
+// .system_generated/logs; Kimi Code's session_<uuid>/agents/main/wire.jsonl
 // is <uuid>, and a subagent's agents/<agent>/wire.jsonl is <uuid>:<agent>.
 func sessionIDFromPath(path string) string {
 	base := filepath.Base(path)
@@ -235,9 +235,8 @@ func sessionIDFromPath(path string) string {
 	if !strings.HasPrefix(stem, "transcript") {
 		return stem
 	}
-	dir := filepath.Dir(path)
-	if filepath.Base(dir) == "logs" && filepath.Base(filepath.Dir(dir)) == ".system_generated" {
-		return filepath.Base(filepath.Dir(filepath.Dir(dir)))
+	if conv := agyConversationDir(path); conv != "" {
+		return filepath.Base(conv)
 	}
 	return ""
 }

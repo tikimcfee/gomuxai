@@ -20,46 +20,56 @@ import (
 //
 // No Kimi session was on the machines this was written on: the shapes come
 // from the format survey in glyph3d-rs kimi.rs, glyph3d-js's Kimi tests,
-// and testdata/corpus/kimi.
+// and testdata/corpus/kimi. So every field is read leniently, as those
+// readers do: a field of a type it doesn't expect reads as absent, and
+// never costs the rest of its line.
 type Kimi struct{}
 
 func (Kimi) Harness() string { return "kimi" }
 
 func (Kimi) NewParser(opts Options) *Parser {
-	k := &kimiLines{sess: opts.Session, turn: opts.Turn, tools: map[string]*Event{}, early: map[string]kimiLoopEvent{}}
+	k := &kimiLines{sess: opts.Session, turn: opts.Turn, tools: map[string]*Event{}, calls: map[string]string{}, early: map[string]kimiEvent{}}
 	if opts.Session.ParentSession != nil {
 		k.agent = opts.Session.SessionID
 	}
 	return newParser("kimi", k, opts.From)
 }
 
-// kimiRecord is the part of a wire.jsonl line the parser reads.
-type kimiRecord struct {
-	Type string `json:"type"`
-	// Time is the record's time in epoch milliseconds.
-	Time  *int64          `json:"time"`
-	Input []kimiPart      `json:"input"`
-	Text  json.RawMessage `json:"prompt"`
-	Model string          `json:"model"`
-	Event *kimiLoopEvent  `json:"event"`
+// kimiFields is a JSON object's fields, read one at a time.
+type kimiFields map[string]json.RawMessage
+
+func kimiObject(raw json.RawMessage) kimiFields {
+	var f kimiFields
+	json.Unmarshal(raw, &f)
+	return f
 }
 
-type kimiPart struct {
-	Type  string `json:"type"`
-	Text  string `json:"text"`
-	Think string `json:"think"`
+// str returns the field key's string, or "" if it isn't one.
+func (f kimiFields) str(key string) string {
+	var s string
+	json.Unmarshal(f[key], &s)
+	return s
 }
 
-type kimiLoopEvent struct {
-	Type       string          `json:"type"`
-	Part       *kimiPart       `json:"part"`
-	ToolCallID string          `json:"toolCallId"`
-	Name       string          `json:"name"`
-	Args       json.RawMessage `json:"args"`
-	Display    *struct {
-		CWD string `json:"cwd"`
-	} `json:"display"`
-	Result json.RawMessage `json:"result"`
+// kimiEvent is a context.append_loop_event's event.
+type kimiEvent struct {
+	typ string
+	// part is a content.part's {type, think|text}.
+	part kimiFields
+	// callID is a call's toolCallId (else its uuid); name, args and cwd
+	// (display.cwd) a tool.call's; result a tool.result's.
+	callID, name, cwd string
+	args, result      json.RawMessage
+}
+
+func readKimiEvent(raw json.RawMessage) kimiEvent {
+	f := kimiObject(raw)
+	ev := kimiEvent{typ: f.str("type"), part: kimiObject(f["part"]), callID: f.str("toolCallId"), name: f.str("name"),
+		cwd: kimiObject(f["display"]).str("cwd"), args: f["args"], result: f["result"]}
+	if ev.callID == "" {
+		ev.callID = f.str("uuid")
+	}
+	return ev
 }
 
 // kimiLines is the Kimi half of a Parser.
@@ -70,22 +80,26 @@ type kimiLines struct {
 	turn  *TurnRef
 	// turns counts the prompts that opened a turn.
 	turns int
-	// tools holds each call's latest event, for its result; early, the
+	// tools holds each call's latest event, by event id, and calls the
+	// id of the latest call with each toolCallId (Kimi numbers calls per
+	// response, functions.Read:0, so an id comes back); early holds the
 	// results that came before their call.
 	tools map[string]*Event
-	early map[string]kimiLoopEvent
+	calls map[string]string
+	early map[string]kimiEvent
 }
 
 func (k *kimiLines) session() Session { return k.sess }
 
 func (k *kimiLines) read(line []byte, at int64, n int) ([]Event, bool) {
-	var r kimiRecord
+	var r kimiFields
 	if json.Unmarshal(line, &r) != nil {
 		return nil, false
 	}
 	ts := ""
-	if r.Time != nil {
-		ts = time.UnixMilli(*r.Time).UTC().Format("2006-01-02T15:04:05.000Z")
+	var ms float64
+	if json.Unmarshal(r["time"], &ms) == nil {
+		ts = time.UnixMilli(int64(ms)).UTC().Format("2006-01-02T15:04:05.000Z")
 	}
 	event := func(id, kind string) Event {
 		if id == "" {
@@ -94,13 +108,13 @@ func (k *kimiLines) read(line []byte, at int64, n int) ([]Event, bool) {
 		return Event{ID: id, Op: OpAdd, At: at, Line: n, TS: ts, Turn: k.turn, Agent: k.agent, Kind: kind}
 	}
 	var events []Event
-	switch r.Type {
+	switch typ := r.str("type"); typ {
 	case "llm.request":
-		if r.Model != "" {
-			k.sess.Model = r.Model
+		if model := r.str("model"); model != "" {
+			k.sess.Model = model
 		}
 	case "turn.prompt", "turn.steer":
-		text := r.promptText()
+		text := kimiPrompt(r)
 		if text == "" {
 			break
 		}
@@ -110,7 +124,7 @@ func (k *kimiLines) read(line []byte, at int64, n int) ([]Event, bool) {
 			// A subagent's prompts are its parent's.
 			e.Prompt.Origin = OriginPeer
 		}
-		if r.Type == "turn.steer" {
+		if typ == "turn.steer" {
 			e.Prompt.Origin = OriginQueued
 		} else {
 			k.turns++
@@ -119,88 +133,95 @@ func (k *kimiLines) read(line []byte, at int64, n int) ([]Event, bool) {
 		}
 		events = append(events, e)
 	case "context.append_loop_event":
-		if r.Event != nil {
-			events = k.loopEvent(*r.Event, event)
-		}
+		events = k.loopEvent(readKimiEvent(r["event"]), n, event)
 	}
 	return events, true
 }
 
-// promptText is a turn.prompt's text: its input's text parts, or the
-// prompt string older logs record.
-func (r *kimiRecord) promptText() string {
+// kimiPrompt is a turn.prompt's text, trimmed: its input's text parts
+// (or input itself, a string), or the prompt string older logs record.
+func kimiPrompt(r kimiFields) string {
 	var parts []string
-	for _, p := range r.Input {
-		if p.Type == "text" && p.Text != "" {
-			parts = append(parts, p.Text)
+	var input []json.RawMessage
+	if json.Unmarshal(r["input"], &input) == nil {
+		for _, raw := range input {
+			if p := kimiObject(raw); p.str("type") == "text" && p.str("text") != "" {
+				parts = append(parts, p.str("text"))
+			}
 		}
+	} else if s := r.str("input"); s != "" {
+		parts = append(parts, s)
 	}
 	if len(parts) == 0 {
-		var s string
-		json.Unmarshal(r.Text, &s)
-		return strings.TrimSpace(s)
+		return strings.TrimSpace(r.str("prompt"))
 	}
-	return strings.Join(parts, "\n")
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-// loopEvent reads a context.append_loop_event's event: thinking, text, a
-// call, or a call's result.
-func (k *kimiLines) loopEvent(ev kimiLoopEvent, event func(id, kind string) Event) []Event {
-	switch ev.Type {
+// loopEvent reads a context.append_loop_event's event, on line n:
+// thinking, text, a call, or a call's result.
+func (k *kimiLines) loopEvent(ev kimiEvent, n int, event func(id, kind string) Event) []Event {
+	switch ev.typ {
 	case "content.part":
-		switch p := ev.Part; {
-		case p == nil:
-		case p.Type == "think" && strings.TrimSpace(p.Think) != "":
+		switch think, text := ev.part.str("think"), ev.part.str("text"); {
+		case ev.part.str("type") == "think" && strings.TrimSpace(think) != "":
 			e := event("", KindThink)
-			e.Think = &ThinkEvent{Text: p.Think}
+			e.Think = &ThinkEvent{Text: think}
 			return []Event{e}
-		case p.Type == "text" && strings.TrimSpace(p.Text) != "":
+		case ev.part.str("type") == "text" && strings.TrimSpace(text) != "":
 			e := event("", KindSay)
-			e.Say = &SayEvent{Text: p.Text}
+			e.Say = &SayEvent{Text: text}
 			return []Event{e}
 		}
 	case "tool.call":
-		if k.sess.CWD == "" && ev.Display != nil {
-			k.sess.setCWD(ev.Display.CWD)
+		if k.sess.CWD == "" {
+			k.sess.setCWD(ev.cwd)
 		}
-		e := event(ev.ToolCallID, KindTool)
-		e.Tool = &ToolEvent{Name: ev.Name, Input: ev.Args, Result: &ToolResult{Status: StatusPending},
-			ToolSummary: SummarizeTool(ev.Name, ev.Args, nil, k.sess.CWD)}
+		id := ev.callID
+		if id != "" && k.tools[id] != nil {
+			// A toolCallId used before: this call's event needs an id of
+			// its own.
+			id = fmt.Sprintf("%s@L%d", id, n)
+		}
+		e := event(id, KindTool)
+		e.Tool = &ToolEvent{Name: ev.name, Input: ev.args, Result: &ToolResult{Status: StatusPending},
+			ToolSummary: SummarizeTool(ev.name, ev.args, nil, k.sess.CWD)}
 		k.tools[e.ID] = &e
+		if ev.callID == "" {
+			return []Event{e}
+		}
+		k.calls[ev.callID] = e.ID
 		events := []Event{e}
-		if res, ok := k.early[e.ID]; ok {
-			delete(k.early, e.ID)
-			events = append(events, k.result(res, event))
+		if res, ok := k.early[ev.callID]; ok {
+			delete(k.early, ev.callID)
+			events = append(events, k.result(&e, res, event))
 		}
 		return events
 	case "tool.result":
-		if k.tools[ev.ToolCallID] == nil {
+		call := k.tools[k.calls[ev.callID]]
+		if call == nil || call.Tool.Result.Status != StatusPending {
 			// Kimi may log a result before its call.
-			if ev.ToolCallID != "" {
-				k.early[ev.ToolCallID] = ev
+			if ev.callID != "" {
+				k.early[ev.callID] = ev
 			}
 			return nil
 		}
-		return []Event{k.result(ev, event)}
+		return []Event{k.result(call, ev, event)}
 	}
 	return nil
 }
 
-// result makes the update a tool.result makes to its call.
-func (k *kimiLines) result(ev kimiLoopEvent, event func(id, kind string) Event) Event {
-	call := k.tools[ev.ToolCallID]
-	var result struct {
-		Output  json.RawMessage `json:"output"`
-		IsError bool            `json:"isError"`
-	}
-	json.Unmarshal(ev.Result, &result)
-	res := &ToolResult{Status: StatusOK, Output: kimiOutput(result.Output)}
-	if result.IsError {
+// result makes the update a tool.result makes to call.
+func (k *kimiLines) result(call *Event, ev kimiEvent, event func(id, kind string) Event) Event {
+	r := kimiObject(ev.result)
+	res := &ToolResult{Status: StatusOK, Output: kimiOutput(r["output"])}
+	var isError bool
+	if json.Unmarshal(r["isError"], &isError) == nil && isError {
 		res.Status = StatusError
 	}
 	t := *call.Tool
 	t.Result = res
-	t.ToolSummary = SummarizeTool(t.Name, t.Input, kimiResponse(t.Name, t.Input, ev.Result, res.Output), k.sess.CWD)
+	t.ToolSummary = SummarizeTool(t.Name, t.Input, kimiResponse(t.Name, t.Input, ev.result, res.Output), k.sess.CWD)
 	e := *call
 	u := event(call.ID, KindTool)
 	e.Op, e.At, e.Line, e.TS, e.Tool = OpUpdate, u.At, u.Line, u.TS, &t
@@ -218,12 +239,12 @@ func kimiOutput(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &s) == nil {
 		return s
 	}
-	var parts []kimiPart
+	var parts []json.RawMessage
 	if json.Unmarshal(raw, &parts) == nil {
 		var texts []string
 		for _, p := range parts {
-			if p.Type == "text" {
-				texts = append(texts, p.Text)
+			if f := kimiObject(p); f.str("type") == "text" {
+				texts = append(texts, f.str("text"))
 			}
 		}
 		return strings.Join(texts, "\n")
@@ -266,25 +287,18 @@ func kimiFileOptions(path string) Options {
 		s.ParentSession = &ParentSession{SessionID: strings.TrimPrefix(filepath.Base(sessionDir), "session_")}
 	}
 	if data, err := os.ReadFile(filepath.Join(sessionDir, "state.json")); err == nil {
-		var state struct {
-			Title      string `json:"title"`
-			LastPrompt string `json:"lastPrompt"`
-			WorkDir    string `json:"workDir"`
-			CWD        string `json:"cwd"`
+		state := kimiObject(data)
+		// The title is the main agent's conversation's.
+		if main {
+			s.Title = strings.TrimSpace(state.str("title"))
+			if s.Title == "" {
+				s.Title = strings.TrimSpace(state.str("lastPrompt"))
+			}
 		}
-		if json.Unmarshal(data, &state) == nil {
-			// The title is the main agent's conversation's.
-			if main {
-				s.Title = strings.TrimSpace(state.Title)
-				if s.Title == "" {
-					s.Title = strings.TrimSpace(state.LastPrompt)
-				}
-			}
-			if cwd := strings.TrimSpace(state.WorkDir); cwd != "" {
-				s.setCWD(cwd)
-			} else {
-				s.setCWD(strings.TrimSpace(state.CWD))
-			}
+		if cwd := strings.TrimSpace(state.str("workDir")); cwd != "" {
+			s.setCWD(cwd)
+		} else {
+			s.setCWD(strings.TrimSpace(state.str("cwd")))
 		}
 	}
 	return Options{Session: s}

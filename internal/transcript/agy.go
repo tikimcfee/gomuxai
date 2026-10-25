@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Agy reads the Antigravity CLI's conversation transcripts
@@ -39,8 +42,14 @@ type agyStep struct {
 	} `json:"tool_calls"`
 }
 
+// NewParser returns a parser for an agy transcript. Which of agy's two
+// logs it reads comes from opts.Session.Path (FileOptions sets it):
+// transcript.jsonl encodes every call's args (agyArgs); transcript_full.jsonl,
+// and a parse that names no file, has them plain.
 func (Agy) NewParser(opts Options) *Parser {
-	a := &agyLines{sess: opts.Session, turn: opts.Turn, tools: map[string]*Event{}, running: map[string]string{}}
+	a := &agyLines{sess: opts.Session, turn: opts.Turn, tools: map[string]*Event{}, prev: -1, highest: -1,
+		encoded: filepath.Base(opts.Session.Path) == "transcript.jsonl"}
+	a.sess.Path = ""
 	if opts.Session.ParentSession != nil {
 		a.agent = opts.Session.SessionID
 	}
@@ -55,30 +64,45 @@ type agyLines struct {
 	turn  *TurnRef
 	// turns counts the prompts that opened a turn.
 	turns int
-	// tools holds each call's latest event, for its updates; pending, the
-	// ids of calls still waiting for their GENERIC step, oldest first;
-	// running, the calls sent to the background, by task id.
+	// encoded is set for transcript.jsonl, whose args are encoded.
+	encoded bool
+	// prev and highest are the step indexes of the last step and the
+	// highest so far (-1 before the first); rewinds counts the times the
+	// index went back (agy rewrote steps), which the ids of the steps
+	// whose index came before carry.
+	prev, highest, rewinds int
+	// tools holds each call's latest event, for its updates. planner is
+	// the latest PLANNER_RESPONSE's step index, and calls its calls' ids
+	// by position, "" once a GENERIC step answered one. running holds the
+	// calls sent to the background, oldest first.
 	tools   map[string]*Event
-	pending []string
-	running map[string]string
+	planner int
+	calls   []string
+	running []agyRunning
 }
+
+// agyRunning is a call agy runs as a background task.
+type agyRunning struct{ task, call string }
 
 func (a *agyLines) session() Session { return a.sess }
 
 // agyLine is what reading one step makes: events it adds, then the
 // updates it makes to earlier ones.
 type agyLine struct {
-	a       *agyLines
-	st      *agyStep
+	a  *agyLines
+	st *agyStep
+	// step names the step in ids: its index, and after a rewind, which
+	// time it is that index ("347.2").
+	step    string
 	at      int64
 	n       int
 	adds    []Event
 	updates []Event
 }
 
-// event starts an event of the step's, its id "step_<index>#<part>".
+// event starts an event of the step's, its id "step_<step>#<part>".
 func (l *agyLine) event(part int, kind string) Event {
-	id := fmt.Sprintf("step_%d#%d", l.st.StepIndex, part)
+	id := fmt.Sprintf("step_%s#%d", l.step, part)
 	return Event{ID: id, Op: OpAdd, At: l.at, Line: l.n, TS: l.st.CreatedAt, Turn: l.a.turn, Agent: l.a.agent, Kind: kind}
 }
 
@@ -92,7 +116,15 @@ func (a *agyLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	if a.sess.CWD == "" {
 		a.sess.setCWD(st.CWD)
 	}
-	l := &agyLine{a: a, st: &st, at: at, n: n}
+	l := &agyLine{a: a, st: &st, step: strconv.Itoa(st.StepIndex), at: at, n: n}
+	if a.prev >= 0 && st.StepIndex <= a.prev {
+		a.rewinds++
+	}
+	if st.StepIndex <= a.highest {
+		l.step += "." + strconv.Itoa(a.rewinds+1)
+	}
+	a.prev, a.highest = st.StepIndex, max(a.highest, st.StepIndex)
+
 	switch st.Type {
 	case "USER_INPUT":
 		l.userInput()
@@ -151,10 +183,19 @@ func (l *agyLine) userInput() {
 	l.a.turn = &TurnRef{ID: e.ID, Index: l.a.turns, Derived: true}
 	e.Turn = l.a.turn
 	l.add(e)
-	for _, id := range l.a.pending {
-		l.update(l.a.tools[id], &ToolResult{Status: StatusInterrupted}, nil, "")
+	l.abandon()
+}
+
+// abandon marks the latest step's calls that no GENERIC step answered
+// interrupted: a new prompt or model response means they never ran to
+// their end.
+func (l *agyLine) abandon() {
+	for _, id := range l.a.calls {
+		if id != "" {
+			l.update(l.a.tools[id], &ToolResult{Status: StatusInterrupted}, nil, "")
+		}
 	}
-	l.a.pending = nil
+	l.a.calls = nil
 }
 
 // agyInjected is the origin of a message a hook injected: gomuxai's held
@@ -168,7 +209,7 @@ func agyInjected(text string) string {
 }
 
 // planner reads a PLANNER_RESPONSE step: thinking, then text, then the
-// calls, each waiting for its own GENERIC step.
+// calls, each answered by the GENERIC step its position names.
 func (l *agyLine) planner() {
 	st := l.st
 	part := 0
@@ -183,34 +224,42 @@ func (l *agyLine) planner() {
 		e.Say = &SayEvent{Text: st.Content, Final: len(st.ToolCalls) == 0}
 		l.add(e)
 	}
+	l.abandon()
+	l.a.planner = st.StepIndex
 	for j, tc := range st.ToolCalls {
-		input := agyArgs(tc.Args)
+		input := agyArgs(tc.Args, l.a.encoded)
 		if l.a.sess.CWD == "" && tc.Name == "run_command" {
 			var args struct{ Cwd string }
 			json.Unmarshal(input, &args)
 			l.a.sess.setCWD(args.Cwd)
 		}
 		e := l.event(0, KindTool)
-		e.ID = fmt.Sprintf("step_%d_tool_%d", st.StepIndex, j)
+		e.ID = fmt.Sprintf("step_%s_tool_%d", l.step, j)
 		e.Tool = &ToolEvent{Name: tc.Name, Input: input, Result: &ToolResult{Status: StatusPending},
 			ToolSummary: SummarizeTool(tc.Name, input, nil, l.a.sess.CWD)}
 		l.add(e)
 		l.a.tools[e.ID] = &e
-		l.a.pending = append(l.a.pending, e.ID)
+		l.a.calls = append(l.a.calls, e.ID)
 	}
 }
 
 // agyTaskID matches the task id in a RUNNING step's notice.
 var agyTaskID = regexp.MustCompile(`background task with task id: (\S+)`)
 
-// generic reads a GENERIC step: the result of the oldest call still
-// waiting for one. A result whose call came before the window is dropped.
+// agyKilled matches manage_task kill's result.
+var agyKilled = regexp.MustCompile(`^Task "([^"]+)" cancelled\.`)
+
+// generic reads a GENERIC step: the result of a call of the latest
+// PLANNER_RESPONSE, the one at the step's distance from it (the GENERIC
+// right after the planner answers its first call). A result whose call
+// came before the window, or that no call is waiting for, is dropped.
 func (l *agyLine) generic() {
-	if len(l.a.pending) == 0 {
+	j := l.st.StepIndex - l.a.planner - 1
+	if j < 0 || j >= len(l.a.calls) || l.a.calls[j] == "" {
 		return
 	}
-	id := l.a.pending[0]
-	l.a.pending = l.a.pending[1:]
+	id := l.a.calls[j]
+	l.a.calls[j] = ""
 	call := l.a.tools[id]
 	output := agyOutput(l.st.Content)
 	res := &ToolResult{Status: agyStatus(l.st, output), Output: output}
@@ -219,7 +268,7 @@ func (l *agyLine) generic() {
 	case res.Status == StatusBackground:
 		// While a call runs, the table has no response to read.
 		if m := agyTaskID.FindStringSubmatch(output); m != nil {
-			l.a.running[m[1]] = id
+			l.a.running = append(l.a.running, agyRunning{task: m[1], call: id})
 		}
 	case l.st.Status == "ERROR" || l.st.Status == "INVALID" || l.st.Error != "":
 		response, _ = json.Marshal(map[string]string{"output": output})
@@ -233,6 +282,9 @@ func (l *agyLine) generic() {
 		}
 	}
 	l.update(call, res, response, sub)
+	if m := agyKilled.FindStringSubmatch(output); m != nil && call.Tool.Name == "manage_task" && res.Status == StatusOK {
+		l.end(m[1], &ToolResult{Status: StatusInterrupted}, nil)
+	}
 }
 
 // update makes the update of call to res, its table fields read from
@@ -250,6 +302,27 @@ func (l *agyLine) update(call *Event, res *ToolResult, response json.RawMessage,
 	l.a.tools[call.ID] = &e
 }
 
+// running returns the background call running task, or nil.
+func (a *agyLines) runningCall(task string) *Event {
+	for _, r := range a.running {
+		if r.task == task {
+			return a.tools[r.call]
+		}
+	}
+	return nil
+}
+
+// end ends the background call running task with res, if there is one.
+func (l *agyLine) end(task string, res *ToolResult, response json.RawMessage) {
+	i := slices.IndexFunc(l.a.running, func(r agyRunning) bool { return r.task == task })
+	if i < 0 {
+		return
+	}
+	call := l.a.tools[l.a.running[i].call]
+	l.a.running = slices.Delete(l.a.running, i, i+1)
+	l.update(call, res, response, "")
+}
+
 // agyTaskSender matches the sender of a background task's messages, the
 // task's id: "<conversation id>/task-6".
 var agyTaskSender = regexp.MustCompile(`/task-\d+$`)
@@ -258,40 +331,63 @@ var agyTaskSender = regexp.MustCompile(`/task-\d+$`)
 // canceled it.
 var agyTaskDone = regexp.MustCompile(`^Task id "([^"]+)" (finished|was canceled) with result:\n?((?s).*)$`)
 
+// agyRestart starts the notice agy sends when a restart stopped every
+// background task.
+const agyRestart = "[Notice] All your subagents and background tasks have been stopped"
+
+// agyHookPreamble starts a message a hook injected as a system message.
+var agyHookPreamble = regexp.MustCompile(`^The following system message was injected by an? \w+ hook:\s*`)
+
 // systemMessage reads a SYSTEM_MESSAGE step: each [Message] entry is a
-// prompt, from a background task or another conversation. A task's end
-// completes the call that started it: ok, error if its command exited
-// non-zero, interrupted if it was canceled.
+// prompt, from a background task, another conversation or agy itself
+// (sender=system). A message from a background task ends its call: a
+// task's end (ok, error if its command exited non-zero, interrupted if it
+// was canceled), or a timer's firing (a schedule call's Prompt, ok). A
+// restart notice interrupts every background call.
 func (l *agyLine) systemMessage() {
 	for k, m := range agySystemEntries(l.st.Content) {
 		e := l.event(k, KindPrompt)
 		e.Prompt = &PromptEvent{Text: m.text, Origin: OriginSystem}
 		switch {
+		case m.sender == "":
+			if loc := agyHookPreamble.FindStringIndex(m.text); loc != nil {
+				e.Prompt.Text = m.text[loc[1]:]
+				e.Prompt.Origin = agyInjected(e.Prompt.Text)
+			}
+		case m.sender == "system":
 		case agyTaskSender.MatchString(m.sender):
 			e.Prompt.Origin = OriginTaskNotification
-		case m.sender != "":
+		default:
 			e.Prompt.Origin = OriginPeer
 		}
 		l.add(e)
-		done := agyTaskDone.FindStringSubmatch(m.text)
-		if done == nil {
+
+		if done := agyTaskDone.FindStringSubmatch(m.text); done != nil {
+			call := l.a.runningCall(done[1])
+			if call == nil {
+				continue
+			}
+			output := strings.TrimSpace(done[3])
+			res := &ToolResult{Status: StatusOK, Output: output}
+			switch {
+			case done[2] == "was canceled":
+				res.Status = StatusInterrupted
+			case agyFailed(output):
+				res.Status = StatusError
+			}
+			l.end(done[1], res, agyResponse(call.Tool.Name, call.Tool.Input, output))
 			continue
 		}
-		id, ok := l.a.running[done[1]]
-		if !ok {
-			continue
-		}
-		delete(l.a.running, done[1])
-		call := l.a.tools[id]
-		output := strings.TrimSpace(done[3])
-		res := &ToolResult{Status: StatusOK, Output: output}
 		switch {
-		case done[2] == "was canceled":
-			res.Status = StatusInterrupted
-		case agyFailed(output):
-			res.Status = StatusError
+		case m.sender == "system" && strings.HasPrefix(m.text, agyRestart):
+			for len(l.a.running) > 0 {
+				l.end(l.a.running[0].task, &ToolResult{Status: StatusInterrupted}, nil)
+			}
+		case e.Prompt.Origin == OriginTaskNotification:
+			if call := l.a.runningCall(m.sender); call != nil && call.Tool.Name == "schedule" {
+				l.end(m.sender, &ToolResult{Status: StatusOK, Output: m.text}, nil)
+			}
 		}
-		l.update(call, res, agyResponse(call.Tool.Name, call.Tool.Input, output), "")
 	}
 }
 
@@ -349,26 +445,25 @@ func agySubagentIDs(output string) []string {
 
 var agyConversationID = regexp.MustCompile(`"conversationId":\s*"([^"]+)"`)
 
-// agyArgs undoes the encoding transcript.jsonl gives a call's args: there
-// every value is a string holding its JSON ("\"ls\"", "5000", "false",
-// "[...]"), while transcript_full.jsonl stores them plain. A call whose
-// every arg is a string of valid JSON is taken as encoded and decoded once;
-// any other is left as it is, so a plain search for "\"exact phrase\"" keeps
-// its quotes.
-func agyArgs(args json.RawMessage) json.RawMessage {
+// agyArgs returns a call's args as the call's input. transcript_full.jsonl
+// stores them plain, as they are; transcript.jsonl (encoded) writes every
+// value as a string holding its JSON ("\"ls\"", "5000", "false", "[...]"),
+// so each such value is decoded once. A value agy cut short there
+// (truncated_fields) is no longer valid JSON and stays as it was written.
+// transcript_full.jsonl's plain strings may hold JSON themselves (a search
+// for "\"exact phrase\"") and are never decoded.
+func agyArgs(args json.RawMessage, encoded bool) json.RawMessage {
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(args, &fields) != nil || len(fields) == 0 {
+	if !encoded || json.Unmarshal(args, &fields) != nil || len(fields) == 0 {
 		return args
 	}
-	decoded := make(map[string]json.RawMessage, len(fields))
 	for k, v := range fields {
 		var s string
-		if json.Unmarshal(v, &s) != nil || !json.Valid([]byte(s)) {
-			return args
+		if json.Unmarshal(v, &s) == nil && json.Valid([]byte(s)) {
+			fields[k] = json.RawMessage(s)
 		}
-		decoded[k] = json.RawMessage(s)
 	}
-	out, err := json.Marshal(decoded)
+	out, err := json.Marshal(fields)
 	if err != nil {
 		return args
 	}
@@ -549,25 +644,26 @@ type agyHunkLines struct {
 	Lines    []string `json:"lines"`
 }
 
-// agyFileOptions reads, for the agy transcript at path, what agy keeps
-// beside it about a subagent's conversation: the conversation that
-// started it (brain/<parent>/.system_generated/subagents/<id>.json), the
-// call there that did, and that call's turn. It returns no options for a
-// conversation no other one started.
+// agyFileOptions reads, for the agy transcript at path, which of agy's
+// logs it is (its Session.Path) and what agy keeps beside it about a
+// subagent's conversation: the conversation that started it
+// (brain/<parent>/.system_generated/subagents/<id>.json), the call there
+// that did, and that call's turn.
 func agyFileOptions(path string) Options {
-	id := sessionIDFromPath(path)
+	opts := Options{Session: Session{Path: path}}
 	conv := agyConversationDir(path)
-	if id == "" || conv == "" {
-		return Options{}
+	if conv == "" {
+		return opts
 	}
-	brain := filepath.Dir(conv)
+	id, brain := filepath.Base(conv), filepath.Dir(conv)
 	descs, _ := filepath.Glob(filepath.Join(brain, "*", ".system_generated", "subagents", id+".json"))
 	if len(descs) == 0 {
-		return Options{}
+		return opts
 	}
 	parent := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(descs[0]))))
-	opts := Options{Session: Session{SessionID: id, ParentSession: &ParentSession{SessionID: parent}}}
-	if call := agySpawnCall(filepath.Join(brain, parent), id); call != nil {
+	opts.Session.SessionID = id
+	opts.Session.ParentSession = &ParentSession{SessionID: parent}
+	if call, ok := agySpawnCalls(filepath.Join(brain, parent))[id]; ok {
 		opts.Session.ParentSession.ToolID = call.ID
 		opts.Turn = call.Turn
 	}
@@ -575,8 +671,9 @@ func agyFileOptions(path string) Options {
 }
 
 // agyConversationDir returns the brain/<conversation id> dir an agy
-// transcript is in: <id>/.system_generated/logs/transcript*.jsonl, or
-// <id>/transcript*.jsonl. It returns "" for a path of neither shape.
+// transcript is in, for either place agy keeps one:
+// <id>/.system_generated/logs/transcript*.jsonl or brain/<id>/transcript*.jsonl.
+// It returns "" for a path of neither shape.
 func agyConversationDir(path string) string {
 	if !strings.HasPrefix(filepath.Base(path), "transcript") {
 		return ""
@@ -585,7 +682,10 @@ func agyConversationDir(path string) string {
 	if filepath.Base(dir) == "logs" && filepath.Base(filepath.Dir(dir)) == ".system_generated" {
 		return filepath.Dir(filepath.Dir(dir))
 	}
-	return dir
+	if filepath.Base(filepath.Dir(dir)) == "brain" {
+		return dir
+	}
+	return ""
 }
 
 // agyTranscripts are the transcripts a conversation dir may hold, the one
@@ -597,15 +697,32 @@ var agyTranscripts = []string{
 	"transcript.jsonl",
 }
 
-// agySpawnCall finds, in the conversation at conv, the invoke_subagent
-// call whose result names the conversation child: the call that started
-// it, as the parent's parse makes it, or nil. (The subagent's index file
-// names the step of that result, spawnStepIndex, but not the call's.)
-func agySpawnCall(conv, child string) *Event {
+// agySpawns caches agySpawnCalls by transcript path, while the file keeps
+// its size and modification time: every read of a subagent's transcript
+// asks, and a parent's runs to megabytes.
+var agySpawns = struct {
+	sync.Mutex
+	m map[string]agySpawnIndex
+}{m: map[string]agySpawnIndex{}}
+
+type agySpawnIndex struct {
+	size  int64
+	mtime time.Time
+	calls map[string]Event
+}
+
+// agySpawnCalls returns, for the conversation at conv, the invoke_subagent
+// call that started each subagent, by the subagent's conversation id: the
+// call whose result names it, as the parent's parse makes it. (The
+// subagent's index file names the step of that result, spawnStepIndex, but
+// not the call's.)
+func agySpawnCalls(conv string) map[string]Event {
 	var f *os.File
+	var path string
 	for _, name := range agyTranscripts {
 		var err error
-		if f, err = os.Open(filepath.Join(conv, name)); err == nil {
+		path = filepath.Join(conv, name)
+		if f, err = os.Open(path); err == nil {
 			break
 		}
 	}
@@ -613,7 +730,17 @@ func agySpawnCall(conv, child string) *Event {
 		return nil
 	}
 	defer f.Close()
-	p := Agy{}.NewParser(Options{})
+	info, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	agySpawns.Lock()
+	defer agySpawns.Unlock()
+	if c, ok := agySpawns.m[path]; ok && c.size == info.Size() && c.mtime.Equal(info.ModTime()) {
+		return c.calls
+	}
+	calls := map[string]Event{}
+	p := Agy{}.NewParser(Options{Session: Session{Path: path}})
 	br := bufio.NewReader(f)
 	for {
 		line, err := br.ReadBytes('\n')
@@ -621,17 +748,16 @@ func agySpawnCall(conv, child string) *Event {
 			line = append(line, '\n')
 		}
 		for _, e := range p.Feed(line) {
-			if e.Op != OpUpdate || e.Tool == nil || e.Tool.Name != "invoke_subagent" {
-				continue
-			}
-			for _, id := range agySubagentIDs(e.Tool.Result.Output) {
-				if id == child {
-					return &e
+			if e.Op == OpUpdate && e.Tool != nil && e.Tool.Name == "invoke_subagent" {
+				for _, id := range agySubagentIDs(e.Tool.Result.Output) {
+					calls[id] = e
 				}
 			}
 		}
 		if err != nil {
-			return nil
+			break
 		}
 	}
+	agySpawns.m[path] = agySpawnIndex{size: info.Size(), mtime: info.ModTime(), calls: calls}
+	return calls
 }
