@@ -9,6 +9,37 @@ person watching the pane see?
 
 Companion to `agy-hooks-findings.md` (hook events, payloads, firing order).
 
+## Status (2026-10-24): implemented
+
+gomuxai now does what the Recommendation below says (see
+`docs/ARCHITECTURE.md`, "Held messages" and "Status resolution"):
+
+- **Delivery:** spawn wires `PostInvocation`; a message sent to a busy agy
+  agent is held (`Held for X until its current step ends`) and handed over
+  as one `userMessage` per message, with `force_continue`. The hook prints
+  nothing when nothing is held, and records nothing then either. A message
+  over 64 KB goes in labeled parts. A failed or `USER_CANCELED` invocation
+  doesn't deliver.
+- **Esc / Ctrl+C:** read off the screen, option (b) below: a report that is
+  `processing`, isn't a `Stop`, and has stood 3s, with agy's input box and an
+  idle footer at the bottom, resolves to `idle` (`interrupted; at its
+  prompt`), and the deliverer types the held messages after its 10s grace,
+  never into a non-empty input line (agy's `>` box is read like Claude's).
+  The log, option (a), wasn't used: see ARCHITECTURE.md for why.
+- **`ask_question`:** after its `PreToolUse`, the dialog on screen makes the
+  agent `waiting`, detail `question: ask_question: <question> (<options>)`;
+  send holds, `send --now` and `approve`/`deny` refuse. A digit key answers
+  it (`agent key agent-<name> 2`).
+- Verified live on agy 1.4.7: one held message after a tool call, two at
+  once, Esc and Ctrl+C mid-turn with a message held, Esc with a person's
+  queued text put back in the input line (held until it was cleared), an
+  `ask_question` dialog with a send, `send --now`, and `approve` attempted,
+  and a 126 KB message (two parts; the model quoted the codewords at its
+  head and tail). agy's log showed no rejected hook output.
+- Not done: the permission-dialog deny path (this machine never prompts),
+  and `_result` for agy (its Stop hook proto has a `FinalModelOutput`
+  field, unverified in a payload).
+
 ---
 
 ## Summary

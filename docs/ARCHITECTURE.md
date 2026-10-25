@@ -150,8 +150,11 @@ applies each one it finds:
 | `NativeStatusProvider` | `claude agents --json` | — | — |
 | `PermissionResponder` | yes | yes | — |
 | `TranscriptProvider` | `transcript.Claude` | `transcript.Agy` | — |
-| `HookDeliverer`: held messages from a hook's output | `Stop` → `additionalContext` | — (being probed) | — |
+| `HookDeliverer`: held messages from a hook's output | `Stop` → `additionalContext` | `PostInvocation` → `injectSteps` + `force_continue` | — |
 | `HookAllower`: approves a safe `agent` command from a hook | `PreToolUse` → `permissionDecision: allow` | — | — |
+| `InputReader`: the input line, so typing never lands in a draft | after `❯` | after `>` | — |
+| `TurnEndReader`: a turn that ended with no hook | — (native status) | the footer under the input box | — |
+| `QuestionPrompter`: a question dialog with no hook | — (`PermissionRequest`) | `ask_question`'s `Question 1/N:` | — |
 
 Notes on each:
 
@@ -161,7 +164,8 @@ Notes on each:
   per spawn and stored as both `_spawn_id` and `_session_id`; Claude gets it
   as `--session-id`. Nothing is written into the agent's project. Claude
   registers 11 events (`claudeHookEvents`); agy registers `PreInvocation`,
-  `PreToolUse`, `PostToolUse`, and `Stop`, each with `--event <Event>`
+  `PreToolUse`, `PostToolUse`, `PostInvocation` (delivery only), and
+  `Stop`, each with `--event <Event>`
   because agy's payload omits the event name and runs hooks with the bundle
   dir as cwd. Each hook has a 10s timeout.
 - **agy's launch command** is prefixed with
@@ -254,7 +258,9 @@ for `wait --next`.
 ### Held messages
 
 Typing into a busy Claude agent lands in its input box, mixed with
-whatever a person is drafting there, and nothing says when it was read. So
+whatever a person is drafting there, and nothing says when it was read
+(agy queues typed text for the turn's end, but typing into its
+`ask_question` dialog answers it). So
 for an agent that *holds messages* (its backend is a `HookDeliverer` and
 spawn wired its hooks: `_spawn_id` is set), `Send` without `--now` does
 this (`service/held.go`):
@@ -268,9 +274,9 @@ this (`service/held.go`):
 Slash commands are never held: a hook can only hand over text. Who
 delivers a held message:
 
-1. **The Stop hook.** `report --hook` calls `HandleHook`, and for an event
+1. **The delivering hook.** `report --hook` calls `HandleHook`, and for an event
    the backend `CanDeliver` (Claude: `Stop`, with or without background
-   tasks), `reportDelivering` claims every pending row and writes the
+   tasks; agy: `PostInvocation`, below), `reportDelivering` claims every pending row and writes the
    status report in one transaction. With messages claimed, the report is
    `processing`, event `delivered`, detail `N held messages delivered`,
    and it clears `_result` and sets `_turn_at` (the turn goes
@@ -282,6 +288,22 @@ delivers a held message:
    (a `{"decision":"block"}` works too but shows as `Stop hook error`). With
    nothing held, the report and output are as before: idle, no output.
    `ReportHook` (status only) never claims.
+
+   agy delivers from `PostInvocation`, which fires after each model call
+   and its tools, including the turn's last, and prints
+   `{"injectSteps":[{"userMessage":"[from lead@hub] ..."},...],"terminationBehavior":"force_continue"}`:
+   one `userMessage` per message, each shown in the pane as a `> [from ...]`
+   prompt of its own, which the model answers in the same turn
+   (`exploration/agy-delivery-findings.md` compares the alternatives: Stop
+   `continue` and the other step types work but show nothing). The output
+   is built with `encoding/json` from a struct of exactly those two fields,
+   since agy parses it strictly and drops a bad one silently. A message
+   over 64 KB is split into labeled parts (`[part 2/3 of the message
+   above]`), since agy cuts a step at ~192 KB without a word. Its
+   `HookReport` is `DeliveryOnly`: with nothing held, the hook prints
+   nothing and records nothing (it says nothing `Stop` won't). A failed or
+   `USER_CANCELED` invocation is left to `Stop`: `force_continue` would
+   override the cancel. agy's other hooks never print.
 2. **`hold`'s re-check.** The turn may have ended between `Send`'s status
    check and the insert, its Stop finding nothing. The claim is the
    transaction's first statement, so it takes SQLite's write lock at once:
@@ -307,7 +329,10 @@ delivers a held message:
    line for 10s, it calls `typeHeld`. The grace gives a person who pressed
    Esc time to type first, and restarts whenever the input line has text.
    It exits when nothing is held, or the agent has exited or is gone. A
-   `StopFailure` (rate limit) is delivered the same way.
+   `StopFailure` (rate limit) is delivered the same way. agy fires no hook
+   on Esc or Ctrl+C either, and has no native status: its status turns
+   `idle` from the screen (`TurnEndReader`, see Status resolution), and the
+   deliverer goes on from there.
 4. **The next `Send`** that finds the agent at its prompt types the held
    messages ahead of its own; `agent deliver <name>` does it by hand.
 
@@ -316,7 +341,8 @@ that holds messages) first reads the input line off a styled capture
 (`TmuxOps.CaptureStyled`, `capture-pane -e`) through the backend's
 `InputReader`. Claude's is the text between the last two `─` rules, after
 the `❯` prompt, with dim text (SGR 2: the `Try "..."` placeholder and
-suggestions) left out. If it has text in it, or isn't on screen, typing
+suggestions) left out; agy's is the same box after its `>` prompt. After
+Esc, agy moves text a person queued during the turn back into it. If it has text in it, or isn't on screen, typing
 would land in a person's draft, so `typeHeld` returns `InputBlockedError`:
 `Send` holds the message instead (`Held for X until its input line is
 empty`), the deliverer keeps waiting, and `status -v` shows `held: N,
@@ -333,9 +359,10 @@ pending rows, shown by `status -v`, `--json`, the orientation, and the
 
 Remote sends get this on the receiving host: `SendRequest.now` (ignored by
 older hosts, which always type) and an optional `SendResponse` (older hosts
-send none, and the CLI says just `Sent`). Backends without `HookDeliverer`
-keep typing. agy has a `Stop` `{"decision":"continue","reason":...}` and a
-`PreInvocation` `injectSteps` that could implement it.
+send none, and the CLI says just `Sent`); `SendResponse.held_until` is the
+backend's `DeliveryPoint` (`its turn ends`, `its current step ends`), for
+the `Held for X until ...` line. Backends without `HookDeliverer` keep
+typing.
 
 ### Queue
 
@@ -389,7 +416,34 @@ The rules between them:
   `processing` from `PreToolUse` and `AgyBackend.PermissionPromptVisible`
   sees the dialog at the bottom of the screen, the status becomes `waiting`
   with detail `permission: ...`, so `approve`/`deny` (and `--expect`) work
-  without `--force`.
+  without `--force`. Its `ask_question` dialog works the same way
+  (`screenStatus`, `QuestionPrompter`): after its `PreToolUse`, the
+  dialog's `Question 1/N:` heading or `↑/↓ Navigate · enter Select · esc
+  Skip` hint above the `esc to cancel` footer makes it `waiting`, detail
+  `question: ask_question: Which color? (red, green)` (from the tool's
+  input), so `send` holds instead of typing (whose Enter would pick the
+  highlighted option, its text becoming an untagged prompt), `send --now`
+  and `typeHeld`'s dialog check refuse, and `approve`/`deny` refuse it as a
+  question. A question whose options are Yes and No isn't taken for a
+  permission prompt.
+- **agy turns that end with no hook.** Esc and Ctrl+C fire nothing in agy
+  (not even the running step's `PostToolUse`), so the report stays
+  `processing`. When it has stood for `turnEndLag` (3s, time for agy to
+  redraw after a hook), is not a `Stop` (one that says `processing` left
+  background tasks running), and `AgyBackend.AtPrompt` sees the input box
+  at the bottom with an idle footer under it (`? for shortcuts`, or a blank
+  left side while text is typed; a turn shows `esc to cancel` or `Press up
+  to edit queued messages`), the status is `idle`, source `scrape`, detail
+  `interrupted; at its prompt` when agy's `Interrupted · What should
+  Antigravity CLI do instead?` line is right above the box (else `at its
+  prompt; no hook reported the turn's end`). Nothing is recorded: the next
+  hook reports as usual, and `export` keeps showing the last report. The
+  screen was chosen over agy's log (`Cancelling conversation <id>`, with a
+  per-agent `--log-file`): it is the same kind of signal gomuxai already
+  reads for agy's dialogs, it needs no log tailing, and it catches any turn
+  that ends without a hook, not only a cancel. Only a footer known to be
+  idle counts, so an unknown screen (a menu, a redesign) stays
+  `processing`.
 
 `StatusInfo` also returns the last report as recorded (`ReportedStatus`,
 `ReportedAt`), which `wait --next` uses to spot a whole turn between checks,
@@ -441,8 +495,9 @@ isn't the agent's current `_spawn_id` is dropped. Without it, the
 `SessionEnd` of the Claude that `cleanup` just killed could land on a
 respawn of the same name.
 
-Hook mode (`report --hook`) reads the payload on stdin, never writes stdout,
-and exits 0 even when the report fails (errors go to stderr), so a reporting
+Hook mode (`report --hook`) reads the payload on stdin, writes stdout only
+to hand over held messages (Claude's `Stop`, agy's `PostInvocation`; see
+Held messages), and exits 0 even when the report fails (errors go to stderr), so a reporting
 problem can't disturb the agent. It still exits 1 if the binary can't start,
 e.g. the database can't be opened.
 
@@ -472,8 +527,9 @@ What the code maps them to:
 | Event | Status | Notes |
 |---|---|---|
 | `PreInvocation` | processing | |
-| `PreToolUse` | processing | stores `_tool_input` for dialog promotion |
+| `PreToolUse` | processing | stores `_tool_input` for dialog promotion; `ask_question`'s detail is its first question and options |
 | `PostToolUse` | processing | `failed: ...` on error |
+| `PostInvocation` | — | `DeliveryOnly`: recorded (processing, `delivered`) only when it hands over held messages; ignored on an error or `USER_CANCELED` |
 | `Stop` | idle, processing, or error | error for an error or `ERROR`/`MAX_*` termination; processing when `fullyIdle` is false |
 
 agy has no `SessionEnd` hook and no session list, so its launch command ends
@@ -1014,10 +1070,19 @@ make lint          # golangci-lint
   messages arrive whole, as hook output).
 - A held message extends the turn it's delivered at the end of, so
   `_result` and `wait --next` cover its reply too.
-- The input line is read off the screen: a Claude redesign of it would
-  leave held messages waiting ("it isn't on screen") until the reader is
-  updated. A person who starts typing between the check and the typing
+- The input line is read off the screen: a Claude or agy redesign of it
+  would leave held messages waiting ("it isn't on screen") until the reader
+  is updated. A person who starts typing between the check and the typing
   (milliseconds) still gets the message mixed in.
+- agy's interrupted turns and question dialogs are read off the screen too:
+  a redesign of its footer would leave an interrupted agent `processing`
+  (its held messages held, until `send --now` or its next turn), and a
+  question `processing` (sends to it are held anyway). A message held in
+  the milliseconds between agy's last `PostInvocation` and its `Stop` is
+  typed by the deliverer after its 10s grace.
+- agy's `Stop` hook arguments have a `FinalModelOutput` field in the
+  binary's protobuf (not checked in a live payload), which `_result` could
+  use; not wired yet.
 - A deliverer polls native status every 2s for as long as messages are
   held, e.g. while an agent sits at a prompt nobody answers.
 - Custom backends aren't remembered after spawn: pass `--backend-config`

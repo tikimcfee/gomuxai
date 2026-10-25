@@ -56,7 +56,10 @@ failed and what to try. Most read commands take `--json`.
   comes from the CLI itself for `claude` and `agy` (hooks wired at spawn), and
   from screen scraping for other backends. `waiting` means blocked on a
   person, e.g. a permission prompt. `error` means the last turn failed (a
-  rate limit, say) and the agent takes input again.
+  rate limit, say) and the agent takes input again. What agy's hooks don't
+  report is read off its screen: a permission or `ask_question` dialog
+  (`waiting`), and a turn that Esc or Ctrl+C ended, which fires no hook
+  (`idle`, detail `interrupted; at its prompt`, source `scrape`).
 - Everything is per host and lives next to the binary, in `.gomuxai/`. Two
   copies of `agent` (e.g. `bin/agent` and an installed one) see separate
   agents. The agent bus links hosts; only reaching another host needs it.
@@ -110,27 +113,36 @@ agent send helper "review internal/auth for injection bugs"
 the message typed into its terminal: `Sent to helper (it was idle).` "Sent"
 means typed, not read.
 
-A Claude agent that is busy (`processing`, or `waiting` on a prompt) holds
-the message instead: `Held for helper until its turn ends (it was
-processing).` When the turn ends, its Stop hook hands over every held
-message at once, oldest first, and Claude goes on with them as its next
-step; its screen shows them as `Stop hook feedback: A message arrived while
-you were working: ...`. A held message never goes near a dialog, and
-arrives whole however long it is. A turn that ends with no Stop hook (Esc,
-a deny, a failed turn) leaves the messages held: a deliverer process that
-`send` starts types them in once the agent has sat at its prompt for 10s,
-and the next `send` that finds it at its prompt types them ahead of its own
-message. Neither types into a person's half-written input: while Claude's
-input line has text in it, messages wait (a `send` then says `Held for
-helper until its input line is empty`), and the 10s start once it's empty.
-`agent status helper -v` shows `held: N messages` and what they wait for,
-and `agent deliver helper` types them now if the agent is at its prompt.
+A Claude or agy agent that is busy (`processing`, or `waiting` on a prompt)
+holds the message instead: `Held for helper until its turn ends (it was
+processing).` A hook hands over every held message at once, oldest first:
+
+- Claude, when the turn ends: its Stop hook's output, and Claude goes on with
+  them as its next step; its screen shows them as `Stop hook feedback: A
+  message arrived while you were working: ...`.
+- agy, when its current step ends (`Held for helper until its current step
+  ends`): its PostInvocation hook, which fires after each model call and its
+  tools, mid-turn or last. Each message shows in the pane as a `> [from ...]`
+  prompt of its own, and the model answers them in the same turn. One over
+  64 KB goes in labeled parts, since agy silently cuts longer ones.
+
+A held message never goes near a dialog, and arrives whole however long it
+is. A turn that ends with no such hook (Esc or Ctrl+C, a deny, a failed
+turn) leaves the messages held: a deliverer process that `send` starts types
+them in once the agent has sat at its prompt for 10s, and the next `send`
+that finds it at its prompt types them ahead of its own message. Neither
+types into a person's half-written input: while the agent's input line has
+text in it, messages wait (a `send` then says `Held for helper until its
+input line is empty`), and the 10s start once it's empty. `agent status
+helper -v` shows `held: N messages` and what they wait for, and `agent
+deliver helper` types them now if the agent is at its prompt.
 
 `send --now` types the message in at once even mid-turn (Claude takes it at
-its next tool boundary), to interrupt; that is what `send` always does for
-other backends (agy queues it too). Typing refuses an agent at a dialog (the
-Enter would answer it; use `approve`/`deny`), and `send` refuses an agent
-that has exited. Slash commands are always typed, never held.
+its next tool boundary, agy queues it for its turn's end), to interrupt;
+that is what `send` always does for other backends. Typing refuses an agent
+at a dialog (the Enter would answer it; use `approve`/`deny`, or `agent key`
+for a question), and `send` refuses an agent that has exited. Slash commands
+are always typed, never held.
 
 Messages from an agent start with `[from name@host]`, so the recipient knows
 where to reply. Messages from anyone without `AGENT_NAME` start with
@@ -213,8 +225,10 @@ agent send helper "do it without rm"    # after a deny, redirect it
 
 Read the detail before approving. `approve` and `deny` refuse unless the
 agent is `waiting`, and refuse questions for the user (Claude's
-`AskUserQuestion`): look with `capture` and answer with `agent keys` (a
-`send` to a waiting agent is held for the end of its turn). `--expect` guards against a
+`AskUserQuestion`, agy's `ask_question`, whose detail starts `question:`):
+look with `capture` and answer in its session (`agent key agent-helper 2`
+picks agy's option 2; `agent keys` types text). A `send` to a waiting agent
+is held, never typed into the dialog. `--expect` guards against a
 different prompt having replaced the one you read. These commands prompt the
 person when an agent runs them.
 
@@ -394,7 +408,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
 | A key fails: "a read-only client is attached" | Detach the client it names (`tmux detach-client -t /dev/pts/N`); watch with `agent capture` instead of `tmux attach -r`. |
 | Queued messages never arrive (not Claude) | Start `agent watch` (one per host is enough). |
-| A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there); `agent deliver <name>` types it now if the agent is at its prompt. |
+| A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's (or agy's step's) end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there); `agent deliver <name>` types it now if the agent is at its prompt. |
 | Leftover tmux session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |
@@ -421,18 +435,27 @@ Known gaps; `agent friction list` has the rest.
 - `capture` reads agents only, not raw `agent session new` sessions.
 - Long messages typed into Claude arrive as pasted content (held ones
   arrive whole).
-- A message held for a Claude agent extends the turn it lands at the end
-  of: `wait --next` and `_result` then cover the reply to the held message
+- A message held for a Claude or agy agent extends the turn it lands in:
+  `wait --next` and `_result` then cover the reply to the held message
   too. The reply that came before it is in `agent logs`.
 - After Esc or a deny (no Stop hook), held messages are typed in once the
   agent has sat at its prompt with an empty input line for 10s. The input
-  line is read off the screen, so a Claude redesign of it would leave them
-  waiting (`status -v` says `waiting for an empty input line (it isn't on
-  screen)`).
+  line is read off the screen, so a Claude or agy redesign of it would leave
+  them waiting (`status -v` says `waiting for an empty input line (it isn't
+  on screen)`).
+- agy's interrupted turns and its permission and `ask_question` dialogs are
+  read off its screen (the footer under its input box, the dialog's
+  `Question 1/N:`). If an agy update redraws those, an interrupted agent
+  stays `processing` with its messages held (`send --now` types anyway), and
+  a question shows as `processing` (a send is still held). A turn counts as
+  interrupted only once its last hook is 3s old. `export` shows such a turn
+  as `processing`, its last report.
+- A message held for agy in the few milliseconds between its last
+  PostInvocation and its Stop is typed by the deliverer, 10s later.
 - Messages held for an agent that exits are never delivered (`status -v`
   says so); `cleanup` deletes them.
-- `queue` needs `agent watch` running on this host, except for Claude
-  agents.
+- `queue` needs `agent watch` running on this host, except for Claude and
+  agy agents.
 - Pre-allowed commands still prompt when run through a variable
   (`$A send`), chained, or piped; see "What a spawned Claude agent may run
   without asking".
