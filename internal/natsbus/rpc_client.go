@@ -65,17 +65,20 @@ func (c *RPCClient) Status(ctx context.Context, ref AgentRef) (*StatusResponse, 
 	return &resp, nil
 }
 
-// Capture returns a remote agent's terminal output.
+// Capture returns a remote agent's terminal output, as plain text or, with
+// raw, with its colors and styling. Either way it is sanitized: raw keeps
+// SGR sequences (colors, bold, dim), and nothing else that could act on the
+// terminal it's printed in.
 func (c *RPCClient) Capture(ctx context.Context, ref AgentRef, lines int, raw bool) (string, error) {
 	var resp CaptureResponse
 	req := CaptureRequest{Agent: ref.Name, Lines: lines, Raw: raw}
 	if err := c.callAgent(ctx, ref, OpCapture, req, &resp); err != nil {
 		return "", err
 	}
-	if !raw { // raw was asked for explicitly; it keeps escape sequences
-		return clean(resp.Output), nil
+	if raw {
+		return util.SanitizeStyled(resp.Output), nil
 	}
-	return resp.Output, nil
+	return clean(resp.Output), nil
 }
 
 // Send types message into a remote agent's terminal, followed by Enter.

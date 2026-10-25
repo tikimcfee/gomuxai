@@ -130,7 +130,7 @@ func TestCreateSession_WithEnv(t *testing.T) {
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		output, err := client.Capture(sessionName, 20, true)
+		output, err := client.Capture(sessionName, 20)
 		if err != nil {
 			t.Fatalf("capturing: %v", err)
 		}
@@ -307,7 +307,7 @@ func TestSendKeys(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Capture output
-	output, err := client.Capture(sessionName, 50, true)
+	output, err := client.Capture(sessionName, 50)
 	if err != nil {
 		t.Fatalf("capturing output: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestSendKeys_IsLiteral(t *testing.T) {
 	client.SendSpecialKey(sessionName, "Enter")
 	time.Sleep(300 * time.Millisecond)
 
-	output, err := client.Capture(sessionName, 50, true)
+	output, err := client.Capture(sessionName, 50)
 	if err != nil {
 		t.Fatalf("capturing output: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestCapture(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Capture output
-	output, err := client.Capture(sessionName, 50, true)
+	output, err := client.Capture(sessionName, 50)
 	if err != nil {
 		t.Fatalf("capturing output: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestCapture_StripANSI(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Capture with ANSI stripping
-	output, err := client.Capture(sessionName, 50, true)
+	output, err := client.Capture(sessionName, 50)
 	if err != nil {
 		t.Fatalf("capturing output: %v", err)
 	}
@@ -795,7 +795,7 @@ func TestClear(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify output exists
-	output, _ := client.Capture(sessionName, 50, true)
+	output, _ := client.Capture(sessionName, 50)
 	if !strings.Contains(output, "CLEAR_TEST_MARKER") {
 		t.Skip("output not captured, skipping clear test")
 	}
@@ -809,7 +809,7 @@ func TestClear(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Check that marker is gone from scrollback
-	output, err = client.Capture(sessionName, 50, true)
+	output, err = client.Capture(sessionName, 50)
 	if err != nil {
 		t.Fatalf("capturing after clear: %v", err)
 	}
@@ -858,7 +858,7 @@ func TestCapture_NonExistentSession(t *testing.T) {
 		t.Fatalf("creating client: %v", err)
 	}
 
-	_, err = client.Capture("nonexistent-session-12345", 50, true)
+	_, err = client.Capture("nonexistent-session-12345", 50)
 	if err == nil {
 		t.Error("expected error when capturing from non-existent session")
 	}
@@ -895,7 +895,7 @@ func TestPaneTargeting_IgnoresActiveWindow(t *testing.T) {
 	// The command only runs if Enter reached the same pane as the text.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		output, err := client.Capture(sessionName, 20, true)
+		output, err := client.Capture(sessionName, 20)
 		if err != nil {
 			t.Fatalf("capturing: %v", err)
 		}

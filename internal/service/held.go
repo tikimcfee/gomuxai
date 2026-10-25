@@ -208,7 +208,7 @@ func (s *AgentService) inputBlocked(agent *storage.Agent) string {
 	if !ok {
 		return ""
 	}
-	screen, err := s.tmux.CaptureStyled(agent.SessionName)
+	screen, err := s.tmux.CaptureStyled(agent.SessionName, 0)
 	if err != nil {
 		return "" // SendUnchecked reports a missing session
 	}

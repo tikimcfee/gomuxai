@@ -15,9 +15,15 @@ var captureCmd = &cobra.Command{
 name. For history older than the scrollback, or after cleanup, use
 "agent logs".
 
-By default, ANSI escape codes are stripped for clean output.
-Use --raw to preserve escape codes.
-An agent on another host is addressed as name@host (needs a running bus).`,
+By default it prints plain text. --raw prints the screen with its colors and
+styling, as tmux's SGR escape codes (capture-pane -e): what tells a CLI's dim
+placeholder text from typed text. Print it to a terminal to see the styling,
+or pipe it to cat -v to read the codes.
+
+An agent on another host is addressed as name@host (needs a running bus).
+Its text is sanitized, since that host may be hostile: plain text keeps no
+control characters, and --raw keeps only the SGR codes (colors, bold, dim),
+never titles, clipboard writes, cursor moves, or mode changes.`,
 	Example: `  agent capture researcher
   agent capture builder --lines 100
   agent capture builder --raw
@@ -33,7 +39,7 @@ var (
 
 func init() {
 	captureCmd.Flags().IntVar(&captureLines, "lines", 50, "Lines of scrollback above the screen to include")
-	captureCmd.Flags().BoolVar(&captureRaw, "raw", false, "Preserve ANSI escape codes")
+	captureCmd.Flags().BoolVar(&captureRaw, "raw", false, "Keep colors and styling, as SGR escape codes")
 }
 
 func runCapture(cmd *cobra.Command, args []string) error {

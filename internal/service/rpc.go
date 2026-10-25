@@ -115,12 +115,12 @@ func (s *AgentService) Keys(ctx context.Context, name, text, key string) error {
 	}
 	if text != "" {
 		if err := s.tmux.SendKeys(agent.SessionName, text); err != nil {
-			return fmt.Errorf("sending keys: %w", err)
+			return err
 		}
 	}
 	if key != "" {
 		if err := s.tmux.SendSpecialKey(agent.SessionName, key); err != nil {
-			return fmt.Errorf("sending %q: %w", key, err)
+			return err
 		}
 	}
 	return nil

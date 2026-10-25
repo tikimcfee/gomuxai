@@ -536,7 +536,7 @@ func (s *AgentService) permissionPromptVisible(agent *storage.Agent) bool {
 	if !ok {
 		return false
 	}
-	screen, err := s.tmux.Capture(agent.SessionName, 0, true)
+	screen, err := s.tmux.Capture(agent.SessionName, 0)
 	if err != nil {
 		return false
 	}
@@ -551,7 +551,7 @@ func (s *AgentService) scrapeStatus(agent *storage.Agent) (AgentStatus, error) {
 		return AgentStatusUnknown, unloadedBackend(agent)
 	}
 
-	output, err := s.tmux.Capture(agent.SessionName, 50, true)
+	output, err := s.tmux.Capture(agent.SessionName, 50)
 	if err != nil {
 		return AgentStatusUnknown, fmt.Errorf("capturing output: %w", err)
 	}
@@ -632,7 +632,7 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 	// the keypress (a few tmux calls, milliseconds) but can't close it: a
 	// prompt answered inside that gap still gets the key.
 	if !opts.Force {
-		screen, err := s.tmux.Capture(agent.SessionName, 0, true)
+		screen, err := s.tmux.Capture(agent.SessionName, 0)
 		if err != nil {
 			return nil, fmt.Errorf("capturing screen: %w", err)
 		}
@@ -641,7 +641,7 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 		}
 	}
 	if err := s.tmux.SendSpecialKey(agent.SessionName, key); err != nil {
-		return nil, fmt.Errorf("sending %q: %w", key, err)
+		return nil, err
 	}
 
 	// Record the expected outcome now: a denied prompt fires no hook, and an

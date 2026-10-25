@@ -24,8 +24,8 @@ func (nopTmux) SessionExists(string) (bool, error)            { return true, nil
 func (nopTmux) ListSessions() ([]tmux.Session, error)         { return nil, nil }
 func (nopTmux) SendKeys(string, string) error                 { return nil }
 func (nopTmux) SendSpecialKey(string, string) error           { return nil }
-func (nopTmux) Capture(string, int, bool) (string, error)     { return "", nil }
-func (nopTmux) CaptureStyled(string) (string, error)          { return "", nil }
+func (nopTmux) Capture(string, int) (string, error)           { return "", nil }
+func (nopTmux) CaptureStyled(string, int) (string, error)     { return "", nil }
 func (nopTmux) PipePane(string, string) error                 { return nil }
 func (nopTmux) StopPipePane(string) error                     { return nil }
 func (nopTmux) Clear(string) error                            { return nil }

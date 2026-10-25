@@ -125,7 +125,7 @@ func waitForSession(t *testing.T, env *testEnv, sessionName string, wants ...str
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		out, _ := env.tmux.Capture(sessionName, 20, true)
+		out, _ := env.tmux.Capture(sessionName, 20)
 		missing := false
 		for _, want := range wants {
 			missing = missing || !strings.Contains(out, want)

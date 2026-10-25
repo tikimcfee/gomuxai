@@ -31,6 +31,26 @@ func SanitizeTerminal(s string) string {
 	}, s)
 }
 
+// sgrPattern matches an SGR sequence (ESC [ params m), which only sets
+// colors and text attributes.
+var sgrPattern = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+
+// SanitizeStyled is SanitizeTerminal keeping SGR sequences, so a styled
+// screen from another host keeps its colors, bold, and dim, and nothing else
+// that could act on a terminal: no titles, clipboard writes, cursor moves,
+// or mode changes.
+func SanitizeStyled(s string) string {
+	var b strings.Builder
+	pos := 0
+	for _, m := range sgrPattern.FindAllStringIndex(s, -1) {
+		b.WriteString(SanitizeTerminal(s[pos:m[0]]))
+		b.WriteString(s[m[0]:m[1]])
+		pos = m[1]
+	}
+	b.WriteString(SanitizeTerminal(s[pos:]))
+	return b.String()
+}
+
 // terminalEscapePattern matches the escape sequences in a raw terminal
 // stream, for TerminalLines: OSC (titles, shell integration marks), ended by
 // BEL or ST; DCS, SOS, PM, and APC, ended by ST; CSI, with its parameters,

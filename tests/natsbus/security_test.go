@@ -333,7 +333,7 @@ func TestSecurity_LocalClientsVerifyTheBus(t *testing.T) {
 }
 
 // Text from another host is printed in the user's terminal; escape sequences
-// in it must not reach the terminal (raw capture excepted: it's asked for).
+// in it must not reach the terminal (raw capture keeps colors and styling).
 func TestRPCClient_SanitizesRemoteText(t *testing.T) {
 	nc := natstest.Start(t)
 	evil := "ok\x1b]0;pwned\x07\x1b[2J\rover\u009bwrite\x00"
@@ -356,8 +356,15 @@ func TestRPCClient_SanitizesRemoteText(t *testing.T) {
 	if out, _ := client.Capture(ctx, ref, 10, false); strings.ContainsAny(out, "\x1b\x07\r") {
 		t.Errorf("capture not sanitized: %q", out)
 	}
-	if out, _ := client.Capture(ctx, ref, 10, true); out != evil {
-		t.Errorf("raw capture should be untouched, got %q", out)
+	// Raw capture keeps colors and styling (SGR), and only those.
+	styled := "\x1b[1;38;5;196mred\x1b[0m " + evil
+	stopStyled, err := natsbus.ServeRPC(nc, "h2", evilHandler{text: styled}, natsbus.AllOps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stopStyled)
+	if out, _ := client.Capture(ctx, natsbus.AgentRef{Name: "w", Host: "h2"}, 10, true); out != "\x1b[1;38;5;196mred\x1b[0m ok]0;pwned[2Joverwrite" {
+		t.Errorf("raw capture = %q, want only its SGR sequences kept", out)
 	}
 	if err := client.Send(ctx, ref, "x"); err == nil || strings.ContainsAny(err.Error(), "\x1b\x07") {
 		t.Errorf("remote error not sanitized: %v", err)

@@ -3,7 +3,6 @@ module github.com/tikimcfee/gomuxai
 go 1.26.0
 
 require (
-	github.com/GianlucaP106/gotmux v0.5.0
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/jwt/v2 v2.8.0
 	github.com/nats-io/nats-server/v2 v2.12.5

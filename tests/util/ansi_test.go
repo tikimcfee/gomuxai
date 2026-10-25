@@ -81,6 +81,31 @@ func TestSanitizeTerminal(t *testing.T) {
 	}
 }
 
+func TestSanitizeStyled(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "plain text", input: "a\tb\nc", expected: "a\tb\nc"},
+		{name: "keeps SGR", input: "\x1b[1;38;5;196mred\x1b[0m \x1b[2mdim\x1b[m", expected: "\x1b[1;38;5;196mred\x1b[0m \x1b[2mdim\x1b[m"},
+		{name: "keeps colon SGR", input: "\x1b[38:2::1:2:3mx", expected: "\x1b[38:2::1:2:3mx"},
+		{name: "drops title", input: "a\x1b]0;pwned\x07b", expected: "a]0;pwnedb"},
+		{name: "drops cursor moves and clears", input: "a\x1b[2J\x1b[Hb", expected: "a[2J[Hb"},
+		{name: "drops private modes", input: "a\x1b[?1049hb", expected: "a[?1049hb"},
+		{name: "drops C1 CSI", input: "a\u009b31mb", expected: "a31mb"},
+		{name: "drops carriage return", input: "fake\rreal", expected: "fakereal"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if result := util.SanitizeStyled(tt.input); result != tt.expected {
+				t.Errorf("SanitizeStyled(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestTerminalLines(t *testing.T) {
 	tests := []struct {
 		name     string

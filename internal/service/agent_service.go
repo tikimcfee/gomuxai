@@ -327,7 +327,7 @@ const (
 // shows up, spawn goes on without it.
 func (s *AgentService) confirmTrust(ctx context.Context, sessionName string, tp backend.TrustPrompter) error {
 	for attempt := 0; attempt < trustPromptAttempts; attempt++ {
-		screen, err := s.tmux.Capture(sessionName, 0, true)
+		screen, err := s.tmux.Capture(sessionName, 0)
 		if keys := tp.TrustKeys(screen); err == nil && keys != nil {
 			for _, key := range keys {
 				if err := s.tmux.SendSpecialKey(sessionName, key); err != nil {
@@ -364,12 +364,9 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // sendLine types text into a session and presses Enter.
 func (s *AgentService) sendLine(sessionName, text string) error {
 	if err := s.tmux.SendKeys(sessionName, text); err != nil {
-		return fmt.Errorf("sending keys: %w", err)
+		return err
 	}
-	if err := s.tmux.SendSpecialKey(sessionName, "Enter"); err != nil {
-		return fmt.Errorf("sending enter: %w", err)
-	}
-	return nil
+	return s.tmux.SendSpecialKey(sessionName, "Enter")
 }
 
 // Send delivers a message to an agent. An agent that holds messages
@@ -441,7 +438,7 @@ func (s *AgentService) checkScreen(agent *storage.Agent) error {
 	if err != nil {
 		return nil // custom backend: nothing to recognize dialogs with
 	}
-	screen, err := s.tmux.Capture(agent.SessionName, 0, true)
+	screen, err := s.tmux.Capture(agent.SessionName, 0)
 	if err != nil {
 		return nil // SendUnchecked reports a missing session
 	}
@@ -533,8 +530,11 @@ func (s *AgentService) Capture(ctx context.Context, name string, lines int, raw 
 		lines = s.cfg.DefaultScrollback
 	}
 
-	// Capture with ANSI stripping by default (raw=false means strip)
-	return s.tmux.Capture(agent.SessionName, lines, !raw)
+	// Plain text by default; raw keeps the colors and styling.
+	if raw {
+		return s.tmux.CaptureStyled(agent.SessionName, lines)
+	}
+	return s.tmux.Capture(agent.SessionName, lines)
 }
 
 // List returns all managed agents.

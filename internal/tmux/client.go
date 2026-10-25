@@ -2,12 +2,13 @@
 package tmux
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/GianlucaP106/gotmux/gotmux"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
@@ -40,13 +41,14 @@ type TmuxOps interface {
 	// SendSpecialKey sends a special key (like c-c, enter) to a session.
 	SendSpecialKey(session string, key string) error
 
-	// Capture captures the current pane content.
-	// If stripANSI is true, ANSI escape codes are removed.
-	Capture(session string, lines int, stripANSI bool) (string, error)
+	// Capture captures the visible pane and up to lines lines of scrollback
+	// above it, as plain text.
+	Capture(session string, lines int) (string, error)
 
-	// CaptureStyled captures the visible pane with its styling escapes
-	// (colors, dim), which tell a CLI's placeholder text from typed text.
-	CaptureStyled(session string) (string, error)
+	// CaptureStyled captures like Capture, keeping the styling escapes
+	// (colors, bold, dim) that tell, say, a CLI's placeholder text from typed
+	// text.
+	CaptureStyled(session string, lines int) (string, error)
 
 	// PipePane starts piping pane output to a file.
 	PipePane(session string, logPath string) error
@@ -58,23 +60,26 @@ type TmuxOps interface {
 	Clear(session string) error
 }
 
-// Client implements TmuxOps using gotmux.
-type Client struct {
-	tmux *gotmux.Tmux
-}
+// Client implements TmuxOps by running the tmux command. Its errors carry
+// tmux's own message (see Error).
+type Client struct{}
 
 // NewClient creates a new tmux client.
 func NewClient() (*Client, error) {
-	t, err := gotmux.DefaultTmux()
-	if err != nil {
-		return nil, fmt.Errorf("initializing tmux: %w", err)
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return nil, errors.New("initializing tmux: tmux isn't installed (not found on PATH): install it and try again")
 	}
-	return &Client{tmux: t}, nil
+	return &Client{}, nil
 }
+
+// exact makes a session name a target that matches only that session:
+// tmux otherwise falls back to a prefix or pattern match, so "agent-a" could
+// pick "agent-ab".
+func exact(session string) string { return "=" + session }
 
 // CreateSession creates a new tmux session.
 func (c *Client) CreateSession(name string, env map[string]string) error {
-	if c.tmux.HasSession(name) {
+	if exists, _ := c.SessionExists(name); exists {
 		return fmt.Errorf("session %q already exists", name)
 	}
 
@@ -90,7 +95,7 @@ func (c *Client) CreateSession(name string, env map[string]string) error {
 		args = append(args, "-e", key+"="+env[key])
 	}
 
-	if _, err := c.tmux.Command(args...); err != nil {
+	if _, err := run(args...); err != nil {
 		return fmt.Errorf("creating session %q: %w", name, err)
 	}
 
@@ -99,97 +104,97 @@ func (c *Client) CreateSession(name string, env map[string]string) error {
 
 // KillSession terminates a tmux session.
 func (c *Client) KillSession(name string) error {
-	session, err := c.getSession(name)
-	if err != nil {
-		return err
-	}
-
-	if err := session.Kill(); err != nil {
+	if _, err := run("kill-session", "-t", exact(name)); err != nil {
+		if exists, _ := c.SessionExists(name); !exists {
+			return fmt.Errorf("session %q not found", name)
+		}
 		return fmt.Errorf("killing session %q: %w", name, err)
 	}
 
 	return nil
 }
 
-// SessionExists checks if a session exists.
+// SessionExists checks if a session exists. With no tmux server running,
+// none does.
 func (c *Client) SessionExists(name string) (bool, error) {
-	return c.tmux.HasSession(name), nil
+	_, err := run("has-session", "-t", exact(name))
+	switch {
+	case err == nil:
+		return true, nil
+	case noServer(err) || tmuxSays(err, "can't find session"):
+		return false, nil
+	}
+	return false, fmt.Errorf("checking session %q: %w", name, err)
 }
 
-// ListSessions returns all tmux sessions.
+// ListSessions returns all tmux sessions. With no tmux server running there
+// are none.
 func (c *Client) ListSessions() ([]Session, error) {
-	sessions, err := c.tmux.ListSessions()
+	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_created}")
 	if err != nil {
+		if noServer(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("listing sessions: %w", err)
 	}
 
-	result := make([]Session, 0, len(sessions))
-	for _, s := range sessions {
+	var result []Session
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 5 {
+			continue
+		}
+		attached, _ := strconv.Atoi(fields[2])
+		windows, _ := strconv.Atoi(fields[3])
 		result = append(result, Session{
-			Name:      s.Name,
-			SessionID: s.Id,
-			Attached:  s.Attached > 0,
-			Windows:   s.Windows,
-			Created:   s.Created,
+			Name:      fields[0],
+			SessionID: fields[1],
+			Attached:  attached > 0,
+			Windows:   windows,
+			Created:   fields[4],
 		})
 	}
 
 	return result, nil
 }
 
-// getSession looks up a session by name, failing if it doesn't exist.
-func (c *Client) getSession(name string) (*gotmux.Session, error) {
-	session, err := c.tmux.GetSessionByName(name)
-	if err != nil {
-		return nil, fmt.Errorf("getting session %q: %w", name, err)
-	}
-	if session == nil {
-		return nil, fmt.Errorf("session %q not found", name)
-	}
-	return session, nil
-}
-
-// getFirstPane gets the first pane of a session.
-func (c *Client) getFirstPane(sessionName string) (*gotmux.Pane, error) {
-	session, err := c.getSession(sessionName)
-	if err != nil {
-		return nil, err
-	}
-
-	panes, err := session.ListPanes()
-	if err != nil {
-		return nil, fmt.Errorf("listing panes: %w", err)
-	}
-
-	if len(panes) == 0 {
-		return nil, fmt.Errorf("session %q has no panes", sessionName)
-	}
-
-	return panes[0], nil
-}
-
-// paneTarget returns the id of the pane SendKeys types into. Every
-// session-level operation targets it, so keys, captures, and logs all hit the
-// agent's pane even when another window or pane is active.
+// paneTarget returns the id of the session's first pane, which SendKeys
+// types into. Every session-level operation targets it, so keys, captures,
+// and logs all hit the agent's pane even when another window or pane is
+// active.
 func (c *Client) paneTarget(sessionName string) (string, error) {
-	pane, err := c.getFirstPane(sessionName)
+	out, err := run("list-panes", "-s", "-t", exact(sessionName), "-F", "#{pane_id}")
 	if err != nil {
-		return "", err
+		if exists, _ := c.SessionExists(sessionName); !exists {
+			return "", fmt.Errorf("session %q not found", sessionName)
+		}
+		return "", fmt.Errorf("listing panes: %w", err)
 	}
-	return pane.Id, nil
+	pane, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	if pane == "" {
+		return "", fmt.Errorf("session %q has no panes", sessionName)
+	}
+	return pane, nil
 }
 
 // SendKeys types text into a tmux session literally. Without -l, tmux reads
 // text that happens to be a key name ("C-c", "Escape", "0x3") as that key,
 // and without "--" text starting with '-' as send-keys flags ("-R" resets
 // the terminal). Text can come from other hosts over the bus.
+//
+// While a read-only client is attached, tmux refuses send-keys, so the text
+// is pasted instead, which types the same bytes.
 func (c *Client) SendKeys(session string, text string) error {
 	target, err := c.paneTarget(session)
 	if err != nil {
 		return err
 	}
 
-	if _, err := c.tmux.Command("send-keys", "-l", "-t", target, "--", text); err != nil {
+	_, err = run("send-keys", "-l", "-t", target, "--", text)
+	if IsReadOnly(err) {
+		err = paste(target, text)
+	}
+	if err != nil {
 		return fmt.Errorf("sending keys: %w", err)
 	}
 
@@ -198,19 +203,55 @@ func (c *Client) SendKeys(session string, text string) error {
 
 // SendSpecialKey sends a special key to a session. key is never read as a
 // flag: one that isn't a key name is typed as text.
+//
+// While a read-only client is attached, tmux refuses send-keys, so a key
+// with fixed bytes (see keyBytes) is pasted instead; any other fails with a
+// ReadOnlyError naming the client.
 func (c *Client) SendSpecialKey(session string, key string) error {
 	target, err := c.paneTarget(session)
 	if err != nil {
 		return err
 	}
-	if _, err := c.tmux.Command("send-keys", "-t", target, "--", key); err != nil {
+	_, err = run("send-keys", "-t", target, "--", key)
+	if IsReadOnly(err) {
+		err = c.pasteKey(target, key, err)
+	}
+	if err != nil {
 		return fmt.Errorf("sending key %q: %w", key, err)
 	}
 	return nil
 }
 
-// Capture captures pane content.
-func (c *Client) Capture(session string, lines int, stripANSI bool) (string, error) {
+// pasteKey types key into target with a paste, for when tmux refused
+// send-keys (refused) because of a read-only client.
+func (c *Client) pasteKey(target, key string, refused error) error {
+	cursorKeys := false
+	if isArrow(key) {
+		out, err := run("display-message", "-p", "-t", target, "#{keypad_cursor_flag}")
+		if err != nil {
+			return err
+		}
+		cursorKeys = strings.TrimSpace(out) == "1"
+	}
+	data, ok := keyBytes(key, cursorKeys)
+	if !ok {
+		return readOnlyError(key, refused)
+	}
+	return paste(target, data)
+}
+
+// Capture captures the pane as plain text.
+func (c *Client) Capture(session string, lines int) (string, error) {
+	return c.capture(session, lines)
+}
+
+// CaptureStyled captures the pane with its styling escapes (-e).
+func (c *Client) CaptureStyled(session string, lines int) (string, error) {
+	return c.capture(session, lines, "-e")
+}
+
+// capture runs capture-pane on the session's pane with extra flags.
+func (c *Client) capture(session string, lines int, flags ...string) (string, error) {
 	target, err := c.paneTarget(session)
 	if err != nil {
 		return "", err
@@ -218,25 +259,8 @@ func (c *Client) Capture(session string, lines int, stripANSI bool) (string, err
 
 	// -p prints to stdout; -S starts that many lines back into the
 	// scrollback (0 is the top of the visible pane).
-	output, err := c.tmux.Command("capture-pane", "-t", target, "-p", "-S", strconv.Itoa(-lines))
-	if err != nil {
-		return "", fmt.Errorf("capturing pane: %w", err)
-	}
-
-	if stripANSI {
-		output = util.StripANSI(output)
-	}
-
-	return output, nil
-}
-
-// CaptureStyled captures the visible pane with its styling escapes (-e).
-func (c *Client) CaptureStyled(session string) (string, error) {
-	target, err := c.paneTarget(session)
-	if err != nil {
-		return "", err
-	}
-	output, err := c.tmux.Command("capture-pane", "-t", target, "-p", "-e")
+	args := append([]string{"capture-pane", "-t", target, "-p", "-S", strconv.Itoa(-lines)}, flags...)
+	output, err := run(args...)
 	if err != nil {
 		return "", fmt.Errorf("capturing pane: %w", err)
 	}
@@ -251,7 +275,7 @@ func (c *Client) PipePane(session string, logPath string) error {
 	}
 	// tmux runs the command through a shell: quote the path so it can't
 	// inject one.
-	if _, err := c.tmux.Command("pipe-pane", "-t", target, "cat >> "+util.ShellQuote(logPath)); err != nil {
+	if _, err := run("pipe-pane", "-t", target, "cat >> "+util.ShellQuote(logPath)); err != nil {
 		return fmt.Errorf("piping pane: %w", err)
 	}
 	return nil
@@ -264,7 +288,7 @@ func (c *Client) StopPipePane(session string) error {
 		return err
 	}
 	// pipe-pane without a command stops the current pipe.
-	if _, err := c.tmux.Command("pipe-pane", "-t", target); err != nil {
+	if _, err := run("pipe-pane", "-t", target); err != nil {
 		return fmt.Errorf("stopping pipe: %w", err)
 	}
 	return nil
@@ -284,7 +308,7 @@ func (c *Client) Clear(session string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := c.tmux.Command("clear-history", "-t", target); err != nil {
+	if _, err := run("clear-history", "-t", target); err != nil {
 		return fmt.Errorf("clearing history: %w", err)
 	}
 
@@ -294,9 +318,9 @@ func (c *Client) Clear(session string) error {
 // SessionNames lists the sessions' names, cheaper than ListSessions. With no
 // tmux server running there are none.
 func (c *Client) SessionNames() ([]string, error) {
-	out, err := c.tmux.Command("list-sessions", "-F", "#{session_name}")
+	out, err := run("list-sessions", "-F", "#{session_name}")
 	if err != nil {
-		if msg := err.Error(); strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting") {
+		if noServer(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("listing sessions: %w", err)
@@ -307,7 +331,7 @@ func (c *Client) SessionNames() ([]string, error) {
 // SessionEnv returns a variable from a session's environment, or "" if it
 // isn't set there.
 func (c *Client) SessionEnv(session, name string) string {
-	out, err := c.tmux.Command("show-environment", "-t", session, name)
+	out, err := run("show-environment", "-t", exact(session), name)
 	if err != nil {
 		return ""
 	}

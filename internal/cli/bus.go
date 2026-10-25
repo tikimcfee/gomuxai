@@ -334,7 +334,7 @@ func startBus(cmd *cobra.Command, args []string) error {
 			break
 		}
 		if time.Now().After(deadline) {
-			out, _ := tmuxClient.Capture(busSession, 20, true)
+			out, _ := tmuxClient.Capture(busSession, 20)
 			return fmt.Errorf("bus didn't come up within 5s; session output:\n%s", strings.TrimSpace(out))
 		}
 		time.Sleep(100 * time.Millisecond)

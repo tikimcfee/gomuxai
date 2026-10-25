@@ -216,7 +216,7 @@ func TestAgyWaitingAndApprove_WhenPermissionDialogVisible(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	if info.Status != service.AgentStatusWaiting {
-		screen, _ := env.tmux.Capture(session, 0, true)
+		screen, _ := env.tmux.Capture(session, 0)
 		t.Fatalf("with dialog on screen: status = %s, want waiting; screen:\n%s", info.Status, screen)
 	}
 	if info.Detail != "permission: run_command: echo gated" || info.Tool != "run_command" {
