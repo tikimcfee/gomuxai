@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -120,5 +121,41 @@ func TestFinals_TranscriptFirst(t *testing.T) {
 	}
 	if _, ok := f.Provisional(heldTurn, "", "", p.Pos()); ok {
 		t.Error("a provisional reply with no text")
+	}
+}
+
+// A Stop seen only after its reply landed adds nothing, and the turn's
+// next Stop still pairs with the reply after it.
+func TestFinals_LateStop(t *testing.T) {
+	data := heldDelivery(t)
+	p := Claude{}.NewParser(Options{})
+	f := NewFinals()
+	var stream []Event
+	feed := func(upTo int) {
+		for _, e := range p.Feed(data[p.Pos().At:upTo]) {
+			stream = append(stream, f.Merge(e))
+		}
+	}
+	feed(lineStart(t, data, heldSecond))
+	if _, ok := f.Provisional(heldTurn, heldFirst+"\n", "2026-10-20T11:00:06.050Z", p.Pos()); ok {
+		t.Fatal("a provisional reply for the reply the transcript holds")
+	}
+	e, ok := f.Provisional(heldTurn, heldSecond, "2026-10-20T11:00:07.950Z", p.Pos())
+	if !ok || e.ID != heldTurn+"#final2" {
+		t.Fatalf("second Stop = %+v, %v; want %s#final2", e, ok, heldTurn)
+	}
+	stream = append(stream, e)
+	feed(len(data))
+	var got []string
+	for _, e := range stream {
+		if e.Say != nil && e.Say.Final {
+			got = append(got, e.ID+" "+e.Op)
+		}
+	}
+	want := []string{
+		"583b7d2b-a4aa-52a2-9829-c8012f0f9942#0 add", heldTurn + "#final2 add", heldTurn + "#final2 update",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("final replies:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
