@@ -154,7 +154,9 @@ should check the rest.
   result. `structured` is dropped. For an Agent call, `meta` is `{tools, tokens, ms}` from
   `<usage>`, the same keys the table's `taskMeta` gives a finished Task.
 - `sub_session` is set from the Agent result's `agentId`, so it arrives with the first
-  update. A subagent's `session_id` is its `agentId` (the file is `agent-<agentId>.jsonl`).
+  update. A Claude subagent's `session_id` is `agent-<agentId>`, its transcript's name
+  (`agent-<agentId>.jsonl`), as `agent sessions` names it; `sub_session` names it the
+  same way. The `agent` field on the subagent's events is the bare `agentId`.
 - The response a reader hands the table: Claude's `toolUseResult` when it is an object
   (a string one reads as none, so a failed Bash has no `meta`). For an Agent completed
   by a task notification, `{totalToolUseCount, totalTokens, totalDurationMs}` from
