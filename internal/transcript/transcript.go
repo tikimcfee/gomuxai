@@ -210,23 +210,32 @@ func (t *tail) events() []Event {
 
 // file records in s the transcript file it was read from, and what the
 // file's name and neighbours say: the session id, if no record named it,
-// and the call that started a Claude subagent.
+// and a Claude subagent's meta.json.
 func (s *Session) file(path string, size int64) {
 	s.Path, s.Size = path, size
 	if s.SessionID == "" {
-		s.SessionID = sessionIDFromPath(path)
+		s.SessionID = SessionIDFromPath(path)
 	}
-	if s.ParentSession != nil && s.ParentSession.ToolID == "" {
-		s.ParentSession.ToolID = claudeSubagentTool(path)
+	if s.ParentSession != nil {
+		if meta, ok := ReadClaudeSubagentMeta(path); ok {
+			s.HarvestClaudeSubagent(meta)
+		}
 	}
 }
 
-// sessionIDFromPath names a session after its transcript, as agent
-// sessions does: Claude Code's is <session id>.jsonl (a subagent's,
-// agent-<agent id>.jsonl); agy's lives in brain/<conversation id>/ or its
-// .system_generated/logs; Kimi Code's session_<uuid>/agents/main/wire.jsonl
-// is <uuid>, and a subagent's agents/<agent>/wire.jsonl is <uuid>:<agent>.
-func sessionIDFromPath(path string) string {
+// SessionIDFromPath names a session after its transcript's path:
+//   - Claude Code: <session id>.jsonl, and a subagent's
+//     <session id>/subagents/agent-<id>.jsonl is agent-<id>;
+//   - agy: brain/<conversation id>/.system_generated/logs/transcript*.jsonl,
+//     or brain/<conversation id>/transcript*.jsonl;
+//   - Kimi Code: session_<uuid>/agents/main/wire.jsonl is <uuid>, and a
+//     subagent's agents/<agent>/wire.jsonl is <uuid>:<agent>.
+//
+// It returns "" for a path of none of these shapes.
+func SessionIDFromPath(path string) string {
+	if path == "" {
+		return ""
+	}
 	base := filepath.Base(path)
 	if agentDir := filepath.Dir(path); base == "wire.jsonl" && filepath.Base(filepath.Dir(agentDir)) == "agents" {
 		session := strings.TrimPrefix(filepath.Base(filepath.Dir(filepath.Dir(agentDir))), "session_")
@@ -239,7 +248,7 @@ func sessionIDFromPath(path string) string {
 	if !strings.HasPrefix(stem, "transcript") {
 		return stem
 	}
-	if conv := agyConversationDir(path); conv != "" {
+	if conv := AgyConversationDir(path); conv != "" {
 		return filepath.Base(conv)
 	}
 	return ""

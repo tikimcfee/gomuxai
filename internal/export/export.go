@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tikimcfee/gomuxai/internal/discovery"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/storage"
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // KindTmux is an agent running in a tmux session that agent spawned. It is
@@ -541,7 +541,7 @@ func (t *Tree) fromRun(s *store, run *storage.Run) Agent {
 		a.Transcript = lastTranscript(filepath.Join(s.dir, "logs", run.Name+".transcripts"))
 	}
 	// Runs don't record the session id; the transcript's path names it.
-	a.SessionID = discovery.SessionIDFromPath(a.Transcript)
+	a.SessionID = transcript.SessionIDFromPath(a.Transcript)
 	a.Dialect = dialect(a.Backend, a.Transcript)
 	statTranscript(&a)
 	return a

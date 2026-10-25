@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"path"
 	"time"
 )
 
@@ -133,8 +132,9 @@ type ToolEvent struct {
 	Input  json.RawMessage `json:"input,omitempty"`
 	Result *ToolResult     `json:"result,omitempty"`
 	ToolSummary
-	// SubSession is the session a subagent-spawning call started.
-	SubSession string `json:"sub_session,omitempty"`
+	// SubSessions are the sessions a subagent-spawning call started, in
+	// the order its result names them.
+	SubSessions []string `json:"sub_sessions,omitempty"`
 }
 
 // ToolResult is what a tool call returned, or that it hasn't yet.
@@ -163,16 +163,16 @@ type RequestEvent struct {
 	Blobs  map[string]json.RawMessage `json:"blobs,omitempty"`
 }
 
-// Session is what a transcript records about its session. ReadFile adds
-// the file's path and size; who owns the session and its status come from
-// elsewhere (agent sessions).
+// Session is what a transcript records about its session (meta.go has the
+// rules). ReadFile adds the file's path and size; who owns the session and
+// its status come from elsewhere (agent sessions).
 type Session struct {
 	SessionID string `json:"session_id"`
 	Harness   string `json:"harness"`
 	Path      string `json:"path,omitempty"`
 	Size      int64  `json:"size,omitempty"`
-	// CWD is the working directory the session recorded last; Project is
-	// its last element, never the storage folder's name.
+	// CWD is the working directory the session recorded first; Project
+	// is its last element, never the storage folder's name.
 	CWD     string `json:"cwd,omitempty"`
 	Project string `json:"project,omitempty"`
 	// Title is the latest title the harness recorded (Claude Code: a
@@ -190,6 +190,8 @@ type Session struct {
 	// customTitle is set once Title holds a custom title, which a later AI
 	// title doesn't replace.
 	customTitle bool
+	// at places each harvested field's value in the transcript.
+	at metaAt
 }
 
 // ParentSession is the session that started a subagent, and the tool call
@@ -197,15 +199,6 @@ type Session struct {
 type ParentSession struct {
 	SessionID string `json:"session_id"`
 	ToolID    string `json:"tool_id,omitempty"`
-}
-
-// setCWD records the session's working directory, and its project.
-func (s *Session) setCWD(cwd string) {
-	if cwd == "" {
-		return
-	}
-	s.CWD = cwd
-	s.Project = path.Base(path.Clean(cwd))
 }
 
 // Pos is a place in a transcript: the byte offset where a line starts,

@@ -113,9 +113,7 @@ func (a *agyLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	if json.Unmarshal(line, &st) != nil {
 		return nil, false
 	}
-	if a.sess.CWD == "" {
-		a.sess.setCWD(st.CWD)
-	}
+	a.sess.setCWD(st.CWD, at)
 	l := &agyLine{a: a, st: &st, step: strconv.Itoa(st.StepIndex), at: at, n: n}
 	if a.prev >= 0 && st.StepIndex <= a.prev {
 		a.rewinds++
@@ -166,7 +164,7 @@ var agyModel = regexp.MustCompile("setting `Model Selection` from .*? to (.+?)\\
 // injected mid-turn (source SYSTEM_SDK: gomuxai's held delivery).
 func (l *agyLine) userInput() {
 	if m := agyModel.FindStringSubmatch(l.st.Content); m != nil {
-		l.a.sess.Model = m[1]
+		l.a.sess.setModel(m[1], l.at)
 	}
 	text := agyPrompt(l.st.Content)
 	if text == "" {
@@ -192,7 +190,7 @@ func (l *agyLine) userInput() {
 func (l *agyLine) abandon() {
 	for _, id := range l.a.calls {
 		if id != "" {
-			l.update(l.a.tools[id], &ToolResult{Status: StatusInterrupted}, nil, "")
+			l.update(l.a.tools[id], &ToolResult{Status: StatusInterrupted}, nil, nil)
 		}
 	}
 	l.a.calls = nil
@@ -231,7 +229,7 @@ func (l *agyLine) planner() {
 		if l.a.sess.CWD == "" && tc.Name == "run_command" {
 			var args struct{ Cwd string }
 			json.Unmarshal(input, &args)
-			l.a.sess.setCWD(args.Cwd)
+			l.a.sess.setCWD(args.Cwd, l.at)
 		}
 		e := l.event(0, KindTool)
 		e.ID = fmt.Sprintf("step_%s_tool_%d", l.step, j)
@@ -275,26 +273,24 @@ func (l *agyLine) generic() {
 	default:
 		response = agyResponse(call.Tool.Name, call.Tool.Input, output)
 	}
-	sub := ""
+	var subs []string
 	if call.Tool.Name == "invoke_subagent" {
-		if ids := agySubagentIDs(output); len(ids) > 0 {
-			sub = ids[0]
-		}
+		subs = agySubagentIDs(output)
 	}
-	l.update(call, res, response, sub)
+	l.update(call, res, response, subs)
 	if m := agyKilled.FindStringSubmatch(output); m != nil && call.Tool.Name == "manage_task" && res.Status == StatusOK {
 		l.end(m[1], &ToolResult{Status: StatusInterrupted}, nil)
 	}
 }
 
 // update makes the update of call to res, its table fields read from
-// response; sub, if set, names the session the call started.
-func (l *agyLine) update(call *Event, res *ToolResult, response json.RawMessage, sub string) {
+// response; subs, if any, name the sessions the call started.
+func (l *agyLine) update(call *Event, res *ToolResult, response json.RawMessage, subs []string) {
 	t := *call.Tool
 	t.Result = res
 	t.ToolSummary = SummarizeTool(t.Name, t.Input, response, l.a.sess.CWD)
-	if sub != "" {
-		t.SubSession = sub
+	if len(subs) > 0 {
+		t.SubSessions = subs
 	}
 	e := *call
 	e.Op, e.At, e.Line, e.TS, e.Tool = OpUpdate, l.at, l.n, l.st.CreatedAt, &t
@@ -320,7 +316,7 @@ func (l *agyLine) end(task string, res *ToolResult, response json.RawMessage) {
 	}
 	call := l.a.tools[l.a.running[i].call]
 	l.a.running = slices.Delete(l.a.running, i, i+1)
-	l.update(call, res, response, "")
+	l.update(call, res, response, nil)
 }
 
 // agyTaskSender matches the sender of a background task's messages, the
@@ -645,36 +641,40 @@ type agyHunkLines struct {
 }
 
 // agyFileOptions reads, for the agy transcript at path, which of agy's
-// logs it is (its Session.Path) and what agy keeps beside it about a
-// subagent's conversation: the conversation that started it
-// (brain/<parent>/.system_generated/subagents/<id>.json), the call there
-// that did, and that call's turn.
+// logs it is (its Session.Path) and what agy keeps beside it (HarvestAgy):
+// its workspace (history.jsonl) and title, and for a subagent's
+// conversation, the conversation that started it
+// (brain/<parent>/.system_generated/subagents/<id>.json), its workspace,
+// the call there that started it, and that call's turn.
 func agyFileOptions(path string) Options {
 	opts := Options{Session: Session{Path: path}}
-	conv := agyConversationDir(path)
+	conv := AgyConversationDir(path)
 	if conv == "" {
 		return opts
 	}
 	id, brain := filepath.Base(conv), filepath.Dir(conv)
-	descs, _ := filepath.Glob(filepath.Join(brain, "*", ".system_generated", "subagents", id+".json"))
-	if len(descs) == 0 {
-		return opts
+	files := AgyFiles{Home: filepath.Dir(brain), Workspace: ReadAgyHistory(filepath.Dir(brain))[id]}
+	if descs, _ := filepath.Glob(filepath.Join(brain, "*", ".system_generated", "subagents", id+".json")); len(descs) > 0 {
+		if sub, ok := ReadAgySubagent(descs[0]); ok {
+			files.Subagent = &sub
+		}
 	}
-	parent := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(descs[0]))))
 	opts.Session.SessionID = id
-	opts.Session.ParentSession = &ParentSession{SessionID: parent}
-	if call, ok := agySpawnCalls(filepath.Join(brain, parent))[id]; ok {
-		opts.Session.ParentSession.ToolID = call.ID
-		opts.Turn = call.Turn
+	opts.Session.HarvestAgy(files)
+	if sub := files.Subagent; sub != nil {
+		if call, ok := agySpawnCalls(filepath.Join(brain, sub.Parent))[id]; ok {
+			opts.Session.ParentSession.ToolID = call.ID
+			opts.Turn = call.Turn
+		}
 	}
 	return opts
 }
 
-// agyConversationDir returns the brain/<conversation id> dir an agy
+// AgyConversationDir returns the brain/<conversation id> dir an agy
 // transcript is in, for either place agy keeps one:
 // <id>/.system_generated/logs/transcript*.jsonl or brain/<id>/transcript*.jsonl.
 // It returns "" for a path of neither shape.
-func agyConversationDir(path string) string {
+func AgyConversationDir(path string) string {
 	if !strings.HasPrefix(filepath.Base(path), "transcript") {
 		return ""
 	}

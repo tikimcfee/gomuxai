@@ -4,8 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
+
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // Session is one agent session, as docs/EVENTS.md describes it: a
@@ -22,7 +23,9 @@ type Session struct {
 	Cwd     string `json:"cwd,omitempty"`
 	Project string `json:"project,omitempty"`
 	// Title is the latest title the harness recorded.
-	Title     string     `json:"title,omitempty"`
+	Title string `json:"title,omitempty"`
+	// AgentName is the name the harness recorded for the session.
+	AgentName string     `json:"agent_name,omitempty"`
 	Model     string     `json:"model,omitempty"`
 	Version   string     `json:"version,omitempty"`
 	GitBranch string     `json:"git_branch,omitempty"`
@@ -54,10 +57,7 @@ type Workgroup struct {
 }
 
 // ParentSession links a subagent's session to the one that started it.
-type ParentSession struct {
-	SessionID string `json:"session_id"`
-	ToolID    string `json:"tool_id,omitempty"`
-}
+type ParentSession = transcript.ParentSession
 
 type liveness int
 
@@ -108,7 +108,7 @@ func Probe(path string) (Session, bool) {
 	case HarnessKimi:
 		return probeKimi(path, info), true
 	case HarnessAgy:
-		conv := agyConversationDir(path)
+		conv := transcript.AgyConversationDir(path)
 		if conv == "" {
 			return Session{}, false
 		}
@@ -117,7 +117,7 @@ func Probe(path string) (Session, bool) {
 		if isClaudeSubagent(path) {
 			return probeClaudeSubagent(path, info), true
 		}
-		return probeClaude(path, info, false), true
+		return probeClaude(path, info), true
 	}
 }
 
@@ -149,17 +149,16 @@ func sortSessions(sessions []Session) {
 	})
 }
 
-// projectOf is a session's project: the last component of the workspace it
-// recorded (a file:// URI too), by one rule for every harness.
-func projectOf(cwd string) string {
-	p := strings.TrimRight(strings.TrimPrefix(cwd, "file://"), "/")
-	if p == "" {
-		return ""
+// fromMeta starts a session for the transcript at path, named as its path
+// names it, with what its records and the files beside it say (m, which
+// the transcript package's Harvest functions filled).
+func fromMeta(harness, path string, info os.FileInfo, m transcript.Session) Session {
+	s := Session{SessionID: transcript.SessionIDFromPath(path), Harness: harness, Path: path, Size: info.Size(), Mtime: info.ModTime().UTC(),
+		Cwd: m.CWD, Project: m.Project, Title: m.Title, AgentName: m.AgentName,
+		Model: m.Model, Version: m.Version, GitBranch: m.GitBranch, ContinuedIn: m.ContinuedIn}
+	if m.ParentSession != nil {
+		parent := *m.ParentSession
+		s.ParentSession = &parent
 	}
-	return filepath.Base(p)
-}
-
-// fromFile starts a session for the transcript at path.
-func fromFile(harness, id, path string, info os.FileInfo) Session {
-	return Session{SessionID: id, Harness: harness, Path: path, Size: info.Size(), Mtime: info.ModTime().UTC()}
+	return s
 }
