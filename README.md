@@ -132,8 +132,12 @@ Other ways in:
 - `agent spawn builder --backend claude tasks/build.md` sends the agent a
   request to read that file as its first message; `--task <name>` sends a
   task saved with `agent task set`.
-- `agent queue helper "..."` delivers when the agent is next idle, but only
-  while `agent watch` runs somewhere on the host.
+- `agent send` to a busy Claude agent holds the message (`Held for helper
+  until its turn ends`) and its Stop hook hands it over when the turn ends;
+  `agent send helper --now "..."` types it in at once instead.
+- `agent queue helper "..."` delivers when the agent is next idle: for a
+  Claude agent it does what `send` does; for others, only while `agent
+  watch` runs somewhere on the host.
 - `agent wait a b c --for idle,waiting --next` waits on several agents at
   once and prints a line as each one gets there (`--any`: the first).
 - `agent wait --any --for waiting` blocks until any agent on the host is at
@@ -248,7 +252,7 @@ bus prints a note about it in its `gomux-bus` session
 
 | Command | Shows |
 |---|---|
-| `agent` | Who you are, this host, your agents and their status, the bus, queued messages |
+| `agent` | Who you are, this host, your agents and their status (and held messages), the bus, messages held for you |
 | `agent list` | Every agent here with STATUS and PARENT; `--host H` for another machine |
 | `agent status NAME -v` | Status, where it came from, last event, and a pending prompt's full tool call |
 | `agent capture NAME` | The agent's screen now, plus scrollback |
@@ -278,13 +282,14 @@ add` found a similar entry.
 | `make macos` fails in `codesign` with `errSecInternalComponent` | Over SSH the login keychain is locked | Build in a terminal on the Mac, or `security unlock-keychain` first |
 | `no bus answering for host "X"` | X's bus is down, not linked to yours, or doesn't allow that op | `agent bus status` on both machines; check the firewall and the `--url` in the hub's bundle |
 | `agent bus status` says not running, though `gomux-bus` exists | The session name is shared by every data dir; another copy of `agent` owns it | Use that copy, or stop its bus first |
-| Queued messages never arrive | No `agent watch` is running (`queue` says so) | Run `agent watch` in a spare terminal, or `agent send` instead |
+| Queued messages never arrive (aider, agy, custom backends) | No `agent watch` is running (`queue` says so) | Run `agent watch` in a spare terminal, or `agent send` instead |
+| A held message hasn't arrived | The Claude agent's turn is still running, or ended with no Stop hook (Esc, deny) | `agent status NAME -v` shows `held:`; a deliverer types it 10s after the turn ends; `agent deliver NAME` types it now if the agent is at its prompt |
 | Agent stays `waiting` | A permission prompt, or a question for the user | `agent status NAME -v`, then `approve`/`deny`; for a question (e.g. AskUserQuestion), `agent capture NAME` and answer with `agent keys` |
-| `send` refused | The agent is at a dialog (the Enter would answer it) or has exited | Answer the dialog first; for an exited agent, `agent logs NAME`, then `agent cleanup NAME` |
+| `send` refused | The agent has exited, or is at a dialog (the Enter would answer it) and the message can't be held (`--now`, or not a Claude agent) | Answer the dialog first; for an exited agent, `agent logs NAME`, then `agent cleanup NAME` |
 | Status `exited` or the tmux session is gone | The CLI quit or crashed | `agent logs NAME` shows how it ended; `agent cleanup NAME` removes the record |
 | A tmux session `agent-NAME` with no agent record | Leftover session | `agent session kill agent-NAME` |
 | Status `unknown` | aider and custom backends have no hooks; the screen matched no pattern | `agent capture NAME`; adjust the backend's patterns |
-| A long message arrives in Claude as pasted content | Claude treats long typed input as a paste, i.e. data | Keep instructions short, or write them to a file and send its path |
+| A long message arrives in Claude as pasted content | Claude treats long typed input as a paste, i.e. data | Keep instructions short, or write them to a file and send its path (a message held for a busy agent arrives whole) |
 
 Known gaps are listed in [`CLAUDE.md`](CLAUDE.md); open requests are in
 `agent friction list`. If the tool gets in your way, `agent friction add

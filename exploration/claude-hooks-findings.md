@@ -49,6 +49,20 @@ Probed later the same day: asking the agent to start a background Bash command (
 
 Pressing Esc at the permission prompt cancelled the turn with **no** `Stop`, `PostToolUseFailure`, or other hook. Hook-only status would stay stuck at `waiting` until the next prompt. `claude agents --json` correctly went back to `idle`. So hooks give push-based transitions, and the native status is the reconciler.
 
+Probed again on 2026-10-24 (v2.1.310, interactive in tmux, every hook logged): Esc while a foreground Bash call ran, Esc while the model was writing, and Esc at an `AskUserQuestion` dialog each ended the turn with no hook at all, and **no `idle_prompt` Notification followed** (watched for 3 minutes). After a normal `Stop`, `idle_prompt` did fire, 60s later. So nothing in the agent's own hooks says that an interrupted turn has ended.
+
+## Handing text to Claude from a hook
+
+Tested for held messages (`agent send` to a busy agent). Plain stdout from `Stop` is ignored. What the model does with each kind of output:
+
+| Hook output | Model acts on it? | Shown in the TUI |
+|---|---|---|
+| `PostToolUse` `hookSpecificOutput.additionalContext` (mid-turn) | No: a system-reminder "hook additional context", ignored | No (transcript only) |
+| `Stop` `{"decision":"block","reason":...}` | Yes, continues the turn | `Stop hook error: ...` plus an error footer |
+| `Stop` `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":...}}` | Yes, continues the turn | `Ran 1 stop hook` / `Stop hook feedback: ...`, no error |
+
+After a delivering `Stop`, the continuation ends with a second `Stop` whose `stop_hook_active` is `true`; no `UserPromptSubmit` fires in between. A `Stop` with `background_tasks` running delivers the same way.
+
 ## Process-level options (beyond hooks)
 
 - `--session-id <uuid>`: gomuxai can pick the session id at spawn, then join hooks, `claude agents --json`, and the transcript by id.

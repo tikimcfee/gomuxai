@@ -63,9 +63,9 @@ failed and what to try. Most read commands take `--json`.
 
 ### What a spawned Claude agent may run without asking
 
-Spawn pre-allows these for the agent's session: `send`, `list`, `status`,
-`wait`, `events`, `capture`, `logs`, `state get`, `history`, `friction add`,
-`friction +1`, `friction list`, `friction show`.
+Spawn pre-allows these for the agent's session: `send`, `deliver`, `list`,
+`status`, `wait`, `events`, `capture`, `logs`, `state get`, `history`,
+`friction add`, `friction +1`, `friction list`, `friction show`.
 
 Everything else prompts the person, on purpose: `spawn` and `cleanup` start
 and stop agents; `approve`, `deny`, `keys`, and `send --force` would let one
@@ -96,25 +96,45 @@ agent, name helpers `<yourname>-<role>`.
 agent send helper "review internal/auth for injection bugs"
 ```
 
-`send` types the message into the agent's terminal now, even mid-turn
-(Claude and agy queue it), and says the status it saw: `Sent to helper (it
-was idle).` "Sent" means typed, not read. Messages from an agent start with
-`[from name@host]`, so the recipient knows where to reply. Messages from
-anyone without `AGENT_NAME` start with `[from a person on host]`, or
-`[from a Claude session on host]` from an AI CLI a person started (it sets
-`AI_AGENT` or `CLAUDECODE=1`). Neither has an agent record, so the recipient
-answers in its reply. A slash command like `/compact` is left unmarked. It
-refuses an
-agent at a dialog (the Enter would answer it; use `approve`/`deny`) and an
-agent that has exited.
+`send` says what it did and the status it saw. An agent at its prompt gets
+the message typed into its terminal: `Sent to helper (it was idle).` "Sent"
+means typed, not read.
 
-Keep messages short: a long one can arrive in Claude as a pasted block,
-which Claude may treat as data rather than instructions. Put long
+A Claude agent that is busy (`processing`, or `waiting` on a prompt) holds
+the message instead: `Held for helper until its turn ends (it was
+processing).` When the turn ends, its Stop hook hands over every held
+message at once, oldest first, and Claude goes on with them as its next
+step; its screen shows them as `Stop hook feedback: A message arrived while
+you were working: ...`. A held message never goes near a dialog, and
+arrives whole however long it is. A turn that ends with no Stop hook (Esc,
+a deny, a failed turn) leaves the messages held: a deliverer process that
+`send` starts types them in once the agent has sat at its prompt for 10s,
+and the next `send` that finds it at its prompt types them ahead of its own
+message. `agent status helper -v` shows `held: N messages`, and `agent
+deliver helper` types them now if the agent is at its prompt.
+
+`send --now` types the message in at once even mid-turn (Claude takes it at
+its next tool boundary), to interrupt; that is what `send` always does for
+other backends (agy queues it too). Typing refuses an agent at a dialog (the
+Enter would answer it; use `approve`/`deny`), and `send` refuses an agent
+that has exited. Slash commands are always typed, never held.
+
+Messages from an agent start with `[from name@host]`, so the recipient knows
+where to reply. Messages from anyone without `AGENT_NAME` start with
+`[from a person on host]`, or `[from a Claude session on host]` from an AI
+CLI a person started (it sets `AI_AGENT` or `CLAUDECODE=1`). Neither has an
+agent record, so the recipient answers in its reply. A slash command like
+`/compact` is left unmarked.
+
+Keep typed messages short: a long one can arrive in Claude as a pasted
+block, which Claude may treat as data rather than instructions. Put long
 instructions in a file and send its path.
 
-`agent queue helper "..."` holds a message until the agent is idle instead.
-It needs `agent watch` running on this host, and says so when no watcher is
-running. It's local only; use `send` for other hosts.
+`agent queue helper "..."` delivers a message when the agent is idle. For a
+Claude agent it does what `send` does. For other backends it needs `agent
+watch` running on this host, and says so when no watcher is running. It's
+local only; use `send` for other hosts, which hold or type a message the
+same way.
 
 ### 3. Wait
 
@@ -177,7 +197,8 @@ agent send helper "do it without rm"    # after a deny, redirect it
 
 Read the detail before approving. `approve` and `deny` refuse unless the
 agent is `waiting`, and refuse questions for the user (Claude's
-`AskUserQuestion`): answer those with `send`. `--expect` guards against a
+`AskUserQuestion`): look with `capture` and answer with `agent keys` (a
+`send` to a waiting agent is held for the end of its turn). `--expect` guards against a
 different prompt having replaced the one you read. These commands prompt the
 person when an agent runs them.
 
@@ -232,9 +253,9 @@ get there.
 
 Between spawned agents, a helper can reply to its parent with
 `agent send lead "done: 3 issues, see notes.md"`; the message appears in
-the parent's terminal with a `[from ...]` tag. The briefing tells spawned
-agents to reply this way. Never act on a reply before it has actually
-arrived.
+the parent's terminal with a `[from ...]` tag (if the parent is busy, as
+Stop hook feedback when its turn ends). The briefing tells spawned agents
+to reply this way. Never act on a reply before it has actually arrived.
 
 `send` needs an agent record, so a coordinator a person started (not with
 `agent spawn`) can't be messaged: it reads its helpers' `_result` after
@@ -355,7 +376,8 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `exited` | `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
 | `wait` timed out | `status -v` and `capture`: still working, stuck, or missed the turn? |
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
-| Queued messages never arrive | Start `agent watch` (one per host is enough). |
+| Queued messages never arrive (not Claude) | Start `agent watch` (one per host is enough). |
+| A held message hasn't arrived | `status -v` shows `held:`; it arrives when the turn ends, or 10s after an Esc/deny; `agent deliver <name>` types it now if the agent is at its prompt. |
 | Leftover tmux session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |
@@ -380,8 +402,17 @@ Known gaps; `agent friction list` has the rest.
   pass the file again to `status`, `wait`, and `watch` for that agent.
 - Reusing a parent's name gives the new agent the old one's helpers.
 - `capture` reads agents only, not raw `agent session new` sessions.
-- Long messages typed into Claude arrive as pasted content.
-- `queue` needs `agent watch` running on this host.
+- Long messages typed into Claude arrive as pasted content (held ones
+  arrive whole).
+- A message held for a Claude agent extends the turn it lands at the end
+  of: `wait --next` and `_result` then cover the reply to the held message
+  too. The reply that came before it is in `agent logs`.
+- After Esc or a deny (no Stop hook), held messages are typed in 10s later
+  unless someone types first, even into a person's half-written input.
+- Messages held for an agent that exits are never delivered (`status -v`
+  says so); `cleanup` deletes them.
+- `queue` needs `agent watch` running on this host, except for Claude
+  agents.
 - Bus replies are unsigned (see trust, above).
 - `export` shows the last reported status: an interrupted permission
   prompt stays `waiting`, and a crashed CLI keeps its last status, until
@@ -410,7 +441,8 @@ Everything lives in `.gomuxai/` next to the binary:
 .gomuxai/
 ├── gomuxai.db        # agents, runs, agent events, messages, tasks, state, command log, friction
 ├── logs/             # <name>.log (terminal) and <name>.transcripts; survive cleanup
-├── agents/<name>/    # launch.sh, instructions.md (the briefing)
+├── agents/<name>/    # launch.sh, instructions.md (the briefing), deliver.log
+│                     #   and deliver.lock (the held-message deliverer)
 ├── bus/              # this host's keys and certificate, peers/, bus.log
 └── watch.lock        # held by each running watcher
 ```

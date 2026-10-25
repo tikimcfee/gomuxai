@@ -122,6 +122,7 @@ applies each one it finds:
 | `NativeStatusProvider` | `claude agents --json` | — | — |
 | `PermissionResponder` | yes | yes | — |
 | `TranscriptProvider` | `transcript.Claude` | `transcript.Agy` | — |
+| `HookDeliverer`: held messages from a hook's output | `Stop` → `additionalContext` | — (being probed) | — |
 
 Notes on each:
 
@@ -140,11 +141,13 @@ Notes on each:
   up signed out.
 - **The briefing** (`service/instructions.go`) tells the agent its name,
   host, and who started it, how to message, wait on, and read other agents,
-  how to run helpers, and how to file friction. It uses the binary's full
-  path, since the agent's shell may not have it on `PATH`.
-- **Pre-allowed commands** (`agentSafeCommands`): `send`, `list`, `status`,
-  `wait`, `events`, `capture`, `logs`, `state get`, `history`, `friction add`,
-  `friction +1`, `friction list`, `friction show`. Each becomes two rules, `agent <cmd>` and
+  how to run helpers, and how to file friction. It says that a message
+  arriving as Stop hook feedback is a message to act on, and that `send
+  --now` interrupts a busy agent. It uses the binary's full path, since the
+  agent's shell may not have it on `PATH`.
+- **Pre-allowed commands** (`agentSafeCommands`): `send`, `deliver`, `list`,
+  `status`, `wait`, `events`, `capture`, `logs`, `state get`, `history`,
+  `friction add`, `friction +1`, `friction list`, `friction show`. Each becomes two rules, `agent <cmd>` and
   `<full binary path> <cmd>`, for that Claude session only. Left out on
   purpose: `approve`, `deny`, `keys`, and `send --force` (one agent answering
   another's prompts), `spawn` and `cleanup` (a person approves each), and
@@ -178,7 +181,8 @@ and the transcripts list stay.
 
 ## Messages
 
-`agent send` (`AgentService.Send`) types the message and Enter. A message
+`agent send` (`AgentService.Send`) types the message and Enter, or holds it
+(below). A message
 from an agent (`AGENT_NAME` set) is prefixed `[from <name>@<host>] `, and
 one without `AGENT_NAME` `[from a person on <host>] `, or `[from a Claude
 session on <host>] ` when the environment shows an AI CLI (`AI_AGENT`'s tool
@@ -193,11 +197,89 @@ checks, and only works for a person at a terminal: it is refused when
 `SendUnchecked` records `_sent_at` (spawn does too, for the first message),
 for `wait --next`.
 
-`agent queue` stores a `pending` row in `messages`. `agent watch`
-(`internal/watcher`) delivers it: every `--interval` (2s) it checks each
-agent that has pending messages and calls `Send` when the agent is `idle` or
+### Held messages
+
+Typing into a busy Claude agent lands in its input box, mixed with
+whatever a person is drafting there, and nothing says when it was read. So
+for an agent that *holds messages* (its backend is a `HookDeliverer` and
+spawn wired its hooks: `_spawn_id` is set), `Send` without `--now` does
+this (`service/held.go`):
+
+| Status `Send` finds | What it does |
+|---|---|
+| `idle`, `error`, `unknown` | `typeHeld`: claims any messages still held, and types them and this one as one prompt, oldest first (after the dialog check) |
+| `processing`, `waiting` | `hold`: stores a `pending` row in `messages`, records `_sent_at`, re-checks (below), and starts a deliverer |
+| `exited` | refuses |
+
+Slash commands are never held: a hook can only hand over text. Who
+delivers a held message:
+
+1. **The Stop hook.** `report --hook` calls `HandleHook`, and for an event
+   the backend `CanDeliver` (Claude: `Stop`, with or without background
+   tasks), `reportDelivering` claims every pending row and writes the
+   status report in one transaction. With messages claimed, the report is
+   `processing`, event `delivered`, detail `N held messages delivered`,
+   and it clears `_result` and sets `_turn_at` (the turn goes
+   on, so `wait --next` waits for its real end and `_result` isn't the
+   interim reply). The hook prints `DeliveryOutput`: for Claude,
+   `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":
+   "<N> messages arrived while you were working, oldest first:\n\n..."}}`.
+   Claude continues the turn with it and shows it as `Stop hook feedback:`
+   (a `{"decision":"block"}` works too but shows as `Stop hook error`). With
+   nothing held, the report and output are as before: idle, no output.
+   `ReportHook` (status only) never claims.
+2. **`hold`'s re-check.** The turn may have ended between `Send`'s status
+   check and the insert, its Stop finding nothing. The claim is the
+   transaction's first statement, so it takes SQLite's write lock at once:
+   a row inserted concurrently is either claimed by the hook, or committed
+   after it, and then the hook's report is visible to `hold`'s re-read.
+   If the last report says the turn is over (`turnOver`: `idle`, `error`,
+   or a `Stop` that left background work running, while native status
+   still says busy), `hold` types the held messages at once. The same
+   path covers native status lagging a `Stop`, and a message sent during
+   background work (the prompt takes input while the work runs).
+3. **The deliverer.** A turn can end with no hook at all: observed on
+   v2.1.310, Esc during a tool call or at a dialog, and a deny, fire
+   nothing (no `Stop`, no `PostToolUseFailure`, and no `idle_prompt`
+   Notification later either, though that follows a normal `Stop` after
+   60s). Only native status sees the agent back at its prompt. So `hold`
+   starts `agent deliver --wait <name>` (`startDeliverer`), detached with
+   `setsid` so it outlives the sender's Bash tool call, logging to
+   `agents/<name>/deliver.log`. It holds `agents/<name>/deliver.lock`
+   (`flock`; one that finds it taken exits at once, and the holder looks
+   again after releasing it, so a message held in between isn't missed).
+   `DeliverHeld` checks every 2s; once the agent has been at its prompt
+   (`idle`/`error`, or the background-work `Stop`) for 10s, it calls
+   `typeHeld`. The grace gives a person who pressed Esc time to type
+   first. It exits when nothing is held, or the agent has exited or is
+   gone. A `StopFailure` (rate limit) is delivered the same way.
+4. **The next `Send`** that finds the agent at its prompt types the held
+   messages ahead of its own; `agent deliver <name>` does it by hand.
+5. **`agent watch`**, if running, delivers pending rows as before.
+
+Every deliverer claims rows before delivering (`ClaimPendingMessages`, or
+`ClaimMessage` per row for the watcher), so each message is delivered once;
+`typeHeld` puts its rows back to `pending` if typing fails. Messages
+held for an agent that exits stay `pending` (`status -v` says they won't
+be delivered) until `cleanup` deletes them. `StatusInfo.Held` counts the
+pending rows, shown by `status -v`, `--json`, the orientation, and the
+`status` RPC.
+
+Remote sends get this on the receiving host: `SendRequest.now` (ignored by
+older hosts, which always type) and an optional `SendResponse` (older hosts
+send none, and the CLI says just `Sent`). Backends without `HookDeliverer`
+keep typing. agy has a `Stop` `{"decision":"continue","reason":...}` and a
+`PreInvocation` `injectSteps` that could implement it.
+
+### Queue
+
+`agent queue` to an agent that holds messages is `Send` (no watcher
+needed). For other agents it stores a `pending` row in `messages`. `agent
+watch` (`internal/watcher`) delivers it: every `--interval` (2s) it checks
+each agent that has pending messages and, when the agent is `idle` or
 `error` (a failed turn leaves the CLI at its prompt, and no hook fires again
-until the next prompt). `processing` and `waiting` hold the message;
+until the next prompt), claims the oldest and types it (`Send` with `Now`).
+`processing` and `waiting` hold the message;
 `exited` fails it, as do 5 `unknown` checks in a row or 3 failed sends
 (backoff 1s, doubling). Each watcher holds a shared `flock` on
 `.gomuxai/watch.lock`, which is how `queue` tells whether one is running.
@@ -256,7 +338,7 @@ uses to spot a whole turn before the wait.
 | Key | Holds |
 |---|---|
 | `_status` | `idle`, `processing`, `waiting`, `error`, `exited` (or `unknown`) |
-| `_event` | the hook event, `report` for `agent report`, `approved`/`denied` |
+| `_event` | the hook event, `report` for `agent report`, `approved`/`denied`, `delivered` (a Stop handed over held messages) |
 | `_detail` | one line of context, e.g. `Bash: go test ./...` or `permission: ...` |
 | `_tool` | the tool the event concerns |
 | `_tool_input` | the full JSON input of a call that may need permission (≤64 KiB); always written, so it never outlives its call |
@@ -315,7 +397,7 @@ What the code maps them to:
 | `PermissionRequest` | waiting | detail `permission: ...` (plus `(from the <type> agent)` for a subagent's); stores `_tool_input` and a pending prompt |
 | `PreCompact` | processing | |
 | `Notification` | idle | only `idle_prompt`; `permission_prompt` arrives ~6s late and is ignored. `idle_prompt` also fires ~60s into background work, so `ReportHook` drops it while the last report is a `Stop` that left the agent `processing` |
-| `Stop` | idle | sets `_result`; stays processing while background tasks (shells, subagents) are running, since their completion starts a new turn |
+| `Stop` | idle | sets `_result`; stays processing while background tasks (shells, subagents) are running, since their completion starts a new turn. With messages held, processing, event `delivered`, and the hook prints them (see [Held messages](#held-messages)) |
 | `StopFailure` | error | e.g. API error, rate limit |
 | `SessionEnd` | exited | ignored for `reason: clear` (a `SessionStart` follows) |
 
@@ -582,13 +664,14 @@ keeps them, since you asked.
 | `list` | `ListRequest` → `ListResponse` (agents with status and parent) | `list --host H` | yes |
 | `status` | `StatusRequest` → `StatusResponse` (mirrors `StatusInfo`) | `status`, `wait` | yes |
 | `capture` | `CaptureRequest` → `CaptureResponse` | `capture` | yes |
-| `send` | `SendRequest` → none | `send` | yes |
+| `send` | `SendRequest` (`now`) → `SendResponse` (status, held, typed); none from older hosts | `send` | yes |
 | `respond` | `RespondRequest` (`approve`, `approve_always`, `deny`, `force`, `expect_tool`) → none | `approve`, `deny` | yes |
 | `keys` | `KeysRequest` (text, then a key) → none | `keys name@host` | no |
 
 `natsbus/ops_test.go` keeps `AllOps` and the server's op table in step. The
-remote side runs the same service code as a local call (`Send` still
-refuses dialogs; `RespondPermission` still checks the screen), and the CLI
+remote side runs the same service code as a local call (`Send` holds a
+message for a busy Claude agent and refuses to type into dialogs;
+`RespondPermission` still checks the screen), and the CLI
 adds the `[from ...]` prefix before the request leaves. `cli/remote.go`
 routes `name@host`: a bare name or `name@<this host>` stays local and needs
 no bus.
@@ -716,7 +799,7 @@ One SQLite database, `.gomuxai/gomuxai.db`, through `modernc.org/sqlite`
 | `agents` | `name` PK, `session_name`, `backend`, `task_file`, `log_file`, `created_at`, `spawned_by`, `cwd` | one row per live agent |
 | `runs` | `id`, `name`, `parent`, `backend`, `session`, `cwd`, `created_at`, `ended_at`, `status`, `transcript` | one per spawn; cleanup sets `ended_at` and the last status and transcript; indexed on `(name, id)` |
 | `agent_events` | `id`, `at`, `kind`, `agent`, `run`, `status`, `event`, `detail`, `tool`, `tool_input`, `session_id`, `transcript` | `spawned`/`status`/`removed`, for `export --follow`; the newest 20000 are kept |
-| `messages` | `id`, `sender_id`, `receiver_id`, `content`, `status`, `created_at` | `pending`/`delivered`/`failed`; indexed on `(receiver_id, status)` |
+| `messages` | `id`, `sender_id`, `receiver_id`, `content`, `status`, `created_at` | held and queued messages: `pending`/`delivered`/`failed`; indexed on `(receiver_id, status)`; claimed with `UPDATE ... WHERE status = 'pending'` |
 | `tasks` | `name` PK, `content`, `source_file`, `created_at` | independent of agents |
 | `state` | `agent_name`, `key`, `value`, `updated_at`; PK `(agent_name, key)` | FK to `agents` with `ON DELETE CASCADE`: state needs an agent record |
 | `command_log` | `id`, `started_at`, `duration_ms`, `host`, `agent`, `parent`, `cwd`, `args` (JSON), `exit_code`, `error`, `build` | `agent history`; indexed on `(agent, id)` |
@@ -859,7 +942,15 @@ make lint          # golangci-lint
   the last.
 - `_result` is Claude-only; agy agents' replies are only in their
   transcripts.
-- Long messages typed into a Claude TUI arrive as pasted content.
+- Long messages typed into a Claude TUI arrive as pasted content (held
+  messages arrive whole, as hook output).
+- A held message extends the turn it's delivered at the end of, so
+  `_result` and `wait --next` cover its reply too.
+- After a turn ends with no hook (Esc, deny), the deliverer types held
+  messages 10s later, into whatever a person has half-typed. It can't see
+  the input box.
+- A deliverer polls native status every 2s for as long as messages are
+  held, e.g. while an agent sits at a prompt nobody answers.
 - Custom backends aren't remembered after spawn: pass `--backend-config`
   again.
 - `agent capture` reads managed agents only, not raw sessions.
