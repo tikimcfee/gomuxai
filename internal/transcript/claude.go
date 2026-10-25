@@ -1,7 +1,6 @@
 package transcript
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -161,10 +160,13 @@ type claudeLines struct {
 	opts Options
 	sess Session
 	turn *TurnRef
-	// index is the last promptIndex seen; derived counts the turns
-	// derived from records with no prompt id.
-	index   int
-	derived int
+	// index is the last turn index known (from a promptIndex, or
+	// Options.Turns); numbered is set once the file has given a
+	// promptIndex. prompts counts the human prompts of a file that gives
+	// none: its turns' indexes.
+	index    int
+	numbered bool
+	prompts  int
 	// tools holds each call's latest event, for its updates; pending,
 	// the ids of calls with no result yet, oldest first.
 	tools   map[string]*Event
@@ -207,16 +209,7 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	}
 	harvestClaude(&c.sess, r)
 	if r.PromptID != "" {
-		index := c.index
-		if r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil {
-			index = *r.TurnPosition.PromptIndex
-			c.index = index
-		} else if i, ok := c.opts.Turns[r.PromptID]; ok {
-			index = i
-		}
-		if c.turn == nil || c.turn.ID != r.PromptID || c.turn.Index != index || c.turn.Derived {
-			c.turn = &TurnRef{ID: r.PromptID, Index: index}
-		}
+		c.enter(r)
 	}
 
 	l := &claudeLine{c: c, r: r, raw: line, at: at, n: n}
@@ -245,6 +238,41 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 		}
 	}
 	return append(l.adds, l.updates...), true
+}
+
+// enter makes the turn a record with a prompt id names the current one.
+// Its index is the record's promptIndex; for a record without one, the
+// index Options.Turns gives (a subagent's records name the parent's
+// turn), else the last index known; in a file that gives no promptIndex
+// at all, the count of human prompts so far (prompt bumps it).
+func (c *claudeLines) enter(r *claudeRecord) {
+	index := c.index
+	switch {
+	case r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil:
+		index = *r.TurnPosition.PromptIndex
+		c.index, c.numbered = index, true
+	case c.opts.Turns != nil:
+		if i, ok := c.opts.Turns(r.PromptID); ok {
+			index = i
+			c.index = i
+		}
+	case !c.numbered:
+		index = c.prompts
+	}
+	c.setTurn(r.PromptID, index, false)
+}
+
+// setTurn makes the turn id, index the current one.
+func (c *claudeLines) setTurn(id string, index int, derived bool) {
+	if c.turn == nil || c.turn.ID != id || c.turn.Index != index || c.turn.Derived != derived {
+		c.turn = &TurnRef{ID: id, Index: index, Derived: derived}
+	}
+}
+
+// counted reports whether r's turn index is the count of human prompts:
+// the file gives no promptIndex, and nothing else numbers its turns.
+func (c *claudeLines) counted(r *claudeRecord) bool {
+	return r.PromptID == "" || !c.numbered && c.opts.Turns == nil && (r.TurnPosition == nil || r.TurnPosition.PromptIndex == nil)
 }
 
 // claudeInterrupted is how the record Claude Code writes when a person
@@ -324,16 +352,7 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 	} else if IsTaskNotification(text) {
 		p.Origin = OriginTaskNotification
 	}
-	// A prompt the transcript gives no prompt id opens a derived turn,
-	// unless it arrived mid-turn.
-	if r.PromptID == "" && (p.Origin == OriginHuman || p.Origin == OriginCommand || p.Origin == OriginTaskNotification) {
-		index := l.c.derived
-		if p.Origin != OriginTaskNotification || index == 0 {
-			l.c.derived++
-			index = l.c.derived
-		}
-		l.c.turn = &TurnRef{ID: id, Index: index, Derived: true}
-	}
+	l.number(id, p.Origin)
 	e := l.event(id, KindPrompt)
 	e.Prompt = p
 	l.add(e)
@@ -341,6 +360,34 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 		l.notification(text)
 	}
 	return false
+}
+
+// number counts a prompt the transcript doesn't number: a human prompt
+// (typed, a command, or queued until the last turn ended) is the next
+// turn. A prompt with no prompt id opens a derived turn, its id the
+// prompt event's id, as does a task notification there (with the index
+// of the human prompt before it); a message that arrives mid-turn stays
+// in the current turn. A prompt with a prompt id is in that turn; numbered
+// by count when the file gives no promptIndex.
+func (l *claudeLine) number(id, origin string) {
+	c, r := l.c, l.r
+	if !c.counted(r) {
+		return
+	}
+	human := origin == OriginHuman || origin == OriginCommand || origin == OriginQueued
+	switch {
+	case human:
+		c.prompts++
+	case r.PromptID != "" || origin != OriginTaskNotification:
+		return
+	case c.prompts == 0:
+		c.prompts = 1
+	}
+	if r.PromptID != "" {
+		c.setTurn(r.PromptID, c.prompts, false)
+	} else {
+		c.setTurn(id, c.prompts, true)
+	}
 }
 
 // claudeOrigins says where a user record's prompt came from, by the
@@ -804,33 +851,62 @@ func HarvestClaude(s *Session, line []byte) bool {
 }
 
 // ClaudeSubagentTurns returns, for the Claude subagent transcript at path
-// (<session id>/subagents/agent-<agent id>.jsonl), the index of each turn
-// its parent's transcript (<session id>.jsonl beside that folder) numbers,
-// by prompt id: Options.Turns for parsing it, so the subagent's events
-// carry the turn of the call that started it. It returns nil for any other
-// path, or a parent it can't read.
-func ClaudeSubagentTurns(path string) map[string]int {
+// (<session id>/subagents/agent-<agent id>.jsonl), the lookup of its
+// parent's turn indexes by prompt id that Options.Turns takes. A
+// subagent's records name the parent's current turn by its prompt id only;
+// its index is what the parent's transcript (<session id>.jsonl beside
+// that folder) gives it, by the same rules. The lookup reads the parent as
+// far as it has been written; a prompt id it doesn't know yet makes it
+// read what the parent has added since. It returns nil for any other
+// path.
+func ClaudeSubagentTurns(path string) func(promptID string) (int, bool) {
 	dir := filepath.Dir(path)
 	if filepath.Base(dir) != "subagents" || !strings.HasPrefix(filepath.Base(path), "agent-") {
 		return nil
 	}
-	f, err := os.Open(filepath.Dir(dir) + ".jsonl")
+	t := &parentTurns{path: filepath.Dir(dir) + ".jsonl", p: Claude{}.NewParser(Options{}), turns: map[string]int{}}
+	return t.lookup
+}
+
+// parentTurns reads a parent transcript's turns as it grows.
+type parentTurns struct {
+	path    string
+	p       *Parser
+	pending []byte // read, but not a whole line yet
+	turns   map[string]int
+}
+
+func (t *parentTurns) lookup(promptID string) (int, bool) {
+	if i, ok := t.turns[promptID]; ok {
+		return i, true
+	}
+	t.read()
+	i, ok := t.turns[promptID]
+	return i, ok
+}
+
+// read parses what the parent's transcript holds past what was read.
+func (t *parentTurns) read() {
+	f, err := os.Open(t.path)
 	if err != nil {
-		return nil
+		return
 	}
 	defer f.Close()
-	turns := map[string]int{}
-	br := bufio.NewReader(f)
+	off := t.p.Pos().At + int64(len(t.pending))
+	buf := make([]byte, readChunk)
 	for {
-		line, err := br.ReadBytes('\n')
-		if bytes.Contains(line, []byte(`"promptIndex"`)) {
-			var r claudeRecord
-			if json.Unmarshal(line, &r) == nil && r.PromptID != "" && r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil {
-				turns[r.PromptID] = *r.TurnPosition.PromptIndex
+		n, err := f.ReadAt(buf, off)
+		off += int64(n)
+		t.pending = append(t.pending, buf[:n]...)
+		start := t.p.Pos().At
+		for _, e := range t.p.Feed(t.pending) {
+			if e.Turn != nil && !e.Turn.Derived {
+				t.turns[e.Turn.ID] = e.Turn.Index
 			}
 		}
-		if err != nil {
-			return turns
+		t.pending = append(t.pending[:0], t.pending[t.p.Pos().At-start:]...)
+		if n == 0 || err != nil {
+			return
 		}
 	}
 }

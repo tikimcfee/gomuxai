@@ -221,11 +221,11 @@ type Options struct {
 	// Requests adds the request channel: Claude Code's api-request lines
 	// as request events.
 	Requests bool
-	// Turns gives the index of turns the transcript names but doesn't
+	// Turns looks up the index of a turn the transcript names but doesn't
 	// number, by prompt id: a Claude subagent's records hold its parent's
 	// prompt id, and only the parent's transcript its index
 	// (ClaudeSubagentTurns).
-	Turns map[string]int
+	Turns func(promptID string) (index int, ok bool)
 }
 
 // A Reader parses one harness's transcript format.

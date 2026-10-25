@@ -550,11 +550,16 @@ func TestReadFile_Errors(t *testing.T) {
 func TestReadFile_SubagentTurn(t *testing.T) {
 	path := filepath.Join(corpusDir, "claude", "subagent", "subagents", "agent-a3f9c2e17b4d5e608.jsonl")
 	turns := ClaudeSubagentTurns(path)
-	if want := map[string]int{
+	for id, want := range map[string]int{
 		"b92d70b1-18b1-5ccf-96b7-bd5d1ce10135": 1, // the prompt
 		"f6c51b03-1d25-579e-8362-5a8ab18cb715": 1, // the task notification, sharing its index
-	}; !reflect.DeepEqual(turns, want) {
-		t.Errorf("turns = %v, want %v", turns, want)
+	} {
+		if got, ok := turns(id); !ok || got != want {
+			t.Errorf("turn %s = %d, %v; want %d", id, got, ok, want)
+		}
+	}
+	if _, ok := turns("unknown"); ok {
+		t.Error("a turn the parent doesn't have")
 	}
 	f, err := ReadFile(path, Claude{}, 50)
 	if err != nil {
@@ -567,6 +572,67 @@ func TestReadFile_SubagentTurn(t *testing.T) {
 	}
 	if ClaudeSubagentTurns(filepath.Join(corpusDir, "claude", "subagent.jsonl")) != nil {
 		t.Error("turns for a transcript that isn't a subagent's")
+	}
+}
+
+// A background subagent outlives the parent's turn that started it: its
+// later records name the parent's current turn, which the lookup finds
+// in what the parent has written since. A turn the parent doesn't number
+// keeps the last index known.
+func TestClaudeSubagentTurns_Grow(t *testing.T) {
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "s1.jsonl")
+	prompt := func(id string, index int) string {
+		return fmt.Sprintf(`{"type":"user","uuid":"%s","promptId":"%s","turnPosition":{"promptIndex":%d},"sessionId":"s1","message":{"role":"user","content":"go"}}`+"\n", id, id, index)
+	}
+	writeTestFile := func(path, content string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(parent, prompt("p1", 1))
+	sub := filepath.Join(dir, "s1", "subagents", "agent-x.jsonl")
+	say := func(uuid, promptID string) string {
+		return fmt.Sprintf(`{"type":"user","uuid":"%s","promptId":"%s","agentId":"x","sessionId":"s1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"none","content":""}]}}`+"\n", uuid, promptID) +
+			fmt.Sprintf(`{"type":"assistant","uuid":"%s-a","agentId":"x","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}`+"\n", uuid)
+	}
+	p := Claude{}.NewParser(Options{Turns: ClaudeSubagentTurns(sub)})
+	var events []Event
+	events = append(events, p.Feed([]byte(say("r1", "p1")))...)
+	// The parent moves on to its second turn; the subagent follows.
+	writeTestFile(parent, prompt("p1", 1)+prompt("p2", 2))
+	events = append(events, p.Feed([]byte(say("r2", "p2")))...)
+	events = append(events, p.Feed([]byte(say("r3", "p9")))...)
+	var got []string
+	for _, e := range events {
+		got = append(got, fmt.Sprintf("%s %d", e.Turn.ID, e.Turn.Index))
+	}
+	if want := []string{"p1 1", "p2 2", "p9 2"}; !slices.Equal(got, want) {
+		t.Errorf("turns %q, want %q", got, want)
+	}
+}
+
+// Claude Code versions that wrote promptId but no turnPosition: a turn's
+// index counts the human prompts, as a derived turn's does.
+func TestClaudeCountedTurns(t *testing.T) {
+	lines := []string{
+		`{"type":"user","uuid":"u1","promptId":"p1","message":{"role":"user","content":"first"}}`,
+		`{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"one"}],"stop_reason":"end_turn"}}`,
+		`{"type":"user","uuid":"u2","promptId":"p2","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<summary>done</summary>\n</task-notification>"}}`,
+		`{"type":"assistant","uuid":"a2","message":{"role":"assistant","content":[{"type":"text","text":"noted"}],"stop_reason":"end_turn"}}`,
+		`{"type":"user","uuid":"u3","promptId":"p3","message":{"role":"user","content":"<command-name>/review</command-name>"}}`,
+		`{"type":"assistant","uuid":"a3","message":{"role":"assistant","content":[{"type":"text","text":"reviewed"}],"stop_reason":"end_turn"}}`,
+	}
+	_, events := parse(Claude{}, []byte(strings.Join(lines, "\n")+"\n"))
+	var got []string
+	for _, e := range events {
+		got = append(got, fmt.Sprintf("%s %d %v", e.Turn.ID, e.Turn.Index, e.Turn.Derived))
+	}
+	if want := []string{"p1 1 false", "p1 1 false", "p2 1 false", "p2 1 false", "p3 2 false", "p3 2 false"}; !slices.Equal(got, want) {
+		t.Errorf("turns %q, want %q", got, want)
 	}
 }
 
@@ -606,6 +672,9 @@ func TestRealTranscriptsIfPresent(t *testing.T) {
 			kinds[e.Kind]++
 			if e.Tool != nil {
 				kinds[e.Tool.Result.Status]++
+			}
+			if e.Turn != nil && e.Turn.Index == 0 {
+				kinds["turn index 0"]++
 			}
 		}
 		t.Logf("%s: %s, %d events, %d lines, %d skipped, %v", filepath.Base(path), r.Harness(), len(f.Events), f.Lines, f.Skipped, kinds)
