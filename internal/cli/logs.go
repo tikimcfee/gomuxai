@@ -244,6 +244,10 @@ func formatEvent(e transcript.Event, full bool) string {
 	case e.Prompt != nil:
 		p := e.Prompt
 		s := text(p.Text)
+		if summary := notificationSummary(p); summary != "" && !full {
+			// A task notification's markup says nothing at a glance.
+			s = cutLine(summary, eventTextWidth)
+		}
 		if p.Origin != transcript.OriginHuman && p.Origin != transcript.OriginCommand {
 			s = "(" + p.Origin + ") " + s
 		}
@@ -266,6 +270,23 @@ func formatEvent(e transcript.Event, full bool) string {
 		return head + fmt.Sprintf("%s, %s", e.Request.Model, plural(len(e.Request.Tail), "new message"))
 	}
 	return head
+}
+
+// notificationSummary returns the <summary> of a task notification
+// prompt, or "".
+func notificationSummary(p *transcript.PromptEvent) string {
+	if p.Origin != transcript.OriginTaskNotification {
+		return ""
+	}
+	_, rest, ok := strings.Cut(p.Text, "<summary>")
+	if !ok {
+		return ""
+	}
+	summary, _, ok := strings.Cut(rest, "</summary>")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(summary)
 }
 
 // formatTool renders a tool call and its result: what it called, on what,
