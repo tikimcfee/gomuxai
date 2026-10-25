@@ -292,33 +292,55 @@ func (c *claudeAgentsCache) get(ctx context.Context) ([]byte, error) {
 	return out, err
 }
 
+// ClaudeSessions returns the status of every Claude Code session running on
+// this host, by session id, from `claude agents --json`.
+func ClaudeSessions(ctx context.Context) (map[string]types.Status, error) {
+	out, err := claudeAgents.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return parseClaudeAgents(out)
+}
+
 // ParseClaudeAgentsJSON finds sessionID in `claude agents --json` output.
-// Interactive sessions report "status", background sessions report "state".
 func ParseClaudeAgentsJSON(data []byte, sessionID string) (types.Status, bool, error) {
+	sessions, err := parseClaudeAgents(data)
+	if err != nil {
+		return types.StatusUnknown, false, err
+	}
+	status, found := sessions[sessionID]
+	if !found {
+		return types.StatusUnknown, false, nil
+	}
+	return status, true, nil
+}
+
+// parseClaudeAgents reads `claude agents --json` output into each session's
+// status. Interactive sessions report "status", background sessions report
+// "state".
+func parseClaudeAgents(data []byte) (map[string]types.Status, error) {
 	var sessions []struct {
 		SessionID string `json:"sessionId"`
 		Status    string `json:"status"`
 		State     string `json:"state"`
 	}
 	if err := json.Unmarshal(data, &sessions); err != nil {
-		return types.StatusUnknown, false, fmt.Errorf("decoding claude agents output: %w", err)
+		return nil, fmt.Errorf("decoding claude agents output: %w", err)
 	}
+	out := make(map[string]types.Status, len(sessions))
 	for _, s := range sessions {
-		if s.SessionID != sessionID {
-			continue
-		}
 		switch firstNonEmpty(s.Status, s.State) {
 		case "idle":
-			return types.StatusIdle, true, nil
+			out[s.SessionID] = types.StatusIdle
 		case "busy":
-			return types.StatusProcessing, true, nil
+			out[s.SessionID] = types.StatusProcessing
 		case "waiting", "blocked":
-			return types.StatusWaiting, true, nil
+			out[s.SessionID] = types.StatusWaiting
 		default:
-			return types.StatusUnknown, true, nil
+			out[s.SessionID] = types.StatusUnknown
 		}
 	}
-	return types.StatusUnknown, false, nil
+	return out, nil
 }
 
 // claudeDialogTools raise a PermissionRequest whose dialog is a question to
