@@ -21,13 +21,14 @@ Held messages normally reach the agent from its Stop hook when its turn
 ends. A turn that ends without that hook (Esc, a deny, a failed turn) leaves
 them held, so send starts "agent deliver --wait <name>" in the background
 when it holds a message. That checks every 2s and types the held messages
-once the agent has sat at its prompt for 10s (time for a person who pressed
-Esc to type first). It exits once nothing is held, or when the agent has
-exited or is gone. One runs per agent at a time; it logs to
+once the agent has sat at its prompt, with nothing typed in its input line,
+for 10s (time for a person who pressed Esc to type first; it never types
+into their half-written input). It exits once nothing is held, or when the
+agent has exited or is gone. One runs per agent at a time; it logs to
 .gomuxai/agents/<name>/deliver.log.
 
 Without --wait, deliver checks once: it types the held messages now if the
-agent is at its prompt, and otherwise says why not. To type into a busy
+agent is at its prompt with an empty input line, and otherwise says why not. To type into a busy
 agent, use "agent send <name> --now".`,
 	Example: `  agent deliver helper
   agent deliver --wait helper`,

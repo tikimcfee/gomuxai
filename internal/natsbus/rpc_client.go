@@ -97,7 +97,7 @@ func (c *RPCClient) SendMessage(ctx context.Context, ref AgentRef, req SendReque
 	if !got {
 		return nil, nil
 	}
-	resp.Status, resp.Detail = clean(resp.Status), clean(resp.Detail)
+	resp.Status, resp.Detail, resp.InputBlocked = clean(resp.Status), clean(resp.Detail), clean(resp.InputBlocked)
 	return &resp, nil
 }
 

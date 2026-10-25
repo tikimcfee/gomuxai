@@ -25,7 +25,18 @@ type fakeHookBackend struct {
 	nativeFound bool // the CLI lists the session, with status native
 	nativeGone  bool // the CLI answers but doesn't list the session (it died)
 	native      backend.Status
-	promptGone  bool // no permission dialog on screen (the test shell shows none)
+	promptGone  bool      // no permission dialog on screen (the test shell shows none)
+	input       string    // what a person has typed in the input line
+	inputUntil  time.Time // if set, when they clear it
+}
+
+// InputText stands in for reading Claude's input line, which the test
+// shell doesn't draw.
+func (f *fakeHookBackend) InputText(string) (string, bool) {
+	if !f.inputUntil.IsZero() && time.Now().After(f.inputUntil) {
+		return "", true
+	}
+	return f.input, true
 }
 
 // PermissionPromptVisible stands in for the screen check: the test session

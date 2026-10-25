@@ -479,6 +479,38 @@ func TestClaudeAllowCommands(t *testing.T) {
 	}
 }
 
+// Screens captured with escapes (tmux capture-pane -e) from Claude Code
+// v2.1.310: its input box sits between two rules, the placeholder drawn dim.
+func TestClaudeInputText(t *testing.T) {
+	rule := "\x1b[38;5;244m" + strings.Repeat("─", 60)
+	footer := "\x1b[39m  \x1b[38;5;220m⏵⏵ auto mode on\x1b[38;5;246m (shift+tab to cycle)\x1b[39m"
+	screen := func(box ...string) string {
+		return strings.Join(append(append([]string{"● ok", "", rule}, box...), rule, footer), "\n") + "\n"
+	}
+	tests := []struct {
+		name   string
+		screen string
+		want   string
+		found  bool
+	}{
+		{"empty, dim placeholder", screen("\x1b[39m❯ \x1b[2mTry \"fix lint errors\"\x1b[0m"), "", true},
+		{"empty", screen("\x1b[39m❯ "), "", true},
+		{"typed", screen("\x1b[39m❯ half typed by a person"), "half typed by a person", true},
+		{"two lines", screen("\x1b[39m❯ half typed by a person", "  second line"), "half typed by a person\nsecond line", true},
+		{"typed, then a dim hint", screen("\x1b[39m❯ yes\x1b[2m (enter to send)\x1b[22m"), "yes", true},
+		{"a shell", "$ ls\nfile\n$ \n", "", false},
+		{"a dialog", "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel\n", "", false},
+		{"rules without a prompt", screen("  1. Apple"), "", false},
+	}
+	b := namedagents.NewClaudeBackend()
+	for _, tt := range tests {
+		got, found := b.InputText(tt.screen)
+		if got != tt.want || found != tt.found {
+			t.Errorf("%s: InputText = %q, %v; want %q, %v", tt.name, got, found, tt.want, tt.found)
+		}
+	}
+}
+
 // Held messages go back as Stop's additionalContext: Claude goes on with
 // it, shown as "Stop hook feedback". {"decision":"block"} would show as an
 // error, and only Stop can deliver.

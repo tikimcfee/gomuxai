@@ -44,6 +44,10 @@ type TmuxOps interface {
 	// If stripANSI is true, ANSI escape codes are removed.
 	Capture(session string, lines int, stripANSI bool) (string, error)
 
+	// CaptureStyled captures the visible pane with its styling escapes
+	// (colors, dim), which tell a CLI's placeholder text from typed text.
+	CaptureStyled(session string) (string, error)
+
 	// PipePane starts piping pane output to a file.
 	PipePane(session string, logPath string) error
 
@@ -223,6 +227,19 @@ func (c *Client) Capture(session string, lines int, stripANSI bool) (string, err
 		output = util.StripANSI(output)
 	}
 
+	return output, nil
+}
+
+// CaptureStyled captures the visible pane with its styling escapes (-e).
+func (c *Client) CaptureStyled(session string) (string, error) {
+	target, err := c.paneTarget(session)
+	if err != nil {
+		return "", err
+	}
+	output, err := c.tmux.Command("capture-pane", "-t", target, "-p", "-e")
+	if err != nil {
+		return "", fmt.Errorf("capturing pane: %w", err)
+	}
 	return output, nil
 }
 

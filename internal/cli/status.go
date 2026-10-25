@@ -136,6 +136,10 @@ func heldLine(name string, remote bool, info *service.StatusInfo) string {
 		line = "  held:   " + n
 	case agentService.HoldsMessages(getContext(), name) && (info.Status == service.AgentStatusIdle || info.Status == service.AgentStatusError):
 		// The turn ended without its Stop hook: Esc, a deny, a failure.
+		if why := agentService.InputBlocked(getContext(), name); why != "" {
+			line = "  held:   " + n + ", waiting for an empty input line (" + why + ")"
+			break
+		}
 		line = "  held:   " + n + ", typed in once it has been at its prompt for 10s (agent deliver " + name + " types it now)"
 	case agentService.HoldsMessages(getContext(), name):
 		line = "  held:   " + n + ", delivered when its turn ends"

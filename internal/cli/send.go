@@ -24,8 +24,10 @@ when its turn ends, its Stop hook hands over every message held for it,
 oldest first, and Claude goes on with them as its next step (its screen shows
 them as "Stop hook feedback"). If the turn ends without that hook (Esc, a
 deny, a failed turn), the held messages are typed in once it has sat at its
-prompt for 10s, or ahead of the next message sent to it. "agent status
-<name> -v" shows how many are held.
+prompt for 10s, or ahead of the next message sent to it. Messages are never
+typed into a Claude agent's input line while it has text in it (a person
+typing there): they're held until it's empty. "agent status <name> -v"
+shows how many are held and what they wait for.
 
 --now types the message in even while the agent is busy (Claude takes it at
 its next tool boundary), as send always does for other backends. Typing is
@@ -102,7 +104,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		printSent(name, service.SendResult{Status: service.AgentStatus(resp.Status), Detail: resp.Detail,
-			Held: resp.Held, HeldCount: resp.HeldCount, Typed: resp.Typed})
+			Held: resp.Held, HeldCount: resp.HeldCount, Typed: resp.Typed, InputBlocked: resp.InputBlocked})
 	case sendForce:
 		if err := agentService.SendUnchecked(getContext(), ref.Name, message); err != nil {
 			return err
@@ -133,6 +135,12 @@ func printSent(name string, res service.SendResult) {
 		}
 		if res.Status == service.AgentStatusWaiting && res.Detail != "" {
 			found += " on " + service.OneLine(res.Detail)
+		}
+		if res.InputBlocked != "" {
+			// At its prompt, but its input line isn't empty: a person may
+			// be typing there.
+			fmt.Printf("Held for %s until its input line is empty%s (%s; its input line: %s).\n", name, behind, found, res.InputBlocked)
+			return
 		}
 		fmt.Printf("Held for %s until its turn ends%s (%s).\n", name, behind, found)
 		if res.Status == service.AgentStatusWaiting {

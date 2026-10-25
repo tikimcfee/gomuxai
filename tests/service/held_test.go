@@ -276,6 +276,80 @@ func TestDeliverHeld(t *testing.T) {
 	}
 }
 
+// Held messages are never typed into a person's half-written input: the
+// deliverer and send wait for an empty input line, and a send that finds
+// messages held and the line in use joins them.
+func TestHeld_WaitsForAnEmptyInputLine(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	fake, _ := spawnHolding(t, env, "worker")
+	busy(t, env, fake, "worker")
+	if _, err := env.service.Send(ctx, "worker", "echo first-$((1))", service.SendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	fake.native = backend.StatusIdle // Esc: no hook fired
+	fake.input = "half a thought"
+
+	var blocked *service.InputBlockedError
+	if n, err := env.service.DeliverHeld(ctx, "worker", service.DeliverOptions{}); n != 0 || !errors.As(err, &blocked) {
+		t.Fatalf("deliver into a half-typed input: typed %d, err %v; want InputBlockedError", n, err)
+	}
+	if why := env.service.InputBlocked(ctx, "worker"); why != "it has text in it" {
+		t.Errorf("InputBlocked = %q", why)
+	}
+	res, err := env.service.Send(ctx, "worker", "echo second-$((2))", service.SendOptions{})
+	if err != nil || !res.Held || res.HeldCount != 2 || res.InputBlocked == "" {
+		t.Fatalf("send with messages held and the input in use: %+v, err %v; want held behind the first", res, err)
+	}
+	fake.input = ""
+	start := time.Now()
+	n, err := env.service.DeliverHeld(ctx, "worker", service.DeliverOptions{Wait: true, Interval: 50 * time.Millisecond, Grace: 200 * time.Millisecond})
+	if n != 2 || err != nil {
+		t.Fatalf("input cleared: typed %d, err %v; want 2", n, err)
+	}
+	if time.Since(start) < 200*time.Millisecond {
+		t.Error("typed before the grace")
+	}
+	screen := waitForOutput(t, env, "worker", "second-2")
+	if i, j := strings.Index(screen, "first-1"), strings.Index(screen, "second-2"); !(i >= 0 && i < j) {
+		t.Errorf("typed out of order:\n%s", screen)
+	}
+
+	// With nothing held too, a send to an agent at its prompt holds rather
+	// than type into a person's input; --now types anyway.
+	fake.input = "more"
+	if res, err := env.service.Send(ctx, "worker", "echo third", service.SendOptions{}); err != nil || !res.Held || res.InputBlocked == "" {
+		t.Errorf("send with nothing held, input in use: %+v, err %v; want held", res, err)
+	}
+	if res, err := env.service.Send(ctx, "worker", "echo fourth", service.SendOptions{Now: true}); err != nil || res.Typed != 1 {
+		t.Errorf("send --now, input in use: %+v, err %v; want typed", res, err)
+	}
+}
+
+// The deliverer's grace starts when the input line empties, not at the
+// first check after a blocked attempt.
+func TestDeliverHeld_GraceStartsWhenInputEmpties(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	fake, _ := spawnHolding(t, env, "worker")
+	busy(t, env, fake, "worker")
+	if _, err := env.service.Send(ctx, "worker", "echo late", service.SendOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cleared := time.Now().Add(400 * time.Millisecond)
+	fake.native, fake.input, fake.inputUntil = backend.StatusIdle, "typing", cleared
+
+	n, err := env.service.DeliverHeld(ctx, "worker", service.DeliverOptions{Wait: true, Interval: 20 * time.Millisecond, Grace: 300 * time.Millisecond})
+	if n != 1 || err != nil {
+		t.Fatalf("typed %d, err %v; want 1", n, err)
+	}
+	if since := time.Since(cleared); since < 300*time.Millisecond {
+		t.Errorf("typed %s after the input line emptied, before the grace", since)
+	}
+}
+
 // waitForOutput waits for want on the agent's screen and returns the screen.
 func waitForOutput(t *testing.T, env *testEnv, name, want string) string {
 	t.Helper()

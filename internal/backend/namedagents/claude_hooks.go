@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/transcript"
@@ -325,6 +326,78 @@ func (b *ClaudeBackend) PermissionPromptVisible(screen string) bool {
 		return false
 	}
 	return claudeDialogNoOption.MatchString(strings.Join(tail, "\n"))
+}
+
+// InputText reads Claude's input box: the lines between the last two rules
+// of "─" at the bottom of the screen, the first starting with the "❯"
+// prompt. Placeholder text ("Try ...") and suggestions are drawn dim, so
+// dim text is left out; what remains was typed.
+func (b *ClaudeBackend) InputText(screen string) (string, bool) {
+	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
+	var rules []int
+	for i := len(lines) - 1; i >= 0 && len(rules) < 2; i-- {
+		if isRule(util.StripANSI(lines[i])) {
+			rules = append(rules, i)
+		}
+	}
+	if len(rules) < 2 || rules[0]-rules[1] < 2 {
+		return "", false
+	}
+	box := lines[rules[1]+1 : rules[0]]
+	var text []string
+	for i, line := range box {
+		line = undimmed(line)
+		if i == 0 {
+			var ok bool
+			if line, ok = strings.CutPrefix(strings.TrimLeft(line, " "), "❯"); !ok {
+				return "", false
+			}
+		}
+		if t := strings.TrimSpace(strings.ReplaceAll(line, " ", " ")); t != "" {
+			text = append(text, t)
+		}
+	}
+	return strings.Join(text, "\n"), true
+}
+
+// isRule reports whether line is a horizontal rule of "─".
+func isRule(line string) bool {
+	line = strings.TrimSpace(line)
+	return utf8.RuneCountInString(line) >= 10 && strings.Trim(line, "─") == ""
+}
+
+// undimmed returns line's text without escapes, and without the text drawn
+// dim (SGR 2, until 22 or a reset).
+func undimmed(line string) string {
+	var out strings.Builder
+	dim := false
+	for i := 0; i < len(line); i++ {
+		if line[i] != '\x1b' {
+			if !dim {
+				out.WriteByte(line[i])
+			}
+			continue
+		}
+		if i+1 >= len(line) || line[i+1] != '[' {
+			continue
+		}
+		j := i + 2
+		for j < len(line) && (line[j] < 0x40 || line[j] > 0x7e) {
+			j++
+		}
+		if j < len(line) && line[j] == 'm' {
+			for _, p := range strings.Split(line[i+2:j], ";") {
+				switch p {
+				case "2":
+					dim = true
+				case "", "0", "22":
+					dim = false
+				}
+			}
+		}
+		i = j
+	}
+	return out.String()
 }
 
 // AllowCommands pre-approves Bash commands by prefix for this session only,

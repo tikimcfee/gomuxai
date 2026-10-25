@@ -69,6 +69,16 @@ type HookDeliverer interface {
 	DeliveryOutput(messages []string) []byte
 }
 
+// InputReader is implemented by backends that can read the CLI's input line
+// off the screen, so held messages are never typed into a person's
+// half-written input.
+type InputReader interface {
+	// InputText returns what is typed in the input line of screen (the
+	// visible pane, with its styling escapes), leaving out placeholder and
+	// suggestion text. found is false if no input line is on screen.
+	InputText(screen string) (text string, found bool)
+}
+
 // InstructionsProvider is implemented by backends that can give an agent
 // standing instructions at launch without writing into its project.
 type InstructionsProvider interface {

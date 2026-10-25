@@ -85,6 +85,8 @@ func (h rpcHandler) Send(ctx context.Context, req natsbus.SendRequest) (*natsbus
 		Held:      res.Held,
 		HeldCount: res.HeldCount,
 		Typed:     res.Typed,
+
+		InputBlocked: res.InputBlocked,
 	}, nil
 }
 

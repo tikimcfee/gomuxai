@@ -57,6 +57,7 @@ func (f *fakeTmux) SessionExists(string) (bool, error)            { return true,
 func (f *fakeTmux) ListSessions() ([]tmux.Session, error)         { return nil, nil }
 func (f *fakeTmux) SendSpecialKey(string, string) error           { return nil }
 func (f *fakeTmux) Capture(string, int, bool) (string, error)     { return "", nil }
+func (f *fakeTmux) CaptureStyled(string) (string, error)          { return "", nil }
 func (f *fakeTmux) PipePane(string, string) error                 { return nil }
 func (f *fakeTmux) StopPipePane(string) error                     { return nil }
 func (f *fakeTmux) Clear(string) error                            { return nil }

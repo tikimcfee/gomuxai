@@ -110,8 +110,11 @@ arrives whole however long it is. A turn that ends with no Stop hook (Esc,
 a deny, a failed turn) leaves the messages held: a deliverer process that
 `send` starts types them in once the agent has sat at its prompt for 10s,
 and the next `send` that finds it at its prompt types them ahead of its own
-message. `agent status helper -v` shows `held: N messages`, and `agent
-deliver helper` types them now if the agent is at its prompt.
+message. Neither types into a person's half-written input: while Claude's
+input line has text in it, messages wait (a `send` then says `Held for
+helper until its input line is empty`), and the 10s start once it's empty.
+`agent status helper -v` shows `held: N messages` and what they wait for,
+and `agent deliver helper` types them now if the agent is at its prompt.
 
 `send --now` types the message in at once even mid-turn (Claude takes it at
 its next tool boundary), to interrupt; that is what `send` always does for
@@ -377,7 +380,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `wait` timed out | `status -v` and `capture`: still working, stuck, or missed the turn? |
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
 | Queued messages never arrive (not Claude) | Start `agent watch` (one per host is enough). |
-| A held message hasn't arrived | `status -v` shows `held:`; it arrives when the turn ends, or 10s after an Esc/deny; `agent deliver <name>` types it now if the agent is at its prompt. |
+| A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there); `agent deliver <name>` types it now if the agent is at its prompt. |
 | Leftover tmux session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |
@@ -407,8 +410,11 @@ Known gaps; `agent friction list` has the rest.
 - A message held for a Claude agent extends the turn it lands at the end
   of: `wait --next` and `_result` then cover the reply to the held message
   too. The reply that came before it is in `agent logs`.
-- After Esc or a deny (no Stop hook), held messages are typed in 10s later
-  unless someone types first, even into a person's half-written input.
+- After Esc or a deny (no Stop hook), held messages are typed in once the
+  agent has sat at its prompt with an empty input line for 10s. The input
+  line is read off the screen, so a Claude redesign of it would leave them
+  waiting (`status -v` says `waiting for an empty input line (it isn't on
+  screen)`).
 - Messages held for an agent that exits are never delivered (`status -v`
   says so); `cleanup` deletes them.
 - `queue` needs `agent watch` running on this host, except for Claude

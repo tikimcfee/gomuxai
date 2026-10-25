@@ -58,6 +58,9 @@ type SendResult struct {
 	// is how many messages are held for it now, this one included.
 	Held      bool
 	HeldCount int
+	// InputBlocked, for a message held although the agent was at its
+	// prompt, says why: its input line isn't empty (see InputBlockedError).
+	InputBlocked string
 	// Typed is how many messages were typed in: this one, after any held
 	// ones it overtook (oldest first, as one prompt).
 	Typed int
@@ -117,6 +120,16 @@ func (s *AgentService) sendHeld(ctx context.Context, agent *storage.Agent, messa
 		return s.hold(ctx, agent, res, message, from)
 	}
 	n, err := s.typeHeld(ctx, agent, message)
+	var blocked *InputBlockedError
+	if errors.As(err, &blocked) {
+		// A person may be typing: hold this one (behind any held), for
+		// the deliverer to type once the input line is empty.
+		res, err = s.hold(ctx, agent, res, message, from)
+		if res.Held {
+			res.InputBlocked = blocked.Why
+		}
+		return res, err
+	}
 	res.Typed = n
 	return res, err
 }
@@ -173,13 +186,65 @@ func (s *AgentService) HeldCount(ctx context.Context, name string) int {
 	return len(held)
 }
 
+// InputBlockedError is typeHeld's error when the agent's input line isn't
+// known to be empty: typed messages would mix into what a person is typing.
+type InputBlockedError struct {
+	Agent string
+	Why   string // e.g. "it has text in it"
+}
+
+func (e *InputBlockedError) Error() string {
+	return fmt.Sprintf("agent %s's input line isn't empty (%s), so messages typed now would mix into what a person is typing there: held messages are typed once it's empty (agent send --now types anyway)", e.Agent, e.Why)
+}
+
+// inputBlocked returns why typing into the agent would land in a person's
+// input: "" if its input line is empty, or the backend can't read it.
+func (s *AgentService) inputBlocked(agent *storage.Agent) string {
+	p, err := s.provider(agent)
+	if err != nil {
+		return ""
+	}
+	ir, ok := p.(backend.InputReader)
+	if !ok {
+		return ""
+	}
+	screen, err := s.tmux.CaptureStyled(agent.SessionName)
+	if err != nil {
+		return "" // SendUnchecked reports a missing session
+	}
+	switch text, found := ir.InputText(screen); {
+	case !found:
+		return "it isn't on screen"
+	case text != "":
+		return "it has text in it"
+	}
+	return ""
+}
+
+// InputBlocked returns why held messages can't be typed into name now
+// because of its input line, or "" if they can (see InputBlockedError).
+func (s *AgentService) InputBlocked(ctx context.Context, name string) string {
+	agent, err := s.getAgent(ctx, name)
+	if err != nil {
+		return ""
+	}
+	return s.inputBlocked(agent)
+}
+
 // typeHeld types the agent's held messages, oldest first, then extra if
 // set, as one prompt. It claims them first, so the agent's hook (or
 // another sender) can't deliver them too, and holds them again if typing
-// fails. It returns how many messages it typed.
+// fails. It refuses (InputBlockedError) unless the agent's input line is
+// empty or unreadable. It returns how many messages it typed.
 func (s *AgentService) typeHeld(ctx context.Context, agent *storage.Agent, extra string) (int, error) {
 	if err := s.checkScreen(agent); err != nil {
 		return 0, err
+	}
+	if held, err := s.storage.GetPendingMessages(ctx, agent.Name, 1); err == nil && len(held) == 0 && extra == "" {
+		return 0, nil
+	}
+	if why := s.inputBlocked(agent); why != "" {
+		return 0, &InputBlockedError{Agent: agent.Name, Why: why}
 	}
 	claimed, err := s.storage.ClaimPendingMessages(ctx, agent.Name, nil)
 	if err != nil {
@@ -313,16 +378,25 @@ func (s *AgentService) DeliverHeld(ctx context.Context, name string, opts Delive
 				name, plural(len(held), "message"), name)
 		case info.Status == AgentStatusIdle || info.Status == AgentStatusError ||
 			info.Status == AgentStatusProcessing && turnOver(reported):
+			if opts.Wait && s.inputBlocked(agent) != "" {
+				// A person is typing: the grace starts once the line is
+				// empty, so a pause in their typing isn't typed over.
+				atPromptSince = time.Time{}
+				break
+			}
 			if atPromptSince.IsZero() {
 				atPromptSince = time.Now()
 			}
 			if !opts.Wait || time.Since(atPromptSince) >= opts.Grace {
 				n, err := s.typeHeld(ctx, agent, "")
 				typed += n
-				if err != nil && !opts.Wait {
+				var blocked *InputBlockedError
+				switch {
+				case err != nil && !opts.Wait:
 					return typed, err
-				}
-				if err != nil {
+				case errors.As(err, &blocked):
+					atPromptSince = time.Time{} // typed into since the check above
+				case err != nil:
 					fmt.Fprintf(os.Stderr, "%s: typing %s's held messages: %v\n", time.Now().Format(time.RFC3339), name, err)
 				}
 			}

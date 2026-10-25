@@ -249,12 +249,24 @@ delivers a held message:
    (`flock`; one that finds it taken exits at once, and the holder looks
    again after releasing it, so a message held in between isn't missed).
    `DeliverHeld` checks every 2s; once the agent has been at its prompt
-   (`idle`/`error`, or the background-work `Stop`) for 10s, it calls
-   `typeHeld`. The grace gives a person who pressed Esc time to type
-   first. It exits when nothing is held, or the agent has exited or is
-   gone. A `StopFailure` (rate limit) is delivered the same way.
+   (`idle`/`error`, or the background-work `Stop`) with an empty input
+   line for 10s, it calls `typeHeld`. The grace gives a person who pressed
+   Esc time to type first, and restarts whenever the input line has text.
+   It exits when nothing is held, or the agent has exited or is gone. A
+   `StopFailure` (rate limit) is delivered the same way.
 4. **The next `Send`** that finds the agent at its prompt types the held
    messages ahead of its own; `agent deliver <name>` does it by hand.
+
+**The input line.** `typeHeld` (every non-`--now` typing into an agent
+that holds messages) first reads the input line off a styled capture
+(`TmuxOps.CaptureStyled`, `capture-pane -e`) through the backend's
+`InputReader`. Claude's is the text between the last two `─` rules, after
+the `❯` prompt, with dim text (SGR 2: the `Try "..."` placeholder and
+suggestions) left out. If it has text in it, or isn't on screen, typing
+would land in a person's draft, so `typeHeld` returns `InputBlockedError`:
+`Send` holds the message instead (`Held for X until its input line is
+empty`), the deliverer keeps waiting, and `status -v` shows `held: N,
+waiting for an empty input line (it has text in it)`.
 5. **`agent watch`**, if running, delivers pending rows as before.
 
 Every deliverer claims rows before delivering (`ClaimPendingMessages`, or
@@ -946,9 +958,10 @@ make lint          # golangci-lint
   messages arrive whole, as hook output).
 - A held message extends the turn it's delivered at the end of, so
   `_result` and `wait --next` cover its reply too.
-- After a turn ends with no hook (Esc, deny), the deliverer types held
-  messages 10s later, into whatever a person has half-typed. It can't see
-  the input box.
+- The input line is read off the screen: a Claude redesign of it would
+  leave held messages waiting ("it isn't on screen") until the reader is
+  updated. A person who starts typing between the check and the typing
+  (milliseconds) still gets the message mixed in.
 - A deliverer polls native status every 2s for as long as messages are
   held, e.g. while an agent sits at a prompt nobody answers.
 - Custom backends aren't remembered after spawn: pass `--backend-config`

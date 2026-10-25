@@ -200,6 +200,9 @@ type SendResponse struct {
 	Held      bool   `json:"held,omitempty"`
 	HeldCount int    `json:"held_count,omitempty"`
 	Typed     int    `json:"typed,omitempty"`
+	// InputBlocked says why a message to an agent at its prompt was held:
+	// its input line isn't empty.
+	InputBlocked string `json:"input_blocked,omitempty"`
 }
 
 // RespondRequest answers a permission prompt (agent approve / deny).
