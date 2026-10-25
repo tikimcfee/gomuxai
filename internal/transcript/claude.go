@@ -329,9 +329,11 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 	case strings.HasPrefix(text, claudeInterrupted):
 		system("interrupt")
 		return true
-	case r.IsMeta && r.Origin == nil:
+	case r.IsMeta && r.Origin == nil && r.PromptSource != "system":
 		// A caveat, a reminder, a skill's expanded body: the harness
-		// talking to the model, not a message into the agent.
+		// talking to the model, not a message into the agent. One the
+		// harness sends as a prompt (promptSource system: a /loop wakeup,
+		// an idle notice, Stop hook feedback) is one.
 		return false
 	case strings.HasPrefix(text, "<local-command-caveat>"):
 		return false
@@ -395,6 +397,9 @@ func (l *claudeLine) number(id, origin string) {
 func claudeOrigins(r *claudeRecord) string {
 	if r.PromptSource == "queued" {
 		return OriginQueued
+	}
+	if r.PromptSource == "system" && r.Origin == nil {
+		return OriginSystem
 	}
 	kind := ""
 	if r.Origin != nil {

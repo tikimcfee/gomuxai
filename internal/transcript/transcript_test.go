@@ -154,6 +154,10 @@ func TestClaudeUserRecords(t *testing.T) {
 		{`"isMeta":true,"origin":{"kind":"channel"},`, `"<channel source=\"chat\">hi</channel>"`, `- add prompt(peer) "<channel source=\"chat\">hi</channel>"`},
 		{`"isMeta":true,"origin":{"kind":"coordinator"},`, `"next step"`, `- add prompt(peer) "next step"`},
 		{`"isMeta":true,"origin":{"kind":"auto-continuation"},`, `"continue"`, `- add prompt(system) "continue"`},
+		// The harness's own prompts: a /loop wakeup or an idle notice opens
+		// its turn; Stop hook feedback continues the current one.
+		{`"isMeta":true,"promptSource":"system","promptId":"w1","turnPosition":{"promptIndex":4},`, `"[Cross-session idle notice] nothing new"`, `4 add prompt(system) "[Cross-session idle notice] nothing new"`},
+		{`"isMeta":true,"promptSource":"system",`, `"Stop hook feedback:\nrun the linter"`, `- add prompt(system) "Stop hook feedback:\nrun the linter"`},
 		// With no prompt id, a task notification opens a (derived) turn.
 		{`"isMeta":true,"origin":{"kind":"task-notification"},`, `"<task-notification>done</task-notification>"`, `1 add prompt(task-notification) "<task-notification>done</task-notification>"`},
 		{``, `"<local-command-stdout>Set model</local-command-stdout>"`, `- add system local_command "<local-command-stdout>Set model</local-command-stdout>"`},
