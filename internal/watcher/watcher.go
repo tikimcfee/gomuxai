@@ -185,15 +185,24 @@ func (w *Watcher) failMessage(ctx context.Context, msg *storage.Message, logger 
 }
 
 func (w *Watcher) deliverMessage(ctx context.Context, agentName string, msg *storage.Message, logger *slog.Logger) {
-	if _, err := w.service.Send(ctx, agentName, msg.Content); err != nil {
-		logger.Error("failed to send message", "error", err)
-		w.handleDeliveryFailure(ctx, msg, logger)
+	// Claim it first: an agent's Stop hook, a send, or another watcher may
+	// be delivering the same message (see service.Send).
+	claimed, err := w.storage.ClaimMessage(ctx, msg.ID)
+	if err != nil {
+		logger.Error("failed to claim message", "error", err)
 		return
 	}
-
-	// Mark as delivered
-	if err := w.storage.UpdateMessageStatus(ctx, msg.ID, storage.MessageStatusDelivered); err != nil {
-		logger.Error("failed to update message status", "error", err)
+	if !claimed {
+		w.clearState(msg.ID)
+		logger.Debug("message already delivered")
+		return
+	}
+	if _, err := w.service.Send(ctx, agentName, msg.Content, service.SendOptions{Now: true}); err != nil {
+		logger.Error("failed to send message", "error", err)
+		if err := w.storage.UpdateMessageStatus(ctx, msg.ID, storage.MessageStatusPending); err != nil {
+			logger.Error("failed to update message status", "error", err)
+		}
+		w.handleDeliveryFailure(ctx, msg, logger)
 		return
 	}
 

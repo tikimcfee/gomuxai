@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,10 +26,12 @@ terminal output. Statuses: idle, processing, waiting, error, exited.
 Agents spawned with a hook-capable backend (claude, agy) report automatically:
 spawn wires the backend's lifecycle hooks to "agent report --hook".
 
-With --hook, the backend's hook payload is read from stdin. Hook mode never
-writes to stdout and exits 0 even if the report fails, so a reporting problem
-can't disturb the agent; errors go to stderr. (It still exits 1 if the tool
-can't start, e.g. its database can't be opened.)
+With --hook, the backend's hook payload is read from stdin. Hook mode exits 0
+even if the report fails, so a reporting problem can't disturb the agent;
+errors go to stderr. (It still exits 1 if the tool can't start, e.g. its
+database can't be opened.) It writes to stdout only to hand the agent the
+messages held for it (see "agent send"), from a hook that ends its turn
+(Claude's Stop).
 
 The agent name defaults to AGENT_NAME.`,
 	Example: `  agent report idle
@@ -100,5 +103,12 @@ func reportFromHook(name string) error {
 	if err != nil {
 		return fmt.Errorf("reading hook payload: %w", err)
 	}
-	return agentService.ReportHook(getContext(), name, reportSpawnID, reportEvent, payload)
+	out, err := agentService.HandleHook(getContext(), name, reportSpawnID, reportEvent, payload)
+	if out != nil {
+		// Held messages, claimed: print them even if recording failed after.
+		if _, werr := os.Stdout.Write(out); werr != nil {
+			err = errors.Join(err, fmt.Errorf("handing over held messages: %w", werr))
+		}
+	}
+	return err
 }

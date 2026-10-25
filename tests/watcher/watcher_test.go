@@ -133,6 +133,24 @@ func (e *deliveryEnv) runWatcher(t *testing.T, d time.Duration) (pending bool) {
 	return true
 }
 
+// pendingAfter runs a watcher for d, stops it, and reports whether the
+// message is pending then.
+func (e *deliveryEnv) pendingAfter(t *testing.T, d time.Duration) bool {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w := watcher.NewWatcher(e.svc, e.store, 5*time.Millisecond,
+		watcher.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	w.Start(ctx)
+	time.Sleep(d)
+	w.Stop()
+	msgs, err := e.store.GetPendingMessages(ctx, "worker", 1)
+	if err != nil {
+		t.Fatalf("reading messages: %v", err)
+	}
+	return len(msgs) > 0
+}
+
 // A failed turn (Claude's StopFailure) leaves the CLI at its prompt, and the
 // status stays error until the next prompt: deliver rather than wait forever.
 func TestWatcher_DeliversToIdleOrErroredAgent(t *testing.T) {
@@ -192,7 +210,10 @@ func TestWatcher_RetriesFailedSendAfterBackoff(t *testing.T) {
 	env := setupDelivery(t, service.AgentStatusIdle)
 	env.tmux.failSend = true
 
-	if !env.runWatcher(t, 200*time.Millisecond) {
+	// The watcher claims the message (marks it delivered) before typing and
+	// puts it back when typing fails, so look once it has run, not as soon
+	// as the message isn't pending.
+	if !env.pendingAfter(t, 200*time.Millisecond) {
 		t.Fatal("message failed after one failed send, want pending for a retry")
 	}
 	if _, attempts := env.tmux.counts(); attempts != 1 {

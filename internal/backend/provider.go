@@ -53,6 +53,22 @@ type HookProvider interface {
 	ParseHookEvent(event string, payload []byte) (report HookReport, ok bool, err error)
 }
 
+// HookDeliverer is implemented by hook backends whose CLI takes messages
+// from a hook's output and goes on with them, so messages sent while the
+// agent is busy can be held and handed over from a hook (at the turn's end,
+// or between model calls), rather than typed into its input box mid-turn.
+type HookDeliverer interface {
+	// CanDeliver reports whether the hook that produced r can hand messages
+	// to the agent through its output (Claude's Stop; agy's PostInvocation
+	// with injectSteps and force_continue would qualify).
+	CanDeliver(r HookReport) bool
+
+	// DeliveryOutput is what that hook prints to hand the agent messages
+	// (oldest first, each with its "[from ...]" tag), which it takes as its
+	// next step.
+	DeliveryOutput(messages []string) []byte
+}
+
 // InstructionsProvider is implemented by backends that can give an agent
 // standing instructions at launch without writing into its project.
 type InstructionsProvider interface {

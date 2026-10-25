@@ -14,6 +14,7 @@ var (
 	_ backend.InstructionsProvider = (*namedagents.ClaudeBackend)(nil)
 	_ backend.TrustPrompter        = (*namedagents.ClaudeBackend)(nil)
 	_ backend.CommandAllower       = (*namedagents.ClaudeBackend)(nil)
+	_ backend.HookDeliverer        = (*namedagents.ClaudeBackend)(nil)
 
 	_ backend.HookProvider         = (*namedagents.AgyBackend)(nil)
 	_ backend.PermissionResponder  = (*namedagents.AgyBackend)(nil)

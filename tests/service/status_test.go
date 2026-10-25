@@ -426,7 +426,7 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 
 	// A permission dialog on screen.
 	fake.promptGone = false
-	if _, err := env.service.Send(ctx, "worker", "hello"); err == nil || !strings.Contains(err.Error(), "permission prompt on screen") {
+	if _, err := env.service.Send(ctx, "worker", "hello", service.SendOptions{}); err == nil || !strings.Contains(err.Error(), "permission prompt on screen") {
 		t.Errorf("send at a permission dialog: err = %v", err)
 	}
 	fake.promptGone = true
@@ -437,7 +437,7 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		_, err := env.service.Send(ctx, "worker", "hello")
+		_, err := env.service.Send(ctx, "worker", "hello", service.SendOptions{})
 		if err != nil && strings.Contains(err.Error(), "trust prompt") {
 			break
 		}
@@ -450,7 +450,7 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	// No dialog: send goes through.
 	env.tmux.Clear(env.cfg.SessionName("worker"))
 	time.Sleep(200 * time.Millisecond)
-	if _, err := env.service.Send(ctx, "worker", "echo ok"); err != nil {
+	if _, err := env.service.Send(ctx, "worker", "echo ok", service.SendOptions{}); err != nil {
 		t.Errorf("send with no dialog: %v", err)
 	}
 }

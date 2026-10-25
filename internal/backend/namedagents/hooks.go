@@ -82,7 +82,7 @@ func toolInput(input json.RawMessage) string {
 // answer.
 func permissionKey(resp types.PermissionResponse, tool string, questionTools map[string]bool) (string, error) {
 	if questionTools[tool] {
-		return "", fmt.Errorf("%s is a question for the user, not a permission prompt; answer it with send/keys (or --force)", tool)
+		return "", fmt.Errorf("%s is a question for the user, not a permission prompt; answer it with agent keys (see it with agent capture), or --force", tool)
 	}
 	switch resp {
 	case types.PermissionApprove:

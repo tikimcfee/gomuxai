@@ -25,8 +25,9 @@ human, e.g. a permission prompt), error (its last turn failed; it takes input
 again), exited, or unknown.
 
 -v adds where the status came from, the last event, its detail (for a
-permission prompt, the full tool call: what approve would allow), and the
-tool. --json has the same fields.
+permission prompt, the full tool call: what approve would allow), the tool,
+and how many messages are held for the agent until its turn ends (see
+"agent send"). --json has the same fields.
 
 Sources, most authoritative first:
   native  the backend CLI's own session status (claude agents --json)
@@ -77,6 +78,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			Event:  info.Event,
 			Detail: info.Detail,
 			Tool:   info.Tool,
+			Held:   info.Held,
 		}
 		if json.Valid([]byte(info.ToolInput)) {
 			out.ToolInput = json.RawMessage(info.ToolInput)
@@ -110,6 +112,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if input != "" {
 			fmt.Printf("  input:  %s\n", input)
 		}
+		if info.Held > 0 {
+			fmt.Println(heldLine(ref.Name, remote, info))
+		}
 	}
 	switch {
 	case info.Status == service.AgentStatusExited:
@@ -120,6 +125,27 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		hint("agent status %s -v shows what it's waiting on", name)
 	}
 	return nil
+}
+
+// heldLine is status -v's line about the messages waiting for an agent.
+func heldLine(name string, remote bool, info *service.StatusInfo) string {
+	n := plural(info.Held, "message")
+	var line string
+	switch {
+	case remote:
+		line = "  held:   " + n
+	case agentService.HoldsMessages(getContext(), name) && (info.Status == service.AgentStatusIdle || info.Status == service.AgentStatusError):
+		// The turn ended without its Stop hook: Esc, a deny, a failure.
+		line = "  held:   " + n + ", typed in once it has been at its prompt for 10s (agent deliver " + name + " types it now)"
+	case agentService.HoldsMessages(getContext(), name):
+		line = "  held:   " + n + ", delivered when its turn ends"
+	default:
+		line = "  queued: " + n + ", delivered by agent watch when it's idle"
+	}
+	if info.Status == service.AgentStatusExited {
+		line += "; it has exited, so they won't be"
+	}
+	return line
 }
 
 // statusJSONOut is a status as --json prints it.
@@ -135,6 +161,9 @@ type statusJSONOut struct {
 	// permission: at a prompt, what approving it allows.
 	ToolInput json.RawMessage `json:"tool_input,omitempty"`
 	UpdatedAt *time.Time      `json:"updated_at,omitempty"`
+	// Held is how many messages wait for the agent: held for the end of
+	// its turn, or queued for agent watch.
+	Held int `json:"held,omitempty"`
 }
 
 // statusWrapWidth is the width status -v wraps a detail to, and
@@ -209,5 +238,6 @@ func remoteStatus(ref natsbus.AgentRef) (*service.StatusInfo, error) {
 		Tool:      resp.Tool,
 		ToolInput: resp.ToolInput,
 		UpdatedAt: resp.UpdatedAt,
+		Held:      resp.Held,
 	}, nil
 }

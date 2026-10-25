@@ -11,14 +11,18 @@ import (
 
 var queueCmd = &cobra.Command{
 	Use:   "queue <name> <message>",
-	Short: "Queue a message, delivered by the watcher when the agent is idle",
+	Short: "Queue a message, delivered when the agent is idle",
 	Long: `Queue adds a message to the agent's inbox, for delivery when it is ready.
 
-The watcher ("agent watch") delivers queued messages when the agent's status
-is idle, or error (a failed turn, back at its prompt). It holds them while the
-agent is processing or waiting, and fails them if the agent has exited.
-Without a running watcher, queued messages are never delivered: queue says so
-when it finds none.
+For a Claude agent, queue does what "agent send" does, and needs no watcher:
+the message is typed in if the agent is at its prompt, and otherwise held
+until its turn ends, when its Stop hook hands it over.
+
+For other agents, the watcher ("agent watch") delivers queued messages when
+the agent's status is idle, or error (a failed turn, back at its prompt). It
+holds them while the agent is processing or waiting, and fails them if the
+agent has exited. Without a running watcher, queued messages are never
+delivered: queue says so when it finds none.
 
 The agent must be on this host: name@<this host> works, while an agent on
 another host is refused, since queueing isn't served over the bus (use
@@ -66,6 +70,16 @@ func runQueue(cmd *cobra.Command, args []string) error {
 		message = markSender(sender, message)
 	}
 	ctx := getContext()
+	if agentService.HoldsMessages(ctx, name) {
+		// Send already holds a message until the agent is free, and needs
+		// no watcher to deliver it.
+		res, err := agentService.Send(ctx, name, message, service.SendOptions{From: sender})
+		if err != nil {
+			return err
+		}
+		printSent(name, res)
+		return nil
+	}
 	if err := agentService.Queue(ctx, sender, name, message); err != nil {
 		return err
 	}

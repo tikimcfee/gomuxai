@@ -80,7 +80,32 @@ func (c *RPCClient) Capture(ctx context.Context, ref AgentRef, lines int, raw bo
 
 // Send types message into a remote agent's terminal, followed by Enter.
 func (c *RPCClient) Send(ctx context.Context, ref AgentRef, message string) error {
-	return c.callAgent(ctx, ref, OpSend, SendRequest{Agent: ref.Name, Message: message}, nil)
+	_, err := c.SendMessage(ctx, ref, SendRequest{Message: message})
+	return err
+}
+
+// SendMessage sends a message to a remote agent, saying what its host did
+// with it; nil (and no error) from a host that predates SendResponse.
+// req.Agent is set from ref.
+func (c *RPCClient) SendMessage(ctx context.Context, ref AgentRef, req SendRequest) (*SendResponse, error) {
+	req.Agent = ref.Name
+	var resp SendResponse
+	var got bool
+	if err := c.callAgent(ctx, ref, OpSend, req, optionalReply{&resp, &got}); err != nil {
+		return nil, err
+	}
+	if !got {
+		return nil, nil
+	}
+	resp.Status, resp.Detail = clean(resp.Status), clean(resp.Detail)
+	return &resp, nil
+}
+
+// optionalReply is a reply's data that hosts predating it don't send: got
+// says whether it came.
+type optionalReply struct {
+	out any
+	got *bool
 }
 
 // Respond answers a remote agent's permission prompt. req.Agent is set from ref.
@@ -134,6 +159,12 @@ func (c *RPCClient) call(ctx context.Context, host, op string, req, out any) err
 	}
 	if out == nil {
 		return nil
+	}
+	if opt, ok := out.(optionalReply); ok {
+		if len(resp.Data) == 0 || string(resp.Data) == "null" {
+			return nil
+		}
+		*opt.got, out = true, opt.out
 	}
 	if len(resp.Data) == 0 {
 		return fmt.Errorf("empty %s reply from host %q", op, host)

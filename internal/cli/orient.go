@@ -84,7 +84,9 @@ func orient(w io.Writer, me string) error {
 	if me != "" && t.agents[me] != nil {
 		if pending, err := store.GetPendingMessages(ctx, me, 100); err == nil && len(pending) > 0 {
 			line := fmt.Sprintf("Queued for you: %s, delivered when you're idle", plural(len(pending), "message"))
-			if running, ok := watcherRunning(); ok && !running {
+			if agentService.HoldsMessages(ctx, me) {
+				line = fmt.Sprintf("Held for you: %s, delivered when this turn ends", plural(len(pending), "message"))
+			} else if running, ok := watcherRunning(); ok && !running {
 				line += ", but no watcher is running to deliver (agent watch)"
 			}
 			fmt.Fprintln(w, line+".")
@@ -100,7 +102,7 @@ func orient(w io.Writer, me string) error {
 }
 
 // agentStatuses lists agents with their status, e.g. "helper idle,
-// builder processing", up to orientMaxAgents of them.
+// builder processing (1 held)", up to orientMaxAgents of them.
 func agentStatuses(agents []*storage.Agent) string {
 	var parts []string
 	for i, a := range agents {
@@ -108,11 +110,14 @@ func agentStatuses(agents []*storage.Agent) string {
 			parts = append(parts, fmt.Sprintf("and %d more (agent list)", len(agents)-i))
 			break
 		}
-		status := service.AgentStatusUnknown
+		status, held := service.AgentStatusUnknown, ""
 		if info, err := agentService.StatusInfo(getContext(), a.Name); err == nil {
 			status = info.Status
+			if info.Held > 0 {
+				held = fmt.Sprintf(" (%d held)", info.Held)
+			}
 		}
-		parts = append(parts, fmt.Sprintf("%s %s", a.Name, status))
+		parts = append(parts, fmt.Sprintf("%s %s%s", a.Name, status, held))
 	}
 	return strings.Join(parts, ", ")
 }

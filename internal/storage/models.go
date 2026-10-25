@@ -144,6 +144,9 @@ type StateUpdate struct {
 	Entries   []*StateEntry
 	AgentName string
 	Delete    []string
+	// Event, if set, is appended to the agent events in the same
+	// transaction.
+	Event *AgentEvent
 }
 
 // StateEntry represents a key-value state entry.

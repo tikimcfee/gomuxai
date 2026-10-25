@@ -145,14 +145,19 @@ func TestSend_RightAfterDeny(t *testing.T) {
 	if _, err := env.service.RespondPermission(ctx, "worker", backend.PermissionDeny, service.PermissionOptions{}); err != nil {
 		t.Fatalf("deny: %v", err)
 	}
-	// Native still says waiting, and the dialog is still on screen: refuse.
-	if _, err := env.service.Send(ctx, "worker", "hello"); err == nil {
-		t.Error("sent while a dialog was on screen")
+	env.service.SetDelivererStarter(func(string) error { return nil })
+	// Native still says waiting, and the dialog is still on screen: type
+	// nothing (--now refuses), hold the message.
+	if _, err := env.service.Send(ctx, "worker", "hello", service.SendOptions{Now: true}); err == nil {
+		t.Error("typed while a dialog was on screen")
+	}
+	if res, err := env.service.Send(ctx, "worker", "hello", service.SendOptions{}); err != nil || !res.Held {
+		t.Errorf("send at a dialog: %+v, err %v; want held", res, err)
 	}
 	fake.promptGone = true
-	status, err := env.service.Send(ctx, "worker", "do it without reading /a")
-	if err != nil || status != service.AgentStatusIdle {
-		t.Errorf("send right after deny: status %s, err %v; want sent, idle", status, err)
+	res, err := env.service.Send(ctx, "worker", "do it without reading /a", service.SendOptions{})
+	if err != nil || res.Status != service.AgentStatusIdle || res.Typed != 2 {
+		t.Errorf("send right after deny: %+v, err %v; want idle, typed with the held one", res, err)
 	}
 
 	// A deny long ago doesn't outweigh native.

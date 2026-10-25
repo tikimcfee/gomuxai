@@ -168,6 +168,9 @@ type StatusResponse struct {
 	// started (see Observation); zero from hosts that predate them.
 	SentAt time.Time `json:"sent_at,omitempty"`
 	TurnAt time.Time `json:"turn_at,omitempty"`
+	// Held is how many messages wait for the agent (see service.Send);
+	// zero from hosts that predate it.
+	Held int `json:"held,omitempty"`
 }
 
 type CaptureRequest struct {
@@ -183,6 +186,20 @@ type CaptureResponse struct {
 type SendRequest struct {
 	Agent   string `json:"agent"`
 	Message string `json:"message"`
+	// Now types the message even while the agent is busy, rather than
+	// holding it for the end of its turn. Hosts that predate holding
+	// ignore it: they always type.
+	Now bool `json:"now,omitempty"`
+}
+
+// SendResponse says what the receiving host did with a message. Hosts that
+// predate it reply with no data.
+type SendResponse struct {
+	Status    string `json:"status"`
+	Detail    string `json:"detail,omitempty"`
+	Held      bool   `json:"held,omitempty"`
+	HeldCount int    `json:"held_count,omitempty"`
+	Typed     int    `json:"typed,omitempty"`
 }
 
 // RespondRequest answers a permission prompt (agent approve / deny).

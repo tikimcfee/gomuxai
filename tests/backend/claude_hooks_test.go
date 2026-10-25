@@ -478,3 +478,31 @@ func TestClaudeAllowCommands(t *testing.T) {
 		t.Errorf("args = %q, want %q", args, want)
 	}
 }
+
+// Held messages go back as Stop's additionalContext: Claude goes on with
+// it, shown as "Stop hook feedback". {"decision":"block"} would show as an
+// error, and only Stop can deliver.
+func TestClaudeDelivery(t *testing.T) {
+	b := namedagents.NewClaudeBackend()
+	for _, tc := range []struct {
+		messages []string
+		want     string
+	}{
+		{[]string{`[from lead@hub] "quoted" <tag>`}, "A message arrived while you were working:\n\n[from lead@hub] \"quoted\" <tag>"},
+		{[]string{"[from a@hub] one", "[from b@hub] two"}, "2 messages arrived while you were working, oldest first:\n\n[from a@hub] one\n\n[from b@hub] two"},
+	} {
+		out := b.DeliveryOutput(tc.messages)
+		var got map[string]map[string]string
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("DeliveryOutput = %s: %v", out, err)
+		}
+		if h := got["hookSpecificOutput"]; len(got) != 1 || len(h) != 2 || h["hookEventName"] != "Stop" || h["additionalContext"] != tc.want {
+			t.Errorf("DeliveryOutput = %s, want only hookSpecificOutput with Stop and %q", out, tc.want)
+		}
+	}
+	for event, want := range map[string]bool{"Stop": true, "PostToolUse": false, "StopFailure": false, "Notification": false} {
+		if got := b.CanDeliver(backend.HookReport{Event: event}); got != want {
+			t.Errorf("CanDeliver(%s) = %v, want %v", event, got, want)
+		}
+	}
+}

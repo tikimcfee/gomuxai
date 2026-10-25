@@ -187,6 +187,32 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 	return r, true, nil
 }
 
+// CanDeliver: Claude's Stop, with or without background work running. Its
+// additionalContext continues the turn. Nothing fires when a turn is
+// interrupted (Esc, a deny), and later hooks of a running turn
+// (PostToolUse) only add context the model was seen to ignore.
+func (b *ClaudeBackend) CanDeliver(r types.HookReport) bool {
+	return r.Event == "Stop"
+}
+
+// DeliveryOutput returns the messages as Stop's additionalContext, under a
+// line saying what they are. Claude goes on with it and shows it as "Stop
+// hook feedback: ...". A {"decision":"block"} works too, but shows as "Stop
+// hook error" with an error footer.
+func (b *ClaudeBackend) DeliveryOutput(messages []string) []byte {
+	head := "A message arrived while you were working:"
+	if len(messages) > 1 {
+		head = fmt.Sprintf("%d messages arrived while you were working, oldest first:", len(messages))
+	}
+	out, _ := json.Marshal(map[string]any{
+		"hookSpecificOutput": map[string]string{
+			"hookEventName":     "Stop",
+			"additionalContext": head + "\n\n" + strings.Join(messages, "\n\n"),
+		},
+	})
+	return out
+}
+
 // TranscriptReader reads the session JSONL whose path hooks report as
 // transcript_path.
 func (b *ClaudeBackend) TranscriptReader() transcript.Reader {

@@ -223,7 +223,7 @@ func TestWait_NextCatchesTurnThatEndedBeforeWait(t *testing.T) {
 		}
 	}
 	report(service.StatusReport{Status: service.AgentStatusIdle, Event: "Stop"}) // the previous turn
-	if _, err := env.service.Send(ctx, "quick", "say hi"); err != nil {
+	if _, err := env.service.Send(ctx, "quick", "say hi", service.SendOptions{}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	report(service.StatusReport{Status: service.AgentStatusProcessing, Event: "UserPromptSubmit", ClearResult: true})

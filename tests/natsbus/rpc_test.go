@@ -74,9 +74,12 @@ func (f *fakeRPC) Capture(ctx context.Context, req natsbus.CaptureRequest) (*nat
 	return &natsbus.CaptureResponse{Output: "screen of " + req.Agent}, nil
 }
 
-func (f *fakeRPC) Send(ctx context.Context, req natsbus.SendRequest) error {
+func (f *fakeRPC) Send(ctx context.Context, req natsbus.SendRequest) (*natsbus.SendResponse, error) {
 	f.record(req)
-	return f.check(ctx, req.Agent)
+	if err := f.check(ctx, req.Agent); err != nil {
+		return nil, err
+	}
+	return &natsbus.SendResponse{Status: "idle", Typed: 1}, nil
 }
 
 func (f *fakeRPC) Respond(ctx context.Context, req natsbus.RespondRequest) error {

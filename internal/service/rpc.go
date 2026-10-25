@@ -62,6 +62,7 @@ func (h rpcHandler) Status(ctx context.Context, req natsbus.StatusRequest) (*nat
 		ReportedAt:     info.ReportedAt,
 		SentAt:         info.SentAt,
 		TurnAt:         info.TurnAt,
+		Held:           info.Held,
 	}, nil
 }
 
@@ -73,9 +74,18 @@ func (h rpcHandler) Capture(ctx context.Context, req natsbus.CaptureRequest) (*n
 	return &natsbus.CaptureResponse{Output: out}, nil
 }
 
-func (h rpcHandler) Send(ctx context.Context, req natsbus.SendRequest) error {
-	_, err := h.s.Send(ctx, req.Agent, req.Message)
-	return remoteErr(err)
+func (h rpcHandler) Send(ctx context.Context, req natsbus.SendRequest) (*natsbus.SendResponse, error) {
+	res, err := h.s.Send(ctx, req.Agent, req.Message, SendOptions{Now: req.Now, From: "remote"})
+	if err != nil {
+		return nil, remoteErr(err)
+	}
+	return &natsbus.SendResponse{
+		Status:    string(res.Status),
+		Detail:    res.Detail,
+		Held:      res.Held,
+		HeldCount: res.HeldCount,
+		Typed:     res.Typed,
+	}, nil
 }
 
 func (h rpcHandler) Respond(ctx context.Context, req natsbus.RespondRequest) error {

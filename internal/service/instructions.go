@@ -47,6 +47,12 @@ A message starting with "[from a person on HOST]" or
 person, or an AI session a person started), so there is no agent to send to:
 answer it in your reply, as you would a prompt typed into your terminal.
 
+A message sent to you while you're working is held until your turn ends, then
+handed to you as Stop hook feedback ("A message arrived while you were
+working: ..."): it's a message like any other, so act on it and reply as
+asked. Likewise, a message you send to a busy agent reaches it when its turn
+ends; `+"`agent send NAME --now \"...\"`"+` types it in at once instead, to interrupt.
+
 Your status (idle, working, waiting on a permission prompt) is reported
 automatically. Use `+"`agent`"+` rather than tmux to reach other agents.
 `, name, s.cfg.Host, by, bin)
@@ -132,7 +138,7 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 // agents: the user approves each one. So are friction accept and resolve,
 // which are for the people working on the tool.
 var agentSafeCommands = []string{
-	"send", "list", "status", "wait", "events", "capture", "logs", "state get", "history",
+	"send", "deliver", "list", "status", "wait", "events", "capture", "logs", "state get", "history",
 	"friction add", "friction +1", "friction list", "friction show",
 }
 

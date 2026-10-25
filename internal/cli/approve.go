@@ -24,8 +24,8 @@ says which prompt it answered.
 Check what it's asking first: "agent status <name> -v" shows the pending
 tool call in full. Refuses unless the agent's status is "waiting", and refuses
 dialogs that are questions for the user rather than permission prompts (e.g.
-Claude's AskUserQuestion: answer those with send/keys). --force overrides
-both.
+Claude's AskUserQuestion: answer those with "agent keys"; a send to a waiting
+Claude agent is held for the end of its turn). --force overrides both.
 
 Use --expect with the tool you inspected, so a prompt that replaced it in the
 meantime isn't approved blind. An agent on another host is addressed as

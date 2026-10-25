@@ -64,6 +64,9 @@ type AgentService struct {
 	tmux     tmux.TmuxOps
 	backends *backend.Registry
 	events   EventPublisher // nil: no bus
+	// deliverer, if set, replaces how a deliverer process is started
+	// (startDeliverer).
+	deliverer func(name string) error
 }
 
 // NewAgentService creates a new agent service.
@@ -369,24 +372,38 @@ func (s *AgentService) sendLine(sessionName, text string) error {
 	return nil
 }
 
-// Send types a message into an agent, followed by Enter. It refuses while
-// the agent is at a dialog: Enter there answers the dialog rather than
-// sending a message (it approves a permission prompt, or picks "No, exit" at
-// Claude's trust prompt), so a message must never be how a dialog gets
-// answered. Use approve/deny, or SendUnchecked to override. It also refuses
-// an agent whose CLI has exited, since the message would run in the shell
-// left behind. It returns the status it found the agent in (unknown if it
-// couldn't tell).
-func (s *AgentService) Send(ctx context.Context, name string, message string) (AgentStatus, error) {
+// Send delivers a message to an agent. An agent that holds messages
+// (Claude, spawned with hooks) gets it typed in if it is at its prompt, and
+// otherwise holds it for the end of its turn, when its Stop hook hands it
+// over (see held.go). Other agents, and opts.Now, get it typed in now, even
+// mid-turn.
+//
+// Typing refuses while the agent is at a dialog: Enter there answers the
+// dialog rather than sending a message (it approves a permission prompt,
+// or picks "No, exit" at Claude's trust prompt), so a message must never be
+// how a dialog gets answered. Use approve/deny, or SendUnchecked to
+// override. Send also refuses an agent whose CLI has exited, since the
+// message would run in the shell left behind. The result says what it
+// found the agent doing and what it did.
+func (s *AgentService) Send(ctx context.Context, name string, message string, opts SendOptions) (SendResult, error) {
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
-		return AgentStatusUnknown, err
+		return SendResult{Status: AgentStatusUnknown}, err
+	}
+	// A hook can only hand over text, which wouldn't run a slash command.
+	if !opts.Now && !strings.HasPrefix(message, "/") && s.holdsMessages(ctx, agent) {
+		return s.sendHeld(ctx, agent, message, opts.From)
 	}
 	status, err := s.checkCanSend(ctx, agent)
+	res := SendResult{Status: status}
 	if err != nil {
-		return status, err
+		return res, err
 	}
-	return status, s.SendUnchecked(ctx, name, message)
+	if err := s.SendUnchecked(ctx, name, message); err != nil {
+		return res, err
+	}
+	res.Typed = 1
+	return res, nil
 }
 
 // checkCanSend fails if the agent has exited, is waiting on a prompt, or
@@ -405,27 +422,38 @@ func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (
 			return status, fmt.Errorf("agent %s is waiting on %s, where the message's Enter would answer it: see it with agent status %s -v, then agent approve %s or agent deny %s (a person can send anyway with --force)",
 				agent.Name, prompt, agent.Name, agent.Name, agent.Name)
 		case AgentStatusExited:
-			return status, fmt.Errorf("agent %s has exited, so the message would be typed into the shell left behind: agent logs %s shows how it ended, and agent cleanup %s removes it",
-				agent.Name, agent.Name, agent.Name)
+			return status, exitedErr(agent)
 		}
 	}
+	return status, s.checkScreen(agent)
+}
+
+// exitedErr is the error for typing into an agent whose CLI has exited.
+func exitedErr(agent *storage.Agent) error {
+	return fmt.Errorf("agent %s has exited, so the message would be typed into the shell left behind: agent logs %s shows how it ended, and agent cleanup %s removes it",
+		agent.Name, agent.Name, agent.Name)
+}
+
+// checkScreen fails if the agent shows a permission or trust dialog on
+// screen, where a message's Enter would answer it.
+func (s *AgentService) checkScreen(agent *storage.Agent) error {
 	provider, err := s.provider(agent)
 	if err != nil {
-		return status, nil // custom backend: nothing to recognize dialogs with
+		return nil // custom backend: nothing to recognize dialogs with
 	}
 	screen, err := s.tmux.Capture(agent.SessionName, 0, true)
 	if err != nil {
-		return status, nil // SendUnchecked reports a missing session
+		return nil // SendUnchecked reports a missing session
 	}
 	if pr, ok := provider.(backend.PermissionResponder); ok && pr.PermissionPromptVisible(screen) {
-		return status, fmt.Errorf("agent %s has a permission prompt on screen, where the message's Enter would answer it: agent approve %s or agent deny %s first (a person can send anyway with --force)",
+		return fmt.Errorf("agent %s has a permission prompt on screen, where the message's Enter would answer it: agent approve %s or agent deny %s first (a person can send anyway with --force)",
 			agent.Name, agent.Name, agent.Name)
 	}
 	if tp, ok := provider.(backend.TrustPrompter); ok && tp.TrustKeys(screen) != nil {
-		return status, fmt.Errorf("agent %s is at a workspace trust prompt, where the message's Enter would answer it: answer it in its session (%s), or clean it up and respawn with --trust-workspace",
+		return fmt.Errorf("agent %s is at a workspace trust prompt, where the message's Enter would answer it: answer it in its session (%s), or clean it up and respawn with --trust-workspace",
 			agent.Name, agent.SessionName)
 	}
-	return status, nil
+	return nil
 }
 
 // maxOneLine bounds OneLine's result.

@@ -375,7 +375,9 @@ func (h evilHandler) Status(context.Context, natsbus.StatusRequest) (*natsbus.St
 func (h evilHandler) Capture(context.Context, natsbus.CaptureRequest) (*natsbus.CaptureResponse, error) {
 	return &natsbus.CaptureResponse{Output: h.text}, nil
 }
-func (h evilHandler) Send(context.Context, natsbus.SendRequest) error { return errors.New(h.text) }
+func (h evilHandler) Send(context.Context, natsbus.SendRequest) (*natsbus.SendResponse, error) {
+	return nil, errors.New(h.text)
+}
 func (h evilHandler) Respond(context.Context, natsbus.RespondRequest) error {
 	return nil
 }

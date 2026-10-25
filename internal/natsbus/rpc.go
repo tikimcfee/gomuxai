@@ -15,7 +15,7 @@ type RPCHandler interface {
 	List(ctx context.Context) (*ListResponse, error)
 	Status(ctx context.Context, req StatusRequest) (*StatusResponse, error)
 	Capture(ctx context.Context, req CaptureRequest) (*CaptureResponse, error)
-	Send(ctx context.Context, req SendRequest) error
+	Send(ctx context.Context, req SendRequest) (*SendResponse, error)
 	Respond(ctx context.Context, req RespondRequest) error
 	Keys(ctx context.Context, req KeysRequest) error
 }
@@ -51,7 +51,7 @@ var rpcOps = map[string]opFunc{
 		if err := decodeAgent(OpSend, data, &req, &req.Agent); err != nil {
 			return nil, err
 		}
-		return nil, h.Send(ctx, req)
+		return h.Send(ctx, req)
 	},
 	OpRespond: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
 		var req RespondRequest

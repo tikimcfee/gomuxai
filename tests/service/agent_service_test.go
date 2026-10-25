@@ -337,7 +337,7 @@ func TestSend_ToExistingAgent(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Send a message
-	_, err = env.service.Send(ctx, opts.Name, "hello world")
+	_, err = env.service.Send(ctx, opts.Name, "hello world", service.SendOptions{})
 	if err != nil {
 		t.Fatalf("send failed: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestSend_ToMissingAgent(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err := env.service.Send(ctx, "nonexistent-agent", "hello")
+	_, err := env.service.Send(ctx, "nonexistent-agent", "hello", service.SendOptions{})
 	if err == nil {
 		t.Fatal("expected error for missing agent")
 	}

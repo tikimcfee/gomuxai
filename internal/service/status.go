@@ -114,6 +114,10 @@ type StatusInfo struct {
 	SentAt time.Time
 	TurnAt time.Time
 
+	// Held is how many messages wait for the agent: held for the end of its
+	// turn (see Send), or queued for agent watch.
+	Held int
+
 	pending []pendingPrompt // unanswered permission prompts, oldest first
 	prompt  *pendingPrompt  // while waiting: the one on screen, which Tool and Detail describe
 }
@@ -138,6 +142,20 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 	if err := s.checkSpawn(ctx, name, r.SpawnID, "report"); err != nil {
 		return err
 	}
+	now := time.Now()
+	u, err := s.reportUpdate(ctx, name, r, now)
+	if err != nil {
+		return err
+	}
+	if err := s.storage.RecordReport(ctx, u.Entries, name, u.Delete, u.Event); err != nil {
+		return err
+	}
+	s.publishStatus(name, r, now)
+	return nil
+}
+
+// reportUpdate is the state change that records r, reported at now.
+func (s *AgentService) reportUpdate(ctx context.Context, name string, r StatusReport, now time.Time) (storage.StateUpdate, error) {
 	values := map[string]string{
 		StateKeyStatus: string(r.Status),
 		StateKeyEvent:  r.Event,
@@ -155,13 +173,12 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 	if r.Transcript != "" {
 		values[StateKeyTranscript] = r.Transcript
 	}
-	now := time.Now()
 	if r.ClearResult && r.Status == AgentStatusProcessing {
 		values[StateKeyTurnAt] = now.Format(time.RFC3339Nano)
 	}
 	del, err := s.promptChanges(ctx, name, r, now, values)
 	if err != nil {
-		return err
+		return storage.StateUpdate{}, err
 	}
 	entries := make([]*storage.StateEntry, 0, len(values))
 	for key, value := range values {
@@ -173,11 +190,7 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 	if r.Status == AgentStatusWaiting {
 		ev.ToolInput = r.ToolInput // only prompts: every tool call's input would bloat the log
 	}
-	if err := s.storage.RecordReport(ctx, entries, name, del, ev); err != nil {
-		return err
-	}
-	s.publishStatus(name, r, now)
-	return nil
+	return storage.StateUpdate{Entries: entries, AgentName: name, Delete: del, Event: ev}, nil
 }
 
 // promptChanges applies r's change to the pending permission prompts: a new
@@ -255,29 +268,41 @@ func (s *AgentService) checkSpawn(ctx context.Context, name, spawnID, what strin
 // command was launched with; hooks from any other spawn of this agent name
 // are rejected. An empty spawnID skips the check (hooks wired by hand).
 func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event string, payload []byte) error {
+	_, err := s.reportHook(ctx, name, spawnID, event, payload, false)
+	return err
+}
+
+// HandleHook is ReportHook for the hook itself. A hook that ends the
+// agent's turn also hands it the messages held for it (see Send), where the
+// backend can: out is what the hook must print for that, nil if nothing.
+func (s *AgentService) HandleHook(ctx context.Context, name, spawnID, event string, payload []byte) (out []byte, err error) {
+	return s.reportHook(ctx, name, spawnID, event, payload, true)
+}
+
+func (s *AgentService) reportHook(ctx context.Context, name, spawnID, event string, payload []byte, deliver bool) ([]byte, error) {
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.checkSpawn(ctx, name, spawnID, "hook"); err != nil {
-		return err
+		return nil, err
 	}
 	provider, err := s.provider(agent)
 	if err != nil {
-		return fmt.Errorf("getting backend: %w", err)
+		return nil, fmt.Errorf("getting backend: %w", err)
 	}
 	hp, ok := provider.(backend.HookProvider)
 	if !ok {
-		return fmt.Errorf("backend %q does not support hooks", agent.Backend)
+		return nil, fmt.Errorf("backend %q does not support hooks", agent.Backend)
 	}
 	hr, ok, err := hp.ParseHookEvent(event, payload)
 	if err != nil || !ok {
-		return err
+		return nil, err
 	}
 	if s.backgroundWorkRunning(ctx, name, hr) {
-		return nil
+		return nil, nil
 	}
-	err = s.Report(ctx, name, StatusReport{
+	r := StatusReport{
 		Status:    fromBackendStatus(hr.Status),
 		Event:     hr.Event,
 		Detail:    hr.Detail,
@@ -292,11 +317,17 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 		Prompt:  hr.Prompt,
 		CallKey: hr.CallKey,
 		Agent:   hr.Agent,
-	})
-	if err != nil || hr.Transcript == "" {
-		return err
 	}
-	return s.recordTranscript(name, agent.Backend, hr.Transcript)
+	var out []byte
+	if hd, ok := provider.(backend.HookDeliverer); ok && deliver && hd.CanDeliver(hr) {
+		out, err = s.reportDelivering(ctx, name, r, hd)
+	} else {
+		err = s.Report(ctx, name, r)
+	}
+	if err != nil || hr.Transcript == "" {
+		return out, err
+	}
+	return out, s.recordTranscript(name, agent.Backend, hr.Transcript)
 }
 
 // backgroundWorkRunning reports whether hr is Claude's idle_prompt
@@ -330,6 +361,7 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 	if err != nil {
 		return nil, err
 	}
+	info.Held = s.HeldCount(ctx, name)
 	if reported != nil {
 		info.ReportedStatus, info.ReportedAt = reported.Status, reported.UpdatedAt
 		info.SentAt, info.TurnAt = reported.SentAt, reported.TurnAt

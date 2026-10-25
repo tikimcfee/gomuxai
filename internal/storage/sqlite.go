@@ -351,6 +351,11 @@ func (s *SQLiteStorage) ClaimPendingMessages(ctx context.Context, receiverID str
 		if err := applyStateUpdate(ctx, tx, u.Entries, u.AgentName, u.Delete); err != nil {
 			return nil, err
 		}
+		if u.Event != nil {
+			if err := insertAgentEvent(ctx, tx, u.Event); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("committing claim: %w", err)
