@@ -156,7 +156,9 @@ func (c *Config) SessionName(agentName string) string {
 	return c.SessionPrefix + agentName
 }
 
-// LogPath returns the log file path for an agent.
+// LogPath returns the log file path for an agent: the pane's pipe-pane
+// output. External viewers (glyph3d-js's screens) tail this path, so
+// changing it breaks them.
 func (c *Config) LogPath(agentName string) string {
 	return filepath.Join(c.LogDir, agentName+".log")
 }
