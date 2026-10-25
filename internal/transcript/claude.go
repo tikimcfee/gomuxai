@@ -515,21 +515,21 @@ func (l *claudeLine) result(b claudeBlock, own bool) {
 	if res.Status == StatusBackground {
 		response = nil
 	}
-	sub := ""
+	var subs []string
 	if structured.AgentID != "" {
-		sub = "agent-" + structured.AgentID
+		subs = []string{"agent-" + structured.AgentID}
 	}
-	l.update(call, res, response, sub)
+	l.update(call, res, response, subs)
 }
 
 // update makes the update of call to res, its table fields read from
-// response; sub, if set, names the session the call started.
-func (l *claudeLine) update(call *Event, res *ToolResult, response json.RawMessage, sub string) {
+// response; subs, if any, name the sessions the call started.
+func (l *claudeLine) update(call *Event, res *ToolResult, response json.RawMessage, subs []string) {
 	t := *call.Tool
 	t.Result = res
 	t.ToolSummary = SummarizeTool(t.Name, t.Input, response, l.c.sess.CWD)
-	if sub != "" {
-		t.SubSession = sub
+	if len(subs) > 0 {
+		t.SubSessions = subs
 	}
 	e := *call
 	e.Op, e.At, e.Line, e.TS, e.Tool = OpUpdate, l.at, l.n, l.r.Timestamp, &t
@@ -561,7 +561,7 @@ func (c *claudeLines) settled(id, status string) {
 func (l *claudeLine) interrupt() {
 	for _, id := range append([]string(nil), l.c.pending...) {
 		if call := l.c.tools[id]; call != nil && call.Tool.Result.Status == StatusPending {
-			l.update(call, &ToolResult{Status: StatusInterrupted}, nil, "")
+			l.update(call, &ToolResult{Status: StatusInterrupted}, nil, nil)
 		}
 	}
 }
@@ -648,7 +648,7 @@ func (l *claudeLine) notification(text string) {
 			}
 			response, _ = json.Marshal(m)
 		}
-		l.update(call, res, response, "")
+		l.update(call, res, response, nil)
 	}
 }
 

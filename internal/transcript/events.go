@@ -133,8 +133,9 @@ type ToolEvent struct {
 	Input  json.RawMessage `json:"input,omitempty"`
 	Result *ToolResult     `json:"result,omitempty"`
 	ToolSummary
-	// SubSession is the session a subagent-spawning call started.
-	SubSession string `json:"sub_session,omitempty"`
+	// SubSessions are the sessions a subagent-spawning call started, in
+	// the order its result names them.
+	SubSessions []string `json:"sub_sessions,omitempty"`
 }
 
 // ToolResult is what a tool call returned, or that it hasn't yet.

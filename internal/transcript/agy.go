@@ -192,7 +192,7 @@ func (l *agyLine) userInput() {
 func (l *agyLine) abandon() {
 	for _, id := range l.a.calls {
 		if id != "" {
-			l.update(l.a.tools[id], &ToolResult{Status: StatusInterrupted}, nil, "")
+			l.update(l.a.tools[id], &ToolResult{Status: StatusInterrupted}, nil, nil)
 		}
 	}
 	l.a.calls = nil
@@ -275,26 +275,24 @@ func (l *agyLine) generic() {
 	default:
 		response = agyResponse(call.Tool.Name, call.Tool.Input, output)
 	}
-	sub := ""
+	var subs []string
 	if call.Tool.Name == "invoke_subagent" {
-		if ids := agySubagentIDs(output); len(ids) > 0 {
-			sub = ids[0]
-		}
+		subs = agySubagentIDs(output)
 	}
-	l.update(call, res, response, sub)
+	l.update(call, res, response, subs)
 	if m := agyKilled.FindStringSubmatch(output); m != nil && call.Tool.Name == "manage_task" && res.Status == StatusOK {
 		l.end(m[1], &ToolResult{Status: StatusInterrupted}, nil)
 	}
 }
 
 // update makes the update of call to res, its table fields read from
-// response; sub, if set, names the session the call started.
-func (l *agyLine) update(call *Event, res *ToolResult, response json.RawMessage, sub string) {
+// response; subs, if any, name the sessions the call started.
+func (l *agyLine) update(call *Event, res *ToolResult, response json.RawMessage, subs []string) {
 	t := *call.Tool
 	t.Result = res
 	t.ToolSummary = SummarizeTool(t.Name, t.Input, response, l.a.sess.CWD)
-	if sub != "" {
-		t.SubSession = sub
+	if len(subs) > 0 {
+		t.SubSessions = subs
 	}
 	e := *call
 	e.Op, e.At, e.Line, e.TS, e.Tool = OpUpdate, l.at, l.n, l.st.CreatedAt, &t
@@ -320,7 +318,7 @@ func (l *agyLine) end(task string, res *ToolResult, response json.RawMessage) {
 	}
 	call := l.a.tools[l.a.running[i].call]
 	l.a.running = slices.Delete(l.a.running, i, i+1)
-	l.update(call, res, response, "")
+	l.update(call, res, response, nil)
 }
 
 // agyTaskSender matches the sender of a background task's messages, the

@@ -100,7 +100,7 @@ updates an earlier one, the add comes first.
     `<promptId>#final`, and `<promptId>#final<n>` for the nth Stop of a turn (a held
     delivery continues it), which pairs with the turn's nth final reply
     (`transcript.Finals`).
-- `tool` `{name, input, result?, action, target?, detail?, meta?, sub_session?}`: one event
+- `tool` `{name, input, result?, action, target?, detail?, meta?, sub_sessions?}`: one event
   per call.
   - `result` is `{status: pending|ok|error|interrupted|background, output?, structured?}`. A
     call is added as `pending`, with any `meta` the table reads from its input (an edit's
@@ -109,9 +109,9 @@ updates an earlier one, the add comes first.
     `transcript.SummarizeTool` in `internal/transcript/tools.go`, whose doc lists each
     action's `meta`. The Claude and agy hooks' status details and `agent logs` read the same table.
   - Tools the table calls noise keep `action: "noise"`; readers may hide them.
-  - A call that starts a subagent names its session in `sub_session`. A call that starts
-    several (agy's `invoke_subagent`) names the first; each one's `parent_session` names
-    the call.
+  - A call that starts subagents names their sessions in `sub_sessions`, in the order its
+    result gives them: one for Claude's Agent, one or more for agy's `invoke_subagent`.
+    Each one's `parent_session` names the call.
 - `system` `{subtype, text?, data?}`: harness records such as turn timing, compaction, API
   errors, interrupts and model fallbacks (`model_fallback`, `data: {from, to}`).
 - `request` (only with `--requests`) `{model, params, base?, tail, blobs}`: what one model call
@@ -136,7 +136,7 @@ updates an earlier one, the add comes first.
     such prompts from 1.
 - `api-request*` lines are never conversation events, only `request` events, and only when asked.
 - A subagent's transcript is its own session, linked both ways: `parent_session` on it, and
-  `sub_session` on the call that started it.
+  `sub_sessions` on the call that started it.
 - No text field is ever truncated. Readers decide what to show.
 - `internal/transcript/testdata/corpus/` holds the conformance corpus: transcripts with the
   events they must produce. Every parser change passes it. Its README lists the cases and

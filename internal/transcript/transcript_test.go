@@ -575,8 +575,8 @@ func TestAgySubagent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last := parent.Events[len(parent.Events)-1]; last.ID != "step_2_tool_1" || last.Tool.SubSession != "child-api" {
-		t.Errorf("the call: %s, sub_session %q; want step_2_tool_1 naming the first subagent, child-api", last.ID, last.Tool.SubSession)
+	if last := parent.Events[len(parent.Events)-1]; last.ID != "step_2_tool_1" || !slices.Equal(last.Tool.SubSessions, []string{"child-api", "child-db"}) {
+		t.Errorf("the call: %s, sub_sessions %q; want step_2_tool_1 naming both subagents, child-api and child-db", last.ID, last.Tool.SubSessions)
 	}
 
 	f, err := ReadFile(child, Agy{}, 50)
