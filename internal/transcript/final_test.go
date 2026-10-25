@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,6 +122,41 @@ func TestFinals_TranscriptFirst(t *testing.T) {
 	}
 	if _, ok := f.Provisional(heldTurn, "", "", p.Pos()); ok {
 		t.Error("a provisional reply with no text")
+	}
+}
+
+// A copy that isn't final when it lands pairs by its text: one with no
+// stop reason (final by an update once its turn ends, which keeps the
+// provisional reply's id), or one a max_tokens stop cut.
+func TestFinals_CopyNotFinal(t *testing.T) {
+	for _, stop := range []string{``, `,"stop_reason":"max_tokens"`} {
+		lines := []string{
+			`{"type":"user","uuid":"u1","timestamp":"2026-10-20T11:00:00Z","message":{"role":"user","content":"go"}}`,
+			`{"type":"assistant","uuid":"a1","timestamp":"2026-10-20T11:00:01Z","message":{"id":"m1","role":"assistant"` + stop + `,"content":[{"type":"text","text":"Done."}]}}`,
+			`{"type":"system","subtype":"turn_duration","uuid":"s1","durationMs":1000,"timestamp":"2026-10-20T11:00:02Z"}`,
+		}
+		p := Claude{}.NewParser(Options{})
+		f := NewFinals()
+		prompt := f.Merge(p.Feed([]byte(lines[0] + "\n"))[0])
+		turn := prompt.Turn.ID
+		e, ok := f.Provisional(turn, "Done.\n", "2026-10-20T11:00:01.500Z", p.Pos())
+		if !ok || e.ID != turn+"#final" {
+			t.Fatalf("stop %q: provisional %+v, %v", stop, e, ok)
+		}
+		var got []string
+		for _, e := range p.Feed([]byte(lines[1] + "\n" + lines[2] + "\n")) {
+			e = f.Merge(e)
+			if e.Say != nil {
+				got = append(got, fmt.Sprintf("%s %s final=%v", e.ID, e.Op, e.Say.Final))
+			}
+		}
+		want := []string{turn + "#final update final=false"}
+		if stop == "" {
+			want = append(want, turn+"#final update final=true")
+		}
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("stop %q, the copy:\n%s\nwant:\n%s", stop, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
 	}
 }
 
