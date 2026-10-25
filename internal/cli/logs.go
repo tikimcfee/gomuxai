@@ -31,11 +31,12 @@ var logsCmd = &cobra.Command{
 
 Kinds: prompt (a message it got; one that didn't come from a person
 typing says where it came from: queued, delivered, task-notification,
-peer, command, system), think (its reasoning, where the CLI keeps it), say
-(text it wrote), tool (a call and its result: ok, error, interrupted,
-running in the background, or no result yet), system (a record of the
-CLI's own: turn timing, compaction, API errors, interrupts). Times are
-local. Text longer than a line is cut and marked "…"; --full prints it
+peer, command, system), think (its reasoning; a bare "think" where the CLI
+kept none of its text), say (text it wrote), tool (a call and its result:
+ok, error, interrupted, running in the background, or no result yet),
+system (a record of the CLI's own: turn timing, compaction, API errors,
+interrupts). Times are local. Text longer than a line is cut and marked
+"…", a command or path in its middle so its end shows; --full prints it
 whole, with each tool's output.
 
 --json prints the events as docs/EVENTS.md describes them, one JSON
@@ -248,6 +249,10 @@ func formatEvent(e transcript.Event, full bool) string {
 			// A task notification's markup says nothing at a glance.
 			s = cutLine(summary, eventTextWidth)
 		}
+		if _, messages, ok := strings.Cut(p.Text, "\n"); ok && p.Origin == transcript.OriginDelivered && !full {
+			// Under gomuxai's head line, the messages delivered.
+			s = cutLine(messages, eventTextWidth)
+		}
 		if p.Origin != transcript.OriginHuman && p.Origin != transcript.OriginCommand {
 			s = "(" + p.Origin + ") " + s
 		}
@@ -257,7 +262,8 @@ func formatEvent(e transcript.Event, full bool) string {
 		return head + s
 	case e.Think != nil:
 		if e.Think.Redacted {
-			return head + "(redacted)"
+			// Its text isn't kept: the line just says it thought.
+			return strings.TrimRight(head, " ")
 		}
 		return head + text(e.Think.Text)
 	case e.Say != nil:
@@ -299,7 +305,7 @@ func formatTool(c *transcript.ToolEvent, full bool) string {
 		if full {
 			call += ": " + indent(about)
 		} else {
-			call += ": " + cutLine(about, toolTextWidth)
+			call += ": " + elide(about, toolTextWidth)
 		}
 	}
 	if m := toolMeta(c); m != "" {
@@ -364,11 +370,28 @@ func formatSystem(s *transcript.SystemEvent, text func(string) string) string {
 		}
 	case "interrupt", "api_error":
 		return text(s.Text)
+	case "model_fallback":
+		var m struct{ From, To string }
+		if json.Unmarshal(s.Data, &m) == nil && m.From != "" && m.To != "" {
+			return fmt.Sprintf("model fallback: %s → %s", m.From, m.To)
+		}
 	}
 	if s.Text == "" {
 		return s.Subtype
 	}
 	return s.Subtype + ": " + text(s.Text)
+}
+
+// elide returns s on one line (its lines and runs of spaces joined by one
+// space), cut to width runes in the middle, so a command's or a path's
+// head and its telling tail both show: "go test ./… -run TestSpin".
+func elide(s string, width int) string {
+	r := []rune(strings.Join(strings.Fields(s), " "))
+	if len(r) <= width {
+		return string(r)
+	}
+	tail := (width - 1) / 2
+	return strings.TrimSpace(string(r[:width-1-tail])) + "…" + strings.TrimSpace(string(r[len(r)-tail:]))
 }
 
 // cutLine returns the first non-blank line of s, cut to width runes; a cut
