@@ -39,7 +39,9 @@ The Go types are in `internal/transcript/events.go`; the Session is
     `--follow`.
   - `--follow` keeps reading as the transcript grows, polling every 250ms and never
     reading a line that isn't whole yet, until interrupted or the reader closes the pipe
-    (both exit 0).
+    (both exit 0; a closed pipe is noticed within a poll, with nothing to write). A
+    transcript removed, replaced by another file, or rewritten in place ends it with an
+    error.
   - `--requests` adds the model-request channel; it is off by default. Request events
     number their own `seq` from 0, so a conversation event has the same `seq` with or
     without it.
@@ -50,8 +52,18 @@ The Go types are in `internal/transcript/events.go`; the Session is
 
 JSON lines. The stream opens with `{"type":"session", …Session}`, describing the session as
 of the end of the initial read. After that come `{"type":"event", …Event}` lines, plus a new
-`session` line whenever the session's metadata changes after that (title, model, status:
-any field but `size`, `mtime` and `status_at`; `--follow` checks every 2s).
+`session` line whenever the session changes (title, model, status: any field but `size`,
+`mtime` and `status_at`).
+- The opening line's metadata is what `agent sessions` read of the transcript's head and
+  tail. The title, model, version, branch and agent name then come from the lines the
+  stream read, so a `session` line right after the initial read may correct it (a title
+  older than the tail). A known value never becomes empty. A `--until` window keeps the
+  opening line.
+- A later line's `size` is how far the stream has read.
+- Under `--follow`, status is the owning agent's last report (an agent of the store the
+  command runs from, read every 2s), and otherwise a full resolve as `agent sessions` does
+  it, reconciled with the harness: every 30s, backing off to 5 minutes while the transcript
+  doesn't grow.
 
 Nothing is ever reordered. An event that changes later (a tool's result lands, a provisional
 reply is confirmed) is sent again with the same `id` and `"op":"update"`: the whole event,
@@ -123,6 +135,14 @@ updates an earlier one, the add comes first.
     own: it carries the `seq` of the event after it. Its `at` and `line` are where the
     transcript's copy will land, so a reader doesn't resume `--from` it. A read that
     starts after the copy landed has no provisional reply, just the copy, as an add.
+  - A reader that resumes drops the provisional replies it holds: one whose copy hasn't
+    landed is sent again, and one whose copy landed while the reader was away comes back
+    as that copy, an add, which a kept provisional reply would duplicate.
+  - The copy is the turn's next final reply, or its next reply with the same text (a
+    reply that isn't final when it lands: no stop reason yet, or a `max_tokens` stop);
+    later updates of the copy keep the provisional reply's id. A Stop that hands over
+    held messages makes none (the turn goes on), so the first final reply of such a turn
+    lands as a plain add, and the next Stop's reply is `#final2`.
 - `tool` `{name, input, result?, action, target?, detail?, meta?, sub_sessions?}`: one event
   per call.
   - `result` is `{status: pending|ok|error|interrupted|background, output?, structured?}`. A

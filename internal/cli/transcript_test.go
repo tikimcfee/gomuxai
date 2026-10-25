@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/discovery"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
@@ -54,8 +55,8 @@ func wholeStream(t *testing.T, path string, data []byte, requests bool) []string
 	return lines
 }
 
-// streamLines runs a stream that doesn't follow and returns its session
-// line and event lines.
+// streamLines runs a stream that doesn't follow and returns its opening
+// session line and its event lines.
 func streamLines(t *testing.T, target *transcriptTarget, opts streamOptions) (string, []string) {
 	t.Helper()
 	var out bytes.Buffer
@@ -63,7 +64,34 @@ func streamLines(t *testing.T, target *transcriptTarget, opts streamOptions) (st
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
-	return lines[0], lines[1:]
+	return lines[0], eventLines(lines)
+}
+
+// eventLines returns the event lines among a stream's lines.
+func eventLines(lines []string) []string {
+	var events []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, `{"type":"event",`) {
+			events = append(events, line)
+		}
+	}
+	return events
+}
+
+// sessionLines returns the session lines among a stream's lines, decoded.
+func sessionLines(t *testing.T, lines []string) []discovery.Session {
+	t.Helper()
+	var sessions []discovery.Session
+	for _, line := range lines {
+		if strings.HasPrefix(line, `{"type":"session",`) {
+			var s discovery.Session
+			if err := json.Unmarshal([]byte(line), &s); err != nil {
+				t.Fatal(err)
+			}
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions
 }
 
 // lineStarts returns the offset each line of data starts at.
@@ -210,40 +238,68 @@ func (b *syncBuffer) lines() []string {
 	return nil
 }
 
-// waitLines waits until b holds n lines, and returns them.
-func waitLines(t *testing.T, b *syncBuffer, n int) []string {
+// waitEvents waits until b holds n event lines, and returns them.
+func waitEvents(t *testing.T, b *syncBuffer, n int) []string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		lines := b.lines()
-		if len(lines) >= n || time.Now().After(deadline) {
-			if len(lines) != n {
-				t.Fatalf("stream has %d lines, want %d:\n%s", len(lines), n, strings.Join(lines, "\n"))
+		events := eventLines(b.lines())
+		if len(events) >= n || time.Now().After(deadline) {
+			if len(events) != n {
+				t.Fatalf("stream has %d events, want %d:\n%s", len(events), n, strings.Join(b.lines(), "\n"))
 			}
-			return lines
+			return events
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-// followStream starts a following stream of target, and returns its
-// output and a func that stops it and returns its error.
-func followStream(t *testing.T, target *transcriptTarget) (*syncBuffer, func() error) {
+// follower is a following stream a test runs.
+type follower struct {
+	out    *syncBuffer
+	cancel context.CancelFunc
+	done   chan error
+}
+
+// followStream starts a following stream of target, polling every 5ms and
+// checking an owner's report every 10ms (never in full). The stream ends
+// once readerGone, if set, says so.
+func followStream(t *testing.T, target *transcriptTarget, readerGone func() bool) *follower {
 	t.Helper()
-	oldPoll, oldSession := transcriptPollInterval, transcriptSessionInterval
-	transcriptPollInterval, transcriptSessionInterval = 5*time.Millisecond, time.Hour
+	oldPoll, oldSession, oldStatus := transcriptPollInterval, transcriptSessionInterval, transcriptStatusInterval
+	transcriptPollInterval, transcriptSessionInterval, transcriptStatusInterval = 5*time.Millisecond, 10*time.Millisecond, time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
-	out := &syncBuffer{}
-	done := make(chan error, 1)
-	go func() { done <- streamTranscript(ctx, target, out, streamOptions{from: -1, until: -1, follow: true}) }()
-	stop := func() error {
+	f := &follower{out: &syncBuffer{}, cancel: cancel, done: make(chan error, 1)}
+	opts := streamOptions{from: -1, until: -1, follow: true, readerGone: readerGone}
+	finished := make(chan struct{})
+	go func() {
+		f.done <- streamTranscript(ctx, target, f.out, opts)
+		close(finished)
+	}()
+	t.Cleanup(func() {
 		cancel()
-		err := <-done
-		transcriptPollInterval, transcriptSessionInterval = oldPoll, oldSession
+		<-finished
+		transcriptPollInterval, transcriptSessionInterval, transcriptStatusInterval = oldPoll, oldSession, oldStatus
+	})
+	return f
+}
+
+// stop ends the stream and returns its error.
+func (f *follower) stop() error {
+	f.cancel()
+	return <-f.done
+}
+
+// wait waits for the stream to end by itself, and returns its error.
+func (f *follower) wait(t *testing.T) error {
+	t.Helper()
+	select {
+	case err := <-f.done:
 		return err
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the stream didn't end:\n%s", strings.Join(f.out.lines(), "\n"))
+		return nil
 	}
-	t.Cleanup(func() { cancel() })
-	return out, stop
 }
 
 // appendFile appends data to the file at path.
@@ -268,7 +324,7 @@ func TestTranscript_Follow(t *testing.T) {
 	starts := lineStarts(data)
 	first := starts[3] + 7 // mid-line: that line isn't read yet
 	writeTestFile(t, path, string(data[:first]))
-	out, stop := followStream(t, fileTarget(path, first))
+	f := followStream(t, fileTarget(path, first), nil)
 
 	upTo := func(at int64) int {
 		n := 0
@@ -279,7 +335,7 @@ func TestTranscript_Follow(t *testing.T) {
 		}
 		return n
 	}
-	waitLines(t, out, 1+upTo(starts[3]))
+	waitEvents(t, f.out, upTo(starts[3]))
 	for off := first; off < int64(len(data)); {
 		next := min(off+97, int64(len(data)))
 		appendFile(t, path, data[off:next])
@@ -288,25 +344,115 @@ func TestTranscript_Follow(t *testing.T) {
 		if off < complete {
 			complete = int64(bytes.LastIndexByte(data[:off], '\n') + 1)
 		}
-		waitLines(t, out, 1+upTo(complete))
+		waitEvents(t, f.out, upTo(complete))
 	}
-	if err := stop(); err != nil {
+	if err := f.stop(); err != nil {
 		t.Fatal(err)
 	}
-	got := out.lines()[1:]
+	got := eventLines(f.out.lines())
 	if strings.Join(got, "\n") != strings.Join(whole, "\n") {
 		t.Errorf("followed:\n%s\nwant the whole read's:\n%s", strings.Join(got, "\n"), strings.Join(whole, "\n"))
 	}
+	// Session lines say how far the stream had read.
+	sessions := sessionLines(t, f.out.lines())
+	if last := sessions[len(sessions)-1]; last.Size <= first || last.Cwd != "/home/user/src/widget" {
+		t.Errorf("last session line: size %d, cwd %q", last.Size, last.Cwd)
+	}
+}
 
-	// A transcript that shrinks was rewritten: the stream says so.
-	out, stop = followStream(t, fileTarget(path, int64(len(data))))
-	waitLines(t, out, 1+len(whole))
-	if err := os.Truncate(path, starts[2]); err != nil {
+// A followed transcript that is removed, replaced, or rewritten in place
+// ends the stream with an error that says so.
+func TestTranscript_FollowFileChanges(t *testing.T) {
+	_, data := corpusTranscript(t, "held-delivery.jsonl")
+	starts := lineStarts(data)
+	for name, change := range map[string]func(path string){
+		"was removed": func(path string) { os.Remove(path) },
+		"was replaced by another file": func(path string) {
+			other := path + ".new"
+			writeTestFile(t, other, string(data))
+			os.Rename(other, path)
+		},
+		"shrank": func(path string) { os.Truncate(path, starts[2]) },
+		// Truncated and grown past where it was between two polls: the
+		// last bytes read are other bytes now.
+		"was rewritten": func(path string) {
+			f, err := os.OpenFile(path, os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.WriteAt([]byte("XXXX"), int64(len(data))-10)
+			f.WriteAt(data[starts[1]:starts[2]], int64(len(data)))
+			f.Close()
+		},
+	} {
+		path := filepath.Join(t.TempDir(), "t.jsonl")
+		writeTestFile(t, path, string(data))
+		f := followStream(t, fileTarget(path, int64(len(data))), nil)
+		waitEvents(t, f.out, len(wholeStream(t, path, data, false)))
+		change(path)
+		if err := f.wait(t); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A reader that has gone ends the stream, cleanly, though nothing is
+// written; readerGone tells a closed pipe from an open one.
+func TestTranscript_ReaderGone(t *testing.T) {
+	path, data := corpusTranscript(t, "held-delivery.jsonl")
+	closed := make(chan struct{})
+	f := followStream(t, fileTarget(path, int64(len(data))), func() bool {
+		select {
+		case <-closed:
+			return true
+		default:
+			return false
+		}
+	})
+	waitEvents(t, f.out, len(wholeStream(t, path, data, false)))
+	close(closed)
+	if err := f.wait(t); err != nil {
+		t.Errorf("a reader gone: %v", err)
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
-	if err := stop(); err == nil || !strings.Contains(err.Error(), "shrank") {
-		t.Errorf("a shrunk transcript: %v", err)
+	defer w.Close()
+	if readerGone(w) {
+		t.Error("readerGone on a pipe whose reader is open")
+	}
+	r.Close()
+	if !readerGone(w) {
+		t.Error("readerGone on a pipe whose reader closed")
+	}
+}
+
+// The parser's values replace what the opening line had from agent
+// sessions' read of the head and tail, and a known value is never emptied.
+func TestTranscript_SessionMeta(t *testing.T) {
+	path, data := corpusTranscript(t, "requests.jsonl")
+	target := fileTarget(path, int64(len(data)))
+	target.session.Title, target.session.Model, target.session.Project = "Spin's return", "older-model", "stale"
+	var out bytes.Buffer
+	if err := streamTranscript(context.Background(), target, &out, streamOptions{from: -1, until: -1}); err != nil {
+		t.Fatal(err)
+	}
+	sessions := sessionLines(t, strings.Split(strings.TrimSpace(out.String()), "\n"))
+	if len(sessions) != 2 {
+		t.Fatalf("%d session lines, want the opening one and the parser's:\n%s", len(sessions), out.String())
+	}
+	if s := sessions[1]; s.Title != "Spin's return" || s.Model != "claude-opus-5-5" || s.Project != "widget" || s.GitBranch != "main" || s.Size != int64(len(data)) {
+		t.Errorf("after the read: %+v", s)
+	}
+	// A window reads part of the transcript: its line stays as it opened.
+	var window bytes.Buffer
+	if err := streamTranscript(context.Background(), target, &window, streamOptions{from: -1, until: lineStarts(data)[5]}); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(window.String(), `"type":"session"`); n != 1 {
+		t.Errorf("a window has %d session lines, want 1:\n%s", n, window.String())
 	}
 }
 
@@ -323,6 +469,82 @@ func stopHook(t *testing.T, path, text string) {
 	payload, _ := json.Marshal(map[string]string{"hook_event_name": "Stop", "transcript_path": path, "last_assistant_message": text})
 	if err := agentService.ReportHook(context.Background(), "worker", "", "", payload); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// finalSays returns the final replies among a stream's event lines.
+func finalSays(events []string) []transcript.Event {
+	var says []transcript.Event
+	for _, line := range events {
+		var e transcript.Event
+		json.Unmarshal([]byte(line), &e)
+		if e.Say != nil && e.Say.Final {
+			says = append(says, e)
+		}
+	}
+	return says
+}
+
+// finalSayOps is "<id> <op> <the text's start>" of each final reply.
+func finalSayOps(events []string) []string {
+	var ops []string
+	for _, e := range finalSays(events) {
+		ops = append(ops, e.ID+" "+e.Op+" "+e.Say.Text[:10])
+	}
+	return ops
+}
+
+// The real held delivery: the Stop that hands over a held message
+// empties _result, as the turn goes on, so the first final reply has no
+// provisional copy; the second Stop's reply is the turn's second.
+func TestTranscript_HeldDelivery(t *testing.T) {
+	setupSessions(t)
+	ctx := context.Background()
+	_, data := corpusTranscript(t, "held-delivery.jsonl")
+	path := filepath.Join(t.TempDir(), "held.jsonl")
+	firstAt := int64(bytes.Index(data, []byte(heldFirst)))
+	firstAt = int64(bytes.LastIndexByte(data[:firstAt], '\n') + 1)
+	secondAt := int64(bytes.Index(data, []byte(heldSecond)))
+	secondAt = int64(bytes.LastIndexByte(data[:secondAt], '\n') + 1)
+	writeTestFile(t, path, string(data[:firstAt]))
+	hookTranscript(t, path)
+	target, err := resolveTranscript(ctx, "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := followStream(t, target, nil)
+	n := len(waitEvents(t, f.out, len(wholeStream(t, path, data[:firstAt], false))))
+
+	if err := store.CreateMessage(ctx, &storage.Message{SenderID: "lead", ReceiverID: "worker", Content: "[from lead@h] only the port",
+		Status: storage.MessageStatusPending, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	stop := func(text string) []byte {
+		payload, _ := json.Marshal(map[string]string{"hook_event_name": "Stop", "transcript_path": path, "last_assistant_message": text})
+		out, err := agentService.HandleHook(ctx, "worker", "", "", payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if out := stop(heldFirst); !bytes.Contains(out, []byte("only the port")) {
+		t.Fatalf("the first Stop delivered %s, want the held message", out)
+	}
+	appendFile(t, path, data[firstAt:secondAt])
+	n = len(waitEvents(t, f.out, len(wholeStream(t, path, data[:secondAt], false))))
+	if out := stop(heldSecond); out != nil {
+		t.Fatalf("the second Stop delivered %s", out)
+	}
+	waitEvents(t, f.out, n+1)
+	appendFile(t, path, data[secondAt:])
+	events := waitEvents(t, f.out, len(wholeStream(t, path, data, false))+1)
+	if err := f.stop(); err != nil {
+		t.Fatal(err)
+	}
+	first := finalSays(wholeStream(t, path, data, false))[0].ID
+	want := []string{first + " add Two TODOs:", heldTurn + "#final2 add Understood", heldTurn + "#final2 update Understood"}
+	if got := finalSayOps(events); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("final replies:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -346,48 +568,41 @@ func TestTranscript_Provisional(t *testing.T) {
 	if !samePath(target.path, path) || target.session.Workgroup == nil || target.session.Workgroup.Name != "worker" {
 		t.Fatalf("worker's target: %s, %+v", target.path, target.session.Workgroup)
 	}
-	out, stop := followStream(t, target)
-	n := len(waitLines(t, out, 1+len(wholeStream(t, path, data[:firstAt], false))))
+	f := followStream(t, target, nil)
+	n := len(waitEvents(t, f.out, len(wholeStream(t, path, data[:firstAt], false))))
 
-	says := func(lines []string) []transcript.Event {
-		var says []transcript.Event
-		for _, line := range lines[1:] {
-			var e transcript.Event
-			json.Unmarshal([]byte(line), &e)
-			if e.Say != nil && e.Say.Final {
-				says = append(says, e)
-			}
-		}
-		return says
-	}
 	stopHook(t, path, heldFirst)
-	lines := waitLines(t, out, n+1)
-	p := says(lines)[0]
-	var next transcript.Event
-	json.Unmarshal([]byte(lines[n-1]), &next)
-	if p.ID != heldTurn+"#final" || !p.Say.Provisional || p.At != firstAt || p.Seq != next.Seq+1 || p.Turn == nil || p.Turn.Index != 1 {
-		t.Errorf("provisional reply %s", lines[n])
+	events := waitEvents(t, f.out, n+1)
+	p := finalSays(events)[0]
+	var last transcript.Event
+	json.Unmarshal([]byte(events[n-1]), &last)
+	if p.ID != heldTurn+"#final" || !p.Say.Provisional || p.At != firstAt || p.Seq != last.Seq+1 || p.Turn == nil || p.Turn.Index != 1 {
+		t.Errorf("provisional reply %s", events[n])
 	}
 
 	appendFile(t, path, data[firstAt:secondAt])
-	n = len(waitLines(t, out, 1+len(wholeStream(t, path, data[:secondAt], false))+1))
+	n = len(waitEvents(t, f.out, len(wholeStream(t, path, data[:secondAt], false))+1))
 	stopHook(t, path, heldSecond)
-	waitLines(t, out, n+1)
+	waitEvents(t, f.out, n+1)
 	appendFile(t, path, data[secondAt:])
-	lines = waitLines(t, out, 1+len(wholeStream(t, path, data, false))+2)
-	if err := stop(); err != nil {
+	events = waitEvents(t, f.out, len(wholeStream(t, path, data, false))+2)
+	// The Stop's report reaches the session line by the report check.
+	deadline := time.Now().Add(5 * time.Second)
+	for s := sessionLines(t, f.out.lines()); s[len(s)-1].Status != "idle"; s = sessionLines(t, f.out.lines()) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no session line says idle after the Stop:\n%s", strings.Join(f.out.lines(), "\n"))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := f.stop(); err != nil {
 		t.Fatal(err)
 	}
 
-	var got []string
-	for _, e := range says(lines) {
-		got = append(got, e.ID+" "+e.Op+" "+e.Say.Text[:10])
-	}
 	want := []string{
 		heldTurn + "#final add Two TODOs:", heldTurn + "#final update Two TODOs:",
 		heldTurn + "#final2 add Understood", heldTurn + "#final2 update Understood",
 	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := finalSayOps(events); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("final replies:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 

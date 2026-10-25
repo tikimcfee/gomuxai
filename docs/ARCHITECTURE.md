@@ -639,18 +639,43 @@ written, by each event's `at`, so a window's events are numbered, turned
 and merged as a whole read's. (`--from` is checked as `ResumeAfter`
 checks it, a line's start with its line whole, but not parsed with it,
 since `Finals` must see the skipped lines' final replies.) `--follow`
-polls the open file every 250ms (there is no file watcher in the repo; a
-poll costs one `fstat`) and feeds the parser what was appended, keeping a
-line not yet whole for the next poll; a file that shrank is an error.
-Every 2s it probes the transcript (and, for a subagent, the sessions above
-it) and resolves it again, and writes a new `session` line when anything
-but `size`, `mtime` and `status_at` changed. For a Claude agent of this
-store whose `_transcript` is the file, each new `_result` (its `updated_at`
-newer than the last one seen, and not older than the current turn's first
-event) is offered to `Finals.Provisional` for the current turn, at the
-parser's `Pos`: where the reply's line will land. SIGINT, SIGTERM and
-SIGPIPE are caught (`signal.NotifyContext`), so a closed pipe fails a write
-with `EPIPE` instead of killing the process, and the command exits 0.
+polls the transcript every 250ms (there is no file watcher in the repo; a
+poll is a `stat` of the path, an `fstat` of the open file and a 64-byte
+`pread`) and feeds the parser what was appended, keeping a line not yet
+whole for the next poll. A path that's gone, names another file
+(`os.SameFile`), shrank, or no longer holds the last 64 bytes read (a
+truncate and regrow between polls) ends the stream with an error.
+
+Each poll also asks whether the reader has gone: `poll(2)` on stdout with
+no events reports `POLLERR` (a Linux pipe whose reader closed) or `POLLHUP`
+(a socket) without a write (`transcript_poll.go`, Linux and darwin; on
+darwin a pipe's reader closing may only show at the next write). SIGPIPE
+is ignored, so a write to a closed stdout fails with `EPIPE` instead of
+killing the process, and a notice to a closed stderr is just lost; SIGINT
+and SIGTERM cancel the stream. All of these exit 0.
+
+The `session` line's metadata (title, model, version, branch, agent name,
+cwd) comes from the stream's own parser after each read, which has seen
+every line, where the opening line had discovery's head-and-tail read; a
+value the parser hasn't found leaves the known one. Status comes from
+checks beside the poll, one at a time in a goroutine the stream waits for
+before it returns, so a slow one never holds up the poll. For a session an
+agent of this store owns, a report check every 2s reads that agent's
+record and state from the store alone (`ownAgent`: what export reads, no
+tmux, no other store) and resolves the probed session against it with no
+harness list, counting only when the agent has reported since the status
+was last set. A full check, `discovery.Resolve` over every store's agents
+and `claude agents --json` as `agent sessions` does it, runs every 30s,
+the wait doubling up to 5 minutes while the transcript doesn't grow. A
+`session` line is written when anything but `size`, `mtime` and
+`status_at` changed; its `size` is how far the stream has read.
+
+For a Claude agent of this store whose `_transcript` is the file, each new
+`_result` (its `updated_at` newer than the last one seen, and not older
+than the current turn's first event) is offered to `Finals.Provisional`
+for the current turn, at the parser's `Pos`: where the reply's line will
+land. A Stop that delivers held messages empties `_result` (the turn goes
+on), so it makes none.
 
 ## Export
 
