@@ -229,8 +229,12 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	case "system":
 		l.system()
 	case "api-request-blob":
-		if c.blobs != nil && r.Hash != "" && r.Message != nil {
-			c.blobs[r.Hash], _ = json.Marshal(r.Message)
+		// The message whole, as it was sent: not the fields claudeRecord reads.
+		var blob struct {
+			Message json.RawMessage `json:"message"`
+		}
+		if c.blobs != nil && r.Hash != "" && json.Unmarshal(line, &blob) == nil && len(blob.Message) > 0 {
+			c.blobs[r.Hash] = blob.Message
 		}
 	case "api-request":
 		if c.opts.Requests {

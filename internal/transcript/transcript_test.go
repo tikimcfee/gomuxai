@@ -241,6 +241,20 @@ func TestClaudeTaskNotifications(t *testing.T) {
 	}
 }
 
+// A request's blobs are the messages as the blob lines hold them, whole:
+// no field the reader doesn't know is lost, none is added.
+func TestClaudeRequestBlobs(t *testing.T) {
+	blob := `{"role":"assistant","content":[{"type":"text","text":"hi"}],"output_config":{"effort":"high"}}`
+	lines := []string{
+		`{"type":"api-request-blob","hash":"h1","message":` + blob + `}`,
+		`{"type":"api-request","id":"q1","params":{"model":"m"},"tail":["h1"]}`,
+	}
+	events := Claude{}.NewParser(Options{Requests: true}).Feed([]byte(strings.Join(lines, "\n") + "\n"))
+	if len(events) != 1 || string(events[0].Request.Blobs["h1"]) != blob {
+		t.Errorf("events %+v, want one request whose blob is %s", events, blob)
+	}
+}
+
 // HarvestClaude reads the session's metadata alone, line by line, as the
 // parser does.
 func TestHarvestClaude(t *testing.T) {
