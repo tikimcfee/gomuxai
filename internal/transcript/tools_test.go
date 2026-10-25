@@ -10,7 +10,21 @@ import (
 // The cases up to "out of cwd" mirror glyph3d-js tools/toolRegistry.test.mjs
 // (and the patch case of tools/delta-source.test.mjs), in its order, so the
 // two tables can be checked for parity. Where this table differs on
-// purpose, the case says so.
+// purpose, the case says so. The differences:
+//   - noise is kept, as action "noise" with a detail, not dropped;
+//   - no result text: the event carries the result whole;
+//   - nothing to count gives no meta, not zeros ({added: 0, removed: 0},
+//     {lines: 0} for a running command, {lines: 1} for a write with no
+//     content, {} for a task);
+//   - an edit without a patch counts its input's replacements (every edit
+//     of a MultiEdit), a write without result content its input's content;
+//   - a write's lines don't count a final newline ("a\nb\n" is 2, not 3);
+//   - a read of no lines has no range (glyph3d-js gives [start, start-1]);
+//   - an unknown tool's detail is relativized like a target;
+//   - details and targets are trimmed;
+//   - empty ranges are left out, not [];
+//   - a label with nothing after it ("workflow") has no dangling ": ";
+//   - Kimi's file tools' "path", and Bash's "output", are read directly.
 func TestSummarizeTool(t *testing.T) {
 	const cwd = "/home/user/proj/"
 	tests := []struct {
@@ -236,10 +250,28 @@ func TestSummarizeTool(t *testing.T) {
 			wantMeta: `{"added":1,"removed":1}`,
 		},
 		{
-			name: "edit from the input: text split off a line's end is a changed line and a new one",
-			tool: "Edit", input: `{"file_path":"/home/user/proj/a.go","old_string":"x","new_string":"y\nx"}`,
+			name: "edit from the input: a function appended after a closing brace",
+			tool: "Edit", input: `{"file_path":"/home/user/proj/a.go","old_string":"func a() {\n\treturn 1\n}","new_string":"func a() {\n\treturn 1\n}\n\nfunc b() {}"}`,
 			want:     ToolSummary{Action: "edit", Target: "a.go"},
-			wantMeta: `{"added":2,"removed":1}`,
+			wantMeta: `{"added":2,"removed":0}`,
+		},
+		{
+			name: "edit from the input: lines deleted after a kept one",
+			tool: "Edit", input: `{"file_path":"/home/user/proj/a.go","old_string":"x\ndead1\ndead2","new_string":"x"}`,
+			want:     ToolSummary{Action: "edit", Target: "a.go"},
+			wantMeta: `{"added":0,"removed":2}`,
+		},
+		{
+			name: "edit from the input: an empty side is no lines",
+			tool: "Edit", input: `{"file_path":"/home/user/proj/a.go","old_string":"","new_string":"a\nb"}`,
+			want:     ToolSummary{Action: "edit", Target: "a.go"},
+			wantMeta: `{"added":2,"removed":0}`,
+		},
+		{
+			name: "MultiEdit whose edits aren't a list: the top-level replacement",
+			tool: "MultiEdit", input: `{"file_path":"/p/m.go","edits":null,"old_string":"a","new_string":"b"}`,
+			want:     ToolSummary{Action: "edit", Target: "/p/m.go"},
+			wantMeta: `{"added":1,"removed":1}`,
 		},
 		{
 			name: "edit from the input: replace_all can't be counted",
@@ -316,6 +348,11 @@ func TestSummarizeTool(t *testing.T) {
 			want: ToolSummary{Action: "task", Detail: "reviewer\ntester"},
 		},
 		{
+			name: "agy invoke_subagent whose Subagents isn't a list: its own spec",
+			tool: "invoke_subagent", input: `{"Subagents":null,"Role":"R"}`,
+			want: ToolSummary{Action: "task", Detail: "R"},
+		},
+		{
 			name: "agy send_message: the recipient and the whole message",
 			tool: "send_message", input: `{"Recipient":"main","Message":"done:\n3 files"}`,
 			want: ToolSummary{Action: "send", Detail: "→ main\ndone:\n3 files"},
@@ -346,11 +383,8 @@ func TestSummarizeTool(t *testing.T) {
 			want: ToolSummary{Action: "mcp__fs__stat", Detail: "go.mod"},
 		},
 		{
-			name: "agy target stored JSON-encoded twice",
-			tool: "view_file", input: `{"AbsolutePath":"\"/home/user/proj/q.go\""}`,
-			want: ToolSummary{Action: "read", Target: "q.go"},
-		},
-		{
+			// agy's transcript_full.jsonl holds searches like this; the
+			// agy reader decodes transcript.jsonl's encoded args (agyArgs).
 			name: "a detail is whole, its quotes kept",
 			tool: "search_web", input: `{"query":"\"exact phrase\""}`,
 			want: ToolSummary{Action: "search", Detail: `"exact phrase"`},
@@ -396,10 +430,34 @@ func sameJSON(got json.RawMessage, want string) bool {
 func TestReplacedLinesTooLarge(t *testing.T) {
 	big := strings.Repeat("a\n", 3000)
 	other := strings.Repeat("b\n", 3000)
-	if _, _, ok := replacedLines(big, other); ok {
+	budget := maxDiffCells
+	if _, _, ok := replacedLines(big, other, &budget); ok {
 		t.Error("replacedLines compared 3000×3000 lines, want it to give up")
 	}
-	if a, r, ok := replacedLines(big+"x", big+"y"); !ok || a != 1 || r != 1 {
+	if a, r, ok := replacedLines(big+"x", big+"y", &budget); !ok || a != 1 || r != 1 {
 		t.Errorf("replacedLines(common ends) = +%d -%d %v, want +1 -1 true", a, r, ok)
+	}
+
+	// The budget is the call's: 20 edits of 500×500 lines don't fit, though one would.
+	edit := map[string]string{"old_string": strings.Repeat("a\n", 500), "new_string": strings.Repeat("b\n", 500)}
+	edits := make([]map[string]string, 20)
+	for i := range edits {
+		edits[i] = edit
+	}
+	input, _ := json.Marshal(map[string]any{"file_path": "/p/m.go", "edits": edits})
+	if s := SummarizeTool("MultiEdit", input, nil, ""); s.Meta != nil {
+		t.Errorf("20 large edits: meta = %s, want none", s.Meta)
+	}
+	input, _ = json.Marshal(map[string]any{"file_path": "/p/m.go", "edits": edits[:1]})
+	if s := SummarizeTool("MultiEdit", input, nil, ""); !sameJSON(s.Meta, `{"added":500,"removed":500}`) {
+		t.Errorf("one large edit: meta = %s, want +500 -500", s.Meta)
+	}
+}
+
+func TestDescribeTool(t *testing.T) {
+	input := json.RawMessage(`{"file_path":"/home/user/proj/a.go","old_string":"a","new_string":"b"}`)
+	got := DescribeTool("Edit", input, "/home/user/proj")
+	if want := (ToolSummary{Action: "edit", Target: "a.go"}); !reflect.DeepEqual(got, want) {
+		t.Errorf("DescribeTool = %+v, want %+v (no meta)", got, want)
 	}
 }

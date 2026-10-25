@@ -120,7 +120,24 @@ var fallbackKeys = []string{
 // call has none. cwd is the session's working directory, or "" to keep
 // paths absolute.
 func SummarizeTool(name string, input, response json.RawMessage, cwd string) ToolSummary {
-	in, out := parseObject(input), parseObject(response)
+	in := parseObject(input)
+	s := describe(name, in, cwd)
+	if spec := tools[name]; spec.meta != nil {
+		if m := spec.meta(in, parseObject(response)); m != nil {
+			s.Meta, _ = json.Marshal(m)
+		}
+	}
+	return s
+}
+
+// DescribeTool is SummarizeTool without Meta, for a caller that shows only
+// what a call is about (a status line, a log line): it reads no result
+// and counts nothing.
+func DescribeTool(name string, input json.RawMessage, cwd string) ToolSummary {
+	return describe(name, parseObject(input), cwd)
+}
+
+func describe(name string, in object, cwd string) ToolSummary {
 	spec, known := tools[name]
 	if !known {
 		action := strings.ToLower(name)
@@ -129,18 +146,13 @@ func SummarizeTool(name string, input, response json.RawMessage, cwd string) Too
 		}
 		return ToolSummary{Action: action, Detail: relativize(in.str(fallbackKeys...), cwd)}
 	}
-	s := ToolSummary{Action: spec.action, Target: relativize(unquote(in.str(spec.target...)), cwd)}
+	s := ToolSummary{Action: spec.action, Target: relativize(in.str(spec.target...), cwd)}
 	switch {
 	case spec.detail != nil:
 		s.Detail = spec.detail(in)
 	case spec.action == ActionNoise:
 		// Noise still says what it was about (ToolSearch's query, say).
 		s.Detail = in.str(fallbackKeys...)
-	}
-	if spec.meta != nil {
-		if m := spec.meta(in, out); m != nil {
-			s.Meta, _ = json.Marshal(m)
-		}
 	}
 	return s
 }
@@ -202,7 +214,7 @@ func askDetail(in object) string {
 // from its Subagents list, or its own top-level spec.
 func subagentDetail(in object) string {
 	specs := in.objects("Subagents")
-	if _, ok := in["Subagents"]; !ok {
+	if in.list("Subagents") == nil {
 		specs = []object{in}
 	}
 	var roles []string
@@ -344,13 +356,15 @@ func countHunk(hunk object) (added, removed int, ranges [][2]int) {
 // countReplacements counts the lines an edit's input replacements add and
 // remove: a MultiEdit's every edit, Claude Code's and Kimi Code's
 // old_string and new_string, or agy's TargetContent and ReplacementContent.
-// It returns false when the input has none, or one replaces every
-// occurrence, since how many there are isn't in the input.
+// It returns false when the input has none, when one replaces every
+// occurrence (how many there are isn't in the input), or when they're too
+// large to compare.
 func countReplacements(in object) (added, removed int, ok bool) {
 	edits := in.objects("edits")
-	if _, multi := in["edits"]; !multi {
+	if in.list("edits") == nil {
 		edits = []object{in}
 	}
+	budget := maxDiffCells
 	for _, e := range edits {
 		old, hasOld := e["old_string"].(string)
 		new, hasNew := e["new_string"].(string)
@@ -363,7 +377,7 @@ func countReplacements(in object) (added, removed int, ok bool) {
 		if !hasOld || !hasNew || all {
 			return 0, 0, false
 		}
-		a, r, fits := replacedLines(old, new)
+		a, r, fits := replacedLines(old, new, &budget)
 		if !fits {
 			return 0, 0, false
 		}
@@ -373,42 +387,62 @@ func countReplacements(in object) (added, removed int, ok bool) {
 	return added, removed, len(edits) > 0
 }
 
-// maxDiffCells bounds the work replacedLines does: the product of the two
-// sides' line counts, after their common ends are dropped.
+// maxDiffCells bounds the work countReplacements does for one call: the
+// sum, over its edits, of the product of the two sides' line counts after
+// their common ends are dropped.
 const maxDiffCells = 1 << 22
 
 // replacedLines counts the file lines that replacing the text old by new
-// adds and removes. Either may start and end mid-line, so their first and
-// last lines are partial: marked, they match only each other. So a whole
-// line removed at the text's edge ("gone\n" by "") counts as a changed line
-// too, as it would be if the text started mid-line. It returns false when
-// the texts are too large to compare.
-func replacedLines(old, new string) (added, removed int, ok bool) {
-	a, b := editSide(old), editSide(new)
+// adds and removes, taking both to be whole lines, as an edit's usually
+// are: a replacement within one line counts it changed (+1 -1). It spends
+// the cells it compares from budget, and returns false when they don't fit.
+func replacedLines(old, new string, budget *int) (added, removed int, ok bool) {
+	a, b := lineIDs(splitLines(old), splitLines(new))
 	for len(a) > 0 && len(b) > 0 && a[0] == b[0] {
 		a, b = a[1:], b[1:]
 	}
 	for len(a) > 0 && len(b) > 0 && a[len(a)-1] == b[len(b)-1] {
 		a, b = a[:len(a)-1], b[:len(b)-1]
 	}
-	if len(a)*len(b) > maxDiffCells {
+	cells := len(a) * len(b)
+	if cells > *budget {
 		return 0, 0, false
 	}
+	*budget -= cells
 	common := lcsLen(a, b)
 	return len(b) - common, len(a) - common, true
 }
 
-// editSide splits a replacement's text into lines, marking the first as
-// starting and the last as ending mid-line.
-func editSide(s string) []string {
-	lines := strings.Split(s, "\n")
-	lines[0] = "\x00" + lines[0]
-	lines[len(lines)-1] += "\x01"
-	return lines
+// splitLines splits s into lines; "" has none, and a final newline doesn't
+// start another.
+func splitLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+}
+
+// lineIDs numbers a's and b's lines, the same line the same number, so
+// they compare as ints.
+func lineIDs(a, b []string) ([]int, []int) {
+	ids := map[string]int{}
+	number := func(lines []string) []int {
+		out := make([]int, len(lines))
+		for i, l := range lines {
+			id, ok := ids[l]
+			if !ok {
+				id = len(ids)
+				ids[l] = id
+			}
+			out[i] = id
+		}
+		return out
+	}
+	return number(a), number(b)
 }
 
 // lcsLen returns the length of a and b's longest common subsequence.
-func lcsLen(a, b []string) int {
+func lcsLen(a, b []int) int {
 	prev, cur := make([]int, len(b)+1), make([]int, len(b)+1)
 	for i := range a {
 		for j := range b {

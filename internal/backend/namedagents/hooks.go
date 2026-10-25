@@ -49,7 +49,7 @@ const maxToolInputLen = 64 << 10
 // breaks included, and paths stay absolute: for a permission prompt, it is
 // what an answer allows.
 func toolSummary(tool string, input json.RawMessage) string {
-	s := transcript.SummarizeTool(tool, input, nil, "")
+	s := transcript.DescribeTool(tool, input, "")
 	if v := cmp.Or(s.Target, s.Detail); v != "" {
 		return tool + ": " + v
 	}

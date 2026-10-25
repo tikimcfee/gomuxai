@@ -66,7 +66,7 @@ func (Agy) Parse(data []byte) *Session {
 				call := &ToolCall{
 					ID:     fmt.Sprintf("step_%d_tool_%d", st.StepIndex, i),
 					Name:   tc.Name,
-					Input:  tc.Args,
+					Input:  agyArgs(tc.Args),
 					Status: StatusNone,
 				}
 				t.step(Step{Time: at, Tool: call})
@@ -84,6 +84,32 @@ func (Agy) Parse(data []byte) *Session {
 		return true
 	})
 	return s
+}
+
+// agyArgs undoes the encoding transcript.jsonl gives a call's args: there
+// every value is a string holding its JSON ("\"ls\"", "5000", "false",
+// "[...]"), while transcript_full.jsonl stores them plain. A call whose
+// every arg is a string of valid JSON is taken as encoded and decoded once;
+// any other is left as it is, so a plain search for "\"exact phrase\"" keeps
+// its quotes.
+func agyArgs(args json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(args, &fields) != nil || len(fields) == 0 {
+		return args
+	}
+	decoded := make(map[string]json.RawMessage, len(fields))
+	for k, v := range fields {
+		var s string
+		if json.Unmarshal(v, &s) != nil || !json.Valid([]byte(s)) {
+			return args
+		}
+		decoded[k] = json.RawMessage(s)
+	}
+	out, err := json.Marshal(decoded)
+	if err != nil {
+		return args
+	}
+	return out
 }
 
 // agyPrompt returns what the user typed: USER_INPUT content wraps it in

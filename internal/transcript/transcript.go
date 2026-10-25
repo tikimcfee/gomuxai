@@ -96,26 +96,14 @@ type ToolCall struct {
 }
 
 // Detail returns what the call is about, from the tool table
-// (SummarizeTool): its file, else its most telling input (command,
+// (DescribeTool): its file, else its most telling input (command,
 // pattern, ...), or "". A path under cwd is made relative to it.
 func (c *ToolCall) Detail(cwd string) string {
-	s := SummarizeTool(c.Name, c.Input, nil, cwd)
+	s := DescribeTool(c.Name, c.Input, cwd)
 	if s.Target != "" {
 		return s.Target
 	}
 	return s.Detail
-}
-
-// unquote decodes a value agy sometimes stores JSON-encoded a second time
-// ("\"/path/file.go\""), as glyph3d-rs clean_antigravity_string does.
-func unquote(s string) string {
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		var inner string
-		if json.Unmarshal([]byte(s), &inner) == nil {
-			return inner
-		}
-	}
-	return s
 }
 
 // Event kinds.
