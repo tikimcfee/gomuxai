@@ -19,7 +19,10 @@ The Go types are in `internal/transcript/events.go`.
   `workgroup` says which one a session is.
 - `agent events <name|session-id|path> [--json] [--follow] [--from <byte>] [--requests]`: one
   session's events, as JSON lines.
-  - `--from` resumes at a byte offset: the `at` of the last event the reader holds.
+  - `--from` resumes after the line at a byte offset: the `at` of the last event the reader
+    holds. That line's events are not sent again (a line's events are always sent
+    together); what follows is numbered and turned as the whole stream is, and updates to
+    events of earlier lines still come. The reader reads the lines before it to know them.
   - `--requests` adds the model-request channel; it is off by default.
 - `agent export` is unchanged: the set of agents as recorded now, plus `--follow` for changes
   to that set.
@@ -68,13 +71,17 @@ updates an earlier one, the add comes first.
 
 - `prompt` `{text, origin, command?, images?}`: every message into the agent.
   - `origin` is one of `human`, `queued` (sent mid-turn), `delivered` (gomuxai's held
-    delivery), `task-notification`, `peer`, `command` or `system`.
+    delivery), `task-notification`, `peer`, `command` or `system` (the harness's own: a
+    scheduled wakeup, an idle notice, a hook's feedback).
+  - One message can hold several task notifications; each completes its own call.
   - A mid-turn message carries the current turn's id.
   - A slash command has `command: "/name"` and `text: "/name args"`. `images` is
     `[{media_type, data}]`, with the base64 data whole.
 - `think` `{text?, redacted?}`: a redacted block (signature only) is still an event.
 - `say` `{text, final?, provisional?}`: text the agent wrote.
-  - `final` marks a turn's closing reply.
+  - `final` marks a turn's closing reply. A reply the harness gave no stop reason (older
+    Claude Code) is marked final by an update once its turn ends with nothing more from the
+    model.
   - A provisional final reply comes from the Stop hook before the transcript holds it. When
     the transcript's own copy lands, it is sent as an update of the same `id`. That id is
     `<promptId>#final`, and `<promptId>#final<n>` for the nth Stop of a turn (a held
@@ -91,7 +98,7 @@ updates an earlier one, the add comes first.
   - Tools the table calls noise keep `action: "noise"`; readers may hide them.
   - A call that starts a subagent names its session in `sub_session`.
 - `system` `{subtype, text?, data?}`: harness records such as turn timing, compaction, API
-  errors and interrupts.
+  errors, interrupts and model fallbacks (`model_fallback`, `data: {from, to}`).
 - `request` (only with `--requests`) `{model, params, base?, tail, blobs}`: what one model call
   was sent. Claude Code's `api-request` lines name message hashes that its `api-request-blob`
   lines hold, so this channel is indexable and searchable, and it is a snapshot of what the
@@ -103,8 +110,13 @@ updates an earlier one, the add comes first.
   it records them. Otherwise they are derived and marked `derived`; never a silent mix.
   - `promptIndex` counts human prompts, so a turn a task notification or a peer opens has
     its own id but the index of the human prompt before it. A record with a `promptId` and
-    no `promptIndex` takes the last index seen in its file, or 0; a subagent's records,
-    which hold the parent's `promptId`, take the index the parent's transcript gives it.
+    no `promptIndex` takes the last index seen in its file. A file that records no
+    `promptIndex` at all (Claude Code 2.1.25x-26x) numbers its turns by counting human
+    prompts, as a derived turn does.
+  - A subagent's records hold the parent's current `promptId`: its events carry that turn,
+    with the index the parent's transcript gives it, or the last index known.
+  - An index of 0 means the transcript doesn't say (a subagent whose parent's transcript is
+    gone, records before any prompt); a known turn's index is 1 or more.
   - A derived turn's id is the id of the prompt event that opened it, and its index counts
     such prompts from 1.
 - `api-request*` lines are never conversation events, only `request` events, and only when asked.
