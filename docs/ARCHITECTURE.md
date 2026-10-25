@@ -52,7 +52,7 @@ installed one:
 | `internal/backend/namedagents` | The built-in backends: `claude`, `agy`, `aider`, and the hook plumbing they share (`hooks.go`). |
 | `internal/backend/types` | `Status`, `HookReport`, `PermissionResponse`, shared by backends and service. |
 | `internal/allowcmd` | Decides whether a shell command line is one plain run of a given binary with a safe subcommand (parsed with `mvdan.cc/sh`), for the PreToolUse approval. |
-| `internal/tmux` | `TmuxOps` over `gotmux`: sessions, send keys, capture, pipe-pane. |
+| `internal/tmux` | `TmuxOps` over the `tmux` command: sessions, send keys, capture, pipe-pane. Errors carry tmux's own message. |
 | `internal/natsbus` | The bus: contract (subjects, ops, wire types), identity and trust, the daemon's server config, RPC server and client, status events and `Wait`. `natstest` starts throwaway NATS servers for tests. |
 | `internal/transcript` | Readers for Claude Code and agy session transcripts, into one `Session`/`Turn`/`Step` shape. |
 | `internal/watcher` | The `agent watch` loop: delivers queued messages when their agent is idle. |
@@ -74,6 +74,33 @@ tmux gives:
    `capture-pane` reads the screen; `pipe-pane` logs everything.
 4. **Escape hatches.** `agent session`, `keys`, `key`, and `clear` expose
    raw tmux for when the higher-level commands fail.
+
+`internal/tmux` runs the `tmux` command itself, and a failure's error
+(`tmux.Error`) carries what tmux printed on stderr ("tmux send-keys: can't
+find pane: %9"). Session targets are exact (`=name`): tmux otherwise falls
+back to a prefix match, so `agent-a` could reach `agent-ab`. Every
+session-level operation targets the session's first pane by id.
+
+`capture` reads plain text (`capture-pane -p`); `capture --raw` and
+`TmuxOps.CaptureStyled` add `-e`, which keeps the SGR escape codes (colors,
+bold, dim). tmux re-encodes the screen, so neither carries the program's
+other escape sequences.
+
+**Read-only clients.** While any client attached with `tmux attach -r` is
+on the server, tmux refuses `send-keys` to every session ("client is
+read-only"): with no `-c`, send-keys checks the most recently active client,
+whichever session it watches. The check is meant to keep a read-only viewer
+from typing through key bindings, not to lock the session, and
+`paste-buffer` isn't refused. So on that refusal, `SendKeys` and
+`SendSpecialKey` paste instead: `set-buffer`, then `paste-buffer -d -r -S`
+(`-r` keeps newlines, `-S` keeps control characters, which tmux 3.5+
+otherwise turns into `^C`; without `-p` there's no bracketed paste), which
+types the same bytes `send-keys -l` does. A key is pasted as the bytes a
+terminal sends for it, for names with fixed bytes: Enter, Escape, Tab,
+BSpace, Space, the arrows (in the pane's cursor key mode,
+`#{keypad_cursor_flag}`), C-a to C-z, and single characters. Any other key
+name fails with a `tmux.ReadOnlyError` that names the read-only clients
+(`list-clients`) and says to detach them or watch with `agent capture`.
 
 The cost is that input is typed, not delivered: a message is "sent" once its
 keys are in the terminal, whether or not the CLI read it, and anything typed
@@ -696,7 +723,9 @@ at most 32 in flight (more get a "busy" reply), with handler panics turned
 into error replies. Every reply is an `RPCResponse{error, data}`. The client
 (`rpc_client.go`) times out after 10s and strips terminal control sequences
 from any text another host sent (`util.SanitizeTerminal`); `capture --raw`
-keeps them, since you asked.
+keeps only SGR sequences (`util.SanitizeStyled`), so a hostile host's
+screen can't set titles, write the clipboard, move the cursor, or switch
+modes in your terminal.
 
 | Op | Request → reply | CLI | Remote by default |
 |---|---|---|---|
@@ -999,6 +1028,8 @@ make lint          # golangci-lint
   rules already trust the name the same way. Commands through a variable
   (`$A send`) still prompt.
 - `agent capture` reads managed agents only, not raw sessions.
+- With a read-only tmux client attached anywhere, keys other than the
+  pasteable ones (see [tmux](#why-tmux)) fail until it detaches.
 - `approve`/`deny` can still hit a prompt answered in the milliseconds
   between the screen check and the keypress.
 - Two data dirs on one machine can't both `bus start`: they share the

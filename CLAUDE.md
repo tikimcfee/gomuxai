@@ -196,7 +196,10 @@ and stores no result until that work finishes and Claude takes another
 turn. `logs` reads the CLI's own transcript for `claude` and `agy` agents
 (`--full` for whole text and tool output; `--terminal` for the terminal
 log, which other backends get), and survives cleanup. `capture` is the live
-screen, and the way to look at an agent on another host.
+screen, and the way to look at an agent on another host. It prints plain
+text; `--raw` keeps the colors and styling as SGR escape codes (`| cat -v`
+to read them), which tell, say, dim placeholder text from typed text. To
+watch an agent, use `capture` rather than `tmux attach -r` (see Warts).
 
 ### 5. Answer permission prompts
 
@@ -366,7 +369,7 @@ cross-machine traffic, so run it on the machine you trust most; a machine
 links to one hub, so only one trusted bundle may carry a `url`. Replies
 aren't signed in v1. Status events are hints that `wait` confirms with a
 real status check. Text from other hosts is stripped of terminal control
-sequences (except `capture --raw`).
+sequences; `capture --raw` keeps only the SGR codes (colors, bold, dim).
 
 **macOS:** from inside tmux, the bus can't dial other machines on the LAN
 unless the binary holds its own Local Network permission. The link fails
@@ -389,6 +392,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `exited` | `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
 | `wait` timed out | `status -v` and `capture`: still working, stuck, or missed the turn? |
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
+| A key fails: "a read-only client is attached" | Detach the client it names (`tmux detach-client -t /dev/pts/N`); watch with `agent capture` instead of `tmux attach -r`. |
 | Queued messages never arrive (not Claude) | Start `agent watch` (one per host is enough). |
 | A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there); `agent deliver <name>` types it now if the agent is at its prompt. |
 | Leftover tmux session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
@@ -433,6 +437,11 @@ Known gaps; `agent friction list` has the rest.
   (`$A send`), chained, or piped; see "What a spawned Claude agent may run
   without asking".
 - Bus replies are unsigned (see trust, above).
+- A read-only tmux client (`tmux attach -r`) attached to any session makes
+  tmux refuse `send-keys` to every session. `agent` pastes text and common
+  keys past it instead (Enter, Escape, Tab, BSpace, Space, the arrows,
+  C-a to C-z, single characters), so `send`, `approve`, and the like still
+  work; any other key name fails, naming the client to detach.
 - `export` shows the last reported status: an interrupted permission
   prompt stays `waiting`, and a crashed CLI keeps its last status, until
   the next hook. A store written by an `agent` built before export has no

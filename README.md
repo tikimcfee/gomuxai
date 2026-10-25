@@ -83,7 +83,9 @@ It is idle: ready for a message.
 ```
 
 Watch it any time with `tmux attach -t agent-helper` (detach with
-`Ctrl-b d`). Give it a task, and wait for the turn that message starts:
+`Ctrl-b d`). Avoid `tmux attach -r`: while a read-only client is attached,
+tmux refuses `send-keys` to every session, and `agent` has to paste around
+it. Give it a task, and wait for the turn that message starts:
 
 ```console
 $ agent send helper "Run the shell command: curl -sI https://example.com" \
@@ -255,7 +257,7 @@ bus prints a note about it in its `gomux-bus` session
 | `agent` | Who you are, this host, your agents and their status (and held messages), the bus, messages held for you |
 | `agent list` | Every agent here with STATUS and PARENT; `--host H` for another machine |
 | `agent status NAME -v` | Status, where it came from, last event, and a pending prompt's full tool call |
-| `agent capture NAME` | The agent's screen now, plus scrollback |
+| `agent capture NAME` | The agent's screen now, plus scrollback, as plain text; `--raw` keeps colors and styling |
 | `agent logs NAME` | What it did, from its CLI's own transcript: prompts, thinking, tool calls, replies. Works after cleanup. `--terminal` for the raw terminal log |
 | `agent history` | Every `agent` command run on this host, by whom, and its exit code; `--failed` for failures |
 | `agent wait --follow --for waiting` | A line each time any agent here is at a new prompt, with what it's asking |
