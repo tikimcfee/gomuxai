@@ -471,6 +471,31 @@ func TestReadFile_Errors(t *testing.T) {
 	}
 }
 
+// A subagent's events carry the turn of the parent's call that started it,
+// its index read from the parent's transcript.
+func TestReadFile_SubagentTurn(t *testing.T) {
+	path := filepath.Join(corpusDir, "claude", "subagent", "subagents", "agent-a3f9c2e17b4d5e608.jsonl")
+	turns := ClaudeSubagentTurns(path)
+	if want := map[string]int{
+		"b92d70b1-18b1-5ccf-96b7-bd5d1ce10135": 1, // the prompt
+		"f6c51b03-1d25-579e-8362-5a8ab18cb715": 1, // the task notification, sharing its index
+	}; !reflect.DeepEqual(turns, want) {
+		t.Errorf("turns = %v, want %v", turns, want)
+	}
+	f, err := ReadFile(path, Claude{}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range f.Events {
+		if e.Turn == nil || e.Turn.ID != "b92d70b1-18b1-5ccf-96b7-bd5d1ce10135" || e.Turn.Index != 1 || e.Agent != "a3f9c2e17b4d5e608" {
+			t.Errorf("event %s: turn %+v, agent %q; want the parent's turn 1", e.ID, e.Turn, e.Agent)
+		}
+	}
+	if ClaudeSubagentTurns(filepath.Join(corpusDir, "claude", "subagent.jsonl")) != nil {
+		t.Error("turns for a transcript that isn't a subagent's")
+	}
+}
+
 func TestSessionIDFromPath(t *testing.T) {
 	for path, want := range map[string]string{
 		"/home/user/.claude/projects/-p/0000-aa.jsonl":                                              "0000-aa",

@@ -246,6 +246,11 @@ type Options struct {
 	// result whose call came earlier is dropped, and events have no turn
 	// until a line names one.
 	From Pos
+	// Turns gives the index of turns the transcript names but doesn't
+	// number, by prompt id: a Claude subagent's records hold its parent's
+	// prompt id, and only the parent's transcript its index
+	// (ClaudeSubagentTurns).
+	Turns map[string]int
 }
 
 // A Reader parses one harness's transcript format.

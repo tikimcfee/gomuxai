@@ -1,10 +1,12 @@
 package transcript
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -209,6 +211,8 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 		if r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil {
 			index = *r.TurnPosition.PromptIndex
 			c.index = index
+		} else if i, ok := c.opts.Turns[r.PromptID]; ok {
+			index = i
 		}
 		if c.turn == nil || c.turn.ID != r.PromptID || c.turn.Index != index || c.turn.Derived {
 			c.turn = &TurnRef{ID: r.PromptID, Index: index}
@@ -748,6 +752,38 @@ func HarvestClaude(s *Session, line []byte) bool {
 	}
 	s.Harness = "claude"
 	return true
+}
+
+// ClaudeSubagentTurns returns, for the Claude subagent transcript at path
+// (<session id>/subagents/agent-<agent id>.jsonl), the index of each turn
+// its parent's transcript (<session id>.jsonl beside that folder) numbers,
+// by prompt id: Options.Turns for parsing it, so the subagent's events
+// carry the turn of the call that started it. It returns nil for any other
+// path, or a parent it can't read.
+func ClaudeSubagentTurns(path string) map[string]int {
+	dir := filepath.Dir(path)
+	if filepath.Base(dir) != "subagents" || !strings.HasPrefix(filepath.Base(path), "agent-") {
+		return nil
+	}
+	f, err := os.Open(filepath.Dir(dir) + ".jsonl")
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	turns := map[string]int{}
+	br := bufio.NewReader(f)
+	for {
+		line, err := br.ReadBytes('\n')
+		if bytes.Contains(line, []byte(`"promptIndex"`)) {
+			var r claudeRecord
+			if json.Unmarshal(line, &r) == nil && r.PromptID != "" && r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil {
+				turns[r.PromptID] = *r.TurnPosition.PromptIndex
+			}
+		}
+		if err != nil {
+			return turns
+		}
+	}
 }
 
 // claudeSubagentTool returns the tool call that started the subagent whose

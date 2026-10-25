@@ -104,6 +104,10 @@ func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 		r = Detect(head)
 	}
 
+	var turns map[string]int
+	if r.Harness() == "claude" {
+		turns = ClaudeSubagentTurns(path)
+	}
 	var p *Parser
 	var events []Event
 	var start int64
@@ -118,7 +122,7 @@ func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 				return nil, err
 			}
 		}
-		p = r.NewParser(Options{From: from})
+		p = r.NewParser(Options{From: from, Turns: turns})
 		events = p.Feed(data)
 		if start == 0 || len(Latest(events)) >= minEvents {
 			break
