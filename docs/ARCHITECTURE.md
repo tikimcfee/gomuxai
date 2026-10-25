@@ -596,8 +596,16 @@ resumed parse take the same ones. `Latest` folds a stream into each event's
 latest state.
 `Finals` merges the final reply a Stop hook reports (`last_assistant_message`)
 into a stream ahead of the transcript, which writes it only after the hook ran:
-a provisional say that the transcript's copy then updates. `HarvestClaude`
-reads a session's metadata alone, line by line, by the same rules.
+a provisional say that the transcript's copy then updates.
+
+The session's metadata (cwd, title, agent name, model, version, branch,
+continued-in) follows one set of rules, `internal/transcript/meta.go`,
+which the parsers apply as they read and `agent sessions` applies to the
+head and tail it reads (`HarvestClaude`, `HarvestKimi` for a line;
+`HarvestAgy`, `HarvestClaudeSubagent`, `FileOptions` for the files beside
+a transcript). Each line's value is placed by its byte offset, not by when
+it was read, so a reader going backwards from the end gets what a parse
+from the start gets: the newest value wins, the oldest for the cwd.
 Backends hand out their reader through `backend.TranscriptProvider`. The
 behaviour was ported from glyph3d-rs `native/src/agent_transcript/` and
 glyph3d-js's session adapter, and `testdata/corpus` holds the transcripts
@@ -738,17 +746,23 @@ only dir scanned for its harness, even if missing; `""` turns the harness
 off.
 
 **What.** Each session's fields come from the harness's own files, never
-the storage folder's name, and only the head and tail are read:
+the storage folder's name, and only the head and tail are read. The rules
+are the readers' (`internal/transcript/meta.go`, under "Results and
+transcripts"); discovery only decides how much to read:
 
 | field | claude | agy | kimi |
 |---|---|---|---|
 | `session_id` | file stem; a subagent's `agent-<id>` | the brain dir's name | `session_<uuid>` without the prefix; a subagent's `<uuid>:<agent>` |
-| `cwd` | the first record's `cwd` (else the newest) | `history.jsonl`'s first `workspace` for it, else a subagent's `workspaceUris` | `state.json` `workDir`/`cwd`, else `session_index.jsonl` |
-| `title` | newest `custom-title`, else newest `ai-title`; a subagent's meta.json `description` when none | `annotations/<id>.pbtxt`, else a subagent's role | `state.json` `title` |
-| `model` | newest assistant `message.model` (not `<synthetic>`) | - | newest `llm.request` `model` |
-| `version`, `git_branch` | newest record's | - | - |
+| `cwd` | the first record's `cwd` | `history.jsonl`'s first `workspace` for it, else a subagent's `workspaceUris` | `state.json` `workDir`/`cwd`, else `session_index.jsonl` |
+| `title` | newest `custom-title`, else newest `ai-title`; a subagent's meta.json `description` | `annotations/<id>.pbtxt`, else a subagent's role | `state.json` `title`, else `lastPrompt`; none on a subagent |
+| `agent_name` | newest `agent-name` record | - | - |
+| `model` | newest assistant `message.model` (not `<synthetic>`) | - (in its steps, which a listing doesn't read) | newest `llm.request` `model` |
+| `version`, `git_branch` | the newest record with a `version`: both, even an empty branch | - | - |
 | `parent_session` | the `<uuid>/subagents/` dir; `tool_id` = meta.json `toolUseId` | `brain/<parent>/.system_generated/subagents/<id>.json` | the session dir of `agents/<agent>/` |
 | `continued_in` | newest `continued-in` record | - | - |
+
+Claude records with `isSidechain` and no `agentId` (an old main
+transcript's subagent records) are another session's and set nothing.
 
 A Claude transcript is never read whole: the head grows from 16 KiB until
 a record has a cwd (at most 256 KiB), and the end is read backwards, at

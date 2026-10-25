@@ -210,14 +210,16 @@ func (t *tail) events() []Event {
 
 // file records in s the transcript file it was read from, and what the
 // file's name and neighbours say: the session id, if no record named it,
-// and the call that started a Claude subagent.
+// and a Claude subagent's meta.json.
 func (s *Session) file(path string, size int64) {
 	s.Path, s.Size = path, size
 	if s.SessionID == "" {
 		s.SessionID = SessionIDFromPath(path)
 	}
-	if s.ParentSession != nil && s.ParentSession.ToolID == "" {
-		s.ParentSession.ToolID = claudeSubagentTool(path)
+	if s.ParentSession != nil {
+		if meta, ok := ReadClaudeSubagentMeta(path); ok {
+			s.HarvestClaudeSubagent(meta)
+		}
 	}
 }
 

@@ -314,27 +314,60 @@ func TestClaudeRequestBlobs(t *testing.T) {
 }
 
 // HarvestClaude reads the session's metadata alone, line by line, as the
-// parser does.
+// parser does, and gets the same whether the lines come first to last or
+// last to first (as agent sessions reads a transcript's end).
 func TestHarvestClaude(t *testing.T) {
-	var s Session
-	for line := range bytes.SplitSeq(readFixture(t, "claude.jsonl"), []byte{'\n'}) {
-		HarvestClaude(&s, line)
+	data := readFixture(t, "claude.jsonl")
+	type line struct {
+		text []byte
+		at   int64
 	}
-	p, _ := parse(Claude{}, readFixture(t, "claude.jsonl"))
-	if want := p.Session(); !reflect.DeepEqual(s, want) {
-		t.Errorf("harvested %+v\nparsed    %+v", s, want)
+	var lines []line
+	for at := int64(0); at < int64(len(data)); {
+		n := int64(bytes.IndexByte(data[at:], '\n'))
+		if n < 0 {
+			n = int64(len(data)) - at
+		}
+		lines = append(lines, line{data[at : at+n], at})
+		at += n + 1
 	}
-	for _, line := range []string{
+	p, _ := parse(Claude{}, data)
+	want := p.Session()
+	var forward, backward Session
+	for i := range lines {
+		HarvestClaude(&forward, lines[i].text, lines[i].at)
+		HarvestClaude(&backward, lines[len(lines)-1-i].text, lines[len(lines)-1-i].at)
+	}
+	forward.Harness, backward.Harness = want.Harness, want.Harness
+	if !reflect.DeepEqual(forward, want) || !reflect.DeepEqual(backward, want) {
+		t.Errorf("harvested first to last %+v\nlast to first %+v\nparsed %+v", forward, backward, want)
+	}
+
+	// The rules, each line after the fixture's.
+	s := want
+	end := int64(len(data))
+	for i, line := range []string{
 		`{"type":"custom-title","customTitle":"mine"}`,
 		`{"type":"ai-title","aiTitle":"later AI title"}`,
 		`{"type":"agent-name","agentName":"fixer"}`,
 		`{"type":"continued-in","continuedInSessionId":"next"}`,
 		`{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[]}}`,
+		`{"type":"user","sessionId":"s","cwd":"/elsewhere","version":"9.9.9","gitBranch":""}`,
+		`{"type":"assistant","isSidechain":true,"version":"9.9.10","message":{"model":"another-session's"}}`,
 	} {
-		HarvestClaude(&s, []byte(line))
+		HarvestClaude(&s, []byte(line), end+int64(i))
 	}
-	if s.Title != "mine" || s.AgentName != "fixer" || s.ContinuedIn != "next" || s.Model != "claude-test-1" {
-		t.Errorf("session = %+v", s)
+	switch {
+	case s.Title != "mine" || !s.TitleIsCustom():
+		t.Errorf("title %q, want the custom title, mine, over the later AI title", s.Title)
+	case s.AgentName != "fixer" || s.ContinuedIn != "next":
+		t.Errorf("agent name %q, continued in %q; want fixer, next", s.AgentName, s.ContinuedIn)
+	case s.Model != want.Model:
+		t.Errorf("model %q, want %q: neither an API error's nor a sidechain's", s.Model, want.Model)
+	case s.Version != "9.9.9" || s.GitBranch != "":
+		t.Errorf("version %q, branch %q; want the newest version's record, with its empty branch", s.Version, s.GitBranch)
+	case s.CWD != want.CWD:
+		t.Errorf("cwd %q, want the first recorded, %q", s.CWD, want.CWD)
 	}
 }
 

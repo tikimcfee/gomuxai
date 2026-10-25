@@ -316,14 +316,23 @@ shapes from glyph3d-rs and glyph3d-js. The readers' unit tests (`TestAgyParse`,
 
 **Session**
 
-- `title`: Claude's latest `custom-title` if there is one, else its latest `ai-title`.
-  Kimi's comes from `state.json` (`title`, else `lastPrompt`). agy records none.
-- `model`, `version`, `git_branch` and `cwd` are the latest values recorded; Claude's
-  `<synthetic>` model is skipped. `project` is the last element of `cwd`.
-- agy: `session_id` is the conversation directory's name, `cwd` is the first
-  `run_command`'s `Cwd`, and `model` is the latest `Model Selection` change in a
-  USER_INPUT. Kimi: `session_id` is the `session_<id>` directory's id, `cwd` is
-  `state.json`'s `workDir`, and `model` is the latest `llm.request` model.
+These are `internal/transcript/meta.go`'s rules, which `agent sessions` applies too
+(to the head and tail it reads of a transcript). "Latest" is by the record's place in
+the file, not the order it was read in.
+
+- `title`: Claude's latest `custom-title` if there is one, else its latest `ai-title`;
+  a Claude subagent's, its `meta.json` `description`. agy's is its
+  `annotations/<id>.pbtxt` title, else a subagent's `role`. Kimi's comes from
+  `state.json` (`title`, else `lastPrompt`), on the main agent only.
+- `cwd` is the first recorded; `project` is its last element.
+- `model` is the latest recorded; Claude's `<synthetic>` model is skipped. Claude's
+  latest record with a `version` sets `version` and `git_branch`, even an empty branch.
+- Claude records with `isSidechain` and no `agentId` say nothing about the session.
+- agy: `session_id` is the conversation directory's name, `cwd` is a step's `cwd` or
+  the first `run_command`'s `Cwd` (a subagent's descriptor's workspace first), and
+  `model` is the latest `Model Selection` change in a USER_INPUT. Kimi: `session_id`
+  is the `session_<id>` directory's id, `cwd` is `state.json`'s `workDir`, and `model`
+  is the latest `llm.request` model.
 - `agent_name` comes from Claude's `agent-name` record (latest), and `continued_in` from
   `continued-in`.
 - `ts` is the record's own timestamp string. Kimi's epoch milliseconds are written as

@@ -45,7 +45,7 @@ updates an earlier one, the add comes first.
 
 ```jsonc
 { "session_id": "…", "harness": "claude|agy|kimi", "path": "…", "size": 0, "mtime": "…",
-  "cwd": "…", "project": "…",  // from the cwd the session recorded, never the storage folder name
+  "cwd": "…", "project": "…",  // the first cwd the session recorded, never the storage folder name
   "title": "…",                // the latest title the harness recorded (Claude: a custom title wins over an AI one)
   "agent_name": "…",           // the name the harness recorded for the session (Claude's agent-name)
   "model": "…", "version": "…", "git_branch": "…",
