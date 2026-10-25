@@ -26,7 +26,7 @@ installed one:
 
 ```
 .gomuxai/
-├── gomuxai.db               # agents, messages, tasks, state, command_log, friction
+├── gomuxai.db               # agents, runs, agent_events, messages, tasks, state, command_log, friction
 ├── logs/
 │   ├── <name>.log           # tmux pipe-pane output (survives cleanup)
 │   └── <name>.transcripts   # "<backend>\t<path>" per CLI transcript (survives cleanup)
@@ -55,6 +55,7 @@ installed one:
 | `internal/natsbus` | The bus: contract (subjects, ops, wire types), identity and trust, the daemon's server config, RPC server and client, status events and `Wait`. `natstest` starts throwaway NATS servers for tests. |
 | `internal/transcript` | Readers for Claude Code and agy session transcripts, into one `Session`/`Turn`/`Step` shape. |
 | `internal/watcher` | The `agent watch` loop: delivers queued messages when their agent is idle. |
+| `internal/export` | The tree `agent export` prints: a snapshot across stores and hosts, kept current from agent events, sessions, and transcripts. |
 | `internal/config` | `Config`, its defaults (data dir next to the binary, host name, startup delay), and paths derived from it. |
 | `internal/macos` | Local Network support for the bus on macOS: Info.plist detection and disclaimed spawn. |
 | `internal/buildinfo` | The build id (`c7253f9-dirty`, a version, or `devel`) from the Go toolchain's embedded VCS info. |
@@ -90,8 +91,10 @@ are in `exploration/tmux-tui-connector-ideation.md`.
    with the binary's directory, and starts `pipe-pane` into
    `logs/<name>.log`.
 4. Stores the agent record, with `spawned_by` from the caller's
-   `AGENT_NAME` ("" for a person). The record exists before the CLI starts,
-   because hooks report against it immediately.
+   `AGENT_NAME` ("" for a person) and the spawn's cwd, and in the same
+   transaction opens a run and records a `spawned` agent event (see
+   [Export](#export)). The record exists before the CLI starts, because
+   hooks report against it immediately.
 5. Builds the launch command from the backend's capabilities (below), writes
    it to `agents/<name>/launch.sh`, and types only `sh <path>` into the
    session. Typed input sits in the terminal's canonical-mode buffer until
@@ -168,8 +171,10 @@ records whose they are.
 idle agent and waits 1.5s, so the CLI exits cleanly and its hooks record it.
 Then it stops pipe-pane, kills the session, deletes the agent's messages
 and agent dir, and deletes the record; state rows go with it through the
-foreign key's `ON DELETE CASCADE`. The terminal log and the transcripts list
-stay.
+foreign key's `ON DELETE CASCADE`. The same transaction closes the agent's
+run (with its last `_status` and `_transcript`) and records a `removed`
+agent event, so the run stays readable (`export --all`). The terminal log
+and the transcripts list stay.
 
 ## Messages
 
@@ -276,7 +281,8 @@ input, and the subagent), when `approve`/`deny` answers it, when the main
 agent takes a prompt (`UserPromptSubmit`, for its own prompts), or when a
 turn ends with nothing running (`Stop` with no background tasks,
 `StopFailure`, `SessionStart`, `SessionEnd`). Report writes and deletes in
-one transaction (`UpdateStates`).
+one transaction (`RecordReport`), which also appends a `status` agent event
+(see [Export](#export)).
 
 Timestamps are stored with nanoseconds: a whole turn can fit in one second,
 and `wait --next` tells reports apart by time. Every recorded report also
@@ -385,6 +391,102 @@ asks for it directly. The terminal log is the raw pipe-pane stream, cleaned by
 `util.TerminalLines` (escapes dropped, cursor moves turned into spaces and
 line breaks, redraws collapsed). Logs are per host; `logs name@host` is
 refused in favor of `capture`.
+
+## Export
+
+`agent export` (`internal/cli/export.go`, `internal/export`) is the
+supported feed of the agent tree for displays: what they would otherwise
+read from the database's tables, which aren't an interface.
+
+### Where it comes from
+
+- **Agent events.** Spawn, cleanup (and a failed spawn's cleanup), and
+  every recorded status report append a row to `agent_events` in the same
+  transaction as the write it describes, so an event is there exactly when
+  its change is. Ids only grow (`AUTOINCREMENT`, and SQLite commits one
+  writer at a time), so a follower tails `id > cursor`. A status event
+  carries the report; `tool_input` only for a `waiting` report, since every
+  tool call's input would bloat the table. The newest 20000 are kept
+  (pruned every 100th insert, like the command log).
+- **Runs.** Spawn opens one, cleanup closes it with the last status and
+  transcript, so `--all` lists departed agents without the command log.
+  A store from before runs has its departed agents rebuilt from the command
+  log's spawns (newest per name, `run` 0) and `logs/<name>.transcripts`.
+- **The snapshot** reads agents, runs, the reserved status keys, and the
+  newest event id in one read transaction, so the snapshot holds every
+  event up to its cursor and none after.
+- **Status** is the last report, not `StatusInfo`: export runs no backend
+  CLI (`claude agents --json`), so any number of followers cost a query
+  every 250ms each. Known differences from `agent status`: an interrupted
+  permission prompt stays `waiting`, a crashed CLI keeps its last status
+  (`attached` stays true: the shell is still there), and with several
+  queued prompts `detail` describes the newest, not the one on screen.
+- **Sessions and transcripts** are checked every second: `tmux
+  list-sessions -F '#{session_name}'` and a stat of each live agent's
+  transcript. A change is a `changed` line with `reason` `session` or
+  `transcript`.
+- **Other stores.** An agent spawned by another binary is recorded in that
+  binary's store. For each `agent-*` session no read store records, export
+  asks tmux for the session's `PATH` (spawn puts the binary's dir first),
+  opens `<dir>/.gomuxai/gomuxai.db` read-only, and adds it (a `store` line
+  while following). `--store` adds one up front. A store written by an
+  older binary has no `agent_events`: `--follow` checks its `PRAGMA
+  data_version`, re-reads it when that moved, and sends a `changed` line
+  (no `id`) per agent that changed, or a whole `store` line when agents
+  came or went, since nothing says whether they were spawned or cleaned up. Sessions still unmatched are listed as `unrecorded`.
+- **Other hosts** (`--hosts all|h1,h2`) come from the bus's `list` op, so
+  they have no store, cwd, transcript, or `attached`, and their status is
+  the remote host's resolved status. `--follow` lists them again every 30s
+  and sends a `host` line when one changed. No bus protocol was added.
+
+### The stream
+
+Without `--follow`, `--json` prints the snapshot, indented. With it, every
+line is one compact JSON object; the first is the snapshot, unless
+`--since <id>` resumes (only when the store still keeps every event after
+`<id>`; otherwise it starts with a snapshot and says so on stderr). A
+follower keys agents by `host` + `store` + `name`, and `run` tells two
+runs of one name apart. Every agent object has the same fields:
+
+```json
+{"name":"lead-t1","host":"laptop","kind":"tmux","run":12,"parent":"lead","backend":"claude",
+ "session":"agent-lead-t1","store":"/home/user/gomuxai/bin/.gomuxai","cwd":"/home/user/gomuxai",
+ "created_at":"2026-10-24T14:00:00.5Z","live":true,"attached":true,
+ "status":"waiting","event":"PermissionRequest","detail":"permission: Bash: rm -rf build","tool":"Bash",
+ "tool_input":"{\"command\":\"rm -rf build\"}","status_at":"2026-10-24T14:01:02.25Z",
+ "session_id":"5f0c…","transcript":"/home/user/.claude/projects/-home-user-gomuxai/5f0c….jsonl",
+ "dialect":"claude","transcript_size":48211,"transcript_mtime":"2026-10-24T14:01:02.3Z"}
+```
+
+`kind` is `tmux` for every agent so far (room for CLI sessions that agent
+didn't start). Absent fields are empty: `parent` for a person's agent,
+`ended_at` while live, `store` and `attached` for another host's agents.
+A departed agent (`live: false`, `ended_at` set) keeps its last report.
+
+| `type` | Fields | When |
+|---|---|---|
+| `snapshot` | `host`, `stores` (`dir`, `this`, `cursor`, `events`, `error`), `hosts` (`host`, `agents`, `error`), `agents`, `unrecorded` (`session`, `store`) | first |
+| `spawned` | `id`, `store`, `at`, `agent` | spawn recorded an agent |
+| `changed` | `id` (for an agent event), `store`, `at`, `reason` (`status`, `session`, `transcript`), `agent` | an agent changed; the whole agent, as now |
+| `removed` | `id`, `store`, `at`, `agent` (departed) | cleanup deleted the record |
+| `store` | `store`, `agents` | a store found while following, or agents came or went in a store without events: replace its agents |
+| `host` | `host`, `agents` | another host's agents changed: replace them |
+| `unrecorded` | `sessions` | the unmatched sessions changed: replace the list |
+
+```json
+{"type":"spawned","id":3,"store":"/home/user/gomuxai/bin/.gomuxai","at":"2026-10-24T14:00:00.5Z","agent":{"name":"lead-t1","live":true,"attached":true,…}}
+{"type":"changed","id":4,"store":"/home/user/gomuxai/bin/.gomuxai","at":"2026-10-24T14:00:03.1Z","reason":"status","agent":{"name":"lead-t1","status":"processing","event":"PreToolUse","detail":"Bash: go test ./...",…}}
+{"type":"changed","store":"/home/user/gomuxai/bin/.gomuxai","at":"2026-10-24T14:00:04Z","reason":"transcript","agent":{"name":"lead-t1","transcript_size":51003,…}}
+{"type":"removed","id":29,"store":"/home/user/gomuxai/bin/.gomuxai","at":"2026-10-24T14:02:00Z","agent":{"name":"lead-t1","live":false,"attached":false,"ended_at":"2026-10-24T14:02:00Z",…}}
+{"type":"store","store":{"dir":"/home/user/.local/bin/.gomuxai","cursor":0,"events":false},"agents":[…]}
+{"type":"host","host":{"host":"hub","agents":2},"agents":[…]}
+{"type":"unrecorded","sessions":[{"session":"agent-stray"}]}
+```
+
+Every status report is a line, even one superseded before the follower
+read it (a prompt answered within 250ms still shows as `waiting`).
+Without `--json`, `--follow` prints a line of text per change, and skips
+transcript growth.
 
 ## The bus
 
@@ -611,7 +713,9 @@ One SQLite database, `.gomuxai/gomuxai.db`, through `modernc.org/sqlite`
 
 | Table | Columns | Notes |
 |---|---|---|
-| `agents` | `name` PK, `session_name`, `backend`, `task_file`, `log_file`, `created_at`, `spawned_by` | one row per live agent |
+| `agents` | `name` PK, `session_name`, `backend`, `task_file`, `log_file`, `created_at`, `spawned_by`, `cwd` | one row per live agent |
+| `runs` | `id`, `name`, `parent`, `backend`, `session`, `cwd`, `created_at`, `ended_at`, `status`, `transcript` | one per spawn; cleanup sets `ended_at` and the last status and transcript; indexed on `(name, id)` |
+| `agent_events` | `id`, `at`, `kind`, `agent`, `run`, `status`, `event`, `detail`, `tool`, `tool_input`, `session_id`, `transcript` | `spawned`/`status`/`removed`, for `export --follow`; the newest 20000 are kept |
 | `messages` | `id`, `sender_id`, `receiver_id`, `content`, `status`, `created_at` | `pending`/`delivered`/`failed`; indexed on `(receiver_id, status)` |
 | `tasks` | `name` PK, `content`, `source_file`, `created_at` | independent of agents |
 | `state` | `agent_name`, `key`, `value`, `updated_at`; PK `(agent_name, key)` | FK to `agents` with `ON DELETE CASCADE`: state needs an agent record |
@@ -626,7 +730,7 @@ There is no logs table: logs are files (see
 
 `migrate` runs `CREATE TABLE IF NOT EXISTS` for every table on each open,
 then `addColumn` for columns that older databases lack (so far
-`agents.spawned_by`). `addColumn` checks `pragma_table_info` first and
+`agents.spawned_by` and `agents.cwd`). `addColumn` checks `pragma_table_info` first and
 tolerates another process adding the column between the check and the
 `ALTER TABLE`. A new column goes in both the `CREATE TABLE` (new databases)
 and an `addColumn` call (old ones).
@@ -638,7 +742,14 @@ own `agent report --hook`. The DSN sets `busy_timeout(5000)`,
 `foreign_keys(1)`, and `synchronous(NORMAL)` on every pooled connection (a
 one-off `PRAGMA` would reach only one), and `journal_mode = WAL` is set once,
 since it's stored in the file. Multi-key writes that must be seen together
-(`SetStates`) use a transaction.
+(`SetStates`) use a transaction. A transaction that will write must not
+start with a plain read: once another process commits, SQLite can't
+upgrade its read to a write (`SQLITE_BUSY`, which `busy_timeout` doesn't
+wait out). So `DeleteAgent` starts with the run's `UPDATE ... RETURNING`.
+
+Readers that only read (`export`) open the store with `OpenReadOnly`
+(`mode=ro`, no migrations) and use short transactions, so they never hold
+up writers in WAL mode.
 
 ### Command log
 
@@ -646,7 +757,8 @@ since it's stored in the file. Multi-key writes that must be seen together
 at 300 bytes), duration, exit code, error, `AGENT_NAME`, cwd, and build id.
 Help is recorded too (`recordCommand` opens the store itself when setup
 didn't); `report --hook` (every tool call of every agent) and `bus run` (a
-daemon) are not. Recording is best effort, bounded at 500ms. The log keeps
+daemon) are not. `export --follow` is recorded once, when it ends (Ctrl-C
+or SIGTERM; a SIGPIPE or SIGKILL leaves no row). Recording is best effort, bounded at 500ms. The log keeps
 the newest 20000 rows: every 100th insert deletes older ones, so most
 inserts don't pay for pruning.
 
@@ -684,8 +796,9 @@ Shared by every command (`internal/cli/output.go`, `exit.go`, `root.go`):
   flushes the bus publisher; `main` exits with `ExitCode(err)`.
 - **`--json`** (on `list`, `status`, `state get`/`list`, `task get`/`list`,
   `session list`, `bus status`, `logs`, `history`, `friction list`/`show`,
-  `events`) goes through `printJSON`: indented, with `&`, `<`, `>` not
-  HTML-escaped.
+  `events`, `export`) goes through `printJSON`: indented, with `&`, `<`, `>`
+  not HTML-escaped. Streams (`events --json`, `export --json --follow`)
+  print one compact object per line instead.
 - **Setup.** `PersistentPreRunE` (`setup`) loads config, the backend
   registry (and `--backend-config`), the database, tmux, and the service for
   every command except help.
@@ -708,7 +821,9 @@ make lint          # golangci-lint
 
 - **`internal/*/..._test.go`**: in-package tests: CLI output, hints, exit
   codes, help examples, cleanup rules, logs, history, friction; storage
-  pruning and friction queries; transcript parsing against fixtures in
+  pruning and friction queries; runs, agent events, and reading old stores
+  read-only; the export snapshot and stream (temp stores, fake tmux and
+  bus); transcript parsing against fixtures in
   `internal/transcript/testdata`; watcher internals; build ids; the RPC op
   tables.
 - **`tests/<package>/`**: black-box tests per package. `backend`: hook
@@ -752,6 +867,12 @@ make lint          # golangci-lint
   between the screen check and the keypress.
 - Two data dirs on one machine can't both `bus start`: they share the
   `gomux-bus` session name and the default client port.
+- `export` shows reported, not resolved, status (see [Export](#export));
+  a store from a binary built before it has no events, and other hosts
+  come only from `list`. An old binary writing into a store that has
+  `agent_events` (a downgrade) records no events, and followers miss its
+  changes.
+- `runs` are never pruned (one row per spawn).
 - The open friction entries: `agent friction list`.
 
 ## History

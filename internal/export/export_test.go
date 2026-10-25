@@ -339,8 +339,15 @@ func TestFollow_StoreWithoutEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := poll(t, tr)
-	if got := summary(lines); len(got) != 1 || lines[0].(StoreLine).Agents[0].Status != "processing" {
-		t.Errorf("old store changed: %v, want a store line with the new status", got)
+	if got := summary(lines); !slices.Equal(got, []string{"changed:old:status:processing"}) || lines[0].(AgentLine).ID != 0 {
+		t.Errorf("old store's agent changed: %v, want a changed line with no event id", got)
+	}
+	if _, err := db.Exec(`INSERT INTO agents VALUES ('new', 'agent-new', 'claude', '', '', '2026-10-24T14:02:00Z', '')`); err != nil {
+		t.Fatal(err)
+	}
+	lines = poll(t, tr)
+	if got := summary(lines); len(got) != 1 || len(lines[0].(StoreLine).Agents) != 2 {
+		t.Errorf("an agent appeared in the old store: %v, want a store line with both (no event says it was spawned)", got)
 	}
 }
 

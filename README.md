@@ -256,6 +256,7 @@ bus prints a note about it in its `gomux-bus` session
 | `agent history` | Every `agent` command run on this host, by whom, and its exit code; `--failed` for failures |
 | `agent wait --follow --for waiting` | A line each time any agent here is at a new prompt, with what it's asking |
 | `agent events` | Status events as they're reported (needs a running bus) |
+| `agent export --json --follow` | The whole agent tree for a display or script, then a JSON line per change (spawn, status, cleanup); `--all` adds departed agents. Shapes in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#export) |
 | `agent friction list` | Open requests and complaints about the tool |
 
 ```console

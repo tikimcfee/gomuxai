@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -299,13 +300,7 @@ func (t *Tree) Poll(ctx context.Context) ([]any, error) {
 			if err != nil || v == s.version {
 				continue
 			}
-			before := s.agents()
-			if err := t.read(ctx, s); err != nil {
-				continue
-			}
-			if after := s.agents(); !sameAgents(before, after) {
-				lines = append(lines, StoreLine{Type: LineStore, Store: s.info(), Agents: after})
-			}
+			lines = append(lines, t.reread(ctx, s)...)
 			continue
 		}
 		for {
@@ -333,7 +328,7 @@ func (t *Tree) Poll(ctx context.Context) ([]any, error) {
 func (t *Tree) PollSessions(ctx context.Context) []any {
 	var lines []any
 	t.refreshSessions()
-	now := t.d.Now()
+	now := t.d.Now().UTC()
 	for _, s := range t.stores {
 		for _, name := range sortedNames(s.live) {
 			a := s.live[name]
@@ -372,6 +367,40 @@ func (t *Tree) PollHosts(ctx context.Context) []any {
 		}
 	}
 	return lines
+}
+
+// reread reads a store without events again. With the same agents, each
+// one that changed gets a changed line; if agents came or went, a store
+// line replaces them all, since without events nothing says whether they
+// were spawned or cleaned up.
+func (t *Tree) reread(ctx context.Context, s *store) []any {
+	before := s.agents()
+	if err := t.read(ctx, s); err != nil {
+		return nil
+	}
+	after := s.agents()
+	key := func(a Agent) string {
+		return a.Name + "\x00" + strconv.FormatInt(a.Run, 10) + "\x00" + strconv.FormatBool(a.Live)
+	}
+	if !slices.Equal(keysOf(before, key), keysOf(after, key)) {
+		return []any{StoreLine{Type: LineStore, Store: s.info(), Agents: after}}
+	}
+	var lines []any
+	now := t.d.Now().UTC()
+	for i := range after {
+		if !sameAgents(before[i:i+1], after[i:i+1]) {
+			lines = append(lines, AgentLine{Type: LineChanged, Store: s.dir, At: now, Reason: ReasonStatus, Agent: after[i]})
+		}
+	}
+	return lines
+}
+
+func keysOf(agents []Agent, key func(Agent) string) []string {
+	out := make([]string, len(agents))
+	for i, a := range agents {
+		out[i] = key(a)
+	}
+	return out
 }
 
 // apply updates s for ev and returns its line.

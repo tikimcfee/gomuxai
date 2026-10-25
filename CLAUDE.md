@@ -269,6 +269,23 @@ agent task set review -f tasks/review.md   # stores the content, not the path
 agent spawn reviewer --backend claude --task review
 ```
 
+### Export, for displays and scripts
+
+```bash
+agent export                          # the tree for a person: stores, agents, transcripts
+agent export --json --follow          # a snapshot, then one JSON line per change, until Ctrl-C
+agent export --json --follow --since 1234   # resume after event 1234
+agent export --json --all             # include departed (cleaned up) agents
+```
+
+Export reads only, runs no backend CLI, and logs one command-log row per
+run, so many followers are cheap. Its status is the last hook report, not
+the resolved status `agent status` shows. It also reads the stores of other
+`agent` binaries that the tmux `agent-*` sessions point at (a worktree's
+`./bin/agent`), read-only. To coordinate, use `wait` and `_result`; export
+is for programs that draw or log the tree. `docs/ARCHITECTURE.md` ("Export")
+has the JSON shapes.
+
 ## Other Hosts
 
 Each machine has a host name on the bus: the short hostname, or
@@ -366,6 +383,13 @@ Known gaps; `agent friction list` has the rest.
 - Long messages typed into Claude arrive as pasted content.
 - `queue` needs `agent watch` running on this host.
 - Bus replies are unsigned (see trust, above).
+- `export` shows the last reported status: an interrupted permission
+  prompt stays `waiting`, and a crashed CLI keeps its last status, until
+  the next hook. A store written by an `agent` built before export has no
+  events: `--follow` re-reads it when it changes, so its spawns and
+  cleanups arrive as a whole-store update, not as events.
+- `export --hosts` lists other hosts through `list` only: no store, cwd,
+  or transcript for them, and `--follow` re-lists them every 30s.
 
 ## Custom Backends
 
@@ -384,7 +408,7 @@ Everything lives in `.gomuxai/` next to the binary:
 
 ```
 .gomuxai/
-├── gomuxai.db        # agents, messages, tasks, state, command log, friction
+├── gomuxai.db        # agents, runs, agent events, messages, tasks, state, command log, friction
 ├── logs/             # <name>.log (terminal) and <name>.transcripts; survive cleanup
 ├── agents/<name>/    # launch.sh, instructions.md (the briefing)
 ├── bus/              # this host's keys and certificate, peers/, bus.log
