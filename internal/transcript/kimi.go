@@ -110,9 +110,7 @@ func (k *kimiLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	var events []Event
 	switch typ := r.str("type"); typ {
 	case "llm.request":
-		if model := r.str("model"); model != "" {
-			k.sess.Model = model
-		}
+		k.sess.setModel(r.str("model"), at)
 	case "turn.prompt", "turn.steer":
 		text := kimiPrompt(r)
 		if text == "" {
@@ -133,7 +131,7 @@ func (k *kimiLines) read(line []byte, at int64, n int) ([]Event, bool) {
 		}
 		events = append(events, e)
 	case "context.append_loop_event":
-		events = k.loopEvent(readKimiEvent(r["event"]), n, event)
+		events = k.loopEvent(readKimiEvent(r["event"]), at, n, event)
 	}
 	return events, true
 }
@@ -158,9 +156,9 @@ func kimiPrompt(r kimiFields) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-// loopEvent reads a context.append_loop_event's event, on line n:
-// thinking, text, a call, or a call's result.
-func (k *kimiLines) loopEvent(ev kimiEvent, n int, event func(id, kind string) Event) []Event {
+// loopEvent reads a context.append_loop_event's event, on line n at byte
+// offset at: thinking, text, a call, or a call's result.
+func (k *kimiLines) loopEvent(ev kimiEvent, at int64, n int, event func(id, kind string) Event) []Event {
 	switch ev.typ {
 	case "content.part":
 		switch think, text := ev.part.str("think"), ev.part.str("text"); {
@@ -174,9 +172,7 @@ func (k *kimiLines) loopEvent(ev kimiEvent, n int, event func(id, kind string) E
 			return []Event{e}
 		}
 	case "tool.call":
-		if k.sess.CWD == "" {
-			k.sess.setCWD(ev.cwd)
-		}
+		k.sess.setCWD(ev.cwd, at)
 		id := ev.callID
 		if id != "" && k.tools[id] != nil {
 			// A toolCallId used before: this call's event needs an id of
@@ -281,7 +277,7 @@ func kimiFileOptions(path string) Options {
 		return Options{}
 	}
 	sessionDir := filepath.Dir(filepath.Dir(agentDir))
-	s := Session{SessionID: sessionIDFromPath(path)}
+	s := Session{SessionID: SessionIDFromPath(path)}
 	main := filepath.Base(agentDir) == "main"
 	if !main {
 		s.ParentSession = &ParentSession{SessionID: strings.TrimPrefix(filepath.Base(sessionDir), "session_")}
@@ -296,9 +292,9 @@ func kimiFileOptions(path string) Options {
 			}
 		}
 		if cwd := strings.TrimSpace(state.str("workDir")); cwd != "" {
-			s.setCWD(cwd)
+			s.setCWD(cwd, 0)
 		} else {
-			s.setCWD(strings.TrimSpace(state.str("cwd")))
+			s.setCWD(strings.TrimSpace(state.str("cwd")), 0)
 		}
 	}
 	return Options{Session: s}

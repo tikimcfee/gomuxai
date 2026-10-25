@@ -5,6 +5,8 @@ import (
 	"slices"
 	"sort"
 	"time"
+
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // Statuses a session can have: an agent's (internal/backend/types), and
@@ -160,7 +162,7 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 		// or a backend that keeps none.
 		s := Session{SessionID: a.SessionID, Harness: a.Backend, Path: a.Transcript}
 		if a.Transcript != "" {
-			s.SessionID = firstNonEmpty(a.SessionID, SessionIDFromPath(a.Transcript))
+			s.SessionID = firstNonEmpty(a.SessionID, transcript.SessionIDFromPath(a.Transcript))
 		} else {
 			s.Workgroup, s.Status, s.StatusAt = workgroupOf(a), reported(a), a.StatusAt
 		}

@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // Harnesses whose sessions discovery reads.
@@ -190,61 +192,11 @@ func HarnessOf(path string) string {
 	switch {
 	case strings.HasSuffix(slash, "/agents/main/wire.jsonl"), strings.Contains(slash, "/.kimi-code/"):
 		return HarnessKimi
-	case agyConversationDir(path) != "", strings.Contains(slash, "/antigravity-cli/brain/"),
+	case transcript.AgyConversationDir(path) != "", strings.Contains(slash, "/antigravity-cli/brain/"),
 		strings.Contains(slash, "/antigravity/brain/"):
 		return HarnessAgy
 	case strings.HasSuffix(slash, ".jsonl"):
 		return HarnessClaude
-	}
-	return ""
-}
-
-// SessionIDFromPath names a session after its transcript's path:
-//   - Claude Code: <session id>.jsonl, and a subagent's
-//     <session id>/subagents/agent-<id>.jsonl is agent-<id>;
-//   - agy: brain/<conversation id>/.system_generated/logs/transcript*.jsonl,
-//     or brain/<conversation id>/transcript*.jsonl;
-//   - Kimi Code: session_<uuid>/agents/main/wire.jsonl is <uuid>, and a
-//     subagent's agents/<agent>/wire.jsonl is <uuid>:<agent>.
-//
-// It returns "" for a path of none of these shapes.
-func SessionIDFromPath(path string) string {
-	if path == "" {
-		return ""
-	}
-	base := filepath.Base(path)
-	dir := filepath.Dir(path)
-	if base == "wire.jsonl" && filepath.Base(filepath.Dir(dir)) == "agents" {
-		session := strings.TrimPrefix(filepath.Base(filepath.Dir(filepath.Dir(dir))), "session_")
-		if agent := filepath.Base(dir); agent != "main" {
-			return session + ":" + agent
-		}
-		return session
-	}
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	if !strings.HasPrefix(stem, "transcript") {
-		return stem
-	}
-	if conv := agyConversationDir(path); conv != "" {
-		return filepath.Base(conv)
-	}
-	return ""
-}
-
-// agyConversationDir returns the brain/<conversation id> dir an agy
-// transcript is in, for either place agy keeps one:
-// <id>/.system_generated/logs/transcript*.jsonl or <id>/transcript*.jsonl.
-// It returns "" for a path of neither shape.
-func agyConversationDir(path string) string {
-	if !strings.HasPrefix(filepath.Base(path), "transcript") {
-		return ""
-	}
-	dir := filepath.Dir(path)
-	if filepath.Base(dir) == "logs" && filepath.Base(filepath.Dir(dir)) == ".system_generated" {
-		return filepath.Dir(filepath.Dir(dir))
-	}
-	if filepath.Base(filepath.Dir(dir)) == "brain" {
-		return dir
 	}
 	return ""
 }

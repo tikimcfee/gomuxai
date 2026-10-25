@@ -311,7 +311,7 @@ func unlistedSession(path string) (discovery.Session, error) {
 	if err != nil {
 		return discovery.Session{}, transcriptGone(path, err)
 	}
-	return discovery.Session{SessionID: discovery.SessionIDFromPath(path), Harness: discovery.HarnessOf(path), Path: path,
+	return discovery.Session{SessionID: transcript.SessionIDFromPath(path), Harness: discovery.HarnessOf(path), Path: path,
 		Size: info.Size(), Mtime: info.ModTime().UTC(), Status: discovery.StatusUnknown}, nil
 }
 

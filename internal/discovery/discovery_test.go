@@ -2,14 +2,19 @@ package discovery
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // Every fixture here is synthesized, in a temp dir standing in for the
@@ -75,25 +80,6 @@ func TestResolveDirs(t *testing.T) {
 	}
 	if desc := DescribeDirs(nil, home); !strings.Contains(desc, "claude_projects_dir") {
 		t.Errorf("describe of nothing = %q, want it to name the config keys", desc)
-	}
-}
-
-func TestSessionIDFromPath(t *testing.T) {
-	cases := map[string]string{
-		"/home/user/.claude/projects/-w/1234-abcd.jsonl":                                           "1234-abcd",
-		"/home/user/.claude/projects/-w/1234-abcd/subagents/agent-a1b2.jsonl":                      "agent-a1b2",
-		"/home/user/.gemini/antigravity-cli/brain/conv-1/.system_generated/logs/transcript.jsonl":  "conv-1",
-		"/home/user/.gemini/antigravity/brain/conv-2/.system_generated/logs/transcript_full.jsonl": "conv-2",
-		"/home/user/.kimi-code/sessions/wd_x_1/session_5678/agents/main/wire.jsonl":                "5678",
-		"/home/user/.kimi-code/sessions/wd_x_1/session_5678/agents/agent-1/wire.jsonl":             "5678:agent-1",
-		"/home/user/.gemini/antigravity-cli/brain/conv-3/transcript.jsonl":                         "conv-3",
-		"/somewhere/transcript.jsonl":                                                              "",
-		"":                                                                                         "",
-	}
-	for path, want := range cases {
-		if got := SessionIDFromPath(path); got != want {
-			t.Errorf("SessionIDFromPath(%q) = %q, want %q", path, got, want)
-		}
 	}
 }
 
@@ -210,7 +196,7 @@ func TestScanClaude(t *testing.T) {
 		t.Errorf("s-ai title/project = %q %q, want the newest AI title", s.Title, s.Project)
 	}
 	x1 := got["agent-x1"]
-	if x1.ParentSession == nil || *x1.ParentSession != (ParentSession{"s-main", "toolu_01"}) || x1.Title != "Look around the cart code" || x1.state != subFinished {
+	if x1.ParentSession == nil || *x1.ParentSession != (ParentSession{SessionID: "s-main", ToolID: "toolu_01"}) || x1.Title != "Look around the cart code" || x1.state != subFinished {
 		t.Errorf("agent-x1 = %+v parent %+v", x1, x1.ParentSession)
 	}
 	if x2 := got["agent-x2"]; x2.state != subRunning {
@@ -237,10 +223,9 @@ func fillers(n int) []string { return slices.Repeat([]string{filler}, n) }
 
 // readCounted runs readClaude over data and returns the session and the
 // bytes it read.
-func readCounted(data string, subagent bool) (Session, int64) {
-	var s Session
+func readCounted(data string, subagent bool) (transcript.Session, int64) {
 	r := &countingReader{r: strings.NewReader(data)}
-	readClaude(&s, r, int64(len(data)), subagent)
+	s := readClaude(r, int64(len(data)), subagent)
 	return s, r.n
 }
 
@@ -264,8 +249,8 @@ func TestReadClaude_Bounded(t *testing.T) {
 		if n > limit {
 			t.Errorf("%s: read %d of %d bytes, want at most %d", name, n, len(c.data), limit)
 		}
-		if s.Cwd != "/home/user/big" {
-			t.Errorf("%s: cwd = %q, want the head's", name, s.Cwd)
+		if s.CWD != "/home/user/big" {
+			t.Errorf("%s: cwd = %q, want the head's", name, s.CWD)
 		}
 	}
 	// A titled transcript stops soon after its newest title.
@@ -292,6 +277,64 @@ func TestReadClaude_TitleWindow(t *testing.T) {
 	}
 }
 
+// A listing reads a session's metadata by the readers' rules: for every
+// transcript in the readers' conformance corpus, what Probe makes of its
+// head and tail is what the corpus says the reader makes of the whole.
+// agy's cwd and model, and the call that started its subagent, are in the
+// conversation's steps, which a listing doesn't read.
+func TestProbeMatchesCorpus(t *testing.T) {
+	corpus := filepath.Join("..", "transcript", "testdata", "corpus")
+	var cases []string
+	err := filepath.WalkDir(corpus, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && strings.HasSuffix(path, ".events.jsonl") && !strings.HasSuffix(path, ".requests.events.jsonl") {
+			cases = append(cases, path)
+		}
+		return err
+	})
+	if err != nil || len(cases) == 0 {
+		t.Fatalf("corpus cases %q: %v", cases, err)
+	}
+	for _, c := range cases {
+		data, err := os.ReadFile(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want transcript.Session
+		if err := json.Unmarshal(data[:bytes.IndexByte(data, '\n')], &want); err != nil {
+			t.Fatalf("%s: %v", c, err)
+		}
+		s, ok := Probe(filepath.Join(corpus, want.Path))
+		if !ok {
+			t.Errorf("%s: no transcript at %s", c, want.Path)
+			continue
+		}
+		got := transcript.Session{SessionID: s.SessionID, Harness: s.Harness, Path: want.Path, Size: s.Size,
+			CWD: s.Cwd, Project: s.Project, Title: s.Title, AgentName: s.AgentName, Model: s.Model,
+			Version: s.Version, GitBranch: s.GitBranch, ParentSession: s.ParentSession, ContinuedIn: s.ContinuedIn}
+		if s.Harness == HarnessClaude {
+			// The corpus names a case's file, and its subagents' folder,
+			// after the case, not the session id a listing takes from
+			// the name.
+			if s.ParentSession == nil {
+				got.SessionID = want.SessionID
+			} else if want.ParentSession != nil {
+				parent := *s.ParentSession
+				parent.SessionID = want.ParentSession.SessionID
+				got.ParentSession = &parent
+			}
+		}
+		if s.Harness == HarnessAgy {
+			got.CWD, got.Project, got.Model = want.CWD, want.Project, want.Model
+			if got.ParentSession != nil && want.ParentSession != nil {
+				got.ParentSession.ToolID = want.ParentSession.ToolID
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s:\n listed %+v\n reader %+v", want.Path, got, want)
+		}
+	}
+}
+
 // In a cwd that isn't a git repo every record's gitBranch is "": the newest
 // version-bearing record still settles version and branch, and older
 // custom titles don't replace the newest one.
@@ -306,6 +349,20 @@ func TestReadClaude_NoGitBranch(t *testing.T) {
 	s, _ := readCounted(data, false)
 	if s.Title != "Second name" || s.Version != "2.1.310" || s.GitBranch != "" || s.Model != "m" {
 		t.Errorf("session = title %q version %q branch %q model %q, want the newest of each", s.Title, s.Version, s.GitBranch, s.Model)
+	}
+}
+
+// An api-request line carries a version but no branch: the branch stays
+// the newest conversation record's when one is the newest line.
+func TestReadClaude_APIRequestKeepsBranch(t *testing.T) {
+	data := lines(
+		`{"type":"user","sessionId":"s","cwd":"/home/user/repo","version":"2.1.310","gitBranch":"feature","message":{"role":"user","content":"go"}}`,
+		`{"type":"assistant","sessionId":"s","version":"2.1.310","gitBranch":"feature","message":{"role":"assistant","model":"m","content":[]}}`,
+		`{"type":"api-request-shape","sessionId":"s","version":"2.1.311","shapeHash":"h"}`,
+		`{"type":"api-request","sessionId":"s","version":"2.1.311","id":"q1","params":{"model":"m"},"tail":[]}`,
+	)
+	if s, _ := readCounted(data, false); s.Version != "2.1.310" || s.GitBranch != "feature" {
+		t.Errorf("version %q, branch %q; want 2.1.310 on feature, the assistant record's", s.Version, s.GitBranch)
 	}
 }
 

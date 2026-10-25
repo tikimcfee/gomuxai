@@ -1,15 +1,13 @@
 package discovery
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // agy (the Antigravity CLI, and its desktop app) keeps each conversation
@@ -17,15 +15,16 @@ import (
 // .system_generated/logs/transcript_full.jsonl. The transcript names no
 // workspace, title or model, so the rest comes from the index files beside
 // brain/, as glyph3d-js cli/sessions.go reads them:
-//   - history.jsonl, one {"workspace","conversationId"?} line per typed
-//     prompt: a conversation's workspace;
+//   - history.jsonl (transcript.ReadAgyHistory): a conversation's
+//     workspace;
 //   - brain/<parent>/.system_generated/subagents/<child>.json
-//     ({"conversationId","subagentDescriptor":{"role"},"state",
-//     "workspaceUris"}): a subagent conversation, its parent, workspace and
-//     state;
+//     (transcript.ReadAgySubagent): a subagent conversation, its parent,
+//     workspace and state;
 //   - annotations/<id>.pbtxt (title:"..."): the conversation's title;
 //   - presence/<id>.lock, which agy holds an exclusive flock on while the
 //     conversation is open.
+//
+// transcript.HarvestAgy reads what they say about a conversation.
 
 // agyTranscripts are the transcript names a conversation may have, the one
 // agy's hooks report first.
@@ -35,15 +34,8 @@ var agyTranscripts = []string{"transcript_full.jsonl", "transcript.jsonl"}
 type agyIndex struct {
 	home      string            // the dir holding brain/
 	workspace map[string]string // conversation id -> workspace, from history.jsonl
-	subagents map[string]agySubagent
+	subagents map[string]transcript.AgySubagent
 	locked    func(path string) bool // whether a process holds a lock on path
-}
-
-type agySubagent struct {
-	parent    string
-	role      string
-	state     string
-	workspace string
 }
 
 // scanAgy lists the conversations under a brain dir.
@@ -93,26 +85,20 @@ func agyTranscript(conv string) (string, os.FileInfo) {
 
 // probeAgy describes one conversation from idx and its presence lock.
 func probeAgy(idx *agyIndex, id, path string, info os.FileInfo) Session {
-	s := fromFile(HarnessAgy, id, path, info)
-	s.Cwd = idx.workspace[id]
+	m := transcript.Session{SessionID: id}
+	files := transcript.AgyFiles{Home: idx.home, Workspace: idx.workspace[id]}
 	if sub, ok := idx.subagents[id]; ok {
-		s.ParentSession = &ParentSession{SessionID: sub.parent}
-		s.Title = sub.role
-		if s.Cwd == "" {
-			s.Cwd = sub.workspace
-		}
-		switch sub.state {
+		files.Subagent = &sub
+	}
+	m.HarvestAgy(files)
+	s := fromMeta(HarnessAgy, path, info, m)
+	if sub := files.Subagent; sub != nil {
+		switch sub.State {
 		case "SUBAGENT_STATE_ALIVE":
 			s.state = subRunning
 		case "":
 		default:
 			s.state = subFinished
-		}
-	}
-	s.Project = projectOf(s.Cwd)
-	if data, err := os.ReadFile(filepath.Join(idx.home, "annotations", id+".pbtxt")); err == nil {
-		if t := agyAnnotationTitle(data); t != "" {
-			s.Title = t
 		}
 	}
 	presence := filepath.Join(idx.home, "presence")
@@ -128,21 +114,7 @@ func probeAgy(idx *agyIndex, id, path string, info os.FileInfo) Session {
 // newAgyIndex reads the index files in home (the dir holding brain/).
 // Missing or malformed files and lines contribute nothing.
 func newAgyIndex(home string) *agyIndex {
-	idx := &agyIndex{home: home, workspace: map[string]string{}, subagents: map[string]agySubagent{}, locked: newLockProbe()}
-	if data, err := os.ReadFile(filepath.Join(home, "history.jsonl")); err == nil {
-		for line := range bytes.SplitSeq(data, []byte{'\n'}) {
-			var e struct {
-				ConversationID string `json:"conversationId"`
-				Workspace      string `json:"workspace"`
-			}
-			if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &e) != nil || e.ConversationID == "" || e.Workspace == "" {
-				continue
-			}
-			if _, ok := idx.workspace[e.ConversationID]; !ok {
-				idx.workspace[e.ConversationID] = filepath.Clean(e.Workspace)
-			}
-		}
-	}
+	idx := &agyIndex{home: home, workspace: transcript.ReadAgyHistory(home), subagents: map[string]transcript.AgySubagent{}, locked: newLockProbe()}
 	brain := filepath.Join(home, "brain")
 	parents, _ := os.ReadDir(brain)
 	for _, p := range parents {
@@ -155,50 +127,12 @@ func newAgyIndex(home string) *agyIndex {
 			if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
 				continue
 			}
-			data, err := os.ReadFile(filepath.Join(dir, f.Name()))
-			if err != nil {
-				continue
+			if sub, ok := transcript.ReadAgySubagent(filepath.Join(dir, f.Name())); ok {
+				idx.subagents[sub.ConversationID] = sub
 			}
-			var d struct {
-				ConversationID string `json:"conversationId"`
-				Descriptor     struct {
-					Role string `json:"role"`
-				} `json:"subagentDescriptor"`
-				State         string   `json:"state"`
-				WorkspaceURIs []string `json:"workspaceUris"`
-			}
-			if json.Unmarshal(data, &d) != nil || d.ConversationID == "" {
-				continue
-			}
-			sub := agySubagent{parent: p.Name(), role: d.Descriptor.Role, state: d.State}
-			for _, u := range d.WorkspaceURIs {
-				if sub.workspace = fileURIPath(u); sub.workspace != "" {
-					break
-				}
-			}
-			idx.subagents[d.ConversationID] = sub
 		}
 	}
 	return idx
-}
-
-// agyAnnotationTitle pulls the title:"..." field out of an annotation file
-// (protobuf text format, whose string escapes are a subset of Go's), or "".
-func agyAnnotationTitle(data []byte) string {
-	s := string(data)
-	i := strings.Index(s, `title:"`)
-	if i < 0 {
-		return ""
-	}
-	q, err := strconv.QuotedPrefix(s[i+len("title:"):])
-	if err != nil {
-		return ""
-	}
-	t, err := strconv.Unquote(q)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(t)
 }
 
 // flockHeld reports whether a process holds an exclusive flock on path. It
@@ -216,13 +150,4 @@ func flockHeld(path string) bool {
 	}
 	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return false
-}
-
-// fileURIPath maps a file:// URI to a clean local path, or "".
-func fileURIPath(uri string) string {
-	u, err := url.Parse(uri)
-	if err != nil || u.Scheme != "file" || u.Path == "" {
-		return ""
-	}
-	return filepath.Clean(filepath.FromSlash(u.Path))
 }

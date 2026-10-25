@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // Kimi Code keeps a session as a directory,
@@ -43,7 +45,7 @@ func scanKimi(dir string) []Session {
 				s := probeKimi(wire, info)
 				if s.Cwd == "" {
 					s.Cwd = index[strings.TrimPrefix(sd.Name(), "session_")]
-					s.Project = projectOf(s.Cwd)
+					s.Project = transcript.ProjectOf(s.Cwd)
 				}
 				out = append(out, s)
 			}
@@ -52,46 +54,20 @@ func scanKimi(dir string) []Session {
 	return out
 }
 
-// probeKimi reads a Kimi wire log's session: the title and cwd from the
-// session's state.json, the model from the newest llm.request line, and for
-// a subagent, its parent session.
+// probeKimi reads a Kimi wire log's session: what the files beside it say
+// (transcript.FileOptions: the title and cwd from the session's
+// state.json, and for a subagent, its parent session), and the model from
+// the newest llm.request line, read from the end backwards.
 func probeKimi(wire string, info os.FileInfo) Session {
-	s := fromFile(HarnessKimi, SessionIDFromPath(wire), wire, info)
-	agentDir := filepath.Dir(wire)
-	sessionDir := filepath.Dir(filepath.Dir(agentDir))
-	if filepath.Base(agentDir) != "main" {
-		s.ParentSession = &ParentSession{SessionID: strings.TrimPrefix(filepath.Base(sessionDir), "session_")}
-	}
-	if data, err := os.ReadFile(filepath.Join(sessionDir, "state.json")); err == nil {
-		var state struct {
-			Title   string `json:"title"`
-			WorkDir string `json:"workDir"`
-			CWD     string `json:"cwd"`
-		}
-		if json.Unmarshal(data, &state) == nil {
-			s.Title = strings.TrimSpace(state.Title)
-			s.Cwd = strings.TrimSpace(state.WorkDir)
-			if s.Cwd == "" {
-				s.Cwd = strings.TrimSpace(state.CWD)
-			}
-		}
-	}
-	s.Project = projectOf(s.Cwd)
+	m := transcript.FileOptions(HarnessKimi, wire).Session
 	if f, err := os.Open(wire); err == nil {
-		eachLineBackward(f, info.Size(), claudeTailChunk, claudeTail, func(line []byte, _ int64) bool {
-			var r struct {
-				Type  string `json:"type"`
-				Model string `json:"model"`
-			}
-			if bytes.Contains(line, []byte(`"llm.request"`)) && json.Unmarshal(line, &r) == nil && r.Type == "llm.request" && r.Model != "" {
-				s.Model = r.Model
-				return false
-			}
-			return true
+		eachLineBackward(f, info.Size(), claudeTailChunk, claudeTail, func(line []byte, at int64) bool {
+			transcript.HarvestKimi(&m, line, at)
+			return m.Model == ""
 		})
 		f.Close()
 	}
-	return s
+	return fromMeta(HarnessKimi, wire, info, m)
 }
 
 // kimiIndex reads session_index.jsonl in home (the dir holding sessions/):

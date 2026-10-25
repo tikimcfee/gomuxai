@@ -32,20 +32,11 @@ func (Claude) NewParser(opts Options) *Parser {
 
 // claudeRecord is the part of a transcript line the parser reads.
 type claudeRecord struct {
-	Type      string `json:"type"`
+	// The session's metadata: type, sessionId, agentId, cwd, version, ...
+	claudeMeta
 	Subtype   string `json:"subtype"`
 	UUID      string `json:"uuid"`
 	Timestamp string `json:"timestamp"`
-	SessionID string `json:"sessionId"`
-	AgentID   string `json:"agentId"`
-	CWD       string `json:"cwd"`
-	Version   string `json:"version"`
-	GitBranch string `json:"gitBranch"`
-
-	AITitle     string `json:"aiTitle"`
-	CustomTitle string `json:"customTitle"`
-	AgentName   string `json:"agentName"`
-	ContinuedIn string `json:"continuedInSessionId"`
 
 	PromptID     string `json:"promptId"`
 	TurnPosition *struct {
@@ -54,7 +45,6 @@ type claudeRecord struct {
 	Origin       *claudeOrigin `json:"origin"`
 	PromptSource string        `json:"promptSource"`
 
-	IsSidechain       bool `json:"isSidechain"`
 	IsMeta            bool `json:"isMeta"`
 	IsCompactSummary  bool `json:"isCompactSummary"`
 	IsAPIErrorMessage bool `json:"isApiErrorMessage"`
@@ -214,7 +204,11 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	if r.IsSidechain && r.AgentID == "" {
 		return nil, true
 	}
-	harvestClaude(&c.sess, r)
+	model := ""
+	if r.Type == "assistant" && r.Message != nil {
+		model = r.Message.Model
+	}
+	harvestClaude(&c.sess, &r.claudeMeta, model, at)
 	if r.PromptID != "" {
 		c.enter(r)
 	}
@@ -515,21 +509,21 @@ func (l *claudeLine) result(b claudeBlock, own bool) {
 	if res.Status == StatusBackground {
 		response = nil
 	}
-	sub := ""
+	var subs []string
 	if structured.AgentID != "" {
-		sub = "agent-" + structured.AgentID
+		subs = []string{"agent-" + structured.AgentID}
 	}
-	l.update(call, res, response, sub)
+	l.update(call, res, response, subs)
 }
 
 // update makes the update of call to res, its table fields read from
-// response; sub, if set, names the session the call started.
-func (l *claudeLine) update(call *Event, res *ToolResult, response json.RawMessage, sub string) {
+// response; subs, if any, name the sessions the call started.
+func (l *claudeLine) update(call *Event, res *ToolResult, response json.RawMessage, subs []string) {
 	t := *call.Tool
 	t.Result = res
 	t.ToolSummary = SummarizeTool(t.Name, t.Input, response, l.c.sess.CWD)
-	if sub != "" {
-		t.SubSession = sub
+	if len(subs) > 0 {
+		t.SubSessions = subs
 	}
 	e := *call
 	e.Op, e.At, e.Line, e.TS, e.Tool = OpUpdate, l.at, l.n, l.r.Timestamp, &t
@@ -561,7 +555,7 @@ func (c *claudeLines) settled(id, status string) {
 func (l *claudeLine) interrupt() {
 	for _, id := range append([]string(nil), l.c.pending...) {
 		if call := l.c.tools[id]; call != nil && call.Tool.Result.Status == StatusPending {
-			l.update(call, &ToolResult{Status: StatusInterrupted}, nil, "")
+			l.update(call, &ToolResult{Status: StatusInterrupted}, nil, nil)
 		}
 	}
 }
@@ -648,7 +642,7 @@ func (l *claudeLine) notification(text string) {
 			}
 			response, _ = json.Marshal(m)
 		}
-		l.update(call, res, response, "")
+		l.update(call, res, response, nil)
 	}
 }
 
@@ -866,72 +860,6 @@ func objectFields(line []byte, keep func(key string) bool) json.RawMessage {
 	return out.Bytes()
 }
 
-// harvestClaude records in s what the record says about the session: the
-// latest value of each field wins, except that an AI title doesn't
-// replace a custom one, and the model of an API error (<synthetic>) isn't
-// a model.
-func harvestClaude(s *Session, r *claudeRecord) {
-	switch r.Type {
-	case "ai-title":
-		if r.AITitle != "" && !s.customTitle {
-			s.Title = r.AITitle
-		}
-	case "custom-title":
-		if r.CustomTitle != "" {
-			s.Title, s.customTitle = r.CustomTitle, true
-		}
-	case "agent-name":
-		if r.AgentName != "" {
-			s.AgentName = r.AgentName
-		}
-	case "continued-in":
-		if r.ContinuedIn != "" {
-			s.ContinuedIn = r.ContinuedIn
-		}
-	case "assistant":
-		if r.Message != nil && r.Message.Model != "" && r.Message.Model != "<synthetic>" {
-			s.Model = r.Message.Model
-		}
-	}
-	switch {
-	case r.AgentID != "":
-		// A subagent's own transcript: its session is named after it, and
-		// its records name the session that started it.
-		s.SessionID = "agent-" + r.AgentID
-		if r.SessionID != "" {
-			if s.ParentSession == nil {
-				s.ParentSession = &ParentSession{}
-			}
-			s.ParentSession.SessionID = r.SessionID
-		}
-	case r.SessionID != "":
-		s.SessionID = r.SessionID
-	}
-	s.setCWD(r.CWD)
-	if r.Version != "" {
-		s.Version = r.Version
-	}
-	if r.GitBranch != "" {
-		s.GitBranch = r.GitBranch
-	}
-}
-
-// HarvestClaude records in s what one line of a Claude Code transcript
-// says about its session (see harvestClaude), for a reader that wants the
-// metadata without the events: feed it lines in file order. It reports
-// whether the line was a JSON object.
-func HarvestClaude(s *Session, line []byte) bool {
-	r := &claudeRecord{}
-	if json.Unmarshal(line, r) != nil {
-		return false
-	}
-	if !r.IsSidechain || r.AgentID != "" {
-		harvestClaude(s, r)
-	}
-	s.Harness = "claude"
-	return true
-}
-
 // ClaudeSubagentTurns returns, for the Claude subagent transcript at path
 // (<session id>/subagents/agent-<agent id>.jsonl), the lookup of its
 // parent's turn indexes by prompt id that Options.Turns takes. A
@@ -991,20 +919,6 @@ func (t *parentTurns) read() {
 			return
 		}
 	}
-}
-
-// claudeSubagentTool returns the tool call that started the subagent whose
-// transcript is at path, from the meta.json beside it, or "".
-func claudeSubagentTool(path string) string {
-	data, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json")
-	if err != nil {
-		return ""
-	}
-	var meta struct {
-		ToolUseID string `json:"toolUseId"`
-	}
-	json.Unmarshal(data, &meta)
-	return meta.ToolUseID
 }
 
 // resultText flattens a tool_result's content (a string, or a list of

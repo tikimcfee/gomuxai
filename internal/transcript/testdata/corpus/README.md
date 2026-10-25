@@ -45,7 +45,7 @@ Compare parsed JSON values, not bytes:
 | `claude/held-delivery` | gomuxai's held delivery: Stop's `additionalContext` after a final reply is a `delivered` prompt in the same turn, and the reply to it is a second final reply. Two `stop_hook_summary` records. | `attachment` `hook_success` and `hook_additional_context{content[],hookEvent: Stop,toolUseID}`; `system` `stop_hook_summary{hookCount,hookInfos,hookErrors,hookAdditionalContext,preventedContinuation,stopReason,hasOutput,toolUseID}`. |
 | `claude/notification-and-commands` | A background Bash (`background`), then its task notification, which opens a turn (`task-notification`) and completes the call (`ok`). A local slash command (`/context`) with its output record. A slash command that expands into a model turn (`/review internal/server`). | `toolUseResult.backgroundTaskId`; `user` with `origin{kind: task-notification,producer}`, `promptSource: system`, `turnOrigin: task_notification`, `<task-notification>` tags `task-id`, `tool-use-id`, `output-file`, `status`, `summary`; `<local-command-caveat>` (`isMeta`); `<command-name>`/`<command-message>`/`<command-args>` in both tag orders; `system` `local_command{commandRun}`; the skill body as an `isMeta` `turnCompanion` user record; `attachment` `command_permissions`. |
 | `claude/requests` | `api-request-shape`, `api-request-blob` and `api-request` lines produce nothing in the plain stream. With `--requests` each `api-request` is a `request` event that carries the blobs its `tail` names. | `api-request{id,base,params,tail,keep,shapeHash,querySource,cacheControl,requestDigest}`, `api-request-blob{hash,message}`, `api-request-shape{shapeHash,shape{system,tools}}`. |
-| `claude/subagent` (+ `subagent/subagents/agent-a3f9c2e17b4d5e608`) | An Agent call that launches a background subagent: `background`, with `sub_session`. The subagent's own transcript as its own session, with `parent_session` and `agent` on every event. The task notification that ends it fills the call's result and `meta`. | `toolUseResult{isAsync,status: async_launched,agentId,outputFile,...}`; `<task-notification>` with `result`, `note` and `usage{subagent_tokens,tool_uses,duration_ms}`; subagent records with `isSidechain: true`, `agentId`, the parent's `sessionId` and `promptId`; `agent-<id>.meta.json{agentType,toolUseId,...}`; WebFetch `toolUseResult{bytes,code,codeText,result,durationMs,url}`. |
+| `claude/subagent` (+ `subagent/subagents/agent-a3f9c2e17b4d5e608`) | An Agent call that launches a background subagent: `background`, with `sub_sessions`. The subagent's own transcript as its own session, with `parent_session` and `agent` on every event. The task notification that ends it fills the call's result and `meta`. | `toolUseResult{isAsync,status: async_launched,agentId,outputFile,...}`; `<task-notification>` with `result`, `note` and `usage{subagent_tokens,tool_uses,duration_ms}`; subagent records with `isSidechain: true`, `agentId`, the parent's `sessionId` and `promptId`; `agent-<id>.meta.json{agentType,toolUseId,...}`; WebFetch `toolUseResult{bytes,code,codeText,result,durationMs,url}`. |
 | `claude/tool-results` | MultiEdit with `edits[]`. Three calls in one message whose results land after all three calls (pending, then updates). A partial Read (`meta.range`). A tool error. An interrupted call that never gets a result. | MultiEdit's input and `toolUseResult{filePath,edits,originalFileContents,structuredPatch,userModified}` (from the versions that had MultiEdit; 2.1.310 has none); Read `toolUseResult{type,file{filePath,content,numLines,startLine,totalLines}}`; an error `tool_result` with `is_error: true` and a string `toolUseResult` (`Error: ...`); the `[Request interrupted by user for tool use]` text record, with no `tool_result` for the call. |
 | `claude/system-records` | Auto-compaction mid-turn: the boundary and the summary, both in the current turn. `stop_hook_summary`, `turn_duration`. An API error. | `system` `compact_boundary{compactMetadata,logicalParentUuid}` with `parentUuid: null`; `user` with `isCompactSummary` and `isVisibleInTranscriptOnly`; an `assistant` record with `message.model: <synthetic>`, `isApiErrorMessage`, `error`, `apiErrorStatus`. |
 | `claude/derived-turns` | An older transcript with no `promptId`, `turnPosition`, `origin` or `promptSource`: turn ids are derived (`derived: true`). One record with two blocks (`#0`, and the tool's id). A plain interrupt. | The same envelope as 2.1.310 minus the turn fields (version 2.0.x); a leading `summary` record. |
@@ -181,9 +181,9 @@ should check the rest.
   `interrupted`. The output is the `<result>` text, or the `<summary>` when there is no
   result. `structured` is dropped. For an Agent call, `meta` is `{tools, tokens, ms}` from
   `<usage>`, the same keys the table's `taskMeta` gives a finished Task.
-- `sub_session` is set from the Agent result's `agentId`, so it arrives with the first
+- `sub_sessions` is set from the Agent result's `agentId`, so it arrives with the first
   update. A Claude subagent's `session_id` is `agent-<agentId>`, its transcript's name
-  (`agent-<agentId>.jsonl`), as `agent sessions` names it; `sub_session` names it the
+  (`agent-<agentId>.jsonl`), as `agent sessions` names it; `sub_sessions` names it the
   same way. The `agent` field on the subagent's events is the bare `agentId`.
 - The response a reader hands the table: Claude's `toolUseResult` when it is an object
   (a string one reads as none, so a failed Bash has no `meta`). For an Agent completed
@@ -295,7 +295,7 @@ shapes from glyph3d-rs and glyph3d-js. The readers' unit tests (`TestAgyParse`,
   conversation id. `brain/<parent>/.system_generated/subagents/<id>.json` names its
   parent; its `spawnStepIndex` is the step of the call's result, not the call, so the
   call is the `invoke_subagent` whose result names the subagent's `conversationId`.
-  `sub_session` is set from that result (the first id, when one call starts several), the
+  `sub_sessions` is set from that result (every id it names, in order), the
   subagent's `parent_session.tool_id` names the call, and its events carry that call's
   turn and `agent: <its session_id>`. The subagent's first message, a SYSTEM_MESSAGE from
   the parent's conversation, is `peer`.
@@ -311,20 +311,29 @@ shapes from glyph3d-rs and glyph3d-js. The readers' unit tests (`TestAgyParse`,
 - Kimi subagents: `agents/<agent>/wire.jsonl` is session `<uuid>:<agent>`, with
   `parent_session` the main session's `<uuid>` and `agent: <uuid>:<agent>` on its events.
   Its prompts are `peer` and open derived turns of its own: its log doesn't say which
-  parent turn started it. No parent call gets a `sub_session`: no Kimi call result
+  parent turn started it. No parent call gets `sub_sessions`: no Kimi call result
   naming its subagent has been seen. Its `title` is left empty (`state.json` holds the
   main conversation's); its `cwd` is the session's.
 
 **Session**
 
-- `title`: Claude's latest `custom-title` if there is one, else its latest `ai-title`.
-  Kimi's comes from `state.json` (`title`, else `lastPrompt`). agy records none.
-- `model`, `version`, `git_branch` and `cwd` are the latest values recorded; Claude's
-  `<synthetic>` model is skipped. `project` is the last element of `cwd`.
-- agy: `session_id` is the conversation directory's name, `cwd` is the first
-  `run_command`'s `Cwd`, and `model` is the latest `Model Selection` change in a
-  USER_INPUT. Kimi: `session_id` is the `session_<id>` directory's id, `cwd` is
-  `state.json`'s `workDir`, and `model` is the latest `llm.request` model.
+These are `internal/transcript/meta.go`'s rules, which `agent sessions` applies too
+(to the head and tail it reads of a transcript). "Latest" is by the record's place in
+the file, not the order it was read in.
+
+- `title`: Claude's latest `custom-title` if there is one, else its latest `ai-title`;
+  a Claude subagent's, its `meta.json` `description`. agy's is its
+  `annotations/<id>.pbtxt` title, else a subagent's `role`. Kimi's comes from
+  `state.json` (`title`, else `lastPrompt`), on the main agent only.
+- `cwd` is the first recorded; `project` is its last element.
+- `model` is the latest recorded; Claude's `<synthetic>` model is skipped. Claude's
+  latest record with a `version` sets `version` and `git_branch`, even an empty branch.
+- Claude records with `isSidechain` and no `agentId` say nothing about the session.
+- agy: `session_id` is the conversation directory's name, `cwd` is a step's `cwd` or
+  the first `run_command`'s `Cwd` (a subagent's descriptor's workspace first), and
+  `model` is the latest `Model Selection` change in a USER_INPUT. Kimi: `session_id`
+  is the `session_<id>` directory's id, `cwd` is `state.json`'s `workDir`, and `model`
+  is the latest `llm.request` model.
 - `agent_name` comes from Claude's `agent-name` record (latest), and `continued_in` from
   `continued-in`.
 - `ts` is the record's own timestamp string. Kimi's epoch milliseconds are written as
