@@ -134,7 +134,14 @@ func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 		h.Feed(head)
 		file.Session.fill(h.Session())
 	}
-	s := &file.Session
+	file.Session.file(path, size)
+	return file, nil
+}
+
+// file records in s the transcript file it was read from, and what the
+// file's name and neighbours say: the session id, if no record named it,
+// and the call that started a Claude subagent.
+func (s *Session) file(path string, size int64) {
 	s.Path, s.Size = path, size
 	if s.SessionID == "" {
 		s.SessionID = sessionIDFromPath(path)
@@ -142,7 +149,6 @@ func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 	if s.ParentSession != nil && s.ParentSession.ToolID == "" {
 		s.ParentSession.ToolID = claudeSubagentTool(path)
 	}
-	return file, nil
 }
 
 // readLines returns f's bytes [off, end), less a partial first line when

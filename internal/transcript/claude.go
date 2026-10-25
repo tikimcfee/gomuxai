@@ -1,47 +1,91 @@
 package transcript
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
 // Claude reads Claude Code session transcripts
 // (~/.claude/projects/<project>/<session id>.jsonl, and a subagent's
-// <session id>/subagents/agent-<agent id>.jsonl).
+// <session id>/subagents/agent-<agent id>.jsonl). Each record is one
+// line: user (a prompt, tool results, or a harness note), assistant (one
+// content block per record, records of one message sharing its id),
+// attachment, system, and bookkeeping (titles, modes, queue operations,
+// api-request copies) that carries metadata at most. testdata/corpus/README.md
+// lists the shapes and the decisions this reader follows.
 type Claude struct{}
 
 func (Claude) Harness() string { return "claude" }
 
 func (Claude) NewParser(opts Options) *Parser {
-	return newParser("claude", &claudeLines{opts: opts, tools: map[string]*Event{}}, opts.From)
+	c := &claudeLines{opts: opts, tools: map[string]*Event{}}
+	if opts.Requests {
+		c.blobs = map[string]json.RawMessage{}
+	}
+	return newParser("claude", c, opts.From)
 }
 
 // claudeRecord is the part of a transcript line the parser reads.
 type claudeRecord struct {
-	Type          string          `json:"type"`
-	UUID          string          `json:"uuid"`
-	Timestamp     string          `json:"timestamp"`
-	SessionID     string          `json:"sessionId"`
-	AgentID       string          `json:"agentId"`
-	CWD           string          `json:"cwd"`
-	Version       string          `json:"version"`
-	GitBranch     string          `json:"gitBranch"`
-	AITitle       string          `json:"aiTitle"`
-	CustomTitle   string          `json:"customTitle"`
-	AgentName     string          `json:"agentName"`
-	ContinuedIn   string          `json:"continuedInSessionId"`
-	PromptID      string          `json:"promptId"`
-	IsSidechain   bool            `json:"isSidechain"`
-	IsMeta        bool            `json:"isMeta"`
+	Type      string `json:"type"`
+	Subtype   string `json:"subtype"`
+	UUID      string `json:"uuid"`
+	Timestamp string `json:"timestamp"`
+	SessionID string `json:"sessionId"`
+	AgentID   string `json:"agentId"`
+	CWD       string `json:"cwd"`
+	Version   string `json:"version"`
+	GitBranch string `json:"gitBranch"`
+
+	AITitle     string `json:"aiTitle"`
+	CustomTitle string `json:"customTitle"`
+	AgentName   string `json:"agentName"`
+	ContinuedIn string `json:"continuedInSessionId"`
+
+	PromptID     string `json:"promptId"`
+	TurnPosition *struct {
+		PromptIndex *int `json:"promptIndex"`
+	} `json:"turnPosition"`
+	Origin       *claudeOrigin `json:"origin"`
+	PromptSource string        `json:"promptSource"`
+
+	IsSidechain       bool `json:"isSidechain"`
+	IsMeta            bool `json:"isMeta"`
+	IsCompactSummary  bool `json:"isCompactSummary"`
+	IsAPIErrorMessage bool `json:"isApiErrorMessage"`
+
+	// Content is a system record's text.
+	Content       json.RawMessage `json:"content"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
-	Message       *struct {
+	Attachment    *struct {
+		Type        string          `json:"type"`
+		Prompt      json.RawMessage `json:"prompt"`
+		CommandMode string          `json:"commandMode"`
+		Origin      *claudeOrigin   `json:"origin"`
+		Content     json.RawMessage `json:"content"`
+		HookEvent   string          `json:"hookEvent"`
+	} `json:"attachment"`
+	Message *struct {
 		Role       string          `json:"role"`
 		Model      string          `json:"model"`
 		Content    json.RawMessage `json:"content"`
 		StopReason string          `json:"stop_reason"`
 	} `json:"message"`
+
+	// api-request and api-request-blob lines.
+	ID     string          `json:"id"`
+	Params json.RawMessage `json:"params"`
+	Base   string          `json:"base"`
+	Tail   []string        `json:"tail"`
+	Hash   string          `json:"hash"`
+}
+
+type claudeOrigin struct {
+	Kind string `json:"kind"`
 }
 
 type claudeBlock struct {
@@ -54,26 +98,58 @@ type claudeBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"is_error"`
+	Source    *struct {
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	} `json:"source"`
 }
 
-// blocks returns the record's content blocks, or nil when the content is
-// a plain string (a typed prompt) or absent.
-func (r *claudeRecord) blocks() []claudeBlock {
-	if r.Message == nil {
-		return nil
+// claudeContent is a message's content read as a prompt: its text (a
+// string, or its text blocks joined with newlines), its images, and the
+// index of the block the prompt starts at.
+type claudeContent struct {
+	text   string
+	images []Image
+	block  int
+	// found is set when the content holds any text or image.
+	found bool
+}
+
+// readClaudeContent reads raw, a message's content: a string or blocks.
+// It returns the blocks too, nil for a string.
+func readClaudeContent(raw json.RawMessage) (claudeContent, []claudeBlock) {
+	var c claudeContent
+	if json.Unmarshal(raw, &c.text) == nil {
+		c.found = true
+		return c, nil
 	}
 	var blocks []claudeBlock
-	if json.Unmarshal(r.Message.Content, &blocks) != nil {
-		return nil
+	if json.Unmarshal(raw, &blocks) != nil {
+		return c, nil
 	}
-	return blocks
+	var parts []string
+	for i, b := range blocks {
+		switch {
+		case b.Type == "text":
+			parts = append(parts, b.Text)
+		case b.Type == "image" && b.Source != nil:
+			c.images = append(c.images, Image{MediaType: b.Source.MediaType, Data: b.Source.Data})
+		default:
+			continue
+		}
+		if !c.found {
+			c.block, c.found = i, true
+		}
+	}
+	c.text = strings.Join(parts, "\n")
+	return c, blocks
 }
 
-// blockID is the id of the event block i of the record on line n makes:
-// "<uuid>#<i>", or for a record without a uuid, "L<n>#<i>".
-func (r *claudeRecord) blockID(n, i int) string {
+// blockID is the id of the event block i of a record makes: "<uuid>#<i>",
+// or for a record without a uuid, "L<line>#<i>".
+func (r *claudeRecord) blockID(line, i int) string {
 	if r.UUID == "" {
-		return fmt.Sprintf("L%d#%d", n, i)
+		return fmt.Sprintf("L%d#%d", line, i)
 	}
 	return fmt.Sprintf("%s#%d", r.UUID, i)
 }
@@ -83,14 +159,39 @@ type claudeLines struct {
 	opts Options
 	sess Session
 	turn *TurnRef
-	// derived counts the turns derived from a transcript that records no
-	// prompt ids.
+	// index is the last promptIndex seen; derived counts the turns
+	// derived from records with no prompt id.
+	index   int
 	derived int
-	// tools holds each call's latest event, for its updates.
-	tools map[string]*Event
+	// tools holds each call's latest event, for its updates; pending,
+	// the ids of calls with no result yet, oldest first.
+	tools   map[string]*Event
+	pending []string
+	// blobs holds the messages api-request-blob lines define, by hash
+	// (with Options.Requests).
+	blobs map[string]json.RawMessage
 }
 
 func (c *claudeLines) session() Session { return c.sess }
+
+// claudeLine is what reading one record makes: events it adds, then the
+// updates it makes to earlier ones.
+type claudeLine struct {
+	c       *claudeLines
+	r       *claudeRecord
+	raw     []byte
+	at      int64
+	n       int
+	adds    []Event
+	updates []Event
+}
+
+// event starts an event of the record's.
+func (l *claudeLine) event(id, kind string) Event {
+	return Event{ID: id, Op: OpAdd, At: l.at, Line: l.n, TS: l.r.Timestamp, Turn: l.c.turn, Agent: l.r.AgentID, Kind: kind}
+}
+
+func (l *claudeLine) add(e Event) { l.adds = append(l.adds, e) }
 
 func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	r := &claudeRecord{}
@@ -102,92 +203,492 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	if r.IsSidechain && r.AgentID == "" {
 		return nil, true
 	}
-	c.harvest(r)
-	if r.Message == nil || len(r.Message.Content) == 0 {
-		return nil, true
+	harvestClaude(&c.sess, r)
+	if r.PromptID != "" {
+		index := c.index
+		if r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil {
+			index = *r.TurnPosition.PromptIndex
+			c.index = index
+		}
+		if c.turn == nil || c.turn.ID != r.PromptID || c.turn.Index != index || c.turn.Derived {
+			c.turn = &TurnRef{ID: r.PromptID, Index: index}
+		}
 	}
-	ev := func(id, kind string) Event {
-		return Event{ID: id, Op: OpAdd, At: at, Line: n, TS: r.Timestamp, Turn: c.turn, Agent: r.AgentID, Kind: kind}
-	}
-	var events []Event
+
+	l := &claudeLine{c: c, r: r, raw: line, at: at, n: n}
 	switch r.Type {
 	case "user":
-		blocks := r.blocks()
-		for _, b := range blocks {
-			if b.Type == "tool_result" {
-				if e, ok := c.result(r, b, at, n); ok {
-					events = append(events, e)
-				}
-			}
-		}
-		if text, ok := claudePrompt(r); ok {
-			c.derived++
-			id := r.blockID(n, 0)
-			c.turn = &TurnRef{ID: id, Index: c.derived, Derived: true}
-			if r.PromptID != "" {
-				c.turn = &TurnRef{ID: r.PromptID}
-			}
-			e := ev(id, KindPrompt)
-			e.Prompt = &PromptEvent{Text: text, Origin: OriginHuman}
-			events = append(events, e)
+		if r.Message != nil {
+			l.user()
 		}
 	case "assistant":
-		for i, b := range r.blocks() {
-			id := r.blockID(n, i)
-			switch b.Type {
-			case "thinking":
-				e := ev(id, KindThink)
-				e.Think = &ThinkEvent{Text: b.Thinking, Redacted: b.Thinking == ""}
-				events = append(events, e)
-			case "text":
-				if strings.TrimSpace(b.Text) == "" {
-					continue
-				}
-				e := ev(id, KindSay)
-				e.Say = &SayEvent{Text: b.Text, Final: r.Message.StopReason == "end_turn"}
-				events = append(events, e)
-			case "tool_use":
-				e := ev(b.ID, KindTool)
-				e.Tool = &ToolEvent{Name: b.Name, Input: b.Input, Result: &ToolResult{Status: StatusPending},
-					ToolSummary: SummarizeTool(b.Name, b.Input, nil, c.sess.CWD)}
-				c.tools[b.ID] = &e
-				events = append(events, e)
-			}
+		if r.Message != nil {
+			l.assistant()
+		}
+	case "attachment":
+		if r.Attachment != nil {
+			l.attachment()
+		}
+	case "system":
+		l.system()
+	case "api-request-blob":
+		if c.blobs != nil && r.Hash != "" && r.Message != nil {
+			c.blobs[r.Hash], _ = json.Marshal(r.Message)
+		}
+	case "api-request":
+		if c.opts.Requests {
+			l.request()
 		}
 	}
-	return events, true
+	return append(l.adds, l.updates...), true
 }
 
-// result returns the update a tool_result block makes to its call, if the
-// parse has seen the call.
-func (c *claudeLines) result(r *claudeRecord, b claudeBlock, at int64, n int) (Event, bool) {
-	call := c.tools[b.ToolUseID]
+// claudeInterrupted is how the record Claude Code writes when a person
+// interrupts a turn starts: "[Request interrupted by user]", or "... for
+// tool use]" when calls were running.
+const claudeInterrupted = "[Request interrupted by user"
+
+// claudeEchoTags start the user records older versions wrote for a local
+// command's output and a person's shell escape (! cmd) output; newer ones
+// write a local_command system record.
+var claudeEchoTags = []string{"<local-command-stdout>", "<local-command-stderr>", "<bash-stdout>", "<bash-stderr>"}
+
+// user reads a user record: tool results, a prompt, or a harness note.
+// Its tool results update their calls after the note or prompt is added,
+// and an interrupt stops the calls still running after that.
+func (l *claudeLine) user() {
+	content, blocks := readClaudeContent(l.r.Message.Content)
+	interrupted := false
+	if content.found {
+		interrupted = l.userContent(content)
+	}
+	var results []claudeBlock
+	for _, b := range blocks {
+		if b.Type == "tool_result" && b.ToolUseID != "" {
+			results = append(results, b)
+		}
+	}
+	for _, b := range results {
+		l.result(b, len(results) == 1)
+	}
+	if interrupted {
+		l.interrupt()
+	}
+}
+
+// userContent reads a user record's text and images: a prompt, or a
+// harness note. It reports whether the record is an interrupt.
+func (l *claudeLine) userContent(content claudeContent) bool {
+	r := l.r
+	id := r.blockID(l.n, content.block)
+	text := strings.TrimSpace(content.text)
+	if text == "" && len(content.images) == 0 {
+		return false
+	}
+	system := func(subtype string) {
+		e := l.event(id, KindSystem)
+		e.System = &SystemEvent{Subtype: subtype, Text: content.text}
+		l.add(e)
+	}
+	switch {
+	case r.IsCompactSummary:
+		system("compact_summary")
+		return false
+	case strings.HasPrefix(text, claudeInterrupted):
+		system("interrupt")
+		return true
+	case r.IsMeta && r.Origin == nil:
+		// A caveat, a reminder, a skill's expanded body: the harness
+		// talking to the model, not a message into the agent.
+		return false
+	case strings.HasPrefix(text, "<local-command-caveat>"):
+		return false
+	}
+	for _, tag := range claudeEchoTags {
+		if strings.HasPrefix(text, tag) {
+			system("local_command")
+			return false
+		}
+	}
+
+	p := &PromptEvent{Text: content.text, Images: content.images, Origin: claudeOrigins(r)}
+	if name, args, ok := slashCommand(text); ok {
+		p.Origin, p.Command, p.Text = OriginCommand, name, name
+		if args != "" {
+			p.Text += " " + args
+		}
+	} else if strings.HasPrefix(text, "<task-notification>") {
+		p.Origin = OriginTaskNotification
+	}
+	// A prompt the transcript gives no prompt id opens a derived turn,
+	// unless it arrived mid-turn.
+	if r.PromptID == "" && (p.Origin == OriginHuman || p.Origin == OriginCommand || p.Origin == OriginTaskNotification) {
+		index := l.c.derived
+		if p.Origin != OriginTaskNotification || index == 0 {
+			l.c.derived++
+			index = l.c.derived
+		}
+		l.c.turn = &TurnRef{ID: id, Index: index, Derived: true}
+	}
+	e := l.event(id, KindPrompt)
+	e.Prompt = p
+	l.add(e)
+	if p.Origin == OriginTaskNotification {
+		l.notification(text)
+	}
+	return false
+}
+
+// claudeOrigins says where a user record's prompt came from, by the
+// origin and prompt source the record carries.
+func claudeOrigins(r *claudeRecord) string {
+	if r.PromptSource == "queued" {
+		return OriginQueued
+	}
+	kind := ""
+	if r.Origin != nil {
+		kind = r.Origin.Kind
+	}
+	switch kind {
+	case "human":
+		return OriginHuman
+	case "task-notification":
+		return OriginTaskNotification
+	case "peer", "channel", "coordinator":
+		return OriginPeer
+	case "":
+		// A subagent's task comes from the agent that started it; a
+		// record from before origins were recorded was typed.
+		if r.AgentID != "" {
+			return OriginPeer
+		}
+		return OriginHuman
+	}
+	return OriginSystem
+}
+
+// slashCommand reads a slash command's markup, in either tag order:
+// <command-name>/review</command-name> <command-message>review</command-message>
+// <command-args>internal/server</command-args>.
+func slashCommand(text string) (name, args string, ok bool) {
+	if !strings.HasPrefix(text, "<command-name>") && !strings.HasPrefix(text, "<command-message>") {
+		return "", "", false
+	}
+	name, ok = tagText(text, "command-name")
+	if !ok || name == "" {
+		return "", "", false
+	}
+	if !strings.HasPrefix(name, "/") {
+		name = "/" + name
+	}
+	args, _ = tagText(text, "command-args")
+	return name, args, true
+}
+
+// tagText returns the trimmed text between <name> and </name> in s.
+func tagText(s, name string) (string, bool) {
+	_, rest, ok := strings.Cut(s, "<"+name+">")
+	if !ok {
+		return "", false
+	}
+	inner, _, ok := strings.Cut(rest, "</"+name+">")
+	return strings.TrimSpace(inner), ok
+}
+
+// result makes the update a tool_result block makes to its call, if the
+// parse has seen the call. The record's toolUseResult is the call's
+// structured response when the record holds no other result.
+func (l *claudeLine) result(b claudeBlock, own bool) {
+	call := l.c.tools[b.ToolUseID]
 	if call == nil {
-		return Event{}, false
+		return
 	}
 	res := &ToolResult{Status: StatusOK, Output: resultText(b.Content)}
-	if b.IsError {
+	var structured struct {
+		Status           string `json:"status"`
+		BackgroundTaskID string `json:"backgroundTaskId"`
+		AgentID          string `json:"agentId"`
+	}
+	if raw := bytes.TrimSpace(l.r.ToolUseResult); own && len(raw) > 0 && raw[0] == '{' {
+		res.Structured = l.r.ToolUseResult
+		json.Unmarshal(raw, &structured)
+	}
+	switch {
+	case b.IsError:
 		res.Status = StatusError
+	case structured.Status == "async_launched" || structured.BackgroundTaskID != "":
+		res.Status = StatusBackground
 	}
-	var response json.RawMessage
-	if len(r.ToolUseResult) > 0 && r.ToolUseResult[0] == '{' {
-		response = r.ToolUseResult
-		res.Structured = response
+	// While a call runs, the table has no response to read.
+	response := res.Structured
+	if res.Status == StatusBackground {
+		response = nil
 	}
-	t := *call.Tool
-	t.Result = res
-	t.ToolSummary = SummarizeTool(t.Name, t.Input, response, c.sess.CWD)
-	e := *call
-	e.Op, e.At, e.Line, e.TS, e.Tool = OpUpdate, at, n, r.Timestamp, &t
-	c.tools[b.ToolUseID] = &e
-	return e, true
+	sub := ""
+	if structured.AgentID != "" {
+		sub = "agent-" + structured.AgentID
+	}
+	l.update(call, res, response, sub)
 }
 
-// harvest records what the record says about the session: the latest
-// value of each field wins, except that an AI title doesn't replace a
-// custom one.
-func (c *claudeLines) harvest(r *claudeRecord) {
-	s := &c.sess
+// update makes the update of call to res, its table fields read from
+// response; sub, if set, names the session the call started.
+func (l *claudeLine) update(call *Event, res *ToolResult, response json.RawMessage, sub string) {
+	t := *call.Tool
+	t.Result = res
+	t.ToolSummary = SummarizeTool(t.Name, t.Input, response, l.c.sess.CWD)
+	if sub != "" {
+		t.SubSession = sub
+	}
+	e := *call
+	e.Op, e.At, e.Line, e.TS, e.Tool = OpUpdate, l.at, l.n, l.r.Timestamp, &t
+	l.updates = append(l.updates, e)
+	l.c.tools[call.ID] = &e
+	l.c.settled(call.ID, res.Status)
+}
+
+// settled records a call's new status: one that isn't pending any more
+// leaves the pending list.
+func (c *claudeLines) settled(id, status string) {
+	if status == StatusPending {
+		return
+	}
+	for i, p := range c.pending {
+		if p == id {
+			c.pending = append(c.pending[:i], c.pending[i+1:]...)
+			return
+		}
+	}
+}
+
+// interrupt marks every call still pending interrupted: an interrupted
+// turn's running calls never return.
+func (l *claudeLine) interrupt() {
+	for _, id := range append([]string(nil), l.c.pending...) {
+		if call := l.c.tools[id]; call != nil && call.Tool.Result.Status == StatusPending {
+			l.update(call, &ToolResult{Status: StatusInterrupted}, nil, "")
+		}
+	}
+}
+
+// claudeTaskStatus maps a task notification's <status> to the result of
+// the call that started the task.
+var claudeTaskStatus = map[string]string{
+	"completed": StatusOK,
+	"failed":    StatusError,
+	"killed":    StatusInterrupted,
+	"stopped":   StatusInterrupted,
+}
+
+// notification completes the background call a task notification reports
+// on: its <result> (or <summary>) is the call's output, and a subagent's
+// <usage> what the table reads its numbers from.
+func (l *claudeLine) notification(text string) {
+	toolID, _ := tagText(text, "tool-use-id")
+	call := l.c.tools[toolID]
+	if call == nil || call.Tool.Result.Status != StatusBackground {
+		return
+	}
+	status, _ := tagText(text, "status")
+	res := &ToolResult{Status: claudeTaskStatus[status]}
+	if res.Status == "" {
+		return
+	}
+	var ok bool
+	if res.Output, ok = tagText(text, "result"); !ok {
+		res.Output, _ = tagText(text, "summary")
+	}
+	var response json.RawMessage
+	if usage, ok := tagText(text, "usage"); ok {
+		m := map[string]int{}
+		for tag, key := range map[string]string{"tool_uses": "totalToolUseCount", "subagent_tokens": "totalTokens", "duration_ms": "totalDurationMs"} {
+			var n int
+			if s, ok := tagText(usage, tag); ok && json.Unmarshal([]byte(s), &n) == nil {
+				m[key] = n
+			}
+		}
+		response, _ = json.Marshal(m)
+	}
+	l.update(call, res, response, "")
+}
+
+// assistant reads an assistant record: thinking, text and tool calls, or
+// an API error the harness wrote in the model's place.
+func (l *claudeLine) assistant() {
+	r := l.r
+	content, blocks := readClaudeContent(r.Message.Content)
+	if r.IsAPIErrorMessage {
+		e := l.event(r.blockID(l.n, 0), KindSystem)
+		data := objectFields(l.raw, func(key string) bool { return key == "error" || key == "apiErrorStatus" })
+		e.System = &SystemEvent{Subtype: "api_error", Text: content.text, Data: data}
+		l.add(e)
+		return
+	}
+	lastText := -1
+	for i, b := range blocks {
+		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+			lastText = i
+		}
+	}
+	for i, b := range blocks {
+		switch b.Type {
+		case "thinking", "redacted_thinking":
+			e := l.event(r.blockID(l.n, i), KindThink)
+			e.Think = &ThinkEvent{Text: b.Thinking, Redacted: b.Thinking == ""}
+			l.add(e)
+		case "text":
+			if strings.TrimSpace(b.Text) == "" {
+				continue
+			}
+			e := l.event(r.blockID(l.n, i), KindSay)
+			e.Say = &SayEvent{Text: b.Text, Final: i == lastText && r.Message.StopReason == "end_turn"}
+			l.add(e)
+		case "tool_use":
+			e := l.event(b.ID, KindTool)
+			e.Tool = &ToolEvent{Name: b.Name, Input: b.Input, Result: &ToolResult{Status: StatusPending},
+				ToolSummary: SummarizeTool(b.Name, b.Input, nil, l.c.sess.CWD)}
+			l.add(e)
+			l.c.tools[b.ID] = &e
+			l.c.pending = append(l.c.pending, b.ID)
+		}
+	}
+}
+
+// claudeDelivered matches the head line of gomuxai's held-message
+// delivery, the Stop hook context that hands an agent the messages sent
+// while it worked (namedagents.ClaudeBackend.DeliveryOutput).
+var claudeDelivered = regexp.MustCompile(`^(A message arrived|\d+ messages arrived) while you were working`)
+
+// attachment reads an attachment record: a message that arrived mid-turn
+// (queued_command) or hook context (hook_additional_context). Other
+// attachments (reminders, listings, file snapshots) aren't events.
+func (l *claudeLine) attachment() {
+	a := l.r.Attachment
+	id := l.r.blockID(l.n, 0)
+	p := &PromptEvent{}
+	switch a.Type {
+	case "queued_command":
+		content, _ := readClaudeContent(a.Prompt)
+		if !content.found {
+			return
+		}
+		p.Text, p.Images, p.Origin = content.text, content.images, OriginQueued
+		kind := ""
+		if a.Origin != nil {
+			kind = a.Origin.Kind
+		}
+		switch {
+		case a.CommandMode == "task-notification" || kind == "task-notification" || strings.HasPrefix(strings.TrimSpace(p.Text), "<task-notification>"):
+			p.Origin = OriginTaskNotification
+		case kind == "peer" || kind == "channel" || kind == "coordinator":
+			p.Origin = OriginPeer
+		}
+	case "hook_additional_context":
+		var parts []string
+		if json.Unmarshal(a.Content, &parts) != nil || len(parts) == 0 {
+			return
+		}
+		p.Text, p.Origin = strings.Join(parts, "\n"), OriginSystem
+		if a.HookEvent == "Stop" && claudeDelivered.MatchString(p.Text) {
+			p.Origin = OriginDelivered
+		}
+	default:
+		return
+	}
+	e := l.event(id, KindPrompt)
+	e.Prompt = p
+	l.add(e)
+	if p.Origin == OriginTaskNotification {
+		l.notification(strings.TrimSpace(p.Text))
+	}
+}
+
+// claudeEnvelope lists the fields every record carries about where it
+// sits: a system event's data leaves them out.
+var claudeEnvelope = map[string]bool{
+	"type": true, "subtype": true, "content": true,
+	"parentUuid": true, "logicalParentUuid": true, "isSidechain": true, "uuid": true, "timestamp": true,
+	"userType": true, "entrypoint": true, "cwd": true, "sessionId": true, "session_id": true,
+	"version": true, "gitBranch": true, "slug": true, "isMeta": true, "level": true, "sessionKind": true,
+	"agentId": true, "promptId": true,
+}
+
+// system reads a system record (turn timing, compaction, hook summaries,
+// local command output): its subtype, its content as text, and every
+// other field but the envelope as data.
+func (l *claudeLine) system() {
+	e := l.event(l.r.blockID(l.n, 0), KindSystem)
+	e.System = &SystemEvent{Subtype: l.r.Subtype, Data: objectFields(l.raw, func(key string) bool { return !claudeEnvelope[key] })}
+	json.Unmarshal(l.r.Content, &e.System.Text)
+	l.add(e)
+}
+
+// request reads an api-request line: what one model call was sent, with
+// the messages its tail names.
+func (l *claudeLine) request() {
+	r := l.r
+	e := l.event(r.ID, KindRequest)
+	req := &RequestEvent{Params: r.Params, Base: r.Base, Tail: r.Tail}
+	var params struct {
+		Model string `json:"model"`
+	}
+	json.Unmarshal(r.Params, &params)
+	req.Model = params.Model
+	for _, hash := range r.Tail {
+		if blob, ok := l.c.blobs[hash]; ok {
+			if req.Blobs == nil {
+				req.Blobs = map[string]json.RawMessage{}
+			}
+			req.Blobs[hash] = blob
+		}
+	}
+	e.Request = req
+	l.add(e)
+}
+
+// objectFields returns the fields of the JSON object line that keep
+// accepts, in its own order, or nil if there are none.
+func objectFields(line []byte, keep func(key string) bool) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(line))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil
+	}
+	var out bytes.Buffer
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil
+		}
+		key, _ := t.(string)
+		if !keep(key) {
+			continue
+		}
+		if out.Len() == 0 {
+			out.WriteByte('{')
+		} else {
+			out.WriteByte(',')
+		}
+		k, _ := json.Marshal(key)
+		out.Write(k)
+		out.WriteByte(':')
+		out.Write(v)
+	}
+	if out.Len() == 0 {
+		return nil
+	}
+	out.WriteByte('}')
+	return out.Bytes()
+}
+
+// harvestClaude records in s what the record says about the session: the
+// latest value of each field wins, except that an AI title doesn't
+// replace a custom one, and the model of an API error (<synthetic>) isn't
+// a model.
+func harvestClaude(s *Session, r *claudeRecord) {
 	switch r.Type {
 	case "ai-title":
 		if r.AITitle != "" && !s.customTitle {
@@ -205,9 +706,15 @@ func (c *claudeLines) harvest(r *claudeRecord) {
 		if r.ContinuedIn != "" {
 			s.ContinuedIn = r.ContinuedIn
 		}
+	case "assistant":
+		if r.Message != nil && r.Message.Model != "" && r.Message.Model != "<synthetic>" {
+			s.Model = r.Message.Model
+		}
 	}
 	switch {
 	case r.AgentID != "":
+		// A subagent's own transcript: its session is named after it, and
+		// its records name the session that started it.
 		s.SessionID = "agent-" + r.AgentID
 		if r.SessionID != "" {
 			if s.ParentSession == nil {
@@ -220,11 +727,27 @@ func (c *claudeLines) harvest(r *claudeRecord) {
 	}
 	s.setCWD(r.CWD)
 	if r.Version != "" {
-		s.Version, s.GitBranch = r.Version, r.GitBranch
+		s.Version = r.Version
 	}
-	if r.Type == "assistant" && r.Message != nil && r.Message.Model != "" && r.Message.Model != "<synthetic>" {
-		s.Model = r.Message.Model
+	if r.GitBranch != "" {
+		s.GitBranch = r.GitBranch
 	}
+}
+
+// HarvestClaude records in s what one line of a Claude Code transcript
+// says about its session (see harvestClaude), for a reader that wants the
+// metadata without the events: feed it lines in file order. It reports
+// whether the line was a JSON object.
+func HarvestClaude(s *Session, line []byte) bool {
+	r := &claudeRecord{}
+	if json.Unmarshal(line, r) != nil {
+		return false
+	}
+	if !r.IsSidechain || r.AgentID != "" {
+		harvestClaude(s, r)
+	}
+	s.Harness = "claude"
+	return true
 }
 
 // claudeSubagentTool returns the tool call that started the subagent whose
@@ -239,60 +762,6 @@ func claudeSubagentTool(path string) string {
 	}
 	json.Unmarshal(data, &meta)
 	return meta.ToolUseID
-}
-
-// claudePrompt returns the prompt a user record carries, if it is one the
-// user (or an agent sending to this one) typed. Typed prompts are plain
-// string content; text blocks hold pasted content. Not prompts: isMeta
-// records (caveats, image notes, reminders), echoes of local commands
-// (<local-command-stdout>, <bash-input>, ...), other tagged text such as
-// task notifications, and "[Request interrupted by user]". A slash command
-// is one, and reads as typed: "/name args".
-func claudePrompt(r *claudeRecord) (string, bool) {
-	if r.IsMeta {
-		return "", false
-	}
-	var text string
-	if json.Unmarshal(r.Message.Content, &text) != nil {
-		var parts []string
-		for _, b := range r.blocks() {
-			if b.Type == "text" {
-				parts = append(parts, b.Text)
-			}
-		}
-		text = strings.Join(parts, "\n")
-	}
-	text = strings.TrimSpace(text)
-	if text == "" || strings.HasPrefix(text, "[Request interrupted") {
-		return "", false
-	}
-	if strings.HasPrefix(text, "<command-name>") {
-		name, ok := tagText(text, "command-name")
-		if !ok {
-			return "", false
-		}
-		if !strings.HasPrefix(name, "/") {
-			name = "/" + name
-		}
-		if args, _ := tagText(text, "command-args"); args != "" {
-			return name + " " + args, true
-		}
-		return name, true
-	}
-	if strings.HasPrefix(text, "<") {
-		return "", false
-	}
-	return text, true
-}
-
-// tagText returns the trimmed text between <name> and </name> in s.
-func tagText(s, name string) (string, bool) {
-	_, rest, ok := strings.Cut(s, "<"+name+">")
-	if !ok {
-		return "", false
-	}
-	inner, _, ok := strings.Cut(rest, "</"+name+">")
-	return strings.TrimSpace(inner), ok
 }
 
 // resultText flattens a tool_result's content (a string, or a list of

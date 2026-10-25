@@ -77,10 +77,12 @@ func TestClaudeParse(t *testing.T) {
 		`1 update tool Bash(go test ./...) ok "ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s"`,
 		`1 update tool Read(go.mod) ok "1\tmodule example.com/proj"`,
 		`1 add say "All tests pass."`,
-		// The caveat is meta and the task notification is tagged text: neither is a prompt.
-		`2 add prompt(human) "/review high"`,
+		// The caveat is meta: not a prompt. A task notification opens a
+		// turn of its own, with the index of the human prompt before it.
+		`2 add prompt(command) "/review high"`,
 		`2 add tool Bash(make lint) pending ""`,
 		`2 update tool Bash(make lint) error "Exit code 2\nlint: 1 issue"`,
+		`2 add prompt(task-notification) "<task-notification>background task finished</task-notification>"`,
 		`2 add say "One lint issue.\nSee above."`,
 		`2 add tool Grep(TODO) pending ""`,
 	}
@@ -136,39 +138,98 @@ func TestClaudeParse_Pairing(t *testing.T) {
 	}
 }
 
-// From glyph3d-rs tests.rs (user_prompt_text_classifies_real_record_shapes).
-func TestClaudePrompt(t *testing.T) {
-	rec := func(content string, extra string) *claudeRecord {
-		var r claudeRecord
-		line := `{"type":"user"` + extra + `,"message":{"role":"user","content":` + content + `}}`
-		if err := json.Unmarshal([]byte(line), &r); err != nil {
-			t.Fatalf("%s: %v", line, err)
-		}
-		return &r
-	}
-	prompts := map[*claudeRecord]string{
-		rec(`"  Fix the fog  "`, ""):                                                        "Fix the fog",
-		rec(`[{"type":"text","text":"pasted"}]`, ""):                                        "pasted",
-		rec(`"<command-name>/model</command-name>\n<command-args></command-args>"`, ""):     "/model",
-		rec(`"<command-name>review</command-name>\n<command-args>high</command-args>"`, ""): "/review high",
-	}
-	for r, want := range prompts {
-		if got, ok := claudePrompt(r); !ok || got != want {
-			t.Errorf("prompt = %q, %v; want %q", got, ok, want)
-		}
-	}
-	for _, r := range []*claudeRecord{
-		rec(`"<local-command-caveat>Caveat</local-command-caveat>"`, `,"isMeta":true`),
-		rec(`"[Image: original 100x100]"`, `,"isMeta":true`),
-		rec(`"<local-command-stdout>Set model</local-command-stdout>"`, ""),
-		rec(`"<bash-input>ls</bash-input>"`, ""),
-		rec(`[{"type":"text","text":"[Request interrupted by user]"}]`, ""),
-		rec(`[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]`, ""),
-		rec(`"   "`, ""),
+// User records of shapes the corpus doesn't hold, seen in real transcripts
+// (after glyph3d-rs tests.rs, user_prompt_text_classifies_real_record_shapes):
+// what each one is, on its own.
+func TestClaudeUserRecords(t *testing.T) {
+	for _, tt := range []struct{ fields, content, want string }{
+		{``, `"  Fix the fog  "`, `1 add prompt(human) "  Fix the fog  "`},
+		{``, `[{"type":"text","text":"pasted"}]`, `1 add prompt(human) "pasted"`},
+		{`"promptSource":"sdk",`, `"from the SDK"`, `1 add prompt(human) "from the SDK"`},
+		{``, `"<command-name>/model</command-name>\n<command-args></command-args>"`, `1 add prompt(command) "/model"`},
+		{``, `"<command-name>review</command-name>\n<command-args>high</command-args>"`, `1 add prompt(command) "/review high"`},
+		{`"origin":{"kind":"human"},`, `"<pasted_content id=\"a1\">log</pasted_content>"`, `1 add prompt(human) "<pasted_content id=\"a1\">log</pasted_content>"`},
+		{``, `"<bash-input>ls</bash-input>"`, `1 add prompt(human) "<bash-input>ls</bash-input>"`},
+		{`"isMeta":true,"origin":{"kind":"peer"},`, `"<agent-message from=\"x\">hi</agent-message>"`, `- add prompt(peer) "<agent-message from=\"x\">hi</agent-message>"`},
+		{`"isMeta":true,"origin":{"kind":"channel"},`, `"<channel source=\"chat\">hi</channel>"`, `- add prompt(peer) "<channel source=\"chat\">hi</channel>"`},
+		{`"isMeta":true,"origin":{"kind":"coordinator"},`, `"next step"`, `- add prompt(peer) "next step"`},
+		{`"isMeta":true,"origin":{"kind":"auto-continuation"},`, `"continue"`, `- add prompt(system) "continue"`},
+		// With no prompt id, a task notification opens a (derived) turn.
+		{`"isMeta":true,"origin":{"kind":"task-notification"},`, `"<task-notification>done</task-notification>"`, `1 add prompt(task-notification) "<task-notification>done</task-notification>"`},
+		{``, `"<local-command-stdout>Set model</local-command-stdout>"`, `- add system local_command "<local-command-stdout>Set model</local-command-stdout>"`},
+		{``, `[{"type":"text","text":"[Request interrupted by user]"}]`, `- add system interrupt "[Request interrupted by user]"`},
+		{`"isMeta":true,`, `"<local-command-caveat>Caveat</local-command-caveat>"`, ``},
+		{`"isMeta":true,`, `"[Image: original 100x100]"`, ``},
+		{``, `[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]`, ``},
+		{``, `"   "`, ``},
 	} {
-		if got, ok := claudePrompt(r); ok {
-			t.Errorf("%s: prompt %q, want none", r.Message.Content, got)
+		line := `{"type":"user","uuid":"u",` + tt.fields + `"message":{"role":"user","content":` + tt.content + `}}` + "\n"
+		_, events := parse(Claude{}, []byte(line))
+		if got := strings.Join(summaries(events), "\n"); got != tt.want {
+			t.Errorf("%s\n got %q\nwant %q", line, got, tt.want)
 		}
+	}
+}
+
+// Records the corpus doesn't hold: a task notification taken mid-turn (an
+// attachment) completes its call in the current turn; hook context from a
+// hook other than Stop is a system prompt; a record that holds a result and
+// an interrupt updates the call it answers, then interrupts the rest.
+func TestClaudeMidTurn(t *testing.T) {
+	lines := []string{
+		`{"type":"user","uuid":"u1","promptId":"p1","turnPosition":{"promptIndex":3},"message":{"role":"user","content":"start it and lint"}}`,
+		`{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"tool_use","id":"bg","name":"Bash","input":{"command":"make serve","run_in_background":true}}],"stop_reason":"tool_use"}}`,
+		`{"type":"user","uuid":"u2","promptId":"p1","toolUseResult":{"stdout":"","backgroundTaskId":"t9"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bg","content":"Command running in background with ID: t9."}]}}`,
+		`{"type":"assistant","uuid":"a2","message":{"role":"assistant","content":[{"type":"tool_use","id":"lint","name":"Bash","input":{"command":"make lint"}}],"stop_reason":"tool_use"}}`,
+		`{"type":"attachment","uuid":"at1","attachment":{"type":"queued_command","prompt":"<task-notification>\n<tool-use-id>bg</tool-use-id>\n<status>failed</status>\n<summary>exit 2</summary>\n</task-notification>","commandMode":"task-notification"}}`,
+		`{"type":"attachment","uuid":"at2","attachment":{"type":"hook_additional_context","content":["lint is slow today"],"hookEvent":"PostToolUse"}}`,
+		`{"type":"assistant","uuid":"a3","message":{"role":"assistant","content":[{"type":"tool_use","id":"vet","name":"Bash","input":{"command":"go vet"}}],"stop_reason":"tool_use"}}`,
+		`{"type":"user","uuid":"u3","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"lint","content":"ok"},{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`,
+	}
+	_, events := parse(Claude{}, []byte(strings.Join(lines, "\n")+"\n"))
+	want := []string{
+		`3 add prompt(human) "start it and lint"`,
+		`3 add tool Bash(make serve) pending ""`,
+		`3 update tool Bash(make serve) background "Command running in background with ID: t9."`,
+		`3 add tool Bash(make lint) pending ""`,
+		`3 add prompt(task-notification) "<task-notification>\n<tool-use-id>bg</tool-use-id>\n<status>failed</status>\n<summary>exit 2</summary>\n</task-notification>"`,
+		`3 update tool Bash(make serve) error "exit 2"`,
+		`3 add prompt(system) "lint is slow today"`,
+		`3 add tool Bash(go vet) pending ""`,
+		`3 add system interrupt "[Request interrupted by user for tool use]"`,
+		`3 update tool Bash(make lint) ok "ok"`,
+		`3 update tool Bash(go vet) interrupted ""`,
+	}
+	if got := summaries(events); !slices.Equal(got, want) {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if e := events[8]; e.ID != "u3#1" {
+		t.Errorf("interrupt id %q, want its block's, u3#1", e.ID)
+	}
+}
+
+// HarvestClaude reads the session's metadata alone, line by line, as the
+// parser does.
+func TestHarvestClaude(t *testing.T) {
+	var s Session
+	for line := range bytes.SplitSeq(readFixture(t, "claude.jsonl"), []byte{'\n'}) {
+		HarvestClaude(&s, line)
+	}
+	p, _ := parse(Claude{}, readFixture(t, "claude.jsonl"))
+	if want := p.Session(); !reflect.DeepEqual(s, want) {
+		t.Errorf("harvested %+v\nparsed    %+v", s, want)
+	}
+	for _, line := range []string{
+		`{"type":"custom-title","customTitle":"mine"}`,
+		`{"type":"ai-title","aiTitle":"later AI title"}`,
+		`{"type":"agent-name","agentName":"fixer"}`,
+		`{"type":"continued-in","continuedInSessionId":"next"}`,
+		`{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[]}}`,
+	} {
+		HarvestClaude(&s, []byte(line))
+	}
+	if s.Title != "mine" || s.AgentName != "fixer" || s.ContinuedIn != "next" || s.Model != "claude-test-1" {
+		t.Errorf("session = %+v", s)
 	}
 }
 
@@ -297,8 +358,9 @@ func TestLatest(t *testing.T) {
 		`1 add tool Bash(go test ./...) ok "ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s"`,
 		`1 add tool Read(go.mod) ok "1\tmodule example.com/proj"`,
 		`1 add say "All tests pass."`,
-		`2 add prompt(human) "/review high"`,
+		`2 add prompt(command) "/review high"`,
 		`2 add tool Bash(make lint) error "Exit code 2\nlint: 1 issue"`,
+		`2 add prompt(task-notification) "<task-notification>background task finished</task-notification>"`,
 		`2 add say "One lint issue.\nSee above."`,
 		`2 add tool Grep(TODO) pending ""`,
 	}
@@ -330,7 +392,7 @@ func TestReadFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Events) != 12 || f.Partial || f.Session.Path != path || f.Session.Size != int64(len(readFixture(t, "claude.jsonl"))) ||
+	if len(f.Events) != 13 || f.Partial || f.Session.Path != path || f.Session.Size != int64(len(readFixture(t, "claude.jsonl"))) ||
 		f.Session.SessionID != "00000000-0000-0000-0000-00000000c1a0" {
 		t.Errorf("got %d events, partial %v, session %+v", len(f.Events), f.Partial, f.Session)
 	}

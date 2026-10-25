@@ -582,6 +582,10 @@ whole lines among them, keeping what later lines need (the open turn, calls
 waiting for results); it starts at any line (`Options.From`) and reports where
 it stopped (`Pos`), so the same code reads a whole file, a window, or what a
 live session appends. `Latest` folds a stream into each event's latest state.
+`Finals` merges the final reply a Stop hook reports (`last_assistant_message`)
+into a stream ahead of the transcript, which writes it only after the hook ran:
+a provisional say that the transcript's copy then updates. `HarvestClaude`
+reads a session's metadata alone, line by line, by the same rules.
 Backends hand out their reader through `backend.TranscriptProvider`. The
 behaviour was ported from glyph3d-rs `native/src/agent_transcript/` and
 glyph3d-js's session adapter, and `testdata/corpus` holds the transcripts

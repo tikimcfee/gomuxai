@@ -198,6 +198,30 @@ should check the rest.
   hash in `tail` to the message of the `api-request-blob` line that defined it.
   `api-request-shape` produces nothing; the shape is not part of `request`.
 
+**Claude records no case holds**
+
+Shapes found in real Claude Code transcripts that no case models yet. The reader's unit
+tests (`TestClaudeUserRecords`, `TestClaudeMidTurn`) pin them.
+
+- A record with no `uuid` has ids `L<line index>#<block index>`, as Kimi's do.
+- A `user` record's `origin.kind` `coordinator` is `peer`, like `peer` and `channel`;
+  any other kind (`auto-continuation`) is `system`. A record with no `origin` is `human`
+  (older versions), or `peer` in a subagent's transcript. A `promptSource: sdk` record is
+  a `human` prompt. A prompt with no text and no image is not an event.
+- A `<pasted_content>` or `<bash-input>` prompt is the person's, kept with its markup.
+  Older versions wrote a local command's output, and a shell escape's, as `user` records
+  (`<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`, `<bash-stderr>`):
+  each is `{subtype: local_command, text}`, like the newer `local_command` system record.
+- A `queued_command` attachment with `commandMode: task-notification` (or a
+  `task-notification` origin, or `<task-notification>` text) is a task notification
+  taken mid-turn: origin `task-notification`, in the current turn, completing its call.
+- A record that holds tool results and an interrupt text block adds the interrupt, then
+  updates the calls its results answer, then interrupts the calls still pending.
+- `isSidechain` records with no `agentId` (subagents of versions before subagents had
+  their own files) belong to another session and are skipped.
+- A derived turn a task notification opens takes the index of the last derived turn (1
+  if it is the first).
+
 **Session**
 
 - `title`: Claude's latest `custom-title` if there is one, else its latest `ai-title`.

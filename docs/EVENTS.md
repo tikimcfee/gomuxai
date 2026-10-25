@@ -76,7 +76,10 @@ updates an earlier one, the add comes first.
 - `say` `{text, final?, provisional?}`: text the agent wrote.
   - `final` marks a turn's closing reply.
   - A provisional final reply comes from the Stop hook before the transcript holds it. When
-    the transcript's own copy lands, it is sent as an update of the same `id`.
+    the transcript's own copy lands, it is sent as an update of the same `id`. That id is
+    `<promptId>#final`, and `<promptId>#final<n>` for the nth Stop of a turn (a held
+    delivery continues it), which pairs with the turn's nth final reply
+    (`transcript.Finals`).
 - `tool` `{name, input, result?, action, target?, detail?, meta?, sub_session?}`: one event
   per call.
   - `result` is `{status: pending|ok|error|interrupted|background, output?, structured?}`. A
