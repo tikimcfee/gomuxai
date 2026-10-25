@@ -66,7 +66,8 @@ func explainArgErrors(root *cobra.Command) {
 	explainOnce.Do(func() {
 		var walk func(*cobra.Command)
 		walk = func(c *cobra.Command) {
-			if v := c.Args; v != nil {
+			// The root's Args only reject unknown commands, which say so.
+			if v := c.Args; v != nil && c.HasParent() {
 				c.Args = func(cmd *cobra.Command, args []string) error {
 					if err := v(cmd, args); err != nil {
 						return usageError(cmd, err)
@@ -133,13 +134,36 @@ func runGroup(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return cmd.Help()
 	}
-	msg := fmt.Sprintf("unknown command %q for %q", args[0], cmd.CommandPath())
+	return unknownCommand(cmd, args[0])
+}
+
+// rootArgs is the root command's Args: any word that isn't a command is an
+// unknown command, suggesting close ones by the same rule as runGroup.
+// (Cobra's own suggestions take any command within two edits, so "bogus"
+// suggested logs and bus.)
+func rootArgs(cmd *cobra.Command, args []string) error {
+	if len(args) > 0 {
+		return unknownCommand(cmd, args[0])
+	}
+	return nil
+}
+
+// unknownCommand is the error for a word that isn't one of cmd's
+// subcommands: close ones if any, and where to see them all.
+func unknownCommand(cmd *cobra.Command, name string) error {
+	msg := fmt.Sprintf("unknown command %q for %q", name, cmd.CommandPath())
 	var names []string
 	for _, sub := range cmd.Commands() {
-		names = append(names, sub.Name())
+		if sub.IsAvailableCommand() || sub.Name() == "help" {
+			names = append(names, sub.Name())
+		}
 	}
-	if s := util.Similar(args[0], names); len(s) > 0 {
+	if s := util.Similar(name, names); len(s) > 0 {
 		msg += "; did you mean " + util.OrList(s, nil) + "?"
 	}
-	return fmt.Errorf("%s (see %s --help)", msg, cmd.CommandPath())
+	help := "agent help"
+	if cmd.HasParent() {
+		help += " " + strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" ")
+	}
+	return fmt.Errorf("%s (see %s)", msg, help)
 }

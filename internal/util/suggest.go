@@ -8,9 +8,12 @@ import (
 // maxSuggestions caps how many close matches Similar returns.
 const maxSuggestions = 3
 
-// Similar returns the candidates close to name, closest first: those within
-// two edits of it (ignoring case), or that start with it. It returns at most
-// three, for "did you mean" suggestions.
+// Similar returns the candidates close to name, closest first, ignoring
+// case: those within one edit per three letters of the longer word (at least
+// one; swapping two neighbors counts as one edit), or that start with name
+// when it has three letters or more. So "stauts" suggests "status", while
+// "bogus" suggests neither "logs" nor "bus", two edits from a five-letter
+// word. It returns at most three, for "did you mean" suggestions.
 func Similar(name string, candidates []string) []string {
 	type match struct {
 		s    string
@@ -24,7 +27,8 @@ func Similar(name string, candidates []string) []string {
 		}
 		lc := strings.ToLower(c)
 		d := editDistance(lower, lc)
-		if d <= 2 || (len(lower) >= 2 && strings.HasPrefix(lc, lower)) {
+		maxDist := max(1, max(len([]rune(lower)), len([]rune(lc)))/3)
+		if d <= maxDist || (len([]rune(lower)) >= 3 && strings.HasPrefix(lc, lower)) {
 			matches = append(matches, match{c, d})
 		}
 	}
@@ -36,9 +40,12 @@ func Similar(name string, candidates []string) []string {
 	return out
 }
 
-// editDistance is the Levenshtein distance between a and b.
+// editDistance is the edit distance between a and b, counting a swap of two
+// neighbors ("lsit" for "list") as one edit, like an insertion, deletion, or
+// substitution (optimal string alignment).
 func editDistance(a, b string) int {
 	ra, rb := []rune(a), []rune(b)
+	prev2 := make([]int, len(rb)+1) // row i-2, for swaps
 	prev := make([]int, len(rb)+1)
 	cur := make([]int, len(rb)+1)
 	for j := range prev {
@@ -52,8 +59,11 @@ func editDistance(a, b string) int {
 				cost = 0
 			}
 			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			if i > 1 && j > 1 && ra[i-1] == rb[j-2] && ra[i-2] == rb[j-1] {
+				cur[j] = min(cur[j], prev2[j-2]+1)
+			}
 		}
-		prev, cur = cur, prev
+		prev2, prev, cur = prev, cur, prev2
 	}
 	return prev[len(rb)]
 }

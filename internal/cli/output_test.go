@@ -56,8 +56,26 @@ func TestUnknownFlagSuggestions(t *testing.T) {
 
 func TestUnknownSubcommandSuggestions(t *testing.T) {
 	err := runGroup(stateCmd, []string{"sett"})
-	if err == nil || !strings.Contains(err.Error(), `unknown command "sett" for "agent state"; did you mean set or get?`) {
+	if err == nil || err.Error() != `unknown command "sett" for "agent state"; did you mean set? (see agent help state)` {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// The root command suggests by the same rule as groups, not cobra's, which
+// took any command within two edits ("bogus": logs, bus).
+func TestUnknownCommandSuggestions(t *testing.T) {
+	tests := map[string]string{
+		"bogus": `unknown command "bogus" for "agent" (see agent help)`,
+		"lsit":  `unknown command "lsit" for "agent"; did you mean list? (see agent help)`,
+	}
+	rootCmd.InitDefaultHelpCmd() // Execute adds it
+	for word, want := range tests {
+		if _, err := runAgent(t, word); err == nil || err.Error() != want {
+			t.Errorf("agent %s: err = %v\nwant %s", word, err, want)
+		}
+		if _, err := runAgent(t, "help", word); err == nil || err.Error() != want {
+			t.Errorf("agent help %s: err = %v\nwant %s", word, err, want)
+		}
 	}
 }
 

@@ -51,11 +51,33 @@ If agent gets in your way, "agent friction add" tells the people who fix it.`,
 	Example: `  agent spawn helper --backend claude
   agent send helper "summarize README.md" && agent wait helper --for idle --next
   agent state get helper _result`,
-	// No Args: cobra then treats extra words as unknown commands, with
-	// suggestions.
+	Args:              rootArgs,
 	RunE:              runOrient,
 	PersistentPreRunE: setup,
 	SilenceUsage:      true,
+}
+
+// helpCmd replaces cobra's help command, which takes a word the root's Args
+// accept for an unknown command and prints the root's help for it.
+var helpCmd = &cobra.Command{
+	Use:   "help [command]",
+	Short: "Help about any command",
+	Long:  `Help prints a command's details and examples, or with no command, the list of commands.`,
+	Example: `  agent help
+  agent help wait
+  agent help friction add`,
+	RunE: func(c *cobra.Command, args []string) error {
+		cmd, rest, err := c.Root().Find(args)
+		if err != nil {
+			return err
+		}
+		if len(rest) > 0 {
+			return unknownCommand(cmd, rest[0])
+		}
+		cmd.InitDefaultHelpFlag()
+		cmd.InitDefaultVersionFlag()
+		return cmd.Help()
+	},
 }
 
 // Command groups for "agent help".
@@ -97,6 +119,7 @@ func init() {
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 	cobra.EnableCommandSorting = false // keep each group in task order
 	rootCmd.SetFlagErrorFunc(flagError)
+	rootCmd.SetHelpCommand(helpCmd)
 	// Subcommands of subcommands are added by later init functions, so the
 	// whole tree is only there once the CLI runs.
 	cobra.OnInitialize(func() { explainArgErrors(rootCmd) })

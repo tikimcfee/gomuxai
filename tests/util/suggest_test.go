@@ -18,10 +18,40 @@ func TestSimilar(t *testing.T) {
 		{"helper", []string{"helper2", "Helper3"}}, // itself excluded
 		{"lead", []string{"lead-build"}},           // a prefix
 		{"zzz", nil},
-		{"b", nil}, // a one-letter prefix is too loose
+		{"b", nil},  // a one-letter prefix is too loose
+		{"le", nil}, // so is two
 	}
 	for _, tt := range tests {
 		if got := util.Similar(tt.name, names); !slices.Equal(got, tt.want) {
+			t.Errorf("Similar(%q) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// Short words allow one edit, so a typo finds its command while an unrelated
+// word two edits from short ones finds nothing.
+func TestSimilarScalesWithLength(t *testing.T) {
+	commands := []string{"spawn", "list", "cleanup", "send", "queue", "status", "state", "wait", "logs", "bus", "keys", "key", "help"}
+	tests := []struct {
+		name string
+		want []string
+	}{
+		{"bogus", nil}, // two edits from logs and bus
+		{"sett", nil},  // two edits from send
+		{"lsit", []string{"list"}},
+		{"stauts", []string{"status", "state"}},
+		{"stat", []string{"status", "state"}},
+		{"spwan", []string{"spawn"}},
+		{"hlep", []string{"help"}},
+		{"kye", []string{"key"}}, // a swap is one edit; keys is two
+		{"cleanpu", []string{"cleanup"}},
+	}
+	for _, tt := range tests {
+		got := util.Similar(tt.name, commands)
+		slices.Sort(got)
+		want := slices.Clone(tt.want)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
 			t.Errorf("Similar(%q) = %q, want %q", tt.name, got, tt.want)
 		}
 	}

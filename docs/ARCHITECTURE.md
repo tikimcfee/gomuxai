@@ -621,7 +621,10 @@ Shared by every command (`internal/cli/output.go`, `exit.go`, `root.go`):
   `watch`) say what they're doing once with `notice()`.
 - **Errors say what failed, what was found, and what to try.** Unknown
   commands, subcommands, and flags get "did you mean" suggestions
-  (`util.Similar`); argument errors add the usage line and the command's
+  (`util.Similar`: one edit per three letters, so a typo finds its command
+  and an unrelated word finds none) or point at `agent help`. The root's
+  `Args` (`rootArgs`) and a replacement `help` command apply that rule in
+  place of cobra's own suggestions. Argument errors add the usage line and the command's
   first example (`explainArgErrors`). A command that only groups
   subcommands uses `runGroup`.
 - **Exit codes.** 0 done, 1 failed, 2 `wait` timed out, 3 `friction add`
