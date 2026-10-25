@@ -2,36 +2,45 @@ package transcript
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"strings"
 )
 
 // Claude reads Claude Code session transcripts
-// (~/.claude/projects/<project>/<session id>.jsonl). Ported from
-// glyph3d-rs claude.rs (parse_claude_session, user_prompt_text).
+// (~/.claude/projects/<project>/<session id>.jsonl, and a subagent's
+// <session id>/subagents/agent-<agent id>.jsonl).
 type Claude struct{}
 
 func (Claude) Harness() string { return "claude" }
 
-// claudeRecord is the part of a transcript line Parse reads. Lines of other
-// types (attachment, system, mode, api-request-blob, ...) carry metadata
-// only; api-request-blob even repeats messages, so only user and assistant
-// records are read as conversation.
+func (Claude) NewParser(opts Options) *Parser {
+	return newParser("claude", &claudeLines{opts: opts, tools: map[string]*Event{}}, opts.From)
+}
+
+// claudeRecord is the part of a transcript line the parser reads.
 type claudeRecord struct {
-	Type             string          `json:"type"`
-	Timestamp        string          `json:"timestamp"`
-	SessionID        string          `json:"sessionId"`
-	CWD              string          `json:"cwd"`
-	Version          string          `json:"version"`
-	GitBranch        string          `json:"gitBranch"`
-	AITitle          string          `json:"aiTitle"`
-	IsSidechain      bool            `json:"isSidechain"`
-	IsMeta           bool            `json:"isMeta"`
-	IsCompactSummary bool            `json:"isCompactSummary"`
-	ToolUseResult    json.RawMessage `json:"toolUseResult"`
-	Message          *struct {
-		Role    string          `json:"role"`
-		Model   string          `json:"model"`
-		Content json.RawMessage `json:"content"`
+	Type          string          `json:"type"`
+	UUID          string          `json:"uuid"`
+	Timestamp     string          `json:"timestamp"`
+	SessionID     string          `json:"sessionId"`
+	AgentID       string          `json:"agentId"`
+	CWD           string          `json:"cwd"`
+	Version       string          `json:"version"`
+	GitBranch     string          `json:"gitBranch"`
+	AITitle       string          `json:"aiTitle"`
+	CustomTitle   string          `json:"customTitle"`
+	AgentName     string          `json:"agentName"`
+	ContinuedIn   string          `json:"continuedInSessionId"`
+	PromptID      string          `json:"promptId"`
+	IsSidechain   bool            `json:"isSidechain"`
+	IsMeta        bool            `json:"isMeta"`
+	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	Message       *struct {
+		Role       string          `json:"role"`
+		Model      string          `json:"model"`
+		Content    json.RawMessage `json:"content"`
+		StopReason string          `json:"stop_reason"`
 	} `json:"message"`
 }
 
@@ -60,113 +69,187 @@ func (r *claudeRecord) blocks() []claudeBlock {
 	return blocks
 }
 
-// isConversation reports whether the record is a message of the main
-// conversation: not a subagent's (sidechain), and not a copy.
-func (r *claudeRecord) isConversation() bool {
-	return (r.Type == "user" || r.Type == "assistant") && !r.IsSidechain &&
-		r.Message != nil && len(r.Message.Content) > 0
+// blockID is the id of the event block i of the record on line n makes:
+// "<uuid>#<i>", or for a record without a uuid, "L<n>#<i>".
+func (r *claudeRecord) blockID(n, i int) string {
+	if r.UUID == "" {
+		return fmt.Sprintf("L%d#%d", n, i)
+	}
+	return fmt.Sprintf("%s#%d", r.UUID, i)
 }
 
-// Parse reads the transcript in two passes: tool results land on later
-// lines than their calls, so the first pass pairs them by tool_use_id
-// across the whole text, and the second emits each call, with its result,
-// at its own position.
-func (Claude) Parse(data []byte) *Session {
-	s := &Session{Harness: "claude"}
-	var records []*claudeRecord
-	eachLine(s, data, func(line []byte) bool {
-		r := &claudeRecord{}
-		if json.Unmarshal(line, r) != nil {
-			return false
-		}
-		if !r.IsSidechain {
-			records = append(records, r)
-		}
-		return true
-	})
+// claudeLines is the Claude half of a Parser.
+type claudeLines struct {
+	opts Options
+	sess Session
+	turn *TurnRef
+	// derived counts the turns derived from a transcript that records no
+	// prompt ids.
+	derived int
+	// tools holds each call's latest event, for its updates.
+	tools map[string]*Event
+}
 
-	results := make(map[string]*ToolCall)
-	for _, r := range records {
-		if !r.isConversation() || r.Message.Role != "user" {
-			continue
-		}
-		for _, b := range r.blocks() {
-			if b.Type != "tool_result" || b.ToolUseID == "" {
-				continue
-			}
-			res := &ToolCall{Status: StatusOK, Output: resultText(b.Content)}
-			if res.Output == "" {
-				res.Output = structuredText(r.ToolUseResult)
-			}
-			if b.IsError {
-				res.Status = StatusError
-			}
-			results[b.ToolUseID] = res
-		}
+func (c *claudeLines) session() Session { return c.sess }
+
+func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
+	r := &claudeRecord{}
+	if json.Unmarshal(line, r) != nil {
+		return nil, false
 	}
-
-	t := turns{s}
-	for _, r := range records {
-		// Metadata: the first value seen wins.
-		for _, f := range []struct {
-			dst *string
-			src string
-		}{
-			{&s.SessionID, r.SessionID}, {&s.CWD, r.CWD}, {&s.Version, r.Version}, {&s.GitBranch, r.GitBranch},
-		} {
-			if *f.dst == "" {
-				*f.dst = f.src
-			}
-		}
-		if s.Title == "" && r.Type == "ai-title" {
-			s.Title = r.AITitle
-		}
-		if !r.isConversation() {
-			continue
-		}
-		at := parseTime(r.Timestamp)
-		s.seen(at)
-		switch r.Message.Role {
-		case "user":
-			if prompt, ok := claudePrompt(r); ok {
-				t.prompt(prompt, at)
-			}
-		case "assistant":
-			if s.Model == "" {
-				s.Model = r.Message.Model
-			}
-			for _, b := range r.blocks() {
-				switch b.Type {
-				case "thinking":
-					if text := strings.TrimSpace(b.Thinking); text != "" {
-						t.step(Step{Time: at, Thinking: text})
-					}
-				case "text":
-					if text := strings.TrimSpace(b.Text); text != "" {
-						t.step(Step{Time: at, Reply: text})
-					}
-				case "tool_use":
-					call := &ToolCall{ID: b.ID, Name: b.Name, Input: b.Input, Status: StatusNone}
-					if res := results[b.ID]; res != nil {
-						call.Status, call.Output = res.Status, res.Output
-					}
-					t.step(Step{Time: at, Tool: call})
+	// Before subagents had their own files (agentId), their records were
+	// sidechains of the main transcript: another session's.
+	if r.IsSidechain && r.AgentID == "" {
+		return nil, true
+	}
+	c.harvest(r)
+	if r.Message == nil || len(r.Message.Content) == 0 {
+		return nil, true
+	}
+	ev := func(id, kind string) Event {
+		return Event{ID: id, Op: OpAdd, At: at, Line: n, TS: r.Timestamp, Turn: c.turn, Agent: r.AgentID, Kind: kind}
+	}
+	var events []Event
+	switch r.Type {
+	case "user":
+		blocks := r.blocks()
+		for _, b := range blocks {
+			if b.Type == "tool_result" {
+				if e, ok := c.result(r, b, at, n); ok {
+					events = append(events, e)
 				}
 			}
 		}
+		if text, ok := claudePrompt(r); ok {
+			c.derived++
+			id := r.blockID(n, 0)
+			c.turn = &TurnRef{ID: id, Index: c.derived, Derived: true}
+			if r.PromptID != "" {
+				c.turn = &TurnRef{ID: r.PromptID}
+			}
+			e := ev(id, KindPrompt)
+			e.Prompt = &PromptEvent{Text: text, Origin: OriginHuman}
+			events = append(events, e)
+		}
+	case "assistant":
+		for i, b := range r.blocks() {
+			id := r.blockID(n, i)
+			switch b.Type {
+			case "thinking":
+				e := ev(id, KindThink)
+				e.Think = &ThinkEvent{Text: b.Thinking, Redacted: b.Thinking == ""}
+				events = append(events, e)
+			case "text":
+				if strings.TrimSpace(b.Text) == "" {
+					continue
+				}
+				e := ev(id, KindSay)
+				e.Say = &SayEvent{Text: b.Text, Final: r.Message.StopReason == "end_turn"}
+				events = append(events, e)
+			case "tool_use":
+				e := ev(b.ID, KindTool)
+				e.Tool = &ToolEvent{Name: b.Name, Input: b.Input, Result: &ToolResult{Status: StatusPending},
+					ToolSummary: SummarizeTool(b.Name, b.Input, nil, c.sess.CWD)}
+				c.tools[b.ID] = &e
+				events = append(events, e)
+			}
+		}
 	}
-	return s
+	return events, true
+}
+
+// result returns the update a tool_result block makes to its call, if the
+// parse has seen the call.
+func (c *claudeLines) result(r *claudeRecord, b claudeBlock, at int64, n int) (Event, bool) {
+	call := c.tools[b.ToolUseID]
+	if call == nil {
+		return Event{}, false
+	}
+	res := &ToolResult{Status: StatusOK, Output: resultText(b.Content)}
+	if b.IsError {
+		res.Status = StatusError
+	}
+	var response json.RawMessage
+	if len(r.ToolUseResult) > 0 && r.ToolUseResult[0] == '{' {
+		response = r.ToolUseResult
+		res.Structured = response
+	}
+	t := *call.Tool
+	t.Result = res
+	t.ToolSummary = SummarizeTool(t.Name, t.Input, response, c.sess.CWD)
+	e := *call
+	e.Op, e.At, e.Line, e.TS, e.Tool = OpUpdate, at, n, r.Timestamp, &t
+	c.tools[b.ToolUseID] = &e
+	return e, true
+}
+
+// harvest records what the record says about the session: the latest
+// value of each field wins, except that an AI title doesn't replace a
+// custom one.
+func (c *claudeLines) harvest(r *claudeRecord) {
+	s := &c.sess
+	switch r.Type {
+	case "ai-title":
+		if r.AITitle != "" && !s.customTitle {
+			s.Title = r.AITitle
+		}
+	case "custom-title":
+		if r.CustomTitle != "" {
+			s.Title, s.customTitle = r.CustomTitle, true
+		}
+	case "agent-name":
+		if r.AgentName != "" {
+			s.AgentName = r.AgentName
+		}
+	case "continued-in":
+		if r.ContinuedIn != "" {
+			s.ContinuedIn = r.ContinuedIn
+		}
+	}
+	switch {
+	case r.AgentID != "":
+		s.SessionID = "agent-" + r.AgentID
+		if r.SessionID != "" {
+			if s.ParentSession == nil {
+				s.ParentSession = &ParentSession{}
+			}
+			s.ParentSession.SessionID = r.SessionID
+		}
+	case r.SessionID != "":
+		s.SessionID = r.SessionID
+	}
+	s.setCWD(r.CWD)
+	if r.Version != "" {
+		s.Version, s.GitBranch = r.Version, r.GitBranch
+	}
+	if r.Type == "assistant" && r.Message != nil && r.Message.Model != "" && r.Message.Model != "<synthetic>" {
+		s.Model = r.Message.Model
+	}
+}
+
+// claudeSubagentTool returns the tool call that started the subagent whose
+// transcript is at path, from the meta.json beside it, or "".
+func claudeSubagentTool(path string) string {
+	data, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json")
+	if err != nil {
+		return ""
+	}
+	var meta struct {
+		ToolUseID string `json:"toolUseId"`
+	}
+	json.Unmarshal(data, &meta)
+	return meta.ToolUseID
 }
 
 // claudePrompt returns the prompt a user record carries, if it is one the
 // user (or an agent sending to this one) typed. Typed prompts are plain
 // string content; text blocks hold pasted content. Not prompts: isMeta
-// records (caveats, image notes, reminders), compaction summaries, echoes
-// of local commands (<local-command-stdout>, <bash-input>, ...), other
-// tagged text such as task notifications, and "[Request interrupted by
-// user]". A slash command is one, and reads as typed: "/name args".
+// records (caveats, image notes, reminders), echoes of local commands
+// (<local-command-stdout>, <bash-input>, ...), other tagged text such as
+// task notifications, and "[Request interrupted by user]". A slash command
+// is one, and reads as typed: "/name args".
 func claudePrompt(r *claudeRecord) (string, bool) {
-	if r.IsMeta || r.IsCompactSummary {
+	if r.IsMeta {
 		return "", false
 	}
 	var text string
@@ -230,27 +313,4 @@ func resultText(content json.RawMessage) string {
 		}
 	}
 	return strings.Join(parts, "\n")
-}
-
-// structuredText returns the text of a structured toolUseResult: the
-// string itself, or its first text field, as glyph3d-js toolRegistry.js
-// pickText reads it.
-func structuredText(raw json.RawMessage) string {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	var fields map[string]any
-	if json.Unmarshal(raw, &fields) != nil {
-		return ""
-	}
-	if e, ok := fields["error"].(string); ok && e != "" {
-		return "error: " + e
-	}
-	for _, key := range []string{"stdout", "content", "result", "output"} {
-		if v, ok := fields[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	return ""
 }

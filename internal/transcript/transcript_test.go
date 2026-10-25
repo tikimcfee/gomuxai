@@ -1,23 +1,55 @@
 package transcript
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
-// eventSummary renders an event compactly for comparisons.
-func eventSummary(e Event) string {
-	if e.Tool != nil {
-		return fmt.Sprintf("%d tool %s(%s) %s %q", e.Turn, e.Tool.Name, e.Tool.Detail(""), e.Tool.Status, e.Tool.Output)
+// summary renders an event compactly for comparisons: its turn's index,
+// op, kind and what it says.
+func summary(e Event) string {
+	turn := "-"
+	if e.Turn != nil {
+		turn = fmt.Sprint(e.Turn.Index)
 	}
-	return fmt.Sprintf("%d %s %q", e.Turn, e.Kind, e.Text)
+	head := fmt.Sprintf("%s %s %s", turn, e.Op, e.Kind)
+	switch {
+	case e.Prompt != nil:
+		return fmt.Sprintf("%s(%s) %q", head, e.Prompt.Origin, e.Prompt.Text)
+	case e.Think != nil && e.Think.Redacted:
+		return head + " redacted"
+	case e.Think != nil:
+		return fmt.Sprintf("%s %q", head, e.Think.Text)
+	case e.Say != nil && e.Say.Final:
+		return fmt.Sprintf("%s final %q", head, e.Say.Text)
+	case e.Say != nil:
+		return fmt.Sprintf("%s %q", head, e.Say.Text)
+	case e.Tool != nil:
+		about := e.Tool.Target
+		if about == "" {
+			about = e.Tool.Detail
+		}
+		return fmt.Sprintf("%s %s(%s) %s %q", head, e.Tool.Name, about, e.Tool.Result.Status, e.Tool.Result.Output)
+	case e.System != nil:
+		return fmt.Sprintf("%s %s %q", head, e.System.Subtype, e.System.Text)
+	}
+	return head
+}
+
+func summaries(events []Event) []string {
+	var out []string
+	for _, e := range events {
+		out = append(out, summary(e))
+	}
+	return out
 }
 
 func readFixture(t *testing.T, name string) []byte {
@@ -29,72 +61,78 @@ func readFixture(t *testing.T, name string) []byte {
 	return data
 }
 
-func TestClaudeParse(t *testing.T) {
-	s := Claude{}.Parse(readFixture(t, "claude.jsonl"))
+// parse reads data whole with r.
+func parse(r Reader, data []byte) (*Parser, []Event) {
+	p := r.NewParser(Options{})
+	return p, p.Feed(data)
+}
 
-	var got []string
-	for _, e := range s.Events() {
-		got = append(got, eventSummary(e))
-	}
+func TestClaudeParse(t *testing.T) {
+	p, events := parse(Claude{}, readFixture(t, "claude.jsonl"))
 	want := []string{
-		`0 user "run the tests"`,
-		`0 think "go test should do it"`,
-		`0 tool Bash(go test ./...) ok "ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s"`,
-		`0 tool Read(/home/user/proj/go.mod) ok "1\tmodule example.com/proj"`,
-		`0 reply "All tests pass."`,
+		`1 add prompt(human) "run the tests"`,
+		`1 add think "go test should do it"`,
+		`1 add tool Bash(go test ./...) pending ""`,
+		`1 add tool Read(go.mod) pending ""`,
+		`1 update tool Bash(go test ./...) ok "ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s"`,
+		`1 update tool Read(go.mod) ok "1\tmodule example.com/proj"`,
+		`1 add say "All tests pass."`,
 		// The caveat is meta and the task notification is tagged text: neither is a prompt.
-		`1 user "/review high"`,
-		`1 tool Bash(make lint) error "Exit code 2\nlint: 1 issue"`,
-		`1 reply "One lint issue.\nSee above."`,
-		`1 tool Grep(TODO) none ""`,
+		`2 add prompt(human) "/review high"`,
+		`2 add tool Bash(make lint) pending ""`,
+		`2 update tool Bash(make lint) error "Exit code 2\nlint: 1 issue"`,
+		`2 add say "One lint issue.\nSee above."`,
+		`2 add tool Grep(TODO) pending ""`,
 	}
-	if !slices.Equal(got, want) {
+	if got := summaries(events); !slices.Equal(got, want) {
 		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for i, e := range events {
+		if e.Seq != i {
+			t.Errorf("event %d has seq %d", i, e.Seq)
+		}
+	}
+	if e := events[2]; e.ID != "tu-bash" || e.TS != "2026-08-01T10:00:01.000Z" || e.Line != 7 {
+		t.Errorf("tool event = %+v, want tu-bash at line 7 with its line's timestamp", e)
 	}
 
 	// Sidechain records don't leak their cwd; api-request-blob copies add nothing.
-	if s.CWD != "/home/user/proj" || s.SessionID != "00000000-0000-0000-0000-00000000c1a0" ||
+	s := p.Session()
+	if s.Harness != "claude" || s.CWD != "/home/user/proj" || s.Project != "proj" || s.SessionID != "00000000-0000-0000-0000-00000000c1a0" ||
 		s.Version != "2.1.400" || s.GitBranch != "main" || s.Title != "Run the tests" || s.Model != "claude-test-1" {
-		t.Errorf("metadata = %+v", s)
+		t.Errorf("session = %+v", s)
 	}
-	if s.Lines != 20 || s.Skipped != 1 {
-		t.Errorf("lines = %d, skipped = %d, want 20 and 1", s.Lines, s.Skipped)
-	}
-	if want := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC); !s.First.Equal(want) {
-		t.Errorf("first = %v, want %v", s.First, want)
-	}
-	if want := time.Date(2026, 8, 1, 10, 1, 5, 0, time.UTC); !s.Last.Equal(want) {
-		t.Errorf("last = %v, want %v", s.Last, want)
-	}
-	if e := s.Events()[2]; !e.Time.Equal(time.Date(2026, 8, 1, 10, 0, 1, 0, time.UTC)) {
-		t.Errorf("tool time = %v, want its line's timestamp", e.Time)
+	if p.Lines != 20 || p.Skipped != 1 {
+		t.Errorf("lines = %d, skipped = %d, want 20 and 1", p.Lines, p.Skipped)
 	}
 }
 
 // The Claude part of glyph3d-rs tests.rs (test_synthetic_claude_session_parity):
-// results pair by id across distance, a result's text wins over the
-// structured record, and the structured text is the fallback.
+// results pair by id across distance, and land as updates of their calls.
 func TestClaudeParse_Pairing(t *testing.T) {
 	lines := []string{
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"Edit","input":{"file_path":"/r/a.js"}}]}}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"b","name":"Bash","input":{"command":"ls"}}]}}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"c","name":"Bash","input":{"command":"true"}}]}}`,
-		`{"type":"user","toolUseResult":{"stdout":"one\ntwo\n"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":[{"type":"text","text":"one"},{"type":"text","text":"two"}]}]}}`,
-		`{"type":"user","toolUseResult":{"stdout":"from structured"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c"}]}}`,
-		`{"type":"user","toolUseResult":{"structuredPatch":[]},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"The file has been updated"}]}}`,
+		`{"type":"assistant","uuid":"u1","message":{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"Edit","input":{"file_path":"/r/a.js"}}]}}`,
+		`{"type":"assistant","uuid":"u2","message":{"role":"assistant","content":[{"type":"tool_use","id":"b","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"user","uuid":"u3","toolUseResult":{"stdout":"one\ntwo\n"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"b","content":[{"type":"text","text":"one"},{"type":"text","text":"two"}]}]}}`,
+		`{"type":"user","uuid":"u4","toolUseResult":{"structuredPatch":[]},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"The file has been updated"}]}}`,
+		`{"type":"user","uuid":"u5","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"unseen","content":"its call came before"}]}}`,
 	}
-	s := Claude{}.Parse([]byte(strings.Join(lines, "\n")))
-	var got []string
-	for _, e := range s.Events() {
-		got = append(got, eventSummary(e))
-	}
+	_, events := parse(Claude{}, []byte(strings.Join(lines, "\n")+"\n"))
 	want := []string{
-		`0 tool Edit(/r/a.js) ok "The file has been updated"`,
-		`0 tool Bash(ls) ok "one\ntwo"`,
-		`0 tool Bash(true) ok "from structured"`,
+		`- add tool Edit(/r/a.js) pending ""`,
+		`- add tool Bash(ls) pending ""`,
+		`- update tool Bash(ls) ok "one\ntwo"`,
+		`- update tool Edit(/r/a.js) ok "The file has been updated"`,
 	}
-	if !slices.Equal(got, want) {
+	if got := summaries(events); !slices.Equal(got, want) {
 		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if string(events[2].Tool.Result.Structured) != `{"stdout":"one\ntwo\n"}` || events[2].Line != 2 {
+		t.Errorf("update = %+v, want the result's toolUseResult and line", events[2])
+	}
+	// The add the parser handed out earlier is left as it was.
+	if events[1].Tool.Result.Status != StatusPending {
+		t.Errorf("an update changed its add: %+v", events[1].Tool.Result)
 	}
 }
 
@@ -122,7 +160,6 @@ func TestClaudePrompt(t *testing.T) {
 	for _, r := range []*claudeRecord{
 		rec(`"<local-command-caveat>Caveat</local-command-caveat>"`, `,"isMeta":true`),
 		rec(`"[Image: original 100x100]"`, `,"isMeta":true`),
-		rec(`"This session is being continued from a previous conversation"`, `,"isCompactSummary":true`),
 		rec(`"<local-command-stdout>Set model</local-command-stdout>"`, ""),
 		rec(`"<bash-input>ls</bash-input>"`, ""),
 		rec(`[{"type":"text","text":"[Request interrupted by user]"}]`, ""),
@@ -136,33 +173,33 @@ func TestClaudePrompt(t *testing.T) {
 }
 
 func TestAgyParse(t *testing.T) {
-	s := Agy{}.Parse(readFixture(t, "agy.jsonl"))
-
-	var got []string
-	for _, e := range s.Events() {
-		got = append(got, eventSummary(e))
-	}
+	p, events := parse(Agy{}, readFixture(t, "agy.jsonl"))
 	want := []string{
-		`0 user "list the files"`,
-		`0 think "I should list them and read the readme."`,
+		`1 add prompt(human) "list the files"`,
+		`1 add think "I should list them and read the readme."`,
+		`1 add tool run_command(ls) pending ""`,
+		`1 add tool view_file(/home/user/proj/README) pending ""`,
 		// Two calls in one step: each GENERIC step answers the next one.
-		`0 tool run_command(ls) ok "The command exited with code 0.\nOutput:\nREADME\nmain.go"`,
-		`0 tool view_file(/home/user/proj/README) ok "File Path: ` + "`file:///home/user/proj/README`" + `\nTotal Lines: 2\n1: hello\n2: world"`,
-		`0 reply "Two files: README and main.go."`,
-		`1 user "build it"`,
-		`1 tool run_command(go build ./...) error "The command exited with code 1.\nOutput:\nmain.go:3: undefined: x"`,
-		`1 tool view_file(/etc/secret) error "Encountered error in step execution: permission denied"`,
-		`1 tool run_command(sleep 100) running "Tool is running as a background task with task id: t-1"`,
-		`1 tool run_command(go vet ./...) none ""`,
+		`1 update tool run_command(ls) ok "The command exited with code 0.\nOutput:\nREADME\nmain.go"`,
+		`1 update tool view_file(/home/user/proj/README) ok "File Path: ` + "`file:///home/user/proj/README`" + `\nTotal Lines: 2\n1: hello\n2: world"`,
+		`1 add say final "Two files: README and main.go."`,
+		`2 add prompt(human) "build it"`,
+		`2 add tool run_command(go build ./...) pending ""`,
+		`2 update tool run_command(go build ./...) error "The command exited with code 1.\nOutput:\nmain.go:3: undefined: x"`,
+		`2 add tool view_file(/etc/secret) pending ""`,
+		`2 add tool run_command(sleep 100) pending ""`,
+		`2 update tool view_file(/etc/secret) error "Encountered error in step execution: permission denied"`,
+		`2 update tool run_command(sleep 100) background "Tool is running as a background task with task id: t-1"`,
+		`2 add tool run_command(go vet ./...) pending ""`,
 	}
-	if !slices.Equal(got, want) {
+	if got := summaries(events); !slices.Equal(got, want) {
 		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if s.Lines != 14 || s.Skipped != 1 {
-		t.Errorf("lines = %d, skipped = %d, want 14 and 1", s.Lines, s.Skipped)
+	if p.Lines != 14 || p.Skipped != 1 {
+		t.Errorf("lines = %d, skipped = %d, want 14 and 1", p.Lines, p.Skipped)
 	}
-	if want := time.Date(2026, 10, 4, 12, 1, 6, 0, time.UTC); !s.Last.Equal(want) {
-		t.Errorf("last = %v, want %v", s.Last, want)
+	if s := p.Session(); s.Harness != "agy" {
+		t.Errorf("session = %+v", s)
 	}
 }
 
@@ -212,13 +249,69 @@ func TestDetect(t *testing.T) {
 
 func TestDegenerateInputs(t *testing.T) {
 	for _, r := range []Reader{Claude{}, Agy{}} {
-		if s := r.Parse(nil); len(s.Turns) != 0 || s.Lines != 0 {
-			t.Errorf("%s: empty input gave %+v", r.Harness(), s)
+		if p, events := parse(r, nil); len(events) != 0 || p.Lines != 0 {
+			t.Errorf("%s: empty input gave %d events, %d lines", r.Harness(), len(events), p.Lines)
 		}
-		s := r.Parse([]byte("null\n42\n\"str\"\n{invalid json\n[]"))
-		if len(s.Turns) != 0 || s.Lines != 5 || s.Skipped != 5 {
-			t.Errorf("%s: garbage gave %d turns, %d lines, %d skipped", r.Harness(), len(s.Turns), s.Lines, s.Skipped)
+		p, events := parse(r, []byte("null\n42\n\"str\"\n{invalid json\n[]\n"))
+		if len(events) != 0 || p.Lines != 5 || p.Skipped != 5 {
+			t.Errorf("%s: garbage gave %d events, %d lines, %d skipped", r.Harness(), len(events), p.Lines, p.Skipped)
 		}
+	}
+}
+
+// Fed in pieces, as a live transcript grows, a parser makes the events it
+// makes from the whole; a line arrives once its newline does.
+func TestParser_FeedInPieces(t *testing.T) {
+	data := readFixture(t, "claude.jsonl")
+	_, whole := parse(Claude{}, data)
+
+	p := Claude{}.NewParser(Options{})
+	var pieces []Event
+	for end := 0; end <= len(data); end += 97 {
+		pending := data[p.Pos().At:min(end, len(data))]
+		pieces = append(pieces, p.Feed(pending)...)
+	}
+	pieces = append(pieces, p.Feed(data[p.Pos().At:])...)
+	if !reflect.DeepEqual(pieces, whole) {
+		t.Errorf("fed in pieces:\n%s\nwhole:\n%s", strings.Join(summaries(pieces), "\n"), strings.Join(summaries(whole), "\n"))
+	}
+	if pos := p.Pos(); pos.At != int64(len(data)) || pos.Line != 20 || pos.Seq != len(whole) {
+		t.Errorf("stopped at %+v, want the end: %d bytes, 20 lines, %d events", pos, len(data), len(whole))
+	}
+
+	// A window that starts on a later line numbers its events from there.
+	from := Pos{At: int64(bytes.Index(data, []byte(`{"type":"user","isMeta":true`))), Line: 14, Seq: 100}
+	w := Claude{}.NewParser(Options{From: from})
+	events := w.Feed(data[from.At:])
+	if len(events) == 0 || events[0].Seq != 100 || events[0].Line != 15 || events[0].At != from.At+int64(bytes.IndexByte(data[from.At:], '\n'))+1 {
+		t.Errorf("window: first event %+v", events[0])
+	}
+}
+
+func TestLatest(t *testing.T) {
+	_, events := parse(Claude{}, readFixture(t, "claude.jsonl"))
+	latest := Latest(events)
+	want := []string{
+		`1 add prompt(human) "run the tests"`,
+		`1 add think "go test should do it"`,
+		`1 add tool Bash(go test ./...) ok "ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s"`,
+		`1 add tool Read(go.mod) ok "1\tmodule example.com/proj"`,
+		`1 add say "All tests pass."`,
+		`2 add prompt(human) "/review high"`,
+		`2 add tool Bash(make lint) error "Exit code 2\nlint: 1 issue"`,
+		`2 add say "One lint issue.\nSee above."`,
+		`2 add tool Grep(TODO) pending ""`,
+	}
+	if got := summaries(latest); !slices.Equal(got, want) {
+		t.Errorf("latest:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// A tool keeps where and when it was called.
+	if latest[2].Line != 7 || latest[2].Seq != 2 {
+		t.Errorf("folded tool at line %d, seq %d; want its call's, 7 and 2", latest[2].Line, latest[2].Seq)
+	}
+	// An update without its add (a window's) is left out.
+	if got := Latest(events[4:5]); len(got) != 0 {
+		t.Errorf("a lone update gave %v", summaries(got))
 	}
 }
 
@@ -233,18 +326,19 @@ func writeFile(t *testing.T, name, content string) string {
 
 func TestReadFile(t *testing.T) {
 	path := writeFile(t, "00000000-0000-0000-0000-0000000000aa.jsonl", string(readFixture(t, "claude.jsonl")))
-	s, err := ReadFile(path, Claude{}, 50)
+	f, err := ReadFile(path, Claude{}, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Events()) != 9 || s.Partial || s.Path != path || s.SessionID != "00000000-0000-0000-0000-00000000c1a0" {
-		t.Errorf("got %d events, partial %v, path %q, session %q", len(s.Events()), s.Partial, s.Path, s.SessionID)
+	if len(f.Events) != 12 || f.Partial || f.Session.Path != path || f.Session.Size != int64(len(readFixture(t, "claude.jsonl"))) ||
+		f.Session.SessionID != "00000000-0000-0000-0000-00000000c1a0" {
+		t.Errorf("got %d events, partial %v, session %+v", len(f.Events), f.Partial, f.Session)
 	}
 
 	// Without a reader, the format is detected.
 	path = writeFile(t, "transcript_full.jsonl", string(readFixture(t, "agy.jsonl")))
-	if s, err := ReadFile(path, nil, 50); err != nil || s.Harness != "agy" || len(s.Events()) != 10 {
-		t.Errorf("detected: %+v, %v", s, err)
+	if f, err := ReadFile(path, nil, 50); err != nil || f.Session.Harness != "agy" || len(f.Events) != 15 {
+		t.Errorf("detected: %+v, %v", f, err)
 	}
 }
 
@@ -252,52 +346,52 @@ func TestReadFile(t *testing.T) {
 // holds enough events; metadata still comes from its head.
 func TestReadFile_TailWindow(t *testing.T) {
 	var b strings.Builder
-	b.WriteString(`{"type":"user","cwd":"/home/user/big","sessionId":"big","timestamp":"2026-08-01T10:00:00Z","message":{"role":"user","content":"first"}}` + "\n")
+	b.WriteString(`{"type":"user","uuid":"p","cwd":"/home/user/big","sessionId":"big","timestamp":"2026-08-01T10:00:00Z","message":{"role":"user","content":"first"}}` + "\n")
 	pad := strings.Repeat("x", 2000)
 	for i := range 3000 {
-		fmt.Fprintf(&b, `{"type":"assistant","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"reply %d"}]},"pad":"%s"}`+"\n", i, pad)
+		fmt.Fprintf(&b, `{"type":"assistant","uuid":"a%d","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"reply %d"}]},"pad":"%s"}`+"\n", i, i, pad)
 	}
 	path := writeFile(t, "big.jsonl", b.String())
 
 	for _, n := range []int{3, 1000} {
-		s, err := ReadFile(path, Claude{}, n)
+		f, err := ReadFile(path, Claude{}, n)
 		if err != nil {
 			t.Fatal(err)
 		}
-		events := s.Events()
-		if len(events) < n || !s.Partial {
-			t.Fatalf("n=%d: %d events, partial %v", n, len(events), s.Partial)
+		events := f.Events
+		if len(events) < n || !f.Partial {
+			t.Fatalf("n=%d: %d events, partial %v", n, len(events), f.Partial)
 		}
-		if last := events[len(events)-1].Text; last != "reply 2999" {
-			t.Errorf("n=%d: last event %q", n, last)
+		if last := events[len(events)-1]; last.Say.Text != "reply 2999" || last.Line != 3000 {
+			t.Errorf("n=%d: last event %q at line %d, want reply 2999 at 3000", n, last.Say.Text, last.Line)
 		}
-		if first := events[0].Text; !strings.HasPrefix(first, "reply ") {
-			t.Errorf("n=%d: first event %q: the window's partial first line must be dropped", n, first)
+		if first := events[0]; first.Say == nil || first.Say.Text != fmt.Sprintf("reply %d", first.Line-1) {
+			t.Errorf("n=%d: first event %+v: the window's partial first line must be dropped, and lines counted", n, first)
 		}
-		if s.CWD != "/home/user/big" || s.SessionID != "big" || s.Skipped != 0 {
-			t.Errorf("n=%d: cwd %q, session %q, skipped %d", n, s.CWD, s.SessionID, s.Skipped)
+		if s := f.Session; s.CWD != "/home/user/big" || s.SessionID != "big" || f.Skipped != 0 {
+			t.Errorf("n=%d: cwd %q, session %q, skipped %d", n, s.CWD, s.SessionID, f.Skipped)
 		}
 	}
 
 	// Asking for more than there is reads it all.
-	s, err := ReadFile(path, Claude{}, 1_000_000)
+	f, err := ReadFile(path, Claude{}, 1_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Events()) != 3001 || s.Partial {
-		t.Errorf("whole file: %d events, partial %v", len(s.Events()), s.Partial)
+	if len(f.Events) != 3001 || f.Partial {
+		t.Errorf("whole file: %d events, partial %v", len(f.Events), f.Partial)
 	}
 }
 
 // A line still being written is left out, not counted as unparseable.
 func TestReadFile_PartialLastLine(t *testing.T) {
-	path := writeFile(t, "s.jsonl", `{"type":"user","message":{"role":"user","content":"hi"}}`+"\n"+`{"type":"assistant","message":{"role":"assis`)
-	s, err := ReadFile(path, Claude{}, 50)
+	path := writeFile(t, "s.jsonl", `{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}`+"\n"+`{"type":"assistant","message":{"role":"assis`)
+	f, err := ReadFile(path, Claude{}, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Events()) != 1 || s.Lines != 1 || s.Skipped != 0 {
-		t.Errorf("%d events, %d lines, %d skipped", len(s.Events()), s.Lines, s.Skipped)
+	if len(f.Events) != 1 || f.Lines != 1 || f.Skipped != 0 {
+		t.Errorf("%d events, %d lines, %d skipped", len(f.Events), f.Lines, f.Skipped)
 	}
 }
 
@@ -310,14 +404,15 @@ func TestReadFile_Errors(t *testing.T) {
 		t.Errorf("text file: %v", err)
 	}
 	// An empty transcript (a session that hasn't written yet) is not an error.
-	if s, err := ReadFile(writeFile(t, "e.jsonl", ""), Agy{}, 50); err != nil || len(s.Events()) != 0 {
-		t.Errorf("empty file: %v, %v", s, err)
+	if f, err := ReadFile(writeFile(t, "e.jsonl", ""), Agy{}, 50); err != nil || len(f.Events) != 0 {
+		t.Errorf("empty file: %v, %v", f, err)
 	}
 }
 
 func TestSessionIDFromPath(t *testing.T) {
 	for path, want := range map[string]string{
 		"/home/user/.claude/projects/-p/0000-aa.jsonl":                                              "0000-aa",
+		"/home/user/.claude/projects/-p/0000-aa/subagents/agent-a1b2.jsonl":                         "agent-a1b2",
 		"/home/user/.gemini/antigravity-cli/brain/c-1/.system_generated/logs/transcript_full.jsonl": "c-1",
 		"/tmp/transcript.jsonl": "",
 	} {
@@ -341,20 +436,20 @@ func TestRealTranscriptsIfPresent(t *testing.T) {
 			t.Fatal(err)
 		}
 		r := Detect(data)
-		s, err := ReadFile(path, r, 1<<30)
+		f, err := ReadFile(path, r, 1<<30)
 		if err != nil {
 			t.Fatalf("%s: %v", path, err)
 		}
 		kinds := map[string]int{}
-		for _, e := range s.Events() {
+		for _, e := range Latest(f.Events) {
 			kinds[e.Kind]++
 			if e.Tool != nil {
-				kinds[e.Tool.Status]++
+				kinds[e.Tool.Result.Status]++
 			}
 		}
-		t.Logf("%s: %s, %d turns, %d lines, %d skipped, %v", filepath.Base(path), r.Harness(), len(s.Turns), s.Lines, s.Skipped, kinds)
-		if s.Skipped > 0 {
-			t.Errorf("%s: %d lines skipped", path, s.Skipped)
+		t.Logf("%s: %s, %d events, %d lines, %d skipped, %v", filepath.Base(path), r.Harness(), len(f.Events), f.Lines, f.Skipped, kinds)
+		if f.Skipped > 0 {
+			t.Errorf("%s: %d lines skipped", path, f.Skipped)
 		}
 	}
 }

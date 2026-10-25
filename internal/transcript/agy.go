@@ -34,56 +34,83 @@ type agyStep struct {
 	} `json:"tool_calls"`
 }
 
-func (Agy) Parse(data []byte) *Session {
-	s := &Session{Harness: "agy"}
-	t := turns{s}
-	// Tool calls of the current turn still waiting for their GENERIC step.
-	var pending []*ToolCall
-	eachLine(s, data, func(line []byte) bool {
-		var st agyStep
-		if json.Unmarshal(line, &st) != nil {
-			return false
+func (Agy) NewParser(opts Options) *Parser {
+	return newParser("agy", &agyLines{}, opts.From)
+}
+
+// agyLines is the agy half of a Parser.
+type agyLines struct {
+	sess Session
+	turn *TurnRef
+	// turns counts the prompts that opened a turn.
+	turns int
+	// pending holds the current turn's calls still waiting for their
+	// GENERIC step, oldest first.
+	pending []*Event
+}
+
+func (a *agyLines) session() Session { return a.sess }
+
+func (a *agyLines) read(line []byte, at int64, n int) ([]Event, bool) {
+	var st agyStep
+	if json.Unmarshal(line, &st) != nil {
+		return nil, false
+	}
+	if a.sess.CWD == "" {
+		a.sess.setCWD(st.CWD)
+	}
+	part := 0
+	ev := func(kind string) Event {
+		e := Event{ID: fmt.Sprintf("step_%d#%d", st.StepIndex, part), Op: OpAdd, At: at, Line: n, TS: st.CreatedAt, Turn: a.turn, Kind: kind}
+		part++
+		return e
+	}
+	var events []Event
+	switch st.Type {
+	case "USER_INPUT":
+		if prompt := agyPrompt(st.Content); prompt != "" {
+			e := ev(KindPrompt)
+			a.turns++
+			a.turn = &TurnRef{ID: e.ID, Index: a.turns, Derived: true}
+			e.Turn = a.turn
+			e.Prompt = &PromptEvent{Text: prompt, Origin: OriginHuman}
+			events = append(events, e)
+			a.pending = nil
 		}
-		at := parseTime(st.CreatedAt)
-		s.seen(at)
-		if s.CWD == "" {
-			s.CWD = st.CWD
+	case "PLANNER_RESPONSE":
+		if text := strings.TrimSpace(st.Thinking); text != "" {
+			e := ev(KindThink)
+			e.Think = &ThinkEvent{Text: text}
+			events = append(events, e)
 		}
-		switch st.Type {
-		case "USER_INPUT":
-			if prompt := agyPrompt(st.Content); prompt != "" {
-				t.prompt(prompt, at)
-				pending = nil
-			}
-		case "PLANNER_RESPONSE":
-			if text := strings.TrimSpace(st.Thinking); text != "" {
-				t.step(Step{Time: at, Thinking: text})
-			}
-			if text := strings.TrimSpace(st.Content); text != "" {
-				t.step(Step{Time: at, Reply: text})
-			}
-			for i, tc := range st.ToolCalls {
-				call := &ToolCall{
-					ID:     fmt.Sprintf("step_%d_tool_%d", st.StepIndex, i),
-					Name:   tc.Name,
-					Input:  agyArgs(tc.Args),
-					Status: StatusNone,
-				}
-				t.step(Step{Time: at, Tool: call})
-				pending = append(pending, call)
-			}
-		case "GENERIC":
-			if len(pending) == 0 {
-				break
-			}
-			call := pending[0]
-			pending = pending[1:]
-			call.Output = agyOutput(st.Content)
-			call.Status = agyStatus(st, call.Output)
+		if text := strings.TrimSpace(st.Content); text != "" {
+			e := ev(KindSay)
+			e.Say = &SayEvent{Text: text, Final: len(st.ToolCalls) == 0}
+			events = append(events, e)
 		}
-		return true
-	})
-	return s
+		for i, tc := range st.ToolCalls {
+			e := ev(KindTool)
+			e.ID = fmt.Sprintf("step_%d_tool_%d", st.StepIndex, i)
+			input := agyArgs(tc.Args)
+			e.Tool = &ToolEvent{Name: tc.Name, Input: input, Result: &ToolResult{Status: StatusPending},
+				ToolSummary: SummarizeTool(tc.Name, input, nil, a.sess.CWD)}
+			events = append(events, e)
+			a.pending = append(a.pending, &e)
+		}
+	case "GENERIC":
+		if len(a.pending) == 0 {
+			break
+		}
+		call := a.pending[0]
+		a.pending = a.pending[1:]
+		output := agyOutput(st.Content)
+		t := *call.Tool
+		t.Result = &ToolResult{Status: agyStatus(st, output), Output: output}
+		e := *call
+		e.Op, e.At, e.Line, e.TS, e.Tool = OpUpdate, at, n, st.CreatedAt, &t
+		events = append(events, e)
+	}
+	return events, true
 }
 
 // agyArgs undoes the encoding transcript.jsonl gives a call's args: there
@@ -146,7 +173,7 @@ func agyStatus(st agyStep, output string) string {
 	case st.Status == "ERROR" || st.Status == "INVALID" || st.Error != "":
 		return StatusError
 	case st.Status == "RUNNING":
-		return StatusRunning
+		return StatusBackground
 	}
 	if m := agyExitCode.FindStringSubmatch(output); m != nil && m[1] != "0" {
 		return StatusError

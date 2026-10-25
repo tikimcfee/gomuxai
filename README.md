@@ -268,9 +268,9 @@ bus prints a note about it in its `gomux-bus` session
 
 ```console
 $ agent logs helper --lines 3
-18:31:19 user  Run the shell command: curl -sI https://example.com
-18:31:21 tool  Bash: curl -sI https://example.com → ok (11 lines)
-18:31:35 reply example.com answered `HTTP/2 200`; Cloudflare served it from cache (`cf-cache-status: HIT`) as `text/html`. Here are th…
+18:31:19 prompt Run the shell command: curl -sI https://example.com
+18:31:21 tool   Bash: curl -sI https://example.com → ok (11 lines)
+18:31:35 say    example.com answered `HTTP/2 200`; Cloudflare served it from cache (`cf-cache-status: HIT`) as `text/html`. Here are th…
 ```
 
 Most commands take `--json`. Results go to stdout, hints to stderr (`-q`
