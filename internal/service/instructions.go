@@ -32,6 +32,7 @@ shell's PATH may not include it:
     agent list                         # agents on this host; --host H for another host
     agent send NAME "message"          # message an agent (NAME@HOST on another host)
     agent status NAME -v               # what an agent is doing right now
+    agent capture NAME --lines 50      # its screen, e.g. to see why it's stuck
     agent wait NAME --for idle,waiting --next --timeout 10m   # its next turn ends, or it needs a person
     agent state get NAME _result       # its latest reply (claude agents on this host)
 
@@ -111,7 +112,8 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 }
 
 // agentSafeCommands are the agent subcommands a spawned agent may run without
-// a permission prompt: they read status or history, deliver messages that
+// a permission prompt: they read status, screens, or history (a coordinator
+// needs capture to see why a helper is stuck), deliver messages that
 // the recipient's own permission prompts still guard, or file and vote on
 // friction, which only writes a note. approve/deny, keys, and send --force
 // are left out: they would let one agent answer another agent's prompts,
@@ -119,7 +121,7 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 // agents: the user approves each one. So are friction accept and resolve,
 // which are for the people working on the tool.
 var agentSafeCommands = []string{
-	"send", "list", "status", "wait", "events", "state get", "history",
+	"send", "list", "status", "wait", "events", "capture", "state get", "history",
 	"friction add", "friction +1", "friction list", "friction show",
 }
 
