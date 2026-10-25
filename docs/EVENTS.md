@@ -80,7 +80,8 @@ updates an earlier one, the add comes first.
 - `tool` `{name, input, result?, action, target?, detail?, meta?, sub_session?}`: one event
   per call.
   - `result` is `{status: pending|ok|error|interrupted|background, output?, structured?}`. A
-    call is added as `pending`; its result, and the `meta` read from it, arrive as an update.
+    call is added as `pending`, with any `meta` the table reads from its input (an edit's
+    line counts); its result, and the `meta` read from that, arrive as an update.
   - `action`, `target`, `detail` and `meta` come from the one tool table.
   - Tools the table calls noise keep `action: "noise"`; readers may hide them.
   - A call that starts a subagent names its session in `sub_session`.

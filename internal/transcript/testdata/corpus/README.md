@@ -38,7 +38,7 @@ Compare parsed JSON values, not bytes:
 
 | Case | What it exercises | Modelled on |
 |---|---|---|
-| `claude/basic-turn` | A typed prompt, a redacted thinking block (signature only) and one with text, a reply, a Bash call and its result, the final reply, turn timing. `ai-title` then `custom-title` then `ai-title`: the custom title wins. | `user` with `promptId`, `promptSource: typed`, `origin.kind`, `turnOrigin`, `turnPosition{promptIndex,turnIndex}`; `assistant` one block per record sharing `message.id`, `thinking{thinking,signature}`, `tool_use{id,name,input,caller}`; `user` `tool_result` with `toolUseResult{stdout,stderr,interrupted,isImage,noOutputExpected}` and `sourceToolAssistantUUID`; `system` `turn_duration`; `file-history-snapshot`, `last-prompt`, `ai-title`, `custom-title`, `mode`, `permission-mode`. |
+| `claude/basic-turn` | A typed prompt, a redacted thinking block (signature only) and one with text, a reply, a noise tool (ToolSearch), a Bash call and its result, the final reply, turn timing. `ai-title` then `custom-title` then `ai-title`: the custom title wins. | `user` with `promptId`, `promptSource: typed`, `origin.kind`, `turnOrigin`, `turnPosition{promptIndex,turnIndex}`; `assistant` one block per record sharing `message.id`, `thinking{thinking,signature}`, `tool_use{id,name,input,caller}`; `user` `tool_result` with `toolUseResult{stdout,stderr,interrupted,isImage,noOutputExpected}` and `sourceToolAssistantUUID`; `system` `turn_duration`; `file-history-snapshot`, `last-prompt`, `ai-title`, `custom-title`, `mode`, `permission-mode`. |
 | `claude/mid-turn-queued` | A message sent mid-turn and taken at a tool boundary: a `queued` prompt in the current turn. A second message queued as the turn ends, which opens its own turn: a `queued` prompt with its own turn id. An Edit with a `structuredPatch`. | `queue-operation` `enqueue`/`remove`/`dequeue` with `content`; `attachment` `queued_command{prompt,commandMode: prompt,origin{kind: human},humanTurn}` with `rendered`; `user` with `promptSource: queued`. |
 | `claude/held-delivery` | gomuxai's held delivery: Stop's `additionalContext` after a final reply is a `delivered` prompt in the same turn, and the reply to it is a second final reply. Two `stop_hook_summary` records. | `attachment` `hook_success` and `hook_additional_context{content[],hookEvent: Stop,toolUseID}`; `system` `stop_hook_summary{hookCount,hookInfos,hookErrors,hookAdditionalContext,preventedContinuation,stopReason,hasOutput,toolUseID}`. |
 | `claude/notification-and-commands` | A background Bash (`background`), then its task notification, which opens a turn (`task-notification`) and completes the call (`ok`). A local slash command (`/context`) with its output record. A slash command that expands into a model turn (`/review internal/server`). | `toolUseResult.backgroundTaskId`; `user` with `origin{kind: task-notification,producer}`, `promptSource: system`, `turnOrigin: task_notification`, `<task-notification>` tags `task-id`, `tool-use-id`, `output-file`, `status`, `summary`; `<local-command-caveat>` (`isMeta`); `<command-name>`/`<command-message>`/`<command-args>` in both tag orders; `system` `local_command{commandRun}`; the skill body as an `isMeta` `turnCompanion` user record; `attachment` `command_permissions`. |
@@ -127,8 +127,20 @@ should check the rest.
 
 **Tools**
 
-- A call is added with `result: {status: "pending"}`. Its result, and the `meta` derived
-  from it, come in the update.
+- `action`, `target`, `detail` and `meta` are what the tool table
+  (`internal/transcript/tools.go`, `SummarizeTool`) says for the call's name, input and
+  structured response. Every tool event in the corpus was checked against it. Where the
+  table differs from glyph3d-js's `toolRegistry.js` on purpose, the corpus follows the
+  table. Earlier drafts of this corpus followed glyph3d-js, and changed here:
+  - An edit's add carries `meta: {added, removed}` counted from its input (old_string and
+    new_string, or a MultiEdit's every edit). The result's `structuredPatch` replaces it
+    in the update.
+  - A call with nothing to count has no `meta`, never zeros. A `background` Bash has none:
+    while a call runs, the reader hands the table no response.
+  - Noise tools (`ToolSearch` in `claude/basic-turn`) keep `action: "noise"` and their
+    detail.
+- A call is added with `result: {status: "pending"}`. Its result comes in the update, with
+  the `meta` the table reads from that result.
 - `output` is the `tool_result` content (a string, or its text blocks joined with `\n`).
   `structured` is the record's `toolUseResult` when that is an object; a string
   `toolUseResult` (`Error: …`) repeats the output and is left out.
@@ -143,21 +155,24 @@ should check the rest.
   `<usage>`, the same keys the table's `taskMeta` gives a finished Task.
 - `sub_session` is set from the Agent result's `agentId`, so it arrives with the first
   update. A subagent's `session_id` is its `agentId` (the file is `agent-<agentId>.jsonl`).
-- Table fields: `target` is relative to the session cwd, as `toolRegistry.js` makes it.
-  Empty `target`/`detail` and a `meta` with no keys are left out. `meta` is computed only
-  from an object result, so a failed Bash (string `toolUseResult`) has no `meta` rather
-  than `{lines: 0}`.
-- Kimi's file tools name their path `path`. The table reads it as `file_path`, as
-  glyph3d-js's `kimiInput` does; `input` keeps Kimi's own key. Read's `meta` counts the
-  output's lines, as glyph3d-js's `kimiResponse` does.
-- agy: `input` is the call's `args` as recorded. Output is the GENERIC content without its
-  leading `Created At:`/`Completed At:` lines, trimmed; there is no `structured`. `meta`
-  comes from the response glyph3d-js's `agyEnrich` reconstructs: `stdout` = output for
-  `run_command`, and `file` from the `Showing lines`/`Total Lines` header for
-  `view_file`. A `RUNNING` result is `background`. Its completion (`Task id "…" finished
-  with result:`) makes it `ok`, with that text as output.
-- Noise tools (TodoWrite, ToolSearch, …) keep `action: "noise"` and carry no target,
-  detail or meta. No case includes one yet.
+- The response a reader hands the table: Claude's `toolUseResult` when it is an object
+  (a string one reads as none, so a failed Bash has no `meta`). For an Agent completed
+  by a task notification, `{totalToolUseCount, totalTokens, totalDurationMs}` from
+  `<usage>`. Kimi's `result`, plus `file: {numLines, startLine}` for Read, as glyph3d-js's
+  `kimiResponse` builds it. For agy, what glyph3d-js's `agyEnrich` reconstructs:
+  `{output, stdout}` for `run_command`, and `{output, file}` from the `Showing lines` /
+  `Total Lines` header for `view_file`. `target` is relative to the session cwd; Kimi's
+  `path` names the file, and `input` keeps Kimi's own key.
+- agy: output is the GENERIC content without its leading `Created At:`/`Completed At:`
+  lines, trimmed; there is no `structured`. A `RUNNING` result is `background`. Its
+  completion (`Task id "…" finished with result:`) makes it `ok`, with that text as output.
+- agy: the corpus models `transcript_full.jsonl`, whose tool args are plain JSON (strings
+  as strings, `AllowMultiple` a boolean), so `input` is the args as recorded. agy's other
+  log, `transcript.jsonl`, JSON-encodes every string arg a second time and writes
+  `AllowMultiple` as `"true"`/`"false"`. But it also truncates long fields
+  (`truncated_fields`; 34 of 49 conversations on the survey host). Readers take
+  `transcript_full.jsonl`. A reader that meets a string arg that is itself a JSON string
+  should decode it once, so `input` carries the decoded value either way.
 
 **System events**
 
