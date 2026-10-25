@@ -70,7 +70,7 @@ listed too.
 Workgroup agents come from this binary's store and the stores its tmux
 sessions point at, live and departed, as agent export --all reads them.
 This host only. --json prints each session as docs/EVENTS.md describes a
-Session: the "session" line agent events opens with.`,
+Session: the "session" line agent transcript opens with.`,
 	Example: `  agent sessions
   agent sessions --workgroup
   agent sessions --local --harness claude
@@ -102,22 +102,12 @@ func runSessions(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--workgroup and --local each leave out what the other keeps: use one (or neither, for all)")
 	}
 	ctx := getContext()
-	dirs := discovery.Dirs(discovery.Overrides{Claude: cfg.ClaudeProjectsDir, Agy: cfg.AgyBrainDir, Kimi: cfg.KimiSessionsDir})
+	dirs := sessionDirs()
 	agents, err := workgroupAgents(ctx)
 	if err != nil {
 		return err
 	}
-	live := discovery.Live{Now: time.Now()}
-	claudeErr := error(nil)
-	if statuses, err := claudeSessions(ctx); err == nil {
-		live.Claude = map[string]string{}
-		for id, st := range statuses {
-			live.Claude[id] = st.String()
-		}
-	} else {
-		claudeErr = err
-	}
-
+	live, claudeErr := liveNow(ctx)
 	sessions := discovery.Resolve(discovery.Scan(dirs), agents, live)
 	// A workgroup agent with no transcript is listed under its backend's
 	// name (aider, say), so that is a harness to filter on too.

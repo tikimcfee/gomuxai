@@ -2,8 +2,8 @@
 
 gomuxai reads every agent session the host can see, whether gomuxai spawned it or not,
 and serves what each one did as one stream of events. It is the only parser of the
-harnesses' transcripts: `agent logs`, `agent events` and any display (a 3D viewer, a
-script) read these events and never a transcript itself.
+harnesses' transcripts: `agent logs`, `agent transcript` and any display (a 3D viewer,
+a script) read these events and never a transcript itself.
 
 Events are one per thing that happened: a prompt, a thinking block, a reply, a tool call.
 They are never pre-grouped. Each carries the turn (prompt) it belongs to, so a reader may
@@ -20,13 +20,29 @@ The Go types are in `internal/transcript/events.go`; the Session is
   session). Both kinds have the same fields; `workgroup` says which one a session is.
   `--json` prints an array of Sessions. `docs/ARCHITECTURE.md` ("Sessions") says where each
   field comes from and how status is decided.
-- `agent events <name|session-id|path> [--json] [--follow] [--from <byte>] [--requests]`: one
-  session's events, as JSON lines.
+- `agent transcript <name|session-id|path> [--follow] [--from <byte>] [--until <byte>]
+  [--requests]`: one session's events, as JSON lines. The session is a workgroup agent's
+  name (its current transcript), a session id or the start of only one, or a transcript's
+  path. (`agent events` is the bus's status feed, not this.)
   - `--from` resumes after the line at a byte offset: the `at` of the last event the reader
-    holds. That line's events are not sent again (a line's events are always sent
-    together); what follows is numbered and turned as the whole stream is, and updates to
-    events of earlier lines still come. The reader reads the lines before it to know them.
-  - `--requests` adds the model-request channel; it is off by default.
+    holds that isn't a provisional reply (see `say`). That line's events are not sent again
+    (a line's events are always sent together); what follows is numbered and turned as the
+    whole stream is, and updates to events of earlier lines still come. Such an update is
+    sent whole even though its add lies before `--from`, where the reader may never have
+    seen it: it is the event's current state either way. The parser reads the lines before
+    to know them.
+  - Under `--from`, `at` and `line` are absolute in the file, as in a whole read (the
+    parser reads from byte 0 anyway), and `seq` is the whole stream's: the first event sent
+    has the `seq` a whole read gives it, not 0.
+  - `--until` leaves out the lines that start at or after a byte offset, so `--from A
+    --until B` reads the lines after A's and before B: a history window. Not with
+    `--follow`.
+  - `--follow` keeps reading as the transcript grows, polling every 250ms and never
+    reading a line that isn't whole yet, until interrupted or the reader closes the pipe
+    (both exit 0).
+  - `--requests` adds the model-request channel; it is off by default. Request events
+    number their own `seq` from 0, so a conversation event has the same `seq` with or
+    without it.
 - `agent export` is unchanged: the set of agents as recorded now, plus `--follow` for changes
   to that set.
 
@@ -34,7 +50,8 @@ The Go types are in `internal/transcript/events.go`; the Session is
 
 JSON lines. The stream opens with `{"type":"session", …Session}`, describing the session as
 of the end of the initial read. After that come `{"type":"event", …Event}` lines, plus a new
-`session` line whenever the session's metadata changes after that (title, model, status).
+`session` line whenever the session's metadata changes after that (title, model, status:
+any field but `size`, `mtime` and `status_at`; `--follow` checks every 2s).
 
 Nothing is ever reordered. An event that changes later (a tool's result lands, a provisional
 reply is confirmed) is sent again with the same `id` and `"op":"update"`: the whole event,
@@ -70,7 +87,8 @@ updates an earlier one, the add comes first.
 { "id": "…",                      // stable: a tool's tool_use id; otherwise "<record uuid>#<block index>"
                                   // (no uuid: agy "step_<step_index>#<n>", Kimi "L<line>#<n>")
   "op": "add|update",
-  "seq": 0,                       // 0-based position in this stream (--requests numbers its own)
+  "seq": 0,                       // 0-based position in the transcript's stream, the same in every
+                                  // read of it (the request channel numbers its own)
   "at": 0, "line": 0,             // byte offset and line index of the source line
   "ts": "…",
   "turn": { "id": "…", "index": 0, "derived": false },  // the prompt this event belongs to
@@ -100,6 +118,11 @@ updates an earlier one, the add comes first.
     `<promptId>#final`, and `<promptId>#final<n>` for the nth Stop of a turn (a held
     delivery continues it), which pairs with the turn's nth final reply
     (`transcript.Finals`).
+  - `agent transcript` sends one for a Claude agent of the store it runs from (the hook's
+    text is the agent's `_result`). It isn't in the transcript, so it takes no `seq` of its
+    own: it carries the `seq` of the event after it. Its `at` and `line` are where the
+    transcript's copy will land, so a reader doesn't resume `--from` it. A read that
+    starts after the copy landed has no provisional reply, just the copy, as an add.
 - `tool` `{name, input, result?, action, target?, detail?, meta?, sub_session?}`: one event
   per call.
   - `result` is `{status: pending|ok|error|interrupted|background, output?, structured?}`. A

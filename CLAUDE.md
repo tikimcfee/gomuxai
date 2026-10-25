@@ -67,8 +67,8 @@ failed and what to try. Most read commands take `--json`.
 ### What a spawned Claude agent may run without asking
 
 Spawn pre-allows these for the agent's session: `send`, `deliver`, `list`,
-`status`, `wait`, `events`, `capture`, `logs`, `sessions`, `state get`, `history`,
-`friction add`, `friction +1`, `friction list`, `friction show`.
+`status`, `wait`, `events`, `capture`, `logs`, `sessions`, `transcript`, `state get`,
+`history`, `friction add`, `friction +1`, `friction list`, `friction show`.
 
 Everything else prompts the person, on purpose: `spawn` and `cleanup` start
 and stop agents; `approve`, `deny`, `keys`, and `send --force` would let one
@@ -356,6 +356,21 @@ shows `unknown`), and for Kimi the transcript's age; `agent help sessions`
 has the rules, and `docs/ARCHITECTURE.md` ("Sessions") where each field
 comes from. This host only. `claude_projects_dir`, `agy_brain_dir` and
 `kimi_sessions_dir` in the JSON app config change where it looks.
+
+```bash
+agent transcript helper               # one session's events as JSON lines: a session line, then events
+agent transcript 3f3a9c --follow      # by session id (or its start), live until Ctrl-C
+agent transcript helper --from 18342  # resume after the line at that byte: the "at" of your last event
+```
+
+`transcript` is the stream a display or script reads, in the framing
+`docs/EVENTS.md` describes: each prompt, thinking block, reply and tool
+call whole, a tool's result as an update of its call. It takes an agent's
+name, a session id or a transcript's path. `--follow` polls every 250ms,
+and for a Claude agent sends its closing reply from the Stop hook before
+the transcript holds it (a provisional say, updated when the copy lands).
+`--until <byte>` ends a window; `--requests` adds what each model call was
+sent. `agent logs` is the same events for a person.
 
 ## Other Hosts
 

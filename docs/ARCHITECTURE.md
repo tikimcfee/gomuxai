@@ -180,8 +180,8 @@ Notes on each:
   --now` interrupts a busy agent. It uses the binary's full path, since the
   agent's shell may not have it on `PATH`.
 - **Pre-allowed commands** (`agentSafeCommands`): `send`, `deliver`, `list`,
-  `status`, `wait`, `events`, `capture`, `logs`, `state get`, `history`,
-  `friction add`, `friction +1`, `friction list`, `friction show`. Each becomes two rules, `agent <cmd>` and
+  `status`, `wait`, `events`, `capture`, `logs`, `sessions`, `transcript`,
+  `state get`, `history`, `friction add`, `friction +1`, `friction list`, `friction show`. Each becomes two rules, `agent <cmd>` and
   `<full binary path> <cmd>`, for that Claude session only. Left out on
   purpose: `approve`, `deny`, `keys`, and `send --force` (one agent answering
   another's prompts), `spawn` and `cleanup` (a person approves each), and
@@ -618,6 +618,31 @@ asks for it directly. The terminal log is the raw pipe-pane stream, cleaned by
 `util.TerminalLines` (escapes dropped, cursor moves turned into spaces and
 line breaks, redraws collapsed). Logs are per host; `logs name@host` is
 refused in favor of `capture`.
+
+**`agent transcript`** (`internal/cli/transcript.go`) is the stream for
+displays: one session's events, whole, as [`docs/EVENTS.md`](EVENTS.md)
+frames them. It resolves a workgroup agent's name (the last transcript in
+its list), a session id or a unique start of one, or a path, by the same
+scan and `discovery.Resolve` as `agent sessions`, whose Session is the
+stream's `session` line. The initial read stops at the size that Session
+recorded, so the line describes the end of that read. Every read parses
+from byte 0, through `Finals`: `--from` and `--until` only filter what is
+written, by each event's `at`, so a window's events are numbered, turned
+and merged as a whole read's. (`--from` is checked as `ResumeAfter`
+checks it, a line's start with its line whole, but not parsed with it,
+since `Finals` must see the skipped lines' final replies.) `--follow`
+polls the open file every 250ms (there is no file watcher in the repo; a
+poll costs one `fstat`) and feeds the parser what was appended, keeping a
+line not yet whole for the next poll; a file that shrank is an error.
+Every 2s it probes the transcript (and, for a subagent, the sessions above
+it) and resolves it again, and writes a new `session` line when anything
+but `size`, `mtime` and `status_at` changed. For a Claude agent of this
+store whose `_transcript` is the file, each new `_result` (its `updated_at`
+newer than the last one seen, and not older than the current turn's first
+event) is offered to `Finals.Provisional` for the current turn, at the
+parser's `Pos`: where the reply's line will land. SIGINT, SIGTERM and
+SIGPIPE are caught (`signal.NotifyContext`), so a closed pipe fails a write
+with `EPIPE` instead of killing the process, and the command exits 0.
 
 ## Export
 

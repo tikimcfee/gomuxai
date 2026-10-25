@@ -158,7 +158,7 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 // agents: the user approves each one. So are friction accept and resolve,
 // which are for the people working on the tool.
 var agentSafeCommands = []string{
-	"send", "deliver", "list", "status", "wait", "events", "capture", "logs", "sessions", "state get", "history",
+	"send", "deliver", "list", "status", "wait", "events", "capture", "logs", "sessions", "transcript", "state get", "history",
 	"friction add", "friction +1", "friction list", "friction show",
 }
 
