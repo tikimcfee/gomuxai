@@ -51,6 +51,7 @@ installed one:
 | `internal/backend` | Backend interfaces (`Backend`, `Provider`, and the optional capability interfaces), the registry, and custom JSON backends (`generic.go`). |
 | `internal/backend/namedagents` | The built-in backends: `claude`, `agy`, `aider`, and the hook plumbing they share (`hooks.go`). |
 | `internal/backend/types` | `Status`, `HookReport`, `PermissionResponse`, shared by backends and service. |
+| `internal/allowcmd` | Decides whether a shell command line is one plain run of a given binary with a safe subcommand (parsed with `mvdan.cc/sh`), for the PreToolUse approval. |
 | `internal/tmux` | `TmuxOps` over `gotmux`: sessions, send keys, capture, pipe-pane. |
 | `internal/natsbus` | The bus: contract (subjects, ops, wire types), identity and trust, the daemon's server config, RPC server and client, status events and `Wait`. `natstest` starts throwaway NATS servers for tests. |
 | `internal/transcript` | Readers for Claude Code and agy session transcripts, into one `Session`/`Turn`/`Step` shape. |
@@ -123,6 +124,7 @@ applies each one it finds:
 | `PermissionResponder` | yes | yes | — |
 | `TranscriptProvider` | `transcript.Claude` | `transcript.Agy` | — |
 | `HookDeliverer`: held messages from a hook's output | `Stop` → `additionalContext` | — (being probed) | — |
+| `HookAllower`: approves a safe `agent` command from a hook | `PreToolUse` → `permissionDecision: allow` | — | — |
 
 Notes on each:
 
@@ -152,7 +154,32 @@ Notes on each:
   purpose: `approve`, `deny`, `keys`, and `send --force` (one agent answering
   another's prompts), `spawn` and `cleanup` (a person approves each), and
   `friction accept`/`resolve` (for the people working on the tool). Rules
-  match the literal command text, so `$A send` still prompts.
+  match the literal command text, so `./bin/agent send` or `agent -q send`
+  would still prompt; the PreToolUse hook covers those (next item).
+- **The PreToolUse approval** (`AgentService.hookApproval`, `allowcmd`):
+  for a Bash call, the hook prints Claude's
+  `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow",...}}`
+  when the command is exactly one run of this binary with a subcommand in
+  `agentSafeCommands` (the same list the rules come from), and nothing
+  otherwise, so the normal permission flow decides. The command is parsed
+  with `mvdan.cc/sh/v3/syntax` (bash dialect). The program may be the bare
+  name (found on the hook's `PATH`), an absolute path, or a path relative
+  to the payload's `cwd`; it must resolve, symlinks followed, to
+  `Config.AgentBinary`. Only `-q`/`--quiet` may come before the
+  subcommand. Refused: more than one command, pipes, `&&`/`||`, `&`, `!`,
+  subshells and compound commands, assignments (`A=1 agent ...`), `env`
+  and other wrappers, any `$` expansion or substitution (so `$A send`
+  still prompts: the hook can't see the shell's variables), globs, braces,
+  tildes, backslashes outside double quotes, comments (zsh without
+  `interactive_comments` reads `#` as text), and every redirection except
+  `>/dev/null`, `2>/dev/null`, `&>/dev/null` (and `>>`), `2>&1`, and
+  `>&2`. Unquoted text is limited to `[A-Za-z0-9_@%+=:,./-]` with no
+  leading `=` (zsh's `=cmd`), so a word means the same in bash and zsh;
+  anything else must be quoted. It never denies. Checked live (Claude Code
+  2.1.310): the allow skips the prompt in default mode, and a settings
+  `deny` rule still wins over it. The decision is made before the status
+  report is recorded, so a failed report doesn't lose it; an unknown agent
+  or stale spawn id gets nothing.
 - **Trust prompts** are answered only with `--trust-workspace`, since
   trusting a repo also enables its own hooks and settings. Spawn polls the
   screen up to 8 times, 500ms apart, and goes on if no prompt shows.
@@ -404,7 +431,7 @@ What the code maps them to:
 |---|---|---|
 | `SessionStart` | idle | clears `_result`, except after `compact` |
 | `UserPromptSubmit` | processing | clears `_result` |
-| `PreToolUse`, `PostToolUse` | processing | detail `Tool: <most telling input>`; `PostToolUse` ends the call's pending prompt |
+| `PreToolUse`, `PostToolUse` | processing | detail `Tool: <most telling input>`; `PostToolUse` ends the call's pending prompt. `PreToolUse` for Bash carries the command and `cwd`, and prints an allow for a safe `agent` command (see [Spawning](#spawning-an-agent)) |
 | `PostToolUseFailure` | processing | detail `failed: ...`; ends the call's pending prompt |
 | `PermissionRequest` | waiting | detail `permission: ...` (plus `(from the <type> agent)` for a subagent's); stores `_tool_input` and a pending prompt |
 | `PreCompact` | processing | |
@@ -966,6 +993,11 @@ make lint          # golangci-lint
   held, e.g. while an agent sits at a prompt nobody answers.
 - Custom backends aren't remembered after spawn: pass `--backend-config`
   again.
+- The PreToolUse approval finds a bare `agent` on the hook's `PATH`, which
+  can differ from the agent shell's if its profile changes `PATH`, aliases
+  `agent`, or defines a function by that name; the `Bash(agent ...:*)`
+  rules already trust the name the same way. Commands through a variable
+  (`$A send`) still prompt.
 - `agent capture` reads managed agents only, not raw sessions.
 - `approve`/`deny` can still hit a prompt answered in the milliseconds
   between the screen check and the keypress.

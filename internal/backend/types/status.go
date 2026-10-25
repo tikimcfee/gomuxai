@@ -59,6 +59,12 @@ type HookReport struct {
 	CallKey string
 	// Agent is the subagent the event came from ("" for the main agent).
 	Agent string
+
+	// Command is the shell command line a tool call is about to run, on an
+	// event whose output can approve it (Claude's PreToolUse for Bash), and
+	// Cwd the directory it runs in.
+	Command string
+	Cwd     string
 }
 
 // PromptChange is how a hook event changes the pending permission prompts.

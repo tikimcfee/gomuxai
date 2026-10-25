@@ -69,6 +69,15 @@ type HookDeliverer interface {
 	DeliveryOutput(messages []string) []byte
 }
 
+// HookAllower is implemented by hook backends whose hook can approve a
+// shell command before it runs (HookReport.Command), skipping the
+// permission prompt.
+type HookAllower interface {
+	// AllowOutput is what that hook prints to approve the command; reason
+	// says why, for the person.
+	AllowOutput(reason string) []byte
+}
+
 // InputReader is implemented by backends that can read the CLI's input line
 // off the screen, so held messages are never typed into a person's
 // half-written input.

@@ -69,8 +69,18 @@ Spawn pre-allows these for the agent's session: `send`, `deliver`, `list`,
 
 Everything else prompts the person, on purpose: `spawn` and `cleanup` start
 and stop agents; `approve`, `deny`, `keys`, and `send --force` would let one
-agent answer another's prompts; `state set` isn't on the list either. The rules match `agent <cmd>` and the binary's full path,
-not a variable: `$A send ...` still prompts.
+agent answer another's prompts; `state set` isn't on the list either.
+
+Two things allow them. Spawn adds rules for `agent <cmd>` and the
+binary's full path, and gomuxai's own PreToolUse hook approves the same
+commands however the binary is reached: `./bin/agent status`, another
+relative path, a symlink, or `agent -q list`. The hook approves only one
+plain run of this binary with a safe subcommand. A chain (`;`, `&&`, a
+pipe), a variable or `$(...)`, an `env` or `A=1` prefix, a glob, or a
+redirection other than `2>&1` and `>/dev/null` gets the normal prompt, and
+so does `$A send ...`: the hook can't see the shell's variables, so run
+the binary by name or path. The hook never denies anything, and a
+settings `deny` rule still wins over it.
 
 ## The Core Loop
 
@@ -419,6 +429,9 @@ Known gaps; `agent friction list` has the rest.
   says so); `cleanup` deletes them.
 - `queue` needs `agent watch` running on this host, except for Claude
   agents.
+- Pre-allowed commands still prompt when run through a variable
+  (`$A send`), chained, or piped; see "What a spawned Claude agent may run
+  without asking".
 - Bus replies are unsigned (see trust, above).
 - `export` shows the last reported status: an interrupted permission
   prompt stays `waiting`, and a crashed CLI keeps its last status, until

@@ -62,6 +62,7 @@ type claudeHookPayload struct {
 	Event                string          `json:"hook_event_name"`
 	SessionID            string          `json:"session_id"`
 	TranscriptPath       string          `json:"transcript_path"`
+	Cwd                  string          `json:"cwd"`
 	Source               string          `json:"source"`
 	ToolName             string          `json:"tool_name"`
 	ToolInput            json.RawMessage `json:"tool_input"`
@@ -125,6 +126,13 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 	case "PreToolUse":
 		r.Status = types.StatusProcessing
 		r.Detail = claudeToolSummary(p.ToolName, p.ToolInput)
+		if p.ToolName == "Bash" {
+			var in struct {
+				Command string `json:"command"`
+			}
+			_ = json.Unmarshal(p.ToolInput, &in)
+			r.Command, r.Cwd = in.Command, p.Cwd
+		}
 	case "PostToolUse":
 		r.Status = types.StatusProcessing
 		r.Detail = claudeToolSummary(p.ToolName, p.ToolInput)
@@ -209,6 +217,19 @@ func (b *ClaudeBackend) DeliveryOutput(messages []string) []byte {
 		"hookSpecificOutput": map[string]string{
 			"hookEventName":     "Stop",
 			"additionalContext": head + "\n\n" + strings.Join(messages, "\n\n"),
+		},
+	})
+	return out
+}
+
+// AllowOutput approves PreToolUse's tool call: Claude runs it without a
+// permission prompt, and shows reason to the person, not the model.
+func (b *ClaudeBackend) AllowOutput(reason string) []byte {
+	out, _ := json.Marshal(map[string]any{
+		"hookSpecificOutput": map[string]string{
+			"hookEventName":            "PreToolUse",
+			"permissionDecision":       "allow",
+			"permissionDecisionReason": reason,
 		},
 	})
 	return out

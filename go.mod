@@ -12,6 +12,7 @@ require (
 	github.com/spf13/cobra v1.10.1
 	golang.org/x/term v0.40.0
 	modernc.org/sqlite v1.40.1
+	mvdan.cc/sh/v3 v3.13.0
 )
 
 require (

@@ -538,3 +538,28 @@ func TestClaudeDelivery(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeAllow(t *testing.T) {
+	b := namedagents.NewClaudeBackend()
+	r, _, err := b.ParseHookEvent("", []byte(`{"hook_event_name":"PreToolUse","cwd":"/work","tool_name":"Bash","tool_input":{"command":"./bin/agent list","description":"List agents"}}`))
+	if err != nil || r.Command != "./bin/agent list" || r.Cwd != "/work" {
+		t.Errorf("PreToolUse Bash: Command %q, Cwd %q (%v), want the command and cwd", r.Command, r.Cwd, err)
+	}
+	for _, payload := range []string{
+		`{"hook_event_name":"PreToolUse","cwd":"/work","tool_name":"Read","tool_input":{"command":"./bin/agent list"}}`,
+		`{"hook_event_name":"PermissionRequest","cwd":"/work","tool_name":"Bash","tool_input":{"command":"./bin/agent list"}}`,
+	} {
+		if r, _, _ := b.ParseHookEvent("", []byte(payload)); r.Command != "" {
+			t.Errorf("%s: Command %q, want none (only PreToolUse for Bash can approve)", payload, r.Command)
+		}
+	}
+
+	out := b.AllowOutput("safe")
+	var got map[string]map[string]string
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("AllowOutput = %s: %v", out, err)
+	}
+	if h := got["hookSpecificOutput"]; len(got) != 1 || h["hookEventName"] != "PreToolUse" || h["permissionDecision"] != "allow" || h["permissionDecisionReason"] != "safe" {
+		t.Errorf("AllowOutput = %s, want a PreToolUse allow with the reason", out)
+	}
+}

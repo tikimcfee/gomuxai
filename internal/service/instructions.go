@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tikimcfee/gomuxai/internal/allowcmd"
+	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
@@ -27,7 +29,9 @@ func (s *AgentService) agentInstructions(name, spawnedBy string) string {
 You are agent %q on host %q, started by %s through gomuxai. Other AI agents
 may be running alongside you, on this host or others. You coordinate with them
 through the `+"`agent`"+` command. Run it by its full path, %s, since your
-shell's PATH may not include it:
+shell's PATH may not include it. These commands run without a permission
+prompt when each is one plain command: not through a shell variable
+($A send ...), and not chained or piped:
 
     agent list                         # agents on this host; --host H for another host
     agent send NAME "message"          # message an agent (NAME@HOST on another host)
@@ -140,6 +144,24 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 var agentSafeCommands = []string{
 	"send", "deliver", "list", "status", "wait", "events", "capture", "logs", "state get", "history",
 	"friction add", "friction +1", "friction list", "friction show",
+}
+
+// hookApproval is the hook output that approves hr's shell command without
+// a prompt, or nil. It approves what the allow rules can't match, since they
+// match the command's text: this binary by any path or symlink, or with -q
+// before the subcommand. Only one plain run of it with a subcommand in
+// agentSafeCommands qualifies (see allowcmd); anything else is left to the
+// normal permission flow, so nothing is ever denied here.
+func (s *AgentService) hookApproval(provider backend.Provider, hr backend.HookReport) []byte {
+	ha, ok := provider.(backend.HookAllower)
+	if !ok || hr.Command == "" || s.cfg.AgentBinary == "" {
+		return nil
+	}
+	c := allowcmd.Checker{Program: s.cfg.AgentBinary, Subcommands: agentSafeCommands}
+	if c.Check(hr.Command, hr.Cwd) != nil {
+		return nil
+	}
+	return ha.AllowOutput("gomuxai: a safe agent command, pre-allowed for spawned agents")
 }
 
 // allowedCommandPrefixes are agentSafeCommands as the agent may type them:

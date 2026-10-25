@@ -302,6 +302,8 @@ func (s *AgentService) reportHook(ctx context.Context, name, spawnID, event stri
 	if s.backgroundWorkRunning(ctx, name, hr) {
 		return nil, nil
 	}
+	// Decided first, so a failure to record the report can't cost it.
+	approval := s.hookApproval(provider, hr)
 	r := StatusReport{
 		Status:    fromBackendStatus(hr.Status),
 		Event:     hr.Event,
@@ -322,7 +324,7 @@ func (s *AgentService) reportHook(ctx context.Context, name, spawnID, event stri
 	if hd, ok := provider.(backend.HookDeliverer); ok && deliver && hd.CanDeliver(hr) {
 		out, err = s.reportDelivering(ctx, name, r, hd)
 	} else {
-		err = s.Report(ctx, name, r)
+		out, err = approval, s.Report(ctx, name, r)
 	}
 	if err != nil || hr.Transcript == "" {
 		return out, err
