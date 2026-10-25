@@ -1,25 +1,23 @@
 // Package transcript reads the transcripts agent CLIs keep of their own
 // sessions (Claude Code's session JSONL, agy's transcript_full.jsonl) into
-// one harness-neutral shape: a Session of Turns, each a user prompt and the
-// thinking, replies and tool calls that followed it, in the order they
-// happened. Session.Events flattens it into the event list agent logs prints.
+// one harness-neutral stream of events (events.go; docs/EVENTS.md is the
+// contract): a prompt, a thinking block, a reply, a tool call and its
+// result, a harness record, each where it happened and tagged with the
+// turn it belongs to.
 //
-// Ported from glyph3d-rs native/src/agent_transcript/ (types.rs: AgentSession,
-// AgentTurn, ToolCallRecord, linearize_events; claude.rs: the two-pass
-// tool_use/tool_result pairing, user_prompt_text, metadata harvest;
-// antigravity.rs: the step parser; agent_transcript.rs: format detection),
-// which replicates glyph3d-js packages/glyph3d-core/src/collections/
-// sessionAdapter.js. The tail-window read follows glyph3d-js cli/sessions.go.
-// Left out: file actions, diff hunks, Kimi, staging and discovery.
+// A Reader's Parser reads a transcript line by line, so the same code
+// reads a whole file, a window of one, and the lines a live session
+// appends. The formats are the CLIs' internal files, not documented APIs:
+// a line that isn't a JSON object is skipped and counted
+// (Parser.Skipped), and a record of an unknown shape is ignored.
 //
-// The formats are the CLIs' internal files, not documented APIs: a line
-// that isn't a JSON object is skipped and counted (Session.Skipped), and a
-// record of an unknown shape is ignored.
+// The behaviour is ported from glyph3d-rs native/src/agent_transcript/
+// and glyph3d-js packages/glyph3d-core/src/collections/sessionAdapter.js,
+// and checked against the conformance corpus in testdata/corpus.
 package transcript
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,192 +26,6 @@ import (
 	"strings"
 	"time"
 )
-
-// A Reader parses one harness's transcript format.
-type Reader interface {
-	// Harness names the format, e.g. "claude".
-	Harness() string
-	// Parse reads whole lines of a transcript: all of it, or a window
-	// that starts on a line boundary.
-	Parse(data []byte) *Session
-}
-
-// Session is one transcript: what it says about the session, and its turns.
-type Session struct {
-	Harness   string    `json:"harness"`
-	Path      string    `json:"path,omitempty"`
-	SessionID string    `json:"session_id,omitempty"`
-	CWD       string    `json:"cwd,omitempty"`
-	Title     string    `json:"title,omitempty"`
-	Model     string    `json:"model,omitempty"`
-	Version   string    `json:"version,omitempty"`
-	GitBranch string    `json:"git_branch,omitempty"`
-	First     time.Time `json:"first,omitzero"`
-	Last      time.Time `json:"last,omitzero"`
-	// Lines counts the non-blank lines read; Skipped, those that weren't
-	// JSON objects.
-	Lines   int `json:"lines"`
-	Skipped int `json:"skipped"`
-	// Partial is set when only the end of the file was read.
-	Partial bool   `json:"partial,omitempty"`
-	Turns   []Turn `json:"-"`
-}
-
-// Turn is a user prompt and what the agent did about it. The first turn of
-// a transcript (or of a window into one) can lack a prompt.
-type Turn struct {
-	Prompt string
-	Time   time.Time
-	Steps  []Step
-}
-
-// Step is one thing the agent did in a turn: exactly one of Thinking, Reply
-// or Tool is set.
-type Step struct {
-	Time     time.Time
-	Thinking string
-	Reply    string
-	Tool     *ToolCall
-}
-
-// Tool call result statuses.
-const (
-	StatusOK      = "ok"
-	StatusError   = "error"
-	StatusRunning = "running" // moved to the background (agy)
-	// StatusNone: the transcript holds no result yet, because the call is
-	// still running or the turn was interrupted.
-	StatusNone = "none"
-)
-
-// ToolCall is a tool the agent called, with its result.
-type ToolCall struct {
-	ID     string          `json:"id,omitempty"`
-	Name   string          `json:"name"`
-	Input  json.RawMessage `json:"input,omitempty"`
-	Status string          `json:"status"`
-	Output string          `json:"output,omitempty"`
-}
-
-// Detail returns what the call is about, from the tool table
-// (DescribeTool): its file, else its most telling input (command,
-// pattern, ...), or "". A path under cwd is made relative to it.
-func (c *ToolCall) Detail(cwd string) string {
-	s := DescribeTool(c.Name, c.Input, cwd)
-	if s.Target != "" {
-		return s.Target
-	}
-	return s.Detail
-}
-
-// Event kinds.
-const (
-	KindUser     = "user"
-	KindThinking = "think"
-	KindReply    = "reply"
-	KindTool     = "tool"
-)
-
-// Event is one step of a session, flattened: a prompt, a thought, a reply,
-// or a tool call.
-type Event struct {
-	Turn int       `json:"turn"`
-	Time time.Time `json:"time,omitzero"`
-	Kind string    `json:"kind"`
-	Text string    `json:"text,omitempty"`
-	Tool *ToolCall `json:"tool,omitempty"`
-}
-
-// Events returns the session's events in the order they happened.
-func (s *Session) Events() []Event {
-	var events []Event
-	for i, t := range s.Turns {
-		if t.Prompt != "" {
-			events = append(events, Event{Turn: i, Time: t.Time, Kind: KindUser, Text: t.Prompt})
-		}
-		for _, st := range t.Steps {
-			e := Event{Turn: i, Time: st.Time}
-			switch {
-			case st.Tool != nil:
-				e.Kind, e.Tool = KindTool, st.Tool
-			case st.Thinking != "":
-				e.Kind, e.Text = KindThinking, st.Thinking
-			default:
-				e.Kind, e.Text = KindReply, st.Reply
-			}
-			events = append(events, e)
-		}
-	}
-	return events
-}
-
-// turns builds a session's turn list as a parser walks the transcript.
-type turns struct {
-	s *Session
-}
-
-// prompt starts a new turn, unless the current one is still empty.
-func (b turns) prompt(text string, at time.Time) {
-	if n := len(b.s.Turns); n == 0 || b.s.Turns[n-1].Prompt != "" || len(b.s.Turns[n-1].Steps) > 0 {
-		b.s.Turns = append(b.s.Turns, Turn{})
-	}
-	t := &b.s.Turns[len(b.s.Turns)-1]
-	t.Prompt, t.Time = text, at
-}
-
-// step appends a step to the current turn, starting one if there is none.
-func (b turns) step(st Step) {
-	if len(b.s.Turns) == 0 {
-		b.s.Turns = append(b.s.Turns, Turn{Time: st.Time})
-	}
-	t := &b.s.Turns[len(b.s.Turns)-1]
-	if t.Time.IsZero() {
-		t.Time = st.Time
-	}
-	t.Steps = append(t.Steps, st)
-}
-
-// seen widens the session's time span to include at.
-func (s *Session) seen(at time.Time) {
-	if at.IsZero() {
-		return
-	}
-	if s.First.IsZero() {
-		s.First = at
-	}
-	s.Last = at
-}
-
-// fillMeta copies into s the metadata it lacks from other.
-func (s *Session) fillMeta(other *Session) {
-	for _, f := range []struct{ dst, src *string }{
-		{&s.SessionID, &other.SessionID}, {&s.CWD, &other.CWD}, {&s.Title, &other.Title},
-		{&s.Model, &other.Model}, {&s.Version, &other.Version}, {&s.GitBranch, &other.GitBranch},
-	} {
-		if *f.dst == "" {
-			*f.dst = *f.src
-		}
-	}
-	if !other.First.IsZero() {
-		s.First = other.First
-	}
-}
-
-// eachLine calls decode with each non-blank line of data that looks like a
-// JSON object, and counts in s the lines read and those skipped: the ones
-// that don't, and the ones decode returns false for.
-func eachLine(s *Session, data []byte, decode func(line []byte) bool) {
-	for line := range bytes.SplitSeq(data, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		s.Lines++
-		if line[0] != '{' || !decode(line) {
-			s.Skipped++
-		}
-	}
-}
 
 // parseTime reads an RFC 3339 timestamp, or returns the zero time.
 func parseTime(s string) time.Time {
@@ -244,20 +56,35 @@ func Detect(data []byte) Reader {
 // object: not a format any Reader knows.
 var ErrUnparseable = errors.New("unparseable transcript")
 
-// Window sizes ReadFile reads: the first tail window, and the head it
-// reads for metadata when the tail doesn't reach the start. Transcripts run
-// to tens of megabytes, much of them tool output and request copies.
+// Read sizes for ReadFile: how much it reads at a time, and how much of
+// the head it reads to detect the format.
 const (
-	tailChunk = 1 << 20
+	readChunk = 1 << 20
 	headChunk = 256 << 10
 )
 
-// ReadFile reads the transcript at path with r. It reads the end of the
-// file first, doubling the window until it holds at least minEvents
-// events or the whole file, so the last events of a large transcript cost
-// a fraction of it. A trailing line still being written is left out. A nil
-// r detects the format from the file's first lines.
-func ReadFile(path string, r Reader, minEvents int) (*Session, error) {
+// File is a transcript ReadFile read.
+type File struct {
+	Session Session
+	// Events is the end of the stream the transcript makes, updates
+	// included: its last events, as Latest counts them, and the updates to
+	// them.
+	Events []Event
+	// Partial is set when the stream had more events than Events keeps.
+	Partial bool
+	// Lines counts the non-blank lines read; Skipped, those that weren't
+	// records of the format.
+	Lines   int
+	Skipped int
+}
+
+// ReadFile reads the transcript at path with r and keeps the last
+// minEvents events it makes (counted as Latest counts them), with their
+// updates. It parses the whole file, since what a line means depends on
+// the lines before it, but holds only those events. A last line with no
+// newline yet is left out. A nil r detects the format from the file's
+// first lines.
+func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -269,73 +96,111 @@ func ReadFile(path string, r Reader, minEvents int) (*Session, error) {
 	}
 	size := info.Size()
 	if r == nil {
-		head, err := readLines(f, 0, min(headChunk, size))
-		if err != nil {
-			return nil, err
+		head := make([]byte, min(headChunk, size))
+		n, err := f.ReadAt(head, 0)
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("reading transcript: %w", err)
 		}
-		r = Detect(head)
+		r = Detect(head[:n])
 	}
 
-	var s *Session
-	off := size
-	for chunk := int64(tailChunk); off > 0; chunk *= 2 {
-		off = max(size-chunk, 0)
-		data, err := readLines(f, off, size)
-		if err != nil {
-			return nil, err
+	var opts Options
+	if r.Harness() == "claude" {
+		opts.Turns = ClaudeSubagentTurns(path)
+	}
+	p := r.NewParser(opts)
+	t := newTail(minEvents)
+	// pending holds the bytes read but not yet parsed: a line not yet
+	// whole. It starts at p.Pos().At.
+	var pending []byte
+	buf := make([]byte, readChunk)
+	for off := int64(0); off < size; {
+		n, err := f.ReadAt(buf[:min(int64(len(buf)), size-off)], off)
+		off += int64(n)
+		pending = append(pending, buf[:n]...)
+		start := p.Pos().At
+		for _, e := range p.Feed(pending) {
+			t.push(e)
 		}
-		s = r.Parse(data)
-		if len(s.Events()) >= minEvents {
+		pending = append(pending[:0], pending[p.Pos().At-start:]...)
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("reading transcript: %w", err)
+		}
+		if n == 0 {
 			break
 		}
 	}
-	if s == nil {
-		s = r.Parse(nil)
+	if p.Lines > 0 && p.Skipped == p.Lines {
+		return nil, fmt.Errorf("%w: none of its %d lines is a JSON object", ErrUnparseable, p.Lines)
 	}
-	if s.Lines > 0 && s.Skipped == s.Lines {
-		return nil, fmt.Errorf("%w: none of its %d lines is a JSON object", ErrUnparseable, s.Lines)
+
+	file := &File{Session: p.Session(), Events: t.events(), Partial: t.cut, Lines: p.Lines, Skipped: p.Skipped}
+	file.Session.file(path, size)
+	return file, nil
+}
+
+// tail keeps the end of a stream: the events of the last n ids it adds,
+// and the updates to them.
+type tail struct {
+	n      int
+	stream []Event
+	// added lists the kept ids, oldest first; kept holds them.
+	added []string
+	kept  map[string]bool
+	// cut is set once an id was dropped.
+	cut bool
+}
+
+func newTail(n int) *tail {
+	return &tail{n: max(n, 0), kept: map[string]bool{}}
+}
+
+func (t *tail) push(e Event) {
+	if !t.kept[e.ID] {
+		if e.Op != OpAdd {
+			return // an update of a dropped event
+		}
+		t.kept[e.ID] = true
+		t.added = append(t.added, e.ID)
 	}
-	if off > 0 {
-		s.Partial = true
-		if head, err := readLines(f, 0, min(headChunk, size)); err == nil {
-			s.fillMeta(r.Parse(head))
+	t.stream = append(t.stream, e)
+	if len(t.added) > t.n {
+		delete(t.kept, t.added[0])
+		t.added = t.added[1:]
+		t.cut = true
+	}
+	if len(t.stream) > 2*t.n+1024 {
+		t.stream = t.events()
+	}
+}
+
+// events returns the kept events, in stream order.
+func (t *tail) events() []Event {
+	var out []Event
+	for _, e := range t.stream {
+		if t.kept[e.ID] {
+			out = append(out, e)
 		}
 	}
-	s.Path = path
+	return out
+}
+
+// file records in s the transcript file it was read from, and what the
+// file's name and neighbours say: the session id, if no record named it,
+// and the call that started a Claude subagent.
+func (s *Session) file(path string, size int64) {
+	s.Path, s.Size = path, size
 	if s.SessionID == "" {
 		s.SessionID = sessionIDFromPath(path)
 	}
-	return s, nil
-}
-
-// readLines returns the whole lines in f's bytes [off, end): a window that
-// starts mid-file drops its first, partial line, and the last line is kept
-// only if complete (newline-terminated, or valid JSON).
-func readLines(f *os.File, off, end int64) ([]byte, error) {
-	// A window that starts mid-file reads one byte early: a newline there
-	// means the window already starts on a line.
-	start := max(off-1, 0)
-	buf := make([]byte, end-start)
-	n, err := f.ReadAt(buf, start)
-	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("reading transcript: %w", err)
+	if s.ParentSession != nil && s.ParentSession.ToolID == "" {
+		s.ParentSession.ToolID = claudeSubagentTool(path)
 	}
-	buf = buf[:n]
-	if off > 0 {
-		nl := bytes.IndexByte(buf, '\n')
-		if nl < 0 {
-			return nil, nil
-		}
-		buf = buf[nl+1:]
-	}
-	if nl := bytes.LastIndexByte(buf, '\n'); nl < len(buf)-1 && !json.Valid(bytes.TrimSpace(buf[nl+1:])) {
-		buf = buf[:nl+1]
-	}
-	return buf, nil
 }
 
 // sessionIDFromPath names a session after its transcript: Claude Code's is
-// <session id>.jsonl; agy's lives in brain/<conversation id>/.system_generated/logs.
+// <session id>.jsonl (a subagent's, agent-<agent id>.jsonl); agy's lives in
+// brain/<conversation id>/.system_generated/logs.
 func sessionIDFromPath(path string) string {
 	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	if !strings.HasPrefix(stem, "transcript") {

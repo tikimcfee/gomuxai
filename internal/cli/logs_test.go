@@ -118,9 +118,9 @@ func TestLogs_Transcript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `12:04:31 user  run the tests
-12:04:33 tool  Bash: go test ./... && go vet ./... → ok (3 lines)
-12:05:02 reply All tests pass.…
+	want := `12:04:31 prompt run the tests
+12:04:33 tool   Bash: go test ./... && go vet ./... → ok (3 lines)
+12:05:02 say    All tests pass.…
 `
 	if out != want {
 		t.Errorf("logs:\n%s\nwant:\n%s", out, want)
@@ -131,22 +131,36 @@ func TestLogs_Transcript(t *testing.T) {
 
 	logsLines, logsFull = 1, true
 	out, _ = stdout(t, func() error { return runLogs(logsCmd, []string{"worker"}) })
-	if want := "12:05:02 reply All tests pass.\n               Nothing else to do.\n"; out != want {
+	if want := "12:05:02 say    All tests pass.\n                Nothing else to do.\n"; out != want {
 		t.Errorf("--lines 1 --full:\n%q\nwant:\n%q", out, want)
 	}
 
+	// --json: the stream, a session line then the events, the tool's
+	// result an update of its call.
 	logsLines, logsFull, logsJSON = 50, false, true
 	out, _ = stdout(t, func() error { return runLogs(logsCmd, []string{"worker"}) })
-	var sessions []struct {
-		Harness, Path, CWD string
-		Events             []transcript.Event
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	var session struct{ Type, Harness, Path, CWD, Project string }
+	if len(lines) != 5 || json.Unmarshal([]byte(lines[0]), &session) != nil || session.Type != "session" ||
+		session.Harness != "claude" || session.Path != path || session.CWD != "/home/user/proj" || session.Project != "proj" {
+		t.Fatalf("--json:\n%s", out)
 	}
-	if err := json.Unmarshal([]byte(out), &sessions); err != nil {
-		t.Fatalf("--json: %v\n%s", err, out)
+	var ops []string
+	for _, line := range lines[1:] {
+		var e struct {
+			Type string
+			transcript.Event
+		}
+		if err := json.Unmarshal([]byte(line), &e); err != nil || e.Type != "event" {
+			t.Fatalf("--json line %s: %v", line, err)
+		}
+		ops = append(ops, e.Op+" "+e.Kind)
+		if e.Op == transcript.OpUpdate && e.Tool.Result.Output != "ok  a\nok  b\nok  c" {
+			t.Errorf("--json tool result: %+v", e.Tool.Result)
+		}
 	}
-	if len(sessions) != 1 || sessions[0].Harness != "claude" || sessions[0].Path != path || sessions[0].CWD != "/home/user/proj" ||
-		len(sessions[0].Events) != 3 || sessions[0].Events[1].Tool.Output != "ok  a\nok  b\nok  c" {
-		t.Errorf("--json:\n%s", out)
+	if want := []string{"add prompt", "add tool", "update tool", "add say"}; !slices.Equal(ops, want) {
+		t.Errorf("--json events %q, want %q", ops, want)
 	}
 	if !strings.Contains(out, `"go test ./... && go vet ./..."`) {
 		t.Errorf("--json escapes the command:\n%s", out)
@@ -172,9 +186,9 @@ func TestLogs_AfterCleanupAndAcrossSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `12:05:02 reply All tests pass.…
+	want := `12:05:02 say    All tests pass.…
 --- session sess-2 (claude)
-13:00:00 user  again
+13:00:00 prompt again
 `
 	if out != want {
 		t.Errorf("logs:\n%s\nwant:\n%s", out, want)
@@ -241,11 +255,20 @@ func TestFormatEvent(t *testing.T) {
 	old := time.Local
 	time.Local = time.UTC
 	defer func() { time.Local = old }()
-	at := time.Date(2026, 8, 1, 9, 5, 7, 0, time.UTC)
+	const at = "2026-08-01T09:05:07.000Z"
 	tool := func(status, output string) transcript.Event {
-		return transcript.Event{Time: at, Kind: transcript.KindTool, Tool: &transcript.ToolCall{
-			Name: "Bash", Input: json.RawMessage(`{"command":"make\nlint"}`), Status: status, Output: output,
+		input := json.RawMessage(`{"command":"make\nlint"}`)
+		return transcript.Event{TS: at, Kind: transcript.KindTool, Tool: &transcript.ToolEvent{
+			Name: "Bash", Input: input, Result: &transcript.ToolResult{Status: status, Output: output},
+			ToolSummary: transcript.SummarizeTool("Bash", input, nil, ""),
 		}}
+	}
+	edit := transcript.Event{TS: at, Kind: transcript.KindTool, Tool: &transcript.ToolEvent{
+		Name: "Edit", Result: &transcript.ToolResult{Status: transcript.StatusOK},
+		ToolSummary: transcript.ToolSummary{Action: "edit", Target: "src/a.go", Meta: json.RawMessage(`{"added":3,"removed":1}`)},
+	}}
+	system := func(subtype, text, data string) transcript.Event {
+		return transcript.Event{TS: at, Kind: transcript.KindSystem, System: &transcript.SystemEvent{Subtype: subtype, Text: text, Data: json.RawMessage(data)}}
 	}
 	long := strings.Repeat("word ", 40)
 	for _, tt := range []struct {
@@ -253,31 +276,42 @@ func TestFormatEvent(t *testing.T) {
 		full bool
 		want string
 	}{
-		{transcript.Event{Kind: transcript.KindUser, Text: "hi"}, false, "--:--:-- user  hi"},
-		{transcript.Event{Time: at, Kind: transcript.KindReply, Text: long}, false, "09:05:07 reply " + strings.TrimSpace(long[:119]) + "…"},
-		{tool("ok", ""), false, "09:05:07 tool  Bash: make… → ok"},
-		{tool("ok", "1 issue\n"), false, "09:05:07 tool  Bash: make… → ok: 1 issue"},
-		{tool("error", "Exit code 2\nlint: 1 issue"), false, "09:05:07 tool  Bash: make… → error: Exit code 2… (2 lines)"},
-		{tool("running", "started"), false, "09:05:07 tool  Bash: make… → running in the background"},
-		{tool("none", ""), false, "09:05:07 tool  Bash: make… → no result yet"},
-		{tool("ok", "a\nb"), true, "09:05:07 tool  Bash: make\n               lint → ok (2 lines)\n               a\n               b"},
+		{transcript.Event{Kind: transcript.KindPrompt, Prompt: &transcript.PromptEvent{Text: "hi", Origin: "human"}}, false, "--:--:-- prompt hi"},
+		{transcript.Event{TS: at, Kind: transcript.KindPrompt, Prompt: &transcript.PromptEvent{Text: "and the docs", Origin: "queued"}}, false, "09:05:07 prompt (queued) and the docs"},
+		{transcript.Event{TS: at, Kind: transcript.KindPrompt, Prompt: &transcript.PromptEvent{Text: "/review", Origin: "command", Command: "/review",
+			Images: []transcript.Image{{MediaType: "image/png", Data: "AA=="}}}}, false, "09:05:07 prompt /review [1 image]"},
+		{transcript.Event{TS: at, Kind: transcript.KindPrompt, Prompt: &transcript.PromptEvent{Origin: "task-notification",
+			Text: "<task-notification>\n<task-id>b1</task-id>\n<summary>Background command \"Serve\" completed</summary>\n</task-notification>"}},
+			false, `09:05:07 prompt (task-notification) Background command "Serve" completed`},
+		{transcript.Event{TS: at, Kind: transcript.KindPrompt, Prompt: &transcript.PromptEvent{Origin: "task-notification",
+			Text: "[SYSTEM NOTIFICATION]\n<task-notification><summary>a done</summary></task-notification>\n<task-notification><summary>b failed</summary></task-notification>"}},
+			false, `09:05:07 prompt (task-notification) a done; b failed`},
+		// A delivery shows the message under gomuxai's head line.
+		{transcript.Event{TS: at, Kind: transcript.KindPrompt, Prompt: &transcript.PromptEvent{Origin: "delivered",
+			Text: "A message arrived while you were working:\n\n[from lead@hub] skip cmd/legacy"}},
+			false, `09:05:07 prompt (delivered) [from lead@hub] skip cmd/legacy`},
+		{transcript.Event{TS: at, Kind: transcript.KindThink, Think: &transcript.ThinkEvent{Redacted: true}}, false, "09:05:07 think"},
+		{transcript.Event{TS: at, Kind: transcript.KindSay, Say: &transcript.SayEvent{Text: long}}, false, "09:05:07 say    " + strings.TrimSpace(long[:119]) + "…"},
+		{tool("ok", ""), false, "09:05:07 tool   Bash: make lint → ok"},
+		{tool("ok", "1 issue\n"), false, "09:05:07 tool   Bash: make lint → ok: 1 issue"},
+		{tool("error", "Exit code 2\nlint: 1 issue"), false, "09:05:07 tool   Bash: make lint → error: Exit code 2… (2 lines)"},
+		{tool("background", "started"), false, "09:05:07 tool   Bash: make lint → running in the background"},
+		{tool("pending", ""), false, "09:05:07 tool   Bash: make lint → no result yet"},
+		{tool("interrupted", ""), false, "09:05:07 tool   Bash: make lint → interrupted"},
+		// A long command keeps its head and its tail.
+		{transcript.Event{TS: at, Kind: transcript.KindTool, Tool: &transcript.ToolEvent{Name: "Bash", Result: &transcript.ToolResult{Status: "ok"},
+			ToolSummary: transcript.ToolSummary{Action: "bash", Detail: "cd /home/user/src/widget && " + strings.Repeat("x", 60) + " && go test ./internal/server -run TestSpin"}}},
+			false, "09:05:07 tool   Bash: cd /home/user/src/widget && xxxxxxxxxxxx…go test ./internal/server -run TestSpin → ok"},
+		{system("model_fallback", "", `{"from":"model-a","to":"model-b"}`), false, "09:05:07 system model fallback: model-a → model-b"},
+		{tool("ok", "a\nb"), true, "09:05:07 tool   Bash: make\n                lint → ok (2 lines)\n                a\n                b"},
+		{edit, false, "09:05:07 tool   Edit: src/a.go (+3 -1) → ok"},
+		{system("turn_duration", "", `{"durationMs":18234,"messageCount":9}`), false, "09:05:07 system turn took 18.2s"},
+		{system("interrupt", "[Request interrupted by user]", ""), false, "09:05:07 system [Request interrupted by user]"},
+		{system("compact_boundary", "Conversation compacted", `{}`), false, "09:05:07 system compact_boundary: Conversation compacted"},
+		{system("stop_hook_summary", "", `{"hookCount":1}`), false, "09:05:07 system stop_hook_summary"},
 	} {
-		if got := formatEvent(tt.e, "", tt.full); got != tt.want {
+		if got := formatEvent(tt.e, tt.full); got != tt.want {
 			t.Errorf("formatEvent(full=%v):\n%q\nwant:\n%q", tt.full, got, tt.want)
-		}
-	}
-
-	// A path under the session's working directory prints relative to it.
-	read := transcript.Event{Time: at, Kind: transcript.KindTool, Tool: &transcript.ToolCall{
-		Name: "Read", Input: json.RawMessage(`{"file_path":"/home/user/proj/src/a.go"}`), Status: "ok",
-	}}
-	for cwd, want := range map[string]string{
-		"/home/user/proj":  "09:05:07 tool  Read: src/a.go → ok",
-		"/home/user/proj/": "09:05:07 tool  Read: src/a.go → ok",
-		"/home/user/pro":   "09:05:07 tool  Read: /home/user/proj/src/a.go → ok",
-	} {
-		if got := formatEvent(read, cwd, false); got != want {
-			t.Errorf("cwd %s: %q, want %q", cwd, got, want)
 		}
 	}
 }

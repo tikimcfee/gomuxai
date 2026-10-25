@@ -575,22 +575,36 @@ cleanup and spans `/clear` and respawns under the same name. The files:
 - Claude: `~/.claude/projects/<encoded project>/<session id>.jsonl`
 - agy: `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl`
 
-**`internal/transcript`** reads both into `Session` → `Turn` (a prompt) →
-`Step` (one of thinking, reply, tool call with its result), and
-`Session.Events` flattens that into the lines `agent logs` prints. Backends
-hand out their reader through `backend.TranscriptProvider`. It was ported
-from glyph3d-rs `native/src/agent_transcript/` (types, Claude's two-pass
-`tool_use`/`tool_result` pairing, the agy step parser, format detection),
-which itself replicates glyph3d-js's session adapter; the tail-window read
-follows glyph3d-js `cli/sessions.go`. `ReadFile` reads the last 1 MiB first
-and doubles the window until it holds enough events, plus 256 KiB of the
-head for metadata, since transcripts run to tens of megabytes. The formats
-are the CLIs' internal files, not APIs: lines that aren't JSON objects are
-counted in `Session.Skipped`, and unknown records are ignored.
+**`internal/transcript`** reads both into the event stream
+[`docs/EVENTS.md`](EVENTS.md) describes (types in `events.go`): one event per
+prompt, thinking block, reply, tool call and harness record, each tagged with
+its turn, a tool's result arriving as an update of its call. A `Reader`'s
+`Parser` takes a transcript's bytes in order and returns the events of the
+whole lines among them, keeping what later lines need (the open turn, calls
+waiting for results), and reports where it stopped (`Pos`), so the same code
+reads a whole file or what a live session appends. A parse always starts at
+the file's start, because what a line means depends on the lines before it;
+`ResumeAfter` resumes after a line by reading the lines up to it silently
+(`Skip`), so what follows is numbered and turned as the whole stream is.
+`Latest` folds a stream into each event's latest state.
+`Finals` merges the final reply a Stop hook reports (`last_assistant_message`)
+into a stream ahead of the transcript, which writes it only after the hook ran:
+a provisional say that the transcript's copy then updates. `HarvestClaude`
+reads a session's metadata alone, line by line, by the same rules.
+Backends hand out their reader through `backend.TranscriptProvider`. The
+behaviour was ported from glyph3d-rs `native/src/agent_transcript/` and
+glyph3d-js's session adapter, and `testdata/corpus` holds the transcripts
+with the exact events they must produce. `ReadFile` parses the whole file a
+megabyte at a time but keeps only the last events it was asked for and their
+updates, since transcripts run to tens of megabytes (75 MB parses in about
+0.2 s); the parser forgets calls once they are done. The
+formats are the CLIs' internal files, not APIs: lines that aren't JSON
+objects are counted in `Parser.Skipped`, and unknown records are ignored.
 
 **`agent logs`** (`internal/cli/logs.go`) reads the newest transcript, going
-back to older ones until it has `--lines` events, and prints
-`--- session <id>` where each earlier session ends. It falls back to the
+back to older ones until it has `--lines` events (each in its latest state),
+and prints `--- session <id>` where each earlier session ends; `--json`
+prints the stream itself, a session line then its events. It falls back to the
 terminal log (with a hint saying why) when there's no transcript: another
 backend, no hook fired yet, or the file is gone or unparseable. `--terminal`
 asks for it directly. The terminal log is the raw pipe-pane stream, cleaned by

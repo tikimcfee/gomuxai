@@ -30,7 +30,9 @@ the transcript, relative to this directory.
 Compare parsed JSON values, not bytes:
 
 - A field that is absent equals its zero value (`false`, `0`, `""`, `null`, `{}`, `[]`).
-  So `"derived": false` and a missing `derived` are the same.
+  So `"derived": false` and a missing `derived` are the same. Not inside a `request`
+  event's payload: it repeats what the harness sent, so a field added or dropped there,
+  even an empty one, is a difference.
 - Session lines leave out `mtime`, `status` and `status_at`. They come from the file
   system and the workgroup, not the transcript, so the test does not compare them.
 
@@ -81,8 +83,14 @@ should check the rest.
 - Claude turns: the id is the record's `promptId`, and the index is
   `turnPosition.promptIndex`. Records without a `promptId` (assistant, attachment and
   system records) take the current turn. A record whose `promptId` has no `promptIndex`
-  (a local slash command, a task notification from older versions, a subagent's records)
-  takes the last `promptIndex` seen in the same file, or 0 if there is none.
+  (a local slash command, a task notification from older versions) takes the last
+  `promptIndex` seen in the same file; a subagent's records, the parent's (below). A
+  file that records no `promptIndex` at all (Claude Code 2.1.25x-26x write `promptId`
+  but no `turnPosition`) numbers its turns by counting human prompts (typed, slash
+  commands, queued), as derived turns are numbered; a task notification or a peer
+  message shares the index of the human prompt before it.
+- Index 0 means the transcript doesn't say: records before any prompt, a subagent whose
+  parent's transcript is gone. A known turn's index is 1 or more.
 - `promptIndex` counts human prompts. A turn opened by a task notification or a peer gets
   its own `promptId`, but shares the index of the human prompt before it.
 - Derived turns (no `promptId`: older Claude, agy, Kimi): the id is the `id` of the prompt
@@ -90,8 +98,13 @@ should check the rest.
   `promptIndex` does. Prompts that open a derived turn are a typed prompt, a slash command
   and an idle-time task notification (Claude), `USER_INPUT` (agy), and `turn.prompt`
   (Kimi). Messages that arrive mid-turn stay in the current turn.
-- A subagent's events carry the parent's turn id (its records hold the parent's
-  `promptId`) with index 0, since its file holds no `promptIndex`.
+- A subagent's events carry the parent's turn. Its records hold the parent's `promptId`
+  but no `promptIndex`, so the index is the one the parent's transcript (`<session
+  id>.jsonl` beside the `<session id>/subagents/` folder) gives that `promptId`, by the
+  parent's own rules: 1 in `claude/subagent`. (Index 0 would read as a turn of its own
+  that no prompt opened.) A background subagent outlives the parent's turn that started
+  it, and its later records hold the parent's current `promptId`: its events follow the
+  parent's turns. A `promptId` the parent doesn't give (yet) keeps the last index known.
 
 **Prompts**
 
@@ -106,8 +119,12 @@ should check the rest.
 - Slash commands: `command` is `/name`, and `text` is `/name args` (just `/name` with no
   args). The command markup wins over the record's `origin.kind: human`. The
   `<local-command-caveat>` record and a skill's expanded body (`isMeta`, `turnCompanion`)
-  are not events. A `user` record with `isMeta` and no `origin` is never an event; one
-  with an `origin` (a peer or channel message) is.
+  are not events. A `user` record with `isMeta` and no `origin` is not an event, unless
+  its `promptSource` is `system`: then it is a message the harness sends the agent (a
+  `/loop` wakeup after a `scheduled_task_fire`, a `[Cross-session idle notice]`, `Stop
+  hook feedback: ...` after a Stop hook's blocking error), a prompt with origin `system`.
+  A wakeup or idle notice has its own `promptId` and opens its turn; hook feedback stays
+  in the current one. One with an `origin` (a peer or channel message) is an event too.
 - A subagent's first prompt, the task its parent gave it, has origin `peer`.
 - `images` is `[{media_type, data}]`, with the base64 data whole.
 - agy: the prompt is the text inside `<USER_REQUEST>`, trimmed. Each `[Message]` entry
@@ -118,7 +135,12 @@ should check the rest.
 **Replies and thinking**
 
 - `final` is set on the last text block of an assistant message whose `stop_reason` is
-  `end_turn`. A turn that a held delivery continues has two final replies, one per Stop.
+  `end_turn` or `stop_sequence`. A turn that a held delivery continues has two final
+  replies, one per Stop. Older versions wrote no stop reason (`null`): the last text of
+  a message with no tool calls becomes final, by an update, once its turn ends with
+  nothing more from the model (a `turn_duration` or `stop_hook_summary` record, or the
+  next turn's prompt). More from the model, or an interrupt, means it wasn't
+  (`claude/derived-turns`: "Starting on the README.").
 - agy: a PLANNER_RESPONSE with content and no tool calls is final.
 - Kimi: `final` is never set. Its wire records no stop reason we have seen; `step.end`
   of a step without tool calls is a candidate, to be confirmed on real Kimi sessions.
@@ -154,7 +176,9 @@ should check the rest.
   result. `structured` is dropped. For an Agent call, `meta` is `{tools, tokens, ms}` from
   `<usage>`, the same keys the table's `taskMeta` gives a finished Task.
 - `sub_session` is set from the Agent result's `agentId`, so it arrives with the first
-  update. A subagent's `session_id` is its `agentId` (the file is `agent-<agentId>.jsonl`).
+  update. A Claude subagent's `session_id` is `agent-<agentId>`, its transcript's name
+  (`agent-<agentId>.jsonl`), as `agent sessions` names it; `sub_session` names it the
+  same way. The `agent` field on the subagent's events is the bare `agentId`.
 - The response a reader hands the table: Claude's `toolUseResult` when it is an object
   (a string one reads as none, so a failed Bash has no `meta`). For an Agent completed
   by a task notification, `{totalToolUseCount, totalTokens, totalDurationMs}` from
@@ -195,6 +219,41 @@ should check the rest.
 - `request` is `{model: params.model, params, base?, tail, blobs}`. `blobs` maps each
   hash in `tail` to the message of the `api-request-blob` line that defined it.
   `api-request-shape` produces nothing; the shape is not part of `request`.
+
+**Claude records no case holds**
+
+Shapes found in real Claude Code transcripts that no case models yet. The reader's unit
+tests (`TestClaudeUserRecords`, `TestClaudeMidTurn`, `TestClaudeTaskNotifications`,
+`TestClaudeClosingReplies`, `TestClaudeCountedTurns`, `TestClaudeSubagentTurns_Grow`,
+`TestClaudeRequestBlobs`) pin them.
+
+- A record with no `uuid` has ids `L<line index>#<block index>`, as Kimi's do.
+- A `user` record's `origin.kind` `coordinator` is `peer`, like `peer` and `channel`;
+  any other kind (`auto-continuation`) is `system`. A record with no `origin` is `human`
+  (older versions), or `peer` in a subagent's transcript. A `promptSource: sdk` record is
+  a `human` prompt. A prompt with no text and no image is not an event.
+- A `<pasted_content>` or `<bash-input>` prompt is the person's, kept with its markup.
+  Older versions wrote a local command's output, and a shell escape's, as `user` records
+  (`<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`, `<bash-stderr>`):
+  each is `{subtype: local_command, text}`, like the newer `local_command` system record.
+- A `queued_command` attachment with `commandMode: task-notification` (or a
+  `task-notification` origin, or `<task-notification>` text) is a task notification
+  taken mid-turn: origin `task-notification`, in the current turn, completing its call.
+- A record that holds tool results and an interrupt text block adds the interrupt, then
+  updates the calls its results answer, then interrupts the calls still pending.
+- `isSidechain` records with no `agentId` (subagents of versions before subagents had
+  their own files) belong to another session and are skipped.
+- A derived turn a task notification opens takes the index of the last derived turn (1
+  if it is the first).
+- One message can hold several `<task-notification>` blocks, alone or after a
+  `[SYSTEM NOTIFICATION ...]` preamble: it is one prompt, and every call a block names
+  gets its update.
+- An assistant `{type: fallback, from, to}` block (the harness switching models) is
+  `{subtype: model_fallback, data: {from, to}}`.
+- A typed `/name args` with no command markup and no `origin` (older versions wrote
+  `/compact` so) is a `command` prompt; a path such as `/etc/hosts` is not a command.
+- A request's `blobs` are the blob lines' messages whole, as written, fields the reader
+  doesn't know included.
 
 **Session**
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/config"
@@ -22,15 +24,24 @@ var logsCmd = &cobra.Command{
 	Short: "Print what an agent did (prompts, replies, tool calls), even after cleanup",
 	Long: `Logs prints an agent's last events, oldest first, one per line:
 
-  12:04:31 user  run the tests
-  12:04:40 tool  Bash: go test ./... → ok (34 lines)
-  12:05:02 reply All tests pass.
+  12:04:31 prompt run the tests
+  12:04:40 tool   Bash: go test ./... → ok (34 lines)
+  12:05:02 say    All tests pass.
+  12:05:02 system turn took 31.2s
 
-Kinds: user (a prompt it got), think (its reasoning, where the CLI keeps
-it), reply (text it wrote), tool (a call and its result: ok, error,
-running in the background, or no result yet). Times are local. Text longer
-than a line is cut and marked "…"; --full prints it whole, with each
-tool's output. --json prints the events with their session's metadata.
+Kinds: prompt (a message it got; one that didn't come from a person
+typing says where it came from: queued, delivered, task-notification,
+peer, command, system), think (its reasoning; a bare "think" where the CLI
+kept none of its text), say (text it wrote), tool (a call and its result:
+ok, error, interrupted, running in the background, or no result yet),
+system (a record of the CLI's own: turn timing, compaction, API errors,
+interrupts). Times are local. Text longer than a line is cut and marked
+"…", a command or path in its middle so its end shows; --full prints it
+whole, with each tool's output.
+
+--json prints the events as docs/EVENTS.md describes them, one JSON
+object per line: for each transcript, a session line, then its events
+(a tool's result is an update of its call, sent again whole).
 
 The events come from the transcript the agent's CLI keeps of its session,
 whose path the CLI's hooks report (claude and agy agents):
@@ -67,7 +78,7 @@ var (
 func init() {
 	logsCmd.Flags().IntVar(&logsLines, "lines", 50, "Number of events (or terminal lines) to print")
 	logsCmd.Flags().BoolVar(&logsFull, "full", false, "Print each event's text and tool output whole")
-	logsCmd.Flags().BoolVar(&logsJSON, "json", false, "Print the events and their sessions as JSON")
+	logsCmd.Flags().BoolVar(&logsJSON, "json", false, "Print the sessions and their events as JSON lines")
 	logsCmd.Flags().BoolVar(&logsTerminal, "terminal", false, "Print the terminal log instead of the transcript")
 }
 
@@ -108,27 +119,28 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return printTerminalLog(name)
 	}
 	if logsJSON {
-		return printJSON(sessions)
+		return printEventLines(sessions)
 	}
-	if len(sessions) == 1 && len(sessions[0].Events) == 0 {
-		fmt.Printf("Agent %s's transcript has no events yet (%s).\n", name, sessions[0].Path)
+	if len(sessions) == 1 && len(sessions[0].events) == 0 {
+		fmt.Printf("Agent %s's transcript has no events yet (%s).\n", name, sessions[0].Session.Path)
 		return nil
 	}
 	for i, s := range sessions {
 		if i > 0 {
-			fmt.Printf("--- session %s (%s)\n", s.SessionID, s.Harness)
+			fmt.Printf("--- session %s (%s)\n", s.Session.SessionID, s.Session.Harness)
 		}
-		for _, e := range s.Events {
-			fmt.Println(formatEvent(e, s.CWD, logsFull))
+		for _, e := range s.events {
+			fmt.Println(formatEvent(e, logsFull))
 		}
 	}
 	return nil
 }
 
-// logsSession is a transcript's session with the events logs prints.
+// logsSession is a transcript read for logs: the stream its lines make,
+// and the events logs prints, each in its latest state.
 type logsSession struct {
-	*transcript.Session
-	Events []transcript.Event `json:"events"`
+	*transcript.File
+	events []transcript.Event
 }
 
 // readTranscripts reads the last n events of the named agent's
@@ -145,7 +157,7 @@ func readTranscripts(name string, n int) ([]logsSession, string) {
 	total := 0
 	for i := len(refs) - 1; i >= 0 && total < n; i-- {
 		ref := refs[i]
-		s, err := transcript.ReadFile(ref.Path, agentService.TranscriptReader(ref.Backend), n-total)
+		f, err := transcript.ReadFile(ref.Path, agentService.TranscriptReader(ref.Backend), n-total)
 		if err != nil {
 			if len(sessions) > 0 {
 				break
@@ -155,12 +167,12 @@ func readTranscripts(name string, n int) ([]logsSession, string) {
 			}
 			return nil, fmt.Sprintf("its transcript %s can't be read: %v", ref.Path, err)
 		}
-		events := s.Events()
+		events := transcript.Latest(f.Events)
 		if keep := n - total; len(events) > keep {
 			events = events[len(events)-keep:]
 		}
 		total += len(events)
-		sessions = append(sessions, logsSession{Session: s, Events: events})
+		sessions = append(sessions, logsSession{File: f, events: events})
 		if len(events) == 0 && len(sessions) > 1 {
 			sessions = sessions[:len(sessions)-1]
 		}
@@ -169,70 +181,217 @@ func readTranscripts(name string, n int) ([]logsSession, string) {
 	return sessions, ""
 }
 
-// Widths of an event line: the head ("15:04:05 reply "), and how much
+// printEventLines prints each session as docs/EVENTS.md frames it: a
+// session line, then its events, updates included, for the events logs
+// would print.
+func printEventLines(sessions []logsSession) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
+	for _, s := range sessions {
+		if err := enc.Encode(sessionLine{"session", s.Session}); err != nil {
+			return err
+		}
+		kept := make(map[string]bool, len(s.events))
+		for _, e := range s.events {
+			kept[e.ID] = true
+		}
+		for _, e := range s.Events {
+			if !kept[e.ID] {
+				continue
+			}
+			if err := enc.Encode(eventLine{"event", e}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// sessionLine and eventLine are the JSON lines of an event stream.
+type (
+	sessionLine struct {
+		Type string `json:"type"`
+		transcript.Session
+	}
+	eventLine struct {
+		Type string `json:"type"`
+		transcript.Event
+	}
+)
+
+// Widths of an event line: the head ("15:04:05 prompt "), and how much
 // text a cut line keeps.
 const (
-	eventHeadWidth = len("15:04:05 reply ")
+	eventHeadWidth = len("15:04:05 prompt ")
 	eventTextWidth = 120
 	toolTextWidth  = 80
 )
 
 // formatEvent renders an event as one line, or with full, as the whole
-// text and tool output, continuation lines indented under the text. Paths
-// under cwd, the session's working directory, print relative to it.
-func formatEvent(e transcript.Event, cwd string, full bool) string {
+// text and tool output, continuation lines indented under the text.
+func formatEvent(e transcript.Event, full bool) string {
 	ts := "--:--:--"
-	if !e.Time.IsZero() {
-		ts = e.Time.Local().Format("15:04:05")
+	if t := e.Time(); !t.IsZero() {
+		ts = t.Local().Format("15:04:05")
 	}
-	head := fmt.Sprintf("%s %-5s ", ts, e.Kind)
-	if e.Tool == nil {
+	head := fmt.Sprintf("%s %-6s ", ts, e.Kind)
+	text := func(s string) string {
 		if full {
-			return head + indent(e.Text)
+			return indent(s)
 		}
-		return head + cutLine(e.Text, eventTextWidth)
+		return cutLine(s, eventTextWidth)
 	}
+	switch {
+	case e.Prompt != nil:
+		p := e.Prompt
+		s := text(p.Text)
+		if summary := notificationSummary(p); summary != "" && !full {
+			// A task notification's markup says nothing at a glance.
+			s = cutLine(summary, eventTextWidth)
+		}
+		if _, messages, ok := strings.Cut(p.Text, "\n"); ok && p.Origin == transcript.OriginDelivered && !full {
+			// Under gomuxai's head line, the messages delivered.
+			s = cutLine(messages, eventTextWidth)
+		}
+		if p.Origin != transcript.OriginHuman && p.Origin != transcript.OriginCommand {
+			s = "(" + p.Origin + ") " + s
+		}
+		if len(p.Images) > 0 {
+			s += fmt.Sprintf(" [%s]", plural(len(p.Images), "image"))
+		}
+		return head + s
+	case e.Think != nil:
+		if e.Think.Redacted {
+			// Its text isn't kept: the line just says it thought.
+			return strings.TrimRight(head, " ")
+		}
+		return head + text(e.Think.Text)
+	case e.Say != nil:
+		return head + text(e.Say.Text)
+	case e.Tool != nil:
+		return head + formatTool(e.Tool, full)
+	case e.System != nil:
+		return head + formatSystem(e.System, text)
+	case e.Request != nil:
+		return head + fmt.Sprintf("%s, %s", e.Request.Model, plural(len(e.Request.Tail), "new message"))
+	}
+	return head
+}
 
-	c := e.Tool
-	call := c.Name
-	if d := c.Detail(cwd); d != "" {
-		if full {
-			call += ": " + indent(d)
-		} else {
-			call += ": " + cutLine(d, toolTextWidth)
+// notificationSummary returns the <summary> of each task notification a
+// prompt holds, joined, or "".
+func notificationSummary(p *transcript.PromptEvent) string {
+	if p.Origin != transcript.OriginTaskNotification {
+		return ""
+	}
+	var summaries []string
+	for _, n := range transcript.TaskNotifications(p.Text) {
+		if n.Summary != "" {
+			summaries = append(summaries, n.Summary)
 		}
 	}
-	output := strings.TrimRight(c.Output, "\n")
+	return strings.Join(summaries, "; ")
+}
+
+// formatTool renders a tool call and its result: what it called, on what,
+// and how it went.
+func formatTool(c *transcript.ToolEvent, full bool) string {
+	call := c.Name
+	about := c.Target
+	if about == "" {
+		about = c.Detail
+	}
+	if about != "" {
+		if full {
+			call += ": " + indent(about)
+		} else {
+			call += ": " + elide(about, toolTextWidth)
+		}
+	}
+	if m := toolMeta(c); m != "" {
+		call += " (" + m + ")"
+	}
+	status, output := transcript.StatusPending, ""
+	if c.Result != nil {
+		status, output = c.Result.Status, strings.TrimRight(c.Result.Output, "\n")
+	}
 	lines := 0
 	if strings.TrimSpace(output) != "" {
 		lines = strings.Count(output, "\n") + 1
 	}
 	var result string
-	switch c.Status {
-	case transcript.StatusNone:
+	switch status {
+	case transcript.StatusPending:
 		result = "no result yet"
-	case transcript.StatusRunning:
+	case transcript.StatusBackground:
 		result = "running in the background"
-	case transcript.StatusError:
-		result = "error"
 	default:
-		result = "ok"
+		result = status
 	}
 	switch {
 	case full && lines > 0:
-		return fmt.Sprintf("%s%s → %s (%s)\n%s", head, call, result, plural(lines, "line"), indentAll(output))
-	case c.Status == transcript.StatusNone || c.Status == transcript.StatusRunning || lines == 0:
-		return fmt.Sprintf("%s%s → %s", head, call, result)
-	case lines == 1 || c.Status == transcript.StatusError:
+		return fmt.Sprintf("%s → %s (%s)\n%s", call, result, plural(lines, "line"), indentAll(output))
+	case status == transcript.StatusPending || status == transcript.StatusBackground || lines == 0:
+		return fmt.Sprintf("%s → %s", call, result)
+	case lines == 1 || status == transcript.StatusError:
 		// An error's first line usually says what failed.
-		s := fmt.Sprintf("%s%s → %s: %s", head, call, result, cutLine(output, toolTextWidth))
+		s := fmt.Sprintf("%s → %s: %s", call, result, cutLine(output, toolTextWidth))
 		if lines > 1 {
 			s += fmt.Sprintf(" (%s)", plural(lines, "line"))
 		}
 		return s
 	default:
-		return fmt.Sprintf("%s%s → %s (%s)", head, call, result, plural(lines, "line"))
+		return fmt.Sprintf("%s → %s (%s)", call, result, plural(lines, "line"))
 	}
+}
+
+// toolMeta returns the numbers of an edit worth a glance, "+3 -1", or "".
+func toolMeta(c *transcript.ToolEvent) string {
+	if c.Action != "edit" || len(c.Meta) == 0 {
+		return ""
+	}
+	var m struct{ Added, Removed int }
+	if json.Unmarshal(c.Meta, &m) != nil {
+		return ""
+	}
+	return fmt.Sprintf("+%d -%d", m.Added, m.Removed)
+}
+
+// formatSystem renders a harness record: its text, or what its subtype
+// says.
+func formatSystem(s *transcript.SystemEvent, text func(string) string) string {
+	switch s.Subtype {
+	case "turn_duration":
+		var d struct {
+			DurationMs float64 `json:"durationMs"`
+		}
+		if json.Unmarshal(s.Data, &d) == nil && d.DurationMs > 0 {
+			return fmt.Sprintf("turn took %s", time.Duration(d.DurationMs*float64(time.Millisecond)).Round(100*time.Millisecond))
+		}
+	case "interrupt", "api_error":
+		return text(s.Text)
+	case "model_fallback":
+		var m struct{ From, To string }
+		if json.Unmarshal(s.Data, &m) == nil && m.From != "" && m.To != "" {
+			return fmt.Sprintf("model fallback: %s → %s", m.From, m.To)
+		}
+	}
+	if s.Text == "" {
+		return s.Subtype
+	}
+	return s.Subtype + ": " + text(s.Text)
+}
+
+// elide returns s on one line (its lines and runs of spaces joined by one
+// space), cut to width runes in the middle, so a command's or a path's
+// head and its telling tail both show: "go test ./… -run TestSpin".
+func elide(s string, width int) string {
+	r := []rune(strings.Join(strings.Fields(s), " "))
+	if len(r) <= width {
+		return string(r)
+	}
+	tail := (width - 1) / 2
+	return strings.TrimSpace(string(r[:width-1-tail])) + "…" + strings.TrimSpace(string(r[len(r)-tail:]))
 }
 
 // cutLine returns the first non-blank line of s, cut to width runes; a cut
