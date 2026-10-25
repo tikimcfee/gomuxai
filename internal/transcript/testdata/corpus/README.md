@@ -226,6 +226,41 @@ tests (`TestClaudeUserRecords`, `TestClaudeMidTurn`) pin them.
 - A derived turn a task notification opens takes the index of the last derived turn (1
   if it is the first).
 
+**agy and Kimi records no case holds**
+
+Shapes found in real agy transcripts (no Kimi session was on the survey host), and Kimi
+shapes from glyph3d-rs and glyph3d-js. The readers' unit tests (`TestAgyParse`,
+`TestAgySubagent`, `TestKimiParse`, `TestKimiSubagent`) pin them.
+
+- agy: a `USER_INPUT` with `source: SYSTEM_SDK` was injected by a hook (gomuxai's held
+  delivery, PostInvocation's `injectSteps`): `delivered` when its text starts with
+  `[from `, else `system`, in the current turn. An `EPHEMERAL_MESSAGE` is the same.
+- agy: a typed `USER_INPUT` interrupts the calls still waiting for a GENERIC step, after
+  its prompt is added. A `background` call still running stays `background`.
+- agy: `Task id "…" was canceled with result:` ends a background call `interrupted`; a
+  completion whose output says the command exited non-zero is `error`.
+- agy: `CHECKPOINT` is `{subtype: compact_summary, text}`; `ERROR_MESSAGE` is
+  `{subtype: api_error, text, data: {error}}`.
+- agy subagents: a subagent is a conversation of its own, its `session_id` its
+  conversation id. `brain/<parent>/.system_generated/subagents/<id>.json` names its
+  parent; its `spawnStepIndex` is the step of the call's result, not the call, so the
+  call is the `invoke_subagent` whose result names the subagent's `conversationId`.
+  `sub_session` is set from that result (the first id, when one call starts several), the
+  subagent's `parent_session.tool_id` names the call, and its events carry that call's
+  turn and `agent: <its session_id>`. The subagent's first message, a SYSTEM_MESSAGE from
+  the parent's conversation, is `peer`.
+- Kimi: `turn.steer` (a message sent mid-turn) is `queued`, in the current turn. A
+  `turn.prompt` with a `prompt` string instead of `input` (older logs) reads the same.
+  `tool.result` with `isError: true` is `error`; an `output` that is a list of parts is
+  their text joined with `\n`. A result logged before its call is applied as the call is
+  added: the add, then its update, at the call's line.
+- Kimi subagents: `agents/<agent>/wire.jsonl` is session `<uuid>:<agent>`, with
+  `parent_session` the main session's `<uuid>` and `agent: <uuid>:<agent>` on its events.
+  Its prompts are `peer` and open derived turns of its own: its log doesn't say which
+  parent turn started it. No parent call gets a `sub_session`: no Kimi call result
+  naming its subagent has been seen. Its `title` is left empty (`state.json` holds the
+  main conversation's); its `cwd` is the session's.
+
 **Session**
 
 - `title`: Claude's latest `custom-title` if there is one, else its latest `ai-title`.

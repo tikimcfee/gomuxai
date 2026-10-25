@@ -251,6 +251,15 @@ type Options struct {
 	// prompt id, and only the parent's transcript its index
 	// (ClaudeSubagentTurns).
 	Turns map[string]int
+	// Session is what files beside the transcript say about its session,
+	// where its records don't (Kimi Code's state.json, agy's subagent
+	// index): the parse starts from it. On a subagent's (ParentSession
+	// set), its SessionID is the Agent of every event. FileOptions reads
+	// it.
+	Session Session
+	// Turn is the turn events carry until a prompt opens one: for an agy
+	// subagent, the parent's turn whose call started it.
+	Turn *TurnRef
 }
 
 // A Reader parses one harness's transcript format.

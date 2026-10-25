@@ -1,5 +1,6 @@
 // Package transcript reads the transcripts agent CLIs keep of their own
-// sessions (Claude Code's session JSONL, agy's transcript_full.jsonl) into
+// sessions (Claude Code's session JSONL, agy's transcript_full.jsonl, Kimi
+// Code's wire.jsonl) into
 // one harness-neutral stream of events (events.go; docs/EVENTS.md is the
 // contract): a prompt, a thinking block, a reply, a tool call and its
 // result, a harness record, each where it happened and tagged with the
@@ -36,20 +37,44 @@ func parseTime(s string) time.Time {
 	return t
 }
 
-// Detect guesses a transcript's format from its first lines: agy's steps
-// carry step_index and step types like PLANNER_RESPONSE; anything else is
-// read as Claude Code's.
+// Detect guesses a transcript's format from its first lines: Kimi Code's
+// records are typed like context.append_loop_event and turn.prompt, after
+// a metadata line naming its protocol_version; agy's steps carry
+// step_index and step types like PLANNER_RESPONSE; anything else is read
+// as Claude Code's.
 func Detect(data []byte) Reader {
 	n := 0
 	for line := range bytes.SplitSeq(data, []byte{'\n'}) {
 		if n++; n > 30 {
 			break
 		}
-		if bytes.Contains(line, []byte(`"step_index"`)) || bytes.Contains(line, []byte(`"PLANNER_RESPONSE"`)) || bytes.Contains(line, []byte(`"USER_INPUT"`)) {
+		switch {
+		case bytes.Contains(line, []byte(`"context.append_loop_event"`)) || bytes.Contains(line, []byte(`"turn.prompt"`)) ||
+			bytes.Contains(line, []byte(`"protocol_version"`)) && bytes.Contains(line, []byte(`"metadata"`)):
+			return Kimi{}
+		case bytes.Contains(line, []byte(`"step_index"`)) || bytes.Contains(line, []byte(`"PLANNER_RESPONSE"`)) || bytes.Contains(line, []byte(`"USER_INPUT"`)):
 			return Agy{}
 		}
 	}
 	return Claude{}
+}
+
+// FileOptions returns the Options for parsing the transcript at path with
+// harness's reader: what the files beside it say that its records don't.
+// For a Claude subagent, the index of its parent's turns
+// (ClaudeSubagentTurns); for an agy subagent, its parent conversation and
+// the call and turn that started it; for Kimi Code, the session's title
+// and working directory, and a subagent's parent session.
+func FileOptions(harness, path string) Options {
+	switch harness {
+	case "claude":
+		return Options{Turns: ClaudeSubagentTurns(path)}
+	case "agy":
+		return agyFileOptions(path)
+	case "kimi":
+		return kimiFileOptions(path)
+	}
+	return Options{}
 }
 
 // ErrUnparseable is returned for a transcript none of whose lines is a JSON
@@ -104,10 +129,7 @@ func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 		r = Detect(head)
 	}
 
-	var turns map[string]int
-	if r.Harness() == "claude" {
-		turns = ClaudeSubagentTurns(path)
-	}
+	opts := FileOptions(r.Harness(), path)
 	var p *Parser
 	var events []Event
 	var start int64
@@ -122,7 +144,8 @@ func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 				return nil, err
 			}
 		}
-		p = r.NewParser(Options{From: from, Turns: turns})
+		opts.From = from
+		p = r.NewParser(opts)
 		events = p.Feed(data)
 		if start == 0 || len(Latest(events)) >= minEvents {
 			break
@@ -134,7 +157,8 @@ func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 
 	file := &File{Session: p.Session(), Events: events, Partial: start > 0, Lines: p.Lines, Skipped: p.Skipped}
 	if file.Partial {
-		h := r.NewParser(Options{})
+		opts.From = Pos{}
+		h := r.NewParser(opts)
 		h.Feed(head)
 		file.Session.fill(h.Session())
 	}
@@ -193,11 +217,21 @@ func linesBefore(f *os.File, n int64) (int, error) {
 	return lines, nil
 }
 
-// sessionIDFromPath names a session after its transcript: Claude Code's is
-// <session id>.jsonl (a subagent's, agent-<agent id>.jsonl); agy's lives in
-// brain/<conversation id>/.system_generated/logs.
+// sessionIDFromPath names a session after its transcript, as agent
+// sessions does: Claude Code's is <session id>.jsonl (a subagent's,
+// agent-<agent id>.jsonl); agy's lives in brain/<conversation
+// id>/.system_generated/logs; Kimi Code's session_<uuid>/agents/main/wire.jsonl
+// is <uuid>, and a subagent's agents/<agent>/wire.jsonl is <uuid>:<agent>.
 func sessionIDFromPath(path string) string {
-	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	base := filepath.Base(path)
+	if agentDir := filepath.Dir(path); base == "wire.jsonl" && filepath.Base(filepath.Dir(agentDir)) == "agents" {
+		session := strings.TrimPrefix(filepath.Base(filepath.Dir(filepath.Dir(agentDir))), "session_")
+		if agent := filepath.Base(agentDir); agent != "main" {
+			return session + ":" + agent
+		}
+		return session
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
 	if !strings.HasPrefix(stem, "transcript") {
 		return stem
 	}

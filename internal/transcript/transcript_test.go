@@ -239,28 +239,224 @@ func TestAgyParse(t *testing.T) {
 		`1 add prompt(human) "list the files"`,
 		`1 add think "I should list them and read the readme."`,
 		`1 add tool run_command(ls) pending ""`,
-		`1 add tool view_file(/home/user/proj/README) pending ""`,
+		// The first run_command's Cwd is the session's.
+		`1 add tool view_file(README) pending ""`,
 		// Two calls in one step: each GENERIC step answers the next one.
 		`1 update tool run_command(ls) ok "The command exited with code 0.\nOutput:\nREADME\nmain.go"`,
-		`1 update tool view_file(/home/user/proj/README) ok "File Path: ` + "`file:///home/user/proj/README`" + `\nTotal Lines: 2\n1: hello\n2: world"`,
+		`1 update tool view_file(README) ok "File Path: ` + "`file:///home/user/proj/README`" + `\nTotal Lines: 2\n1: hello\n2: world"`,
 		`1 add say final "Two files: README and main.go."`,
+		// A SYSTEM_MESSAGE with no [Message] entry is the harness's.
+		`1 add prompt(system) "The following is a <SYSTEM_MESSAGE> not actually sent by the user."`,
 		`2 add prompt(human) "build it"`,
 		`2 add tool run_command(go build ./...) pending ""`,
 		`2 update tool run_command(go build ./...) error "The command exited with code 1.\nOutput:\nmain.go:3: undefined: x"`,
 		`2 add tool view_file(/etc/secret) pending ""`,
 		`2 add tool run_command(sleep 100) pending ""`,
 		`2 update tool view_file(/etc/secret) error "Encountered error in step execution: permission denied"`,
-		`2 update tool run_command(sleep 100) background "Tool is running as a background task with task id: t-1"`,
+		`2 update tool run_command(sleep 100) background "Tool is running as a background task with task id: c-1/task-3"`,
 		`2 add tool run_command(go vet ./...) pending ""`,
+		// gomuxai's held delivery, injected mid-turn, stays in the turn.
+		`2 add prompt(delivered) "[from lead@hub] also run the linter"`,
+		`2 add system api_error "Error: response cut off"`,
+		// A typed prompt abandons the calls still waiting for a result.
+		`3 add prompt(human) "stop, summarize"`,
+		`2 update tool run_command(go vet ./...) interrupted ""`,
+		`3 add system compact_summary "# Summary\nThe user asked to build and vet."`,
+		// A background task's completion completes its call; it exited
+		// non-zero, so the call failed.
+		`3 add prompt(task-notification) "Task id \"c-1/task-3\" finished with result:\nThe command exited with code 2.\nOutput:\nfail"`,
+		`3 add prompt(peer) "hello from c-2"`,
+		`2 update tool run_command(sleep 100) error "The command exited with code 2.\nOutput:\nfail"`,
 	}
 	if got := summaries(events); !slices.Equal(got, want) {
 		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if p.Lines != 14 || p.Skipped != 1 {
-		t.Errorf("lines = %d, skipped = %d, want 14 and 1", p.Lines, p.Skipped)
+	if p.Lines != 19 || p.Skipped != 1 {
+		t.Errorf("lines = %d, skipped = %d, want 19 and 1", p.Lines, p.Skipped)
 	}
-	if s := p.Session(); s.Harness != "agy" {
+	if s := p.Session(); s.Harness != "agy" || s.CWD != "/home/user/proj" || s.Model != "Gemini 3.8 Pro" {
 		t.Errorf("session = %+v", s)
+	}
+	for _, e := range events {
+		if e.ID == "step_14#0" && string(e.System.Data) != `{"error":"response cut off"}` {
+			t.Errorf("api_error data = %s", e.System.Data)
+		}
+		if e.ID == "step_1_tool_1" && e.Op == OpUpdate && string(e.Tool.Meta) != `{"lines":2}` {
+			t.Errorf("view_file meta = %s, want 2 lines read off its numbered lines", e.Tool.Meta)
+		}
+	}
+}
+
+// A canceled background task interrupts its call.
+func TestAgyTaskCanceled(t *testing.T) {
+	_, events := parse(Agy{}, []byte(strings.Join([]string{
+		`{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","content":"<USER_REQUEST>\nserve\n</USER_REQUEST>"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"make serve"}}]}`,
+		`{"step_index":2,"type":"GENERIC","status":"RUNNING","content":"Tool is running as a background task with task id: c-1/task-2"}`,
+		`{"step_index":3,"type":"SYSTEM_MESSAGE","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-04T12:00:00Z sender=c-1/task-2 priority=MESSAGE_PRIORITY_HIGH content=Task id \"c-1/task-2\" was canceled with result:\nserving on :8080\n</SYSTEM_MESSAGE>"}`,
+	}, "\n")+"\n"))
+	if got := summary(events[len(events)-1]); got != `1 update tool run_command(make serve) interrupted "serving on :8080"` {
+		t.Errorf("last event: %s", got)
+	}
+}
+
+// agyResponse rebuilds the structured response the tool table reads from
+// a result agy keeps only as text.
+func TestAgyResponse(t *testing.T) {
+	tests := []struct{ name, tool, input, output, meta string }{
+		{
+			name: "a partial read: its Showing header",
+			tool: "view_file", input: `{"AbsolutePath":"/p/a.go"}`,
+			output: "File Path: `file:///p/a.go`\nTotal Lines: 40\nShowing lines 11 to 13\n11: a\n12: b\n13: c",
+			meta:   `{"lines":3,"range":[11,13]}`,
+		},
+		{
+			name: "a replacement: its diff block",
+			tool: "replace_file_content", input: `{"TargetFile":"/p/a.go"}`,
+			output: "The following changes were made:\n[diff_block_start]\n@@ -3,2 +3,3 @@\n a\n-b\n+c\n+d\n\n[diff_block_end]",
+			meta:   `{"added":2,"removed":1,"ranges":[[4,5]],"patch":[{"lines":[" a","-b","+c","+d"," "],"newLines":3,"newStart":3,"oldLines":2,"oldStart":3}]}`,
+		},
+		{
+			name: "edit_file: its replacement count",
+			tool: "edit_file", input: `{"Path":"/p/a.go"}`,
+			output: "Made 1 replacement in file:///p/a.go starting at line 7 (+2/-1 lines)",
+			meta:   `{"added":2,"removed":1,"ranges":[[7,8]]}`,
+		},
+		{
+			name: "write_to_file: its content",
+			tool: "write_to_file", input: `{"TargetFile":"/p/n.go","CodeContent":"a\nb\n","Overwrite":true}`,
+			output: "Created file",
+			meta:   `{"kind":"update","lines":2}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := json.RawMessage(tt.input)
+			if s := SummarizeTool(tt.tool, in, agyResponse(tt.tool, in, tt.output), ""); string(s.Meta) != tt.meta {
+				t.Errorf("meta = %s, want %s", s.Meta, tt.meta)
+			}
+		})
+	}
+}
+
+// An agy subagent's conversation: agy's index beside the parent's names
+// it, and the parent's call names it back.
+func TestAgySubagent(t *testing.T) {
+	brain := t.TempDir()
+	write := func(path, content string) {
+		t.Helper()
+		path = filepath.Join(brain, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logs := filepath.Join(".system_generated", "logs", "transcript_full.jsonl")
+	write(filepath.Join("parent", logs), strings.Join([]string{
+		`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","created_at":"2026-10-04T12:00:00Z","content":"<USER_REQUEST>\nfirst\n</USER_REQUEST>"}`,
+		`{"step_index":1,"source":"USER_EXPLICIT","type":"USER_INPUT","created_at":"2026-10-04T12:01:00Z","content":"<USER_REQUEST>\nsplit the review\n</USER_REQUEST>"}`,
+		`{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-10-04T12:01:01Z","tool_calls":[{"name":"view_file","args":{"AbsolutePath":"/p/a"}},{"name":"invoke_subagent","args":{"Subagents":[{"Role":"api"},{"Role":"db"}]}}]}`,
+		`{"step_index":3,"source":"MODEL","type":"GENERIC","created_at":"2026-10-04T12:01:02Z","content":"1: a"}`,
+		`{"step_index":4,"source":"MODEL","type":"GENERIC","created_at":"2026-10-04T12:01:03Z","content":"Started the subagents:\n{\n  \"conversationId\":  \"child-api\"\n}\n{\n  \"conversationId\":  \"child-db\"\n}"}`,
+	}, "\n")+"\n")
+	write(filepath.Join("parent", ".system_generated", "subagents", "child-db.json"), `{"conversationId":"child-db","spawnStepIndex":4,"state":"SUBAGENT_STATE_ALIVE"}`)
+	child := filepath.Join(brain, "child-db", logs)
+	write(filepath.Join("child-db", logs), strings.Join([]string{
+		`{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","created_at":"2026-10-04T12:01:03Z","content":"<SYSTEM_MESSAGE>\n[Message] timestamp=2026-10-04T12:01:03Z sender=parent priority=MESSAGE_PRIORITY_HIGH content=Review the schema.\n</SYSTEM_MESSAGE>"}`,
+		`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-10-04T12:01:05Z","content":"Schema looks fine."}`,
+	}, "\n")+"\n")
+
+	parent, err := ReadFile(filepath.Join(brain, "parent", logs), Agy{}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := parent.Events[len(parent.Events)-1]; last.ID != "step_2_tool_1" || last.Tool.SubSession != "child-api" {
+		t.Errorf("the call: %s, sub_session %q; want step_2_tool_1 naming the first subagent, child-api", last.ID, last.Tool.SubSession)
+	}
+
+	f, err := ReadFile(child, Agy{}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := f.Session; s.SessionID != "child-db" || s.ParentSession == nil || *s.ParentSession != (ParentSession{SessionID: "parent", ToolID: "step_2_tool_1"}) {
+		t.Errorf("session %q, parent %+v; want child-db, started by parent's step_2_tool_1", s.SessionID, s.ParentSession)
+	}
+	want := TurnRef{ID: "step_1#0", Index: 2, Derived: true}
+	if got := summaries(f.Events); !slices.Equal(got, []string{`2 add prompt(peer) "Review the schema."`, `2 add say final "Schema looks fine."`}) {
+		t.Errorf("events: %q", got)
+	}
+	for _, e := range f.Events {
+		if e.Agent != "child-db" || *e.Turn != want {
+			t.Errorf("event %s: agent %q, turn %+v; want child-db in the parent's turn %+v", e.ID, e.Agent, e.Turn, want)
+		}
+	}
+
+	// A conversation no other started is no subagent.
+	if opts := FileOptions("agy", filepath.Join(brain, "parent", logs)); opts.Session.ParentSession != nil || opts.Turn != nil {
+		t.Errorf("parent's options: %+v", opts)
+	}
+}
+
+func TestKimiParse(t *testing.T) {
+	wire := strings.Join([]string{
+		`{"type":"metadata","protocol_version":"1.4","created_at":1792490400000}`,
+		`{"type":"turn.prompt","time":1792490400000,"prompt":"older prompt shape"}`,
+		`{"type":"context.append_loop_event","time":1792490401000,"event":{"type":"tool.result","toolCallId":"tc-1","result":{"output":"early\n"}}}`,
+		`{"type":"context.append_loop_event","time":1792490402000,"event":{"type":"tool.call","toolCallId":"tc-1","name":"Bash","args":{"command":"echo early"},"display":{"kind":"command","cwd":"/home/user/w"}}}`,
+		`{"type":"turn.steer","time":1792490403000,"input":[{"type":"text","text":"also check b"}]}`,
+		`{"type":"context.append_loop_event","time":1792490404000,"event":{"type":"tool.call","toolCallId":"tc-2","name":"Read","args":{"path":"/home/user/w/b.go","line_offset":10}}}`,
+		`{"type":"context.append_loop_event","time":1792490405000,"event":{"type":"tool.result","toolCallId":"tc-2","result":{"output":"10\tx\n11\ty\n"}}}`,
+		`{"type":"context.append_loop_event","time":1792490406000,"event":{"type":"tool.call","toolCallId":"tc-3","name":"Bash","args":{"command":"false"}}}`,
+		`{"type":"context.append_loop_event","time":1792490407000,"event":{"type":"tool.result","toolCallId":"tc-3","result":{"output":[{"type":"text","text":"exit 1"}],"isError":true}}}`,
+		`{"type":"context.append_loop_event","time":1792490408000,"event":{"type":"content.part","part":{"type":"think","think":"   "}}}`,
+		`{"type":"turn.prompt","time":1792490409000,"input":[{"type":"text","text":"next"},{"type":"text","text":"line two"}]}`,
+	}, "\n") + "\n"
+	p, events := parse(Kimi{}, []byte(wire))
+	want := []string{
+		`1 add prompt(human) "older prompt shape"`,
+		// A result logged before its call completes it as it's added.
+		`1 add tool Bash(echo early) pending ""`,
+		`1 update tool Bash(echo early) ok "early\n"`,
+		`1 add prompt(queued) "also check b"`,
+		`1 add tool Read(b.go) pending ""`,
+		`1 update tool Read(b.go) ok "10\tx\n11\ty\n"`,
+		`1 add tool Bash(false) pending ""`,
+		`1 update tool Bash(false) error "exit 1"`,
+		`2 add prompt(human) "next\nline two"`,
+	}
+	if got := summaries(events); !slices.Equal(got, want) {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if events[5].TS != "2026-10-20T10:00:05.000Z" || string(events[5].Tool.Meta) != `{"lines":2,"range":[10,11]}` {
+		t.Errorf("Read update: ts %s, meta %s", events[5].TS, events[5].Tool.Meta)
+	}
+	if s := p.Session(); s.Harness != "kimi" || s.CWD != "/home/user/w" {
+		t.Errorf("session = %+v", s)
+	}
+}
+
+// A Kimi subagent's log is its own session, named as agent sessions names
+// it, and its events say whose they are.
+func TestKimiSubagent(t *testing.T) {
+	session := filepath.Join(t.TempDir(), "session_f0aa")
+	wire := filepath.Join(session, "agents", "agent-1", "wire.jsonl")
+	if err := os.MkdirAll(filepath.Dir(wire), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(session, "state.json"), []byte(`{"title":"The main conversation","workDir":"/home/user/w"}`), 0o600)
+	os.WriteFile(wire, []byte(`{"type":"turn.prompt","time":1792490400000,"input":[{"type":"text","text":"review a.go"}]}`+"\n"), 0o600)
+	f, err := ReadFile(wire, nil, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := f.Session; s.Harness != "kimi" || s.SessionID != "f0aa:agent-1" || s.ParentSession == nil || s.ParentSession.SessionID != "f0aa" ||
+		s.CWD != "/home/user/w" || s.Title != "" {
+		t.Errorf("session = %+v", s)
+	}
+	if len(f.Events) != 1 || f.Events[0].Agent != "f0aa:agent-1" || f.Events[0].Prompt.Origin != OriginPeer {
+		t.Errorf("events = %+v", f.Events)
 	}
 }
 
@@ -306,10 +502,17 @@ func TestDetect(t *testing.T) {
 	if r := Detect(readFixture(t, "claude.jsonl")); r.Harness() != "claude" {
 		t.Errorf("claude fixture detected as %s", r.Harness())
 	}
+	kimi, err := os.ReadFile(filepath.Join(corpusDir, "kimi", "interleaved", "session_f0aa1fb8-41b1-5485-a887-ecd00a0bf053", "agents", "main", "wire.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := Detect(kimi); r.Harness() != "kimi" {
+		t.Errorf("kimi wire detected as %s", r.Harness())
+	}
 }
 
 func TestDegenerateInputs(t *testing.T) {
-	for _, r := range []Reader{Claude{}, Agy{}} {
+	for _, r := range []Reader{Claude{}, Agy{}, Kimi{}} {
 		if p, events := parse(r, nil); len(events) != 0 || p.Lines != 0 {
 			t.Errorf("%s: empty input gave %d events, %d lines", r.Harness(), len(events), p.Lines)
 		}
@@ -399,7 +602,7 @@ func TestReadFile(t *testing.T) {
 
 	// Without a reader, the format is detected.
 	path = writeFile(t, "transcript_full.jsonl", string(readFixture(t, "agy.jsonl")))
-	if f, err := ReadFile(path, nil, 50); err != nil || f.Session.Harness != "agy" || len(f.Events) != 15 {
+	if f, err := ReadFile(path, nil, 50); err != nil || f.Session.Harness != "agy" || len(f.Events) != 24 {
 		t.Errorf("detected: %+v, %v", f, err)
 	}
 }
@@ -501,6 +704,8 @@ func TestSessionIDFromPath(t *testing.T) {
 		"/home/user/.claude/projects/-p/0000-aa.jsonl":                                              "0000-aa",
 		"/home/user/.claude/projects/-p/0000-aa/subagents/agent-a1b2.jsonl":                         "agent-a1b2",
 		"/home/user/.gemini/antigravity-cli/brain/c-1/.system_generated/logs/transcript_full.jsonl": "c-1",
+		"/home/user/.kimi-code/sessions/wd_w_1/session_f0aa/agents/main/wire.jsonl":                 "f0aa",
+		"/home/user/.kimi-code/sessions/wd_w_1/session_f0aa/agents/agent-1/wire.jsonl":              "f0aa:agent-1",
 		"/tmp/transcript.jsonl": "",
 	} {
 		if got := sessionIDFromPath(path); got != want {

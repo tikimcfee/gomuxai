@@ -18,13 +18,17 @@ import (
 // events each must produce.
 const corpusDir = "testdata/corpus"
 
-// TestCorpusClaude runs the Claude reader over every claude case, its subagents'
-// transcripts included, and compares what it emits to the case's expected stream,
-// line by line, as README.md's "Comparing" says: as JSON values, an absent field
-// equal to its zero value, the session line's mtime and status left out.
-func TestCorpusClaude(t *testing.T) {
+func TestCorpusClaude(t *testing.T) { testCorpus(t, Claude{}) }
+func TestCorpusAgy(t *testing.T)    { testCorpus(t, Agy{}) }
+func TestCorpusKimi(t *testing.T)   { testCorpus(t, Kimi{}) }
+
+// testCorpus runs r over every case of its harness, subagents' transcripts
+// included, and compares what it emits to the case's expected stream, line by
+// line, as README.md's "Comparing" says: as JSON values, an absent field equal to
+// its zero value, the session line's mtime and status left out.
+func testCorpus(t *testing.T, r Reader) {
 	var cases []string
-	err := filepath.WalkDir(filepath.Join(corpusDir, "claude"), func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(filepath.Join(corpusDir, r.Harness()), func(path string, d fs.DirEntry, err error) error {
 		if err == nil && strings.HasSuffix(path, ".events.jsonl") {
 			cases = append(cases, path)
 		}
@@ -34,7 +38,7 @@ func TestCorpusClaude(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(cases) == 0 {
-		t.Fatal("no claude cases")
+		t.Fatalf("no %s cases", r.Harness())
 	}
 	for _, want := range cases {
 		t.Run(strings.TrimPrefix(want, corpusDir+"/"), func(t *testing.T) {
@@ -47,11 +51,10 @@ func TestCorpusClaude(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// As ReadFile reads it: a subagent's turns numbered from its parent's transcript.
-			p := Claude{}.NewParser(Options{
-				Requests: strings.HasSuffix(want, ".requests.events.jsonl"),
-				Turns:    ClaudeSubagentTurns(filepath.Join(corpusDir, session.Path)),
-			})
+			// As ReadFile reads it, with what the files beside the transcript say.
+			opts := FileOptions(r.Harness(), filepath.Join(corpusDir, session.Path))
+			opts.Requests = strings.HasSuffix(want, ".requests.events.jsonl")
+			p := r.NewParser(opts)
 			events := p.Feed(data)
 			s := p.Session()
 			s.file(filepath.Join(corpusDir, session.Path), int64(len(data)))
