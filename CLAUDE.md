@@ -335,7 +335,27 @@ the resolved status `agent status` shows. It also reads the stores of other
 `agent` binaries that the tmux `agent-*` sessions point at (a worktree's
 `./bin/agent`), read-only. To coordinate, use `wait` and `_result`; export
 is for programs that draw or log the tree. `docs/ARCHITECTURE.md` ("Export")
-has the JSON shapes.
+has the JSON shapes. A departed agent's `session_id` is the one its
+transcript's path names.
+
+### Sessions: every agent session on the host
+
+```bash
+agent sessions                        # one line each: when, harness, project, status, workgroup, title
+agent sessions --workgroup            # only sessions a workgroup agent owns (--local: only the others)
+agent sessions --harness claude --json   # docs/EVENTS.md's Session shape
+```
+
+`sessions` lists the transcripts Claude Code, agy and Kimi Code keep,
+whether `agent spawn` started the session or a person ran the CLI: same
+fields for both, with `workgroup` naming the owning agent (name, parent,
+store, host) or null. Subagent sessions are listed too, with
+`parent_session`. Status for a session no workgroup owns comes from the
+harness: `claude agents --json` for Claude, agy's presence lock (running
+shows `unknown`), and for Kimi the transcript's age; `agent help sessions`
+has the rules, and `docs/ARCHITECTURE.md` ("Sessions") where each field
+comes from. This host only. `claude_projects_dir`, `agy_brain_dir` and
+`kimi_sessions_dir` in the JSON app config change where it looks.
 
 ## Other Hosts
 

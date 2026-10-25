@@ -9,14 +9,17 @@ Events are one per thing that happened: a prompt, a thinking block, a reply, a t
 They are never pre-grouped. Each carries the turn (prompt) it belongs to, so a reader may
 group them; none has to.
 
-The Go types are in `internal/transcript/events.go`.
+The Go types are in `internal/transcript/events.go`; the Session is
+`discovery.Session` (`internal/discovery/sessions.go`).
 
 ## Commands
 
-- `agent sessions [--json]`: every agent session on the host. That includes workgroup
-  agents (spawned by gomuxai, with a name, parent and status) and local transcripts that no
-  workgroup owns (a plain Claude Code, agy or Kimi session). Both kinds have the same fields;
-  `workgroup` says which one a session is.
+- `agent sessions [--json] [--harness h] [--workgroup|--local]`: every agent session on the
+  host, newest first. That includes workgroup agents (spawned by gomuxai, with a name, parent
+  and status) and local transcripts that no workgroup owns (a plain Claude Code, agy or Kimi
+  session). Both kinds have the same fields; `workgroup` says which one a session is.
+  `--json` prints an array of Sessions. `docs/ARCHITECTURE.md` ("Sessions") says where each
+  field comes from and how status is decided.
 - `agent events <name|session-id|path> [--json] [--follow] [--from <byte>] [--requests]`: one
   session's events, as JSON lines.
   - `--from` resumes at a byte offset: the `at` of the last event the reader holds.
@@ -45,6 +48,15 @@ reply is confirmed) is sent again with the same `id` and `"op":"update"`.
   "parent_session": { "session_id": "…", "tool_id": "…" },  // set on a subagent's session
   "continued_in": "…" }
 ```
+
+- `session_id` is the harness's id: Claude's session uuid, agy's conversation id, Kimi's
+  uuid (without `session_`). A subagent's is its own: Claude's `agent-<agent id>` (its
+  transcript's name), agy's conversation id, Kimi's `<uuid>:<agent>`.
+- `tool_id` is the call that started the subagent, where the harness records it (Claude's
+  meta.json `toolUseId`); absent for agy and Kimi.
+- `workgroup.parent` is absent when a person spawned the agent.
+- A live workgroup agent whose CLI hasn't written a transcript yet (or keeps none) is listed
+  with an empty `path` and `harness` set to its backend.
 
 ## Event
 
