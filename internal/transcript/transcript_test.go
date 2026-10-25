@@ -166,6 +166,41 @@ func TestAgyParse(t *testing.T) {
 	}
 }
 
+func TestAgyArgs(t *testing.T) {
+	tests := []struct{ name, args, want string }{
+		{
+			name: "transcript.jsonl: every value is its JSON in a string",
+			args: `{"CommandLine":"\"echo hi\\nls\"","WaitMsBeforeAsync":"500","AllowMultiple":"false","questions":"[{\"question\":\"Q?\"}]","toolSummary":"\"Run\""}`,
+			want: `{"AllowMultiple":false,"CommandLine":"echo hi\nls","WaitMsBeforeAsync":500,"questions":[{"question":"Q?"}],"toolSummary":"Run"}`,
+		},
+		{
+			name: "transcript_full.jsonl: plain values stay, a quoted search's quotes too",
+			args: `{"query":"\"exact phrase\"","toolSummary":"Search the web"}`,
+			want: `{"query":"\"exact phrase\"","toolSummary":"Search the web"}`,
+		},
+		{
+			name: "a value that isn't a string means plain",
+			args: `{"CommandLine":"\"ls\"","WaitMsBeforeAsync":500}`,
+			want: `{"CommandLine":"\"ls\"","WaitMsBeforeAsync":500}`,
+		},
+		{name: "no args", args: `{}`, want: `{}`},
+		{name: "not an object", args: `null`, want: `null`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := agyArgs(json.RawMessage(tt.args)); string(got) != tt.want {
+				t.Errorf("agyArgs = %s, want %s", got, tt.want)
+			}
+		})
+	}
+
+	// Decoded, an encoded replacement's lines count.
+	args := agyArgs(json.RawMessage(`{"TargetFile":"\"/p/d.go\"","TargetContent":"\"a\\nb\"","ReplacementContent":"\"a\\nc\\nd\\ne\"","AllowMultiple":"false"}`))
+	if s := SummarizeTool("replace_file_content", args, nil, ""); s.Target != "/p/d.go" || string(s.Meta) != `{"added":3,"removed":1}` {
+		t.Errorf("encoded replace_file_content: %+v, meta %s; want /p/d.go, +3 -1", s, s.Meta)
+	}
+}
+
 func TestDetect(t *testing.T) {
 	if r := Detect(readFixture(t, "agy.jsonl")); r.Harness() != "agy" {
 		t.Errorf("agy fixture detected as %s", r.Harness())

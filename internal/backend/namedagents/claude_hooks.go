@@ -124,7 +124,7 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		r.Prompt = types.PromptsMainEnded
 	case "PreToolUse":
 		r.Status = types.StatusProcessing
-		r.Detail = claudeToolSummary(p.ToolName, p.ToolInput)
+		r.Detail = toolSummary(p.ToolName, p.ToolInput)
 		if p.ToolName == "Bash" {
 			var in struct {
 				Command string `json:"command"`
@@ -134,15 +134,15 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		}
 	case "PostToolUse":
 		r.Status = types.StatusProcessing
-		r.Detail = claudeToolSummary(p.ToolName, p.ToolInput)
+		r.Detail = toolSummary(p.ToolName, p.ToolInput)
 		r.Prompt, r.CallKey = types.PromptResolved, callKey(p.ToolName, p.ToolInput)
 	case "PostToolUseFailure":
 		r.Status = types.StatusProcessing
-		r.Detail = "failed: " + claudeToolSummary(p.ToolName, p.ToolInput)
+		r.Detail = "failed: " + toolSummary(p.ToolName, p.ToolInput)
 		r.Prompt, r.CallKey = types.PromptResolved, callKey(p.ToolName, p.ToolInput)
 	case "PermissionRequest":
 		r.Status = types.StatusWaiting
-		r.Detail = "permission: " + claudeToolSummary(p.ToolName, p.ToolInput)
+		r.Detail = "permission: " + toolSummary(p.ToolName, p.ToolInput)
 		switch {
 		case p.AgentType != "":
 			// As Claude's dialog says: "Bash command · from the general-purpose agent".
@@ -240,15 +240,6 @@ func (b *ClaudeBackend) AllowOutput(reason string) []byte {
 // transcript_path.
 func (b *ClaudeBackend) TranscriptReader() transcript.Reader {
 	return transcript.Claude{}
-}
-
-// claudeToolInputKeys are the tool_input fields that best describe a tool
-// call, most telling first.
-var claudeToolInputKeys = []string{"command", "file_path", "pattern", "url", "query", "description"}
-
-// claudeToolSummary renders a tool call as "Tool: <most telling input>".
-func claudeToolSummary(tool string, input json.RawMessage) string {
-	return toolSummary(tool, input, claudeToolInputKeys)
 }
 
 // NativeStatus reads the session's status from `claude agents --json`.

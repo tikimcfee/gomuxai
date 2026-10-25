@@ -2,6 +2,7 @@ package namedagents
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
@@ -42,16 +44,14 @@ const maxDetailLen = 120
 // call.
 const maxToolInputLen = 64 << 10
 
-// toolSummary renders a tool call as "tool: <most telling input>", the
-// input being the first of keys set in it. The input is kept whole, line
-// breaks included: for a permission prompt, it is what an answer allows.
-func toolSummary(tool string, input json.RawMessage, keys []string) string {
-	var fields map[string]any
-	_ = json.Unmarshal(input, &fields)
-	for _, key := range keys {
-		if v, ok := fields[key].(string); ok && strings.TrimSpace(v) != "" {
-			return tool + ": " + strings.TrimSpace(v)
-		}
+// toolSummary renders a tool call as "tool: <what it's about>": the file,
+// else the most telling input, from the tool table. It is kept whole, line
+// breaks included, and paths stay absolute: for a permission prompt, it is
+// what an answer allows.
+func toolSummary(tool string, input json.RawMessage) string {
+	s := transcript.DescribeTool(tool, input, "")
+	if v := cmp.Or(s.Target, s.Detail); v != "" {
+		return tool + ": " + v
 	}
 	return tool
 }

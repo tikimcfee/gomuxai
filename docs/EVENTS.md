@@ -75,7 +75,9 @@ reply is confirmed) is sent again with the same `id` and `"op":"update"`.
   per call.
   - `result` is `{status: pending|ok|error|interrupted|background, output?, structured?}` and
     arrives as an update.
-  - `action`, `target`, `detail` and `meta` come from the one tool table.
+  - `action`, `target`, `detail` and `meta` come from the one tool table,
+    `transcript.SummarizeTool` in `internal/transcript/tools.go`, whose doc lists each
+    action's `meta`. The Claude and agy hooks' status details and `agent logs` read the same table.
   - Tools the table calls noise keep `action: "noise"`; readers may hide them.
   - A call that starts a subagent names its session in `sub_session`.
 - `system` `{subtype, text?, data?}`: harness records such as turn timing, compaction, API
