@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // Kimi Code keeps a session as a directory,
@@ -56,7 +58,7 @@ func scanKimi(dir string) []Session {
 // session's state.json, the model from the newest llm.request line, and for
 // a subagent, its parent session.
 func probeKimi(wire string, info os.FileInfo) Session {
-	s := fromFile(HarnessKimi, SessionIDFromPath(wire), wire, info)
+	s := fromFile(HarnessKimi, transcript.SessionIDFromPath(wire), wire, info)
 	agentDir := filepath.Dir(wire)
 	sessionDir := filepath.Dir(filepath.Dir(agentDir))
 	if filepath.Base(agentDir) != "main" {

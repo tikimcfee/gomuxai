@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // Session is one agent session, as docs/EVENTS.md describes it: a
@@ -108,7 +110,7 @@ func Probe(path string) (Session, bool) {
 	case HarnessKimi:
 		return probeKimi(path, info), true
 	case HarnessAgy:
-		conv := agyConversationDir(path)
+		conv := transcript.AgyConversationDir(path)
 		if conv == "" {
 			return Session{}, false
 		}

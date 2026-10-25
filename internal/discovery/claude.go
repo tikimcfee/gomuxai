@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // Claude Code keeps a session at <projects>/<project folder>/<session
@@ -142,7 +144,7 @@ const (
 // A subagent's title comes from its meta.json, so its transcript isn't
 // searched for one.
 func probeClaude(path string, info os.FileInfo, subagent bool) Session {
-	s := fromFile(HarnessClaude, SessionIDFromPath(path), path, info)
+	s := fromFile(HarnessClaude, transcript.SessionIDFromPath(path), path, info)
 	f, err := os.Open(path)
 	if err != nil {
 		return s

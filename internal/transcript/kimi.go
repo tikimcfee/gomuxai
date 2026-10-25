@@ -281,7 +281,7 @@ func kimiFileOptions(path string) Options {
 		return Options{}
 	}
 	sessionDir := filepath.Dir(filepath.Dir(agentDir))
-	s := Session{SessionID: sessionIDFromPath(path)}
+	s := Session{SessionID: SessionIDFromPath(path)}
 	main := filepath.Base(agentDir) == "main"
 	if !main {
 		s.ParentSession = &ParentSession{SessionID: strings.TrimPrefix(filepath.Base(sessionDir), "session_")}

@@ -1108,9 +1108,12 @@ func TestSessionIDFromPath(t *testing.T) {
 		"/home/user/.gemini/antigravity-cli/brain/c-2/transcript_full.jsonl":                        "c-2",
 		"/home/user/.kimi-code/sessions/wd_w_1/session_f0aa/agents/main/wire.jsonl":                 "f0aa",
 		"/home/user/.kimi-code/sessions/wd_w_1/session_f0aa/agents/agent-1/wire.jsonl":              "f0aa:agent-1",
+		"/home/user/.gemini/antigravity-cli/brain/c-3/.system_generated/logs/transcript.jsonl":      "c-3",
+		"/home/user/.gemini/antigravity/brain/c-4/transcript.jsonl":                                 "c-4",
 		"/tmp/transcript.jsonl": "",
+		"":                      "",
 	} {
-		if got := sessionIDFromPath(path); got != want {
+		if got := SessionIDFromPath(path); got != want {
 			t.Errorf("%s: %q, want %q", path, got, want)
 		}
 	}

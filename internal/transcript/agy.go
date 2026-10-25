@@ -651,7 +651,7 @@ type agyHunkLines struct {
 // that did, and that call's turn.
 func agyFileOptions(path string) Options {
 	opts := Options{Session: Session{Path: path}}
-	conv := agyConversationDir(path)
+	conv := AgyConversationDir(path)
 	if conv == "" {
 		return opts
 	}
@@ -670,11 +670,11 @@ func agyFileOptions(path string) Options {
 	return opts
 }
 
-// agyConversationDir returns the brain/<conversation id> dir an agy
+// AgyConversationDir returns the brain/<conversation id> dir an agy
 // transcript is in, for either place agy keeps one:
 // <id>/.system_generated/logs/transcript*.jsonl or brain/<id>/transcript*.jsonl.
 // It returns "" for a path of neither shape.
-func agyConversationDir(path string) string {
+func AgyConversationDir(path string) string {
 	if !strings.HasPrefix(filepath.Base(path), "transcript") {
 		return ""
 	}

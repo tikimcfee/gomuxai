@@ -78,25 +78,6 @@ func TestResolveDirs(t *testing.T) {
 	}
 }
 
-func TestSessionIDFromPath(t *testing.T) {
-	cases := map[string]string{
-		"/home/user/.claude/projects/-w/1234-abcd.jsonl":                                           "1234-abcd",
-		"/home/user/.claude/projects/-w/1234-abcd/subagents/agent-a1b2.jsonl":                      "agent-a1b2",
-		"/home/user/.gemini/antigravity-cli/brain/conv-1/.system_generated/logs/transcript.jsonl":  "conv-1",
-		"/home/user/.gemini/antigravity/brain/conv-2/.system_generated/logs/transcript_full.jsonl": "conv-2",
-		"/home/user/.kimi-code/sessions/wd_x_1/session_5678/agents/main/wire.jsonl":                "5678",
-		"/home/user/.kimi-code/sessions/wd_x_1/session_5678/agents/agent-1/wire.jsonl":             "5678:agent-1",
-		"/home/user/.gemini/antigravity-cli/brain/conv-3/transcript.jsonl":                         "conv-3",
-		"/somewhere/transcript.jsonl":                                                              "",
-		"":                                                                                         "",
-	}
-	for path, want := range cases {
-		if got := SessionIDFromPath(path); got != want {
-			t.Errorf("SessionIDFromPath(%q) = %q, want %q", path, got, want)
-		}
-	}
-}
-
 // eachLineBackward yields the same lines as a forward split, in reverse,
 // with their offsets, whatever the chunk size, including lines longer than
 // a chunk and a last line without a newline.

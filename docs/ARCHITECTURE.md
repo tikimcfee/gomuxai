@@ -690,7 +690,7 @@ didn't start). Absent fields are empty: `parent` for a person's agent,
 `ended_at` while live, `store` and `attached` for another host's agents.
 A departed agent (`live: false`, `ended_at` set) keeps its last report.
 Runs don't record the session id, so a departed agent's `session_id` is
-the one its transcript's path names (`discovery.SessionIDFromPath`).
+the one its transcript's path names (`transcript.SessionIDFromPath`).
 
 | `type` | Fields | When |
 |---|---|---|
