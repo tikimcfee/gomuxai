@@ -222,6 +222,11 @@ The rules between them:
   watcher would type queued messages into the shell.
 - A session listed in a state the backend doesn't map counts as alive with
   no native answer; the report decides.
+- **After a deny**, Claude's session list still says `waiting` for a moment
+  (under a second observed), and a deny fires no hook. Within 5s of a
+  recorded `denied` report that left no pending prompt and no dialog on
+  screen (`deniedSince`), the report's status wins, so a `send` right after
+  `deny` isn't refused.
 - **agy dialog promotion.** agy fires `PreToolUse` before it shows a
   permission dialog and nothing while it's up. When the report is
   `processing` from `PreToolUse` and `AgyBackend.PermissionPromptVisible`

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/service"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
 // hookAs sends a Claude hook payload for agent name, with the fake's session
@@ -124,6 +126,45 @@ func TestStatus_SubagentPromptOutlivesMainTurn(t *testing.T) {
 	}
 	if n := pendingKeys(t, env, "worker"); n != 0 {
 		t.Errorf("%d prompts still pending after deny, want 0", n)
+	}
+}
+
+// Repro (real claude): deny, then send at once. claude agents --json still
+// said waiting for about half a second, so send refused ("waiting on a
+// prompt"). A deny that left nothing pending or on screen is believed over
+// a native waiting, briefly; a dialog on screen still stops the send.
+func TestSend_RightAfterDeny(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/opt/x/agent"
+	ctx := context.Background()
+	fake := spawnFake(t, env, "worker")
+	fake.nativeFound, fake.native = true, backend.StatusWaiting
+
+	hookAs(t, env, fake, "worker", readHook("PermissionRequest", "/a"))
+	if _, err := env.service.RespondPermission(ctx, "worker", backend.PermissionDeny, service.PermissionOptions{}); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	// Native still says waiting, and the dialog is still on screen: refuse.
+	if _, err := env.service.Send(ctx, "worker", "hello"); err == nil {
+		t.Error("sent while a dialog was on screen")
+	}
+	fake.promptGone = true
+	status, err := env.service.Send(ctx, "worker", "do it without reading /a")
+	if err != nil || status != service.AgentStatusIdle {
+		t.Errorf("send right after deny: status %s, err %v; want sent, idle", status, err)
+	}
+
+	// A deny long ago doesn't outweigh native.
+	old := time.Now().Add(-time.Minute)
+	if err := env.store.SetStates(ctx, []*storage.StateEntry{
+		{AgentName: "worker", Key: service.StateKeyStatus, Value: "idle", UpdatedAt: old},
+		{AgentName: "worker", Key: service.StateKeyEvent, Value: "denied", UpdatedAt: old},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := env.service.Status(ctx, "worker"); st != service.AgentStatusWaiting {
+		t.Errorf("a minute after deny: status %s, want native's waiting", st)
 	}
 }
 

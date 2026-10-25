@@ -328,6 +328,11 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 	}
 
 	native, found, queried := s.nativeStatus(ctx, agent)
+	if found && native == AgentStatusWaiting && s.deniedSince(agent, reported) {
+		// Claude's session list still says waiting for a moment after a
+		// deny (which fires no hook), so a send right after deny was refused.
+		return reported, reported, nil
+	}
 	if found {
 		info := &StatusInfo{Status: native, Source: StatusSourceNative}
 		// Hook detail is only trustworthy while it agrees with the backend;
@@ -427,6 +432,18 @@ func (s *AgentService) nativeStatus(ctx context.Context, agent *storage.Agent) (
 		return "", false, false
 	}
 	return fromBackendStatus(st), true, true
+}
+
+// deniedLag bounds how long after a deny native status may still say
+// waiting before it is believed again. Observed: under a second.
+const deniedLag = 5 * time.Second
+
+// deniedSince reports whether the last report is a deny recorded within
+// deniedLag that left no prompt pending or on screen: a native "waiting"
+// then is the CLI catching up, not a prompt.
+func (s *AgentService) deniedSince(agent *storage.Agent, reported *StatusInfo) bool {
+	return reported != nil && reported.Event == "denied" && time.Since(reported.UpdatedAt) < deniedLag &&
+		len(reported.pending) == 0 && !s.permissionPromptVisible(agent)
 }
 
 func (s *AgentService) permissionPromptVisible(agent *storage.Agent) bool {
