@@ -108,11 +108,16 @@ func Probe(path string) (Session, bool) {
 	case HarnessKimi:
 		return probeKimi(path, info), true
 	case HarnessAgy:
-		// brain/<id>/.system_generated/logs/<transcript>
-		brain := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(path))))
-		return probeAgy(newAgyIndex(filepath.Dir(brain)), SessionIDFromPath(path), path, info), true
+		conv := agyConversationDir(path)
+		if conv == "" {
+			return Session{}, false
+		}
+		return probeAgy(newAgyIndex(filepath.Dir(filepath.Dir(conv))), filepath.Base(conv), path, info), true
 	default:
-		return probeClaude(path, info), true
+		if isClaudeSubagent(path) {
+			return probeClaudeSubagent(path, info), true
+		}
+		return probeClaude(path, info, false), true
 	}
 }
 

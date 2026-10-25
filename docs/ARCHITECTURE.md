@@ -395,7 +395,8 @@ from three sources, most authoritative first:
    lines of the screen, for backends with neither. A custom backend needs
    its `--backend-config` loaded for this.
 
-The rules between them:
+The rules between native and report are one function,
+`discovery.ReconcileNative`, which `agent sessions` applies too:
 
 - Native wins when it disagrees with the report. An interrupted Claude
   permission prompt fires no hook, so the report would stay `waiting`
@@ -728,29 +729,45 @@ the storage folder's name, and only the head and tail are read:
 | `parent_session` | the `<uuid>/subagents/` dir; `tool_id` = meta.json `toolUseId` | `brain/<parent>/.system_generated/subagents/<id>.json` | the session dir of `agents/<agent>/` |
 | `continued_in` | newest `continued-in` record | - | - |
 
-Claude re-appends the custom title beside every AI title it writes, so the
-title search reads backwards and stops 1 MiB past the newest AI title; a
-transcript with no title is read whole. `project` is the cwd's last part.
+A Claude transcript is never read whole: the head grows from 16 KiB until
+a record has a cwd (at most 256 KiB), and the end is read backwards, at
+most its last 1 MiB, until the metadata is found and, for a main session,
+a title. Claude re-appends the custom title beside every AI title it
+writes, so the search stops 64 KiB past the newest AI title; a title older
+than the last 1 MiB isn't found. A subagent's transcript holds no title,
+so only its metadata is looked for. Measured on 1851 transcripts (896 MB):
+117 MB read, at most about 0.5 MB per file. `project` is the cwd's last
+part.
 
 **Workgroup join.** The agents come from export's tree with `--all` (this
 store and those its tmux sessions point at), each with its name's
 `logs/<name>.transcripts`. A transcript belongs to the run whose current or
 last transcript it is; one only the history names, to that name's newest
 run created before the file's last write. A subagent's session belongs to
-its parent session's agent. A workgroup transcript outside the scanned dirs
-is read on its own, and a live agent with no transcript yet is listed with
-an empty `path`.
+its parent session's agent, at any depth. Every transcript an agent names
+is read first, wherever it lives, so the history rule knows its last write.
+Paths and stores are compared with symlinks resolved, so a symlinked
+`~/.claude` lists a session once. A live agent with no transcript yet is
+listed with an empty `path` and its backend as `harness`.
 
 **Status** (`discovery.Resolve`):
-- a live agent's current session: its last report, but `claude agents
-  --json`'s status when that disagrees, and `exited` when it doesn't list
-  the session or agy no longer holds the conversation open;
+- a live agent's current session: its last report, reconciled with
+  `claude agents --json` by `discovery.ReconcileNative`, the one rule
+  `agent status` uses too: the list's status when it lists the session in
+  a mapped state (but not a `waiting` within 5s of a deny), `exited` when
+  it doesn't list a session the report says is alive, else the report.
+  `agent status` then reads the screen as well; `sessions` doesn't. agy:
+  `exited` once agy no longer holds the conversation open;
 - an agent's other sessions, and a departed run's: `exited`;
 - Claude, no workgroup: `claude agents --json`, `exited` if unlisted,
   `unknown` if the CLI can't be run;
 - agy, no workgroup: agy holds an exclusive `flock` on
-  `presence/<conversation id>.lock` while a conversation is open (checked
-  with a non-blocking shared lock, released at once): `unknown` while held
+  `presence/<conversation id>.lock` while a conversation is open. On Linux
+  that is read from `/proc/locks`, taking no lock: a lock on the file's
+  inode whose holder has the file open (its `/proc/<pid>/fd`; the device
+  `/proc/locks` names is the superblock's, which differs from `stat`'s on
+  btrfs). Elsewhere a non-blocking shared `flock`, released at once, which
+  for that moment would make agy's own non-blocking lock fail. `unknown` while held
   (idle and busy look the same), else `exited`. A subagent conversation
   without its own lock is open while its record says `ALIVE` and its parent
   is open;

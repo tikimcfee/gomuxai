@@ -27,14 +27,14 @@ func scanClaude(dir string) []Session {
 		for _, e := range entries {
 			path := filepath.Join(folder, e.Name())
 			if e.IsDir() {
-				out = append(out, scanClaudeSubagents(filepath.Join(path, "subagents"), e.Name())...)
+				out = append(out, scanClaudeSubagents(filepath.Join(path, "subagents"))...)
 				continue
 			}
 			if !strings.HasSuffix(e.Name(), ".jsonl") {
 				continue
 			}
 			if info, err := e.Info(); err == nil && info.Size() > 0 {
-				out = append(out, probeClaude(path, info))
+				out = append(out, probeClaude(path, info, false))
 			}
 		}
 	}
@@ -49,9 +49,9 @@ func scanClaude(dir string) []Session {
 	return out
 }
 
-// scanClaudeSubagents lists the subagent sessions of the session named
-// parent.
-func scanClaudeSubagents(dir, parent string) []Session {
+// scanClaudeSubagents lists the subagent sessions in a session's
+// subagents dir.
+func scanClaudeSubagents(dir string) []Session {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -63,13 +63,24 @@ func scanClaudeSubagents(dir, parent string) []Session {
 			continue
 		}
 		if info, err := e.Info(); err == nil && info.Size() > 0 {
-			s := probeClaude(filepath.Join(dir, name), info)
-			s.ParentSession = &ParentSession{SessionID: parent}
-			readClaudeMeta(&s, filepath.Join(dir, strings.TrimSuffix(name, ".jsonl")+".meta.json"))
-			out = append(out, s)
+			out = append(out, probeClaudeSubagent(filepath.Join(dir, name), info))
 		}
 	}
 	return out
+}
+
+// isClaudeSubagent reports whether path is a subagent's transcript,
+// <session id>/subagents/agent-<id>.jsonl.
+func isClaudeSubagent(path string) bool {
+	return filepath.Base(filepath.Dir(path)) == "subagents" && strings.HasPrefix(filepath.Base(path), "agent-")
+}
+
+// probeClaudeSubagent reads a subagent's transcript and its meta.json.
+func probeClaudeSubagent(path string, info os.FileInfo) Session {
+	s := probeClaude(path, info, true)
+	s.ParentSession = &ParentSession{SessionID: filepath.Base(filepath.Dir(filepath.Dir(path)))}
+	readClaudeMeta(&s, strings.TrimSuffix(path, ".jsonl")+".meta.json")
+	return s
 }
 
 // readClaudeMeta fills a subagent's session from its meta.json: the tool
@@ -116,54 +127,79 @@ type claudeLine struct {
 	} `json:"message"`
 }
 
-// Read sizes for a Claude transcript: the head read for the cwd, the tail
-// chunk read backwards for the newest metadata, and how far past the
-// newest AI title to keep looking for a custom one.
+// Read sizes for a Claude transcript: the head read for the cwd; the tail
+// chunk read backwards for the newest metadata; how far from the end to
+// look for anything at all (claudeTail); and how far past the newest AI
+// title to keep looking for a custom one.
 const (
 	claudeHead       = 256 << 10
-	claudeTailChunk  = 256 << 10
-	claudeTitleSlack = 1 << 20
+	claudeTailChunk  = 64 << 10
+	claudeTail       = 1 << 20
+	claudeTitleSlack = 64 << 10
 )
 
-// probeClaude reads a Claude transcript's metadata: the cwd from its first
-// record that has one, and from the end backwards the newest title, model,
-// version, git branch and continued-in.
-//
-// The title is the newest custom title (a person's /rename) if there is
-// one, else the newest AI title: Claude Code re-appends the custom title
-// beside each AI title it writes, so the custom one is never far from the
-// end. The search stops claudeTitleSlack past the newest AI title; a
-// transcript with no title at all is read whole.
-func probeClaude(path string, info os.FileInfo) Session {
+// probeClaude reads a Claude transcript's metadata (see readClaude).
+// A subagent's title comes from its meta.json, so its transcript isn't
+// searched for one.
+func probeClaude(path string, info os.FileInfo, subagent bool) Session {
 	s := fromFile(HarnessClaude, SessionIDFromPath(path), path, info)
 	f, err := os.Open(path)
 	if err != nil {
 		return s
 	}
 	defer f.Close()
-	size := info.Size()
+	readClaude(&s, f, info.Size(), subagent)
+	return s
+}
 
-	head := make([]byte, min(claudeHead, size))
-	n, _ := f.ReadAt(head, 0)
-	for line := range bytes.SplitSeq(head[:n], []byte{'\n'}) {
-		var r claudeLine
-		if !bytes.Contains(line, []byte(`"cwd"`)) || json.Unmarshal(line, &r) != nil || r.CWD == "" {
-			continue
+// readClaude fills s from a Claude transcript of size bytes: the cwd from
+// its first record that has one, and from the end backwards the newest
+// title, model, version, git branch and continued-in. It reads at most
+// claudeHead bytes of the head and claudeTail of the end, never the whole
+// of a large transcript; a title older than that is not found.
+//
+// The title is the newest custom title (a person's /rename) if there is
+// one, else the newest AI title. Claude Code re-appends the custom title
+// beside each AI title it writes, so the search stops claudeTitleSlack
+// past the newest AI title. A subagent's transcript holds no title, so only
+// its metadata is looked for.
+func readClaude(s *Session, f io.ReaderAt, size int64, subagent bool) {
+	if size <= 2*claudeTailChunk {
+		// Small enough to read once for both ends.
+		data := make([]byte, size)
+		n, _ := f.ReadAt(data, 0)
+		f, size = bytes.NewReader(data[:n]), int64(n)
+	}
+	// The cwd is in one of the first records; the head read grows from
+	// 16 KiB only until one has it.
+	var head []byte
+	for want := int64(16 << 10); s.Cwd == "" && int64(len(head)) < min(claudeHead, size); want *= 2 {
+		more := make([]byte, min(want, claudeHead, size)-int64(len(head)))
+		n, _ := f.ReadAt(more, int64(len(head)))
+		if n == 0 {
+			break
 		}
-		s.Cwd = r.CWD
-		break
+		head = append(head, more[:n]...)
+		for line := range bytes.SplitSeq(head, []byte{'\n'}) {
+			var r claudeLine
+			if bytes.Contains(line, []byte(`"cwd"`)) && json.Unmarshal(line, &r) == nil && r.CWD != "" {
+				s.Cwd = r.CWD
+				break
+			}
+		}
 	}
 
 	var aiTitle, customTitle, cwd string
 	var aiTitleAt int64 = -1
-	eachLineBackward(f, size, claudeTailChunk, func(line []byte, at int64) bool {
+	versionSeen := false // the newest record with a version: its branch, even "", is the branch
+	eachLineBackward(f, size, claudeTailChunk, claudeTail, func(line []byte, at int64) bool {
 		switch {
-		case bytes.Contains(line, []byte(`"custom-title"`)):
+		case !subagent && bytes.Contains(line, []byte(`"custom-title"`)):
 			var r claudeLine
-			if json.Unmarshal(line, &r) == nil && r.Type == "custom-title" && r.CustomTitle != "" {
+			if customTitle == "" && json.Unmarshal(line, &r) == nil && r.Type == "custom-title" && r.CustomTitle != "" {
 				customTitle = r.CustomTitle
 			}
-		case bytes.Contains(line, []byte(`"ai-title"`)):
+		case !subagent && bytes.Contains(line, []byte(`"ai-title"`)):
 			var r claudeLine
 			if aiTitle == "" && json.Unmarshal(line, &r) == nil && r.Type == "ai-title" && r.AITitle != "" {
 				aiTitle, aiTitleAt = r.AITitle, at
@@ -173,7 +209,7 @@ func probeClaude(path string, info os.FileInfo) Session {
 			if s.ContinuedIn == "" && json.Unmarshal(line, &r) == nil && r.Type == "continued-in" {
 				s.ContinuedIn = r.ContinuedIn
 			}
-		case s.Model == "" || s.Version == "" || s.GitBranch == "" || cwd == "":
+		case s.Model == "" || !versionSeen || cwd == "":
 			var r claudeLine
 			if !bytes.Contains(line, []byte(`"sessionId"`)) || json.Unmarshal(line, &r) != nil {
 				break
@@ -181,18 +217,15 @@ func probeClaude(path string, info os.FileInfo) Session {
 			if s.Model == "" && r.Type == "assistant" && r.Message != nil && r.Message.Model != "" && r.Message.Model != "<synthetic>" {
 				s.Model = r.Message.Model
 			}
-			if s.Version == "" {
-				s.Version = r.Version
-			}
-			if s.GitBranch == "" {
-				s.GitBranch = r.GitBranch
+			if !versionSeen && r.Version != "" {
+				s.Version, s.GitBranch, versionSeen = r.Version, r.GitBranch, true
 			}
 			if cwd == "" {
 				cwd = r.CWD
 			}
 		}
-		metaDone := s.Model != "" && s.Version != "" && s.GitBranch != ""
-		titleDone := customTitle != "" || (aiTitleAt >= 0 && aiTitleAt-at > claudeTitleSlack)
+		metaDone := s.Model != "" && versionSeen
+		titleDone := subagent || customTitle != "" || (aiTitleAt >= 0 && aiTitleAt-at > claudeTitleSlack)
 		return !(metaDone && titleDone)
 	})
 	s.Title = customTitle
@@ -203,18 +236,19 @@ func probeClaude(path string, info os.FileInfo) Session {
 		s.Cwd = cwd
 	}
 	s.Project = projectOf(s.Cwd)
-	return s
 }
 
 // eachLineBackward calls fn with each line of f's first size bytes, last
 // line first, with the byte offset it starts at, until fn returns false.
 // It reads chunk bytes at a time from the end, so stopping early reads only
-// the tail. A last line without a newline is passed too (it may be one
-// being written; fn's decode decides).
-func eachLineBackward(f io.ReaderAt, size, chunk int64, fn func(line []byte, at int64) bool) {
+// the tail, and it never reads more than the last limit bytes: a line that
+// starts before them is left out. A last line without a newline is passed
+// too (it may be one being written; fn's decode decides).
+func eachLineBackward(f io.ReaderAt, size, chunk, limit int64, fn func(line []byte, at int64) bool) {
+	floor := max(size-limit, 0)
 	var carry []byte // the start of the line the previous chunk began inside
-	for end := size; end > 0; {
-		start := max(end-chunk, 0)
+	for end := size; end > floor; {
+		start := max(end-chunk, floor)
 		buf := make([]byte, end-start, end-start+int64(len(carry)))
 		if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
 			return
@@ -236,7 +270,7 @@ func eachLineBackward(f io.ReaderAt, size, chunk int64, fn func(line []byte, at 
 		carry = buf
 		end = start
 	}
-	if line := bytes.TrimSpace(carry); len(line) > 0 {
+	if line := bytes.TrimSpace(carry); len(line) > 0 && floor == 0 {
 		fn(line, 0)
 	}
 }

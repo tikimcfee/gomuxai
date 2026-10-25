@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 )
@@ -16,6 +17,45 @@ const (
 	StatusExited     = "exited"
 	StatusUnknown    = "unknown"
 )
+
+// Native is what a backend CLI's own session list (claude agents --json)
+// says about one session.
+type Native struct {
+	Queried bool   // the CLI answered
+	Listed  bool   // it lists the session
+	Status  string // its status there; StatusUnknown for a state with no mapping
+}
+
+// How ReconcileNative decides.
+const (
+	NativeWins   = iota // the CLI's status
+	NativeGone          // the CLI doesn't list a session the report says is alive: it exited without a SessionEnd hook
+	ReportStands        // the report: the CLI wasn't asked or didn't answer, or lists the session in a state with no mapping (alive, so not a crash)
+	ReportDenied        // the report, over the CLI's waiting just after a deny (which fires no hook): the CLI catching up
+)
+
+// DeniedLag bounds how long after a deny native status may still say
+// waiting before it is believed again. Observed: under a second.
+const DeniedLag = 5 * time.Second
+
+// ReconcileNative is the one rule for a session that has both a hook report
+// and a place in its CLI's own session list, used by agent status and agent
+// sessions alike. report is the last report's status ("" if none); denied
+// says whether that report is a deny within DeniedLag with no prompt left
+// (asked only when the CLI says waiting).
+func ReconcileNative(n Native, report string, denied func() bool) int {
+	switch {
+	case n.Listed && n.Status == StatusUnknown:
+		return ReportStands
+	case n.Listed && n.Status == StatusWaiting && denied():
+		return ReportDenied
+	case n.Listed:
+		return NativeWins
+	case n.Queried && report != "" && report != StatusExited:
+		return NativeGone
+	}
+	return ReportStands
+}
 
 // RecentWindow is how recently a session with no other sign of life must
 // have written its transcript to count as possibly running (unknown)
@@ -33,8 +73,9 @@ type Agent struct {
 	Live      bool // it has a record (not cleaned up)
 	CreatedAt time.Time
 	EndedAt   time.Time
-	// Status and StatusAt are its last report.
+	// Status, Event and StatusAt are its last report.
 	Status   string
+	Event    string
 	StatusAt time.Time
 	// SessionID and Transcript are its current session (live), or its last
 	// transcript (departed).
@@ -65,9 +106,9 @@ type Live struct {
 // belongs to its parent session's agent.
 //
 // Status:
-//   - a live agent's current session: its last report, corrected by
-//     `claude agents --json` for Claude (its status when it lists the
-//     session; exited when it doesn't), and by agy's presence lock;
+//   - a live agent's current session: its last report, reconciled with
+//     `claude agents --json` for Claude by ReconcileNative (the rule agent
+//     status uses), and exited when agy no longer holds it open;
 //   - any other session of a workgroup agent: exited;
 //   - Claude, no workgroup: `claude agents --json`'s status, or exited if
 //     it doesn't list the session (unknown if it couldn't be asked);
@@ -81,31 +122,38 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 	if live.Now.IsZero() {
 		live.Now = time.Now()
 	}
+	// Paths are compared resolved, so a symlinked ~/.claude (or two
+	// spellings of one dir) is one session, not an owned and a local one.
 	byPath := map[string]int{}
 	for i, s := range sessions {
-		byPath[filepath.Clean(s.Path)] = i
+		byPath[canonical(s.Path)] = i
 	}
-	owner := owners(agents, func(path string) (time.Time, bool) {
-		if i, ok := byPath[path]; ok {
+	// Every transcript an agent names is read first, so the join below
+	// knows each one's last write wherever it lives.
+	for i := range agents {
+		for _, p := range append(slices.Clone(agents[i].History), agents[i].Transcript) {
+			key := canonical(p)
+			if _, ok := byPath[key]; ok || p == "" {
+				continue
+			}
+			if s, ok := Probe(p); ok {
+				byPath[key] = len(sessions)
+				sessions = append(sessions, s)
+			}
+		}
+	}
+	owner := owners(agents, func(key string) (time.Time, bool) {
+		if i, ok := byPath[key]; ok {
 			return sessions[i].Mtime, true
 		}
 		return time.Time{}, false
 	})
-	for _, path := range sortedPaths(owner) {
-		if _, ok := byPath[path]; ok {
-			continue
-		}
-		if s, ok := Probe(path); ok {
-			byPath[path] = len(sessions)
-			sessions = append(sessions, s)
-		}
-	}
 	for i := range agents {
 		a := &agents[i]
 		if !a.Live {
 			continue
 		}
-		if _, ok := byPath[filepath.Clean(a.Transcript)]; ok && a.Transcript != "" {
+		if _, ok := byPath[canonical(a.Transcript)]; ok && a.Transcript != "" {
 			continue
 		}
 		// No transcript yet (a Claude session before its first prompt),
@@ -116,19 +164,23 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 		} else {
 			s.Workgroup, s.Status, s.StatusAt = workgroupOf(a), reported(a), a.StatusAt
 		}
-		byPath[filepath.Clean(a.Transcript)] = len(sessions)
 		sessions = append(sessions, s)
 	}
 
-	// Main sessions first: a subagent's status and workgroup follow its
-	// parent's.
+	// Main sessions first, then each subagent once its parent is done: a
+	// subagent's status and workgroup follow its parent's, at any depth.
 	byID := map[string]*Session{}
+	done := make([]bool, len(sessions))
 	for i := range sessions {
 		s := &sessions[i]
-		if s.ParentSession != nil || (s.Path == "" && s.Workgroup != nil) {
+		if s.ParentSession != nil {
 			continue
 		}
-		if a := owner[filepath.Clean(s.Path)]; a != nil {
+		done[i] = true
+		if s.Path == "" && s.Workgroup != nil {
+			continue
+		}
+		if a := owner[canonical(s.Path)]; a != nil {
 			s.Workgroup = workgroupOf(a)
 			ownedStatus(s, a, live)
 		} else {
@@ -136,38 +188,82 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 		}
 		byID[s.Harness+"\x00"+s.SessionID] = s
 	}
-	for i := range sessions {
-		s := &sessions[i]
-		if s.ParentSession == nil {
-			continue
+	for progress, waitForParent := true, true; ; {
+		if !progress {
+			if !waitForParent {
+				break
+			}
+			waitForParent = false // a cycle, or a parent that isn't here: go on without it
 		}
-		parent := byID[s.Harness+"\x00"+s.ParentSession.SessionID]
-		if a := owner[filepath.Clean(s.Path)]; a != nil {
-			s.Workgroup = workgroupOf(a)
-		} else if parent != nil {
-			s.Workgroup = parent.Workgroup
+		progress = false
+		for i := range sessions {
+			s := &sessions[i]
+			if done[i] {
+				continue
+			}
+			key := s.Harness + "\x00" + s.ParentSession.SessionID
+			parent := byID[key]
+			if parent == nil && waitForParent && hasSession(sessions, done, key) {
+				continue
+			}
+			if a := owner[canonical(s.Path)]; a != nil {
+				s.Workgroup = workgroupOf(a)
+			} else if parent != nil {
+				s.Workgroup = parent.Workgroup
+			}
+			subagentStatus(s, parent, live)
+			byID[s.Harness+"\x00"+s.SessionID] = s
+			done[i], progress, waitForParent = true, true, true
 		}
-		subagentStatus(s, parent, live)
 	}
 	sortSessions(sessions)
 	return sessions
 }
 
-// owners maps each transcript path the agents name to the run it belongs
-// to. mtime gives a transcript's last write, if it is known.
-func owners(agents []Agent, mtime func(path string) (time.Time, bool)) map[string]*Agent {
+// hasSession reports whether a session not yet done has the harness and id
+// in key.
+func hasSession(sessions []Session, done []bool, key string) bool {
+	for i, s := range sessions {
+		if !done[i] && s.Harness+"\x00"+s.SessionID == key {
+			return true
+		}
+	}
+	return false
+}
+
+// canonical is the key a path is joined on: with symlinks resolved, or
+// just cleaned if it can't be (it doesn't exist).
+func canonical(path string) string {
+	if path == "" {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
+// owners maps each transcript path the agents name (canonical) to the run
+// it belongs to. mtime gives a transcript's last write, if it is known.
+func owners(agents []Agent, mtime func(key string) (time.Time, bool)) map[string]*Agent {
 	owner := map[string]*Agent{}
 	runs := map[string][]*Agent{} // by store and name, oldest first
 	for i := range agents {
 		a := &agents[i]
-		key := a.Store + "\x00" + a.Name
+		key := canonical(a.Store) + "\x00" + a.Name
 		runs[key] = append(runs[key], a)
 	}
-	for _, rs := range runs {
+	keys := make([]string, 0, len(runs))
+	for k := range runs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		rs := runs[k]
 		sort.SliceStable(rs, func(i, j int) bool { return rs[i].CreatedAt.Before(rs[j].CreatedAt) })
 		for _, a := range rs {
 			for _, p := range a.History {
-				p = filepath.Clean(p)
+				p = canonical(p)
 				if owner[p] != nil {
 					continue
 				}
@@ -184,7 +280,7 @@ func owners(agents []Agent, mtime func(path string) (time.Time, bool)) map[strin
 		}
 		for _, a := range rs {
 			if a.Transcript != "" {
-				owner[filepath.Clean(a.Transcript)] = a
+				owner[canonical(a.Transcript)] = a
 			}
 		}
 	}
@@ -202,21 +298,26 @@ func reported(a *Agent) string {
 
 // ownedStatus sets the status of a session a workgroup agent owns.
 func ownedStatus(s *Session, a *Agent, live Live) {
-	if !a.Live || filepath.Clean(a.Transcript) != filepath.Clean(s.Path) {
+	current := canonical(a.Transcript) == canonical(s.Path)
+	if !a.Live || !current {
 		s.Status, s.StatusAt = StatusExited, s.Mtime
-		if !a.Live && filepath.Clean(a.Transcript) == filepath.Clean(s.Path) && !a.EndedAt.IsZero() {
+		if !a.Live && current && !a.EndedAt.IsZero() {
 			s.StatusAt = a.EndedAt
 		}
 		return
 	}
 	s.Status, s.StatusAt = reported(a), a.StatusAt
 	switch {
-	case s.Harness == HarnessClaude && live.Claude != nil:
-		if st, ok := live.Claude[s.SessionID]; ok {
+	case s.Harness == HarnessClaude:
+		st, listed := live.Claude[s.SessionID]
+		n := Native{Queried: live.Claude != nil, Listed: listed, Status: st}
+		denied := func() bool { return a.Event == "denied" && live.Now.Sub(a.StatusAt) < DeniedLag }
+		switch ReconcileNative(n, a.Status, denied) {
+		case NativeWins:
 			if st != s.Status {
 				s.Status, s.StatusAt = st, s.Mtime
 			}
-		} else if s.Status != StatusExited {
+		case NativeGone:
 			s.Status, s.StatusAt = StatusExited, s.Mtime
 		}
 	case s.live == liveNo && s.Status != StatusExited:
@@ -268,15 +369,6 @@ func recent(s *Session, live Live) string {
 		return StatusUnknown
 	}
 	return StatusExited
-}
-
-func sortedPaths(m map[string]*Agent) []string {
-	paths := make([]string, 0, len(m))
-	for p := range m {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-	return paths
 }
 
 func firstNonEmpty(values ...string) string {

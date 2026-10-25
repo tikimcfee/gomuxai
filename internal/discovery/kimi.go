@@ -78,7 +78,7 @@ func probeKimi(wire string, info os.FileInfo) Session {
 	}
 	s.Project = projectOf(s.Cwd)
 	if f, err := os.Open(wire); err == nil {
-		eachLineBackward(f, info.Size(), claudeTailChunk, func(line []byte, _ int64) bool {
+		eachLineBackward(f, info.Size(), claudeTailChunk, claudeTail, func(line []byte, _ int64) bool {
 			var r struct {
 				Type  string `json:"type"`
 				Model string `json:"model"`

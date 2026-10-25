@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -85,6 +86,7 @@ func TestSessionIDFromPath(t *testing.T) {
 		"/home/user/.gemini/antigravity/brain/conv-2/.system_generated/logs/transcript_full.jsonl": "conv-2",
 		"/home/user/.kimi-code/sessions/wd_x_1/session_5678/agents/main/wire.jsonl":                "5678",
 		"/home/user/.kimi-code/sessions/wd_x_1/session_5678/agents/agent-1/wire.jsonl":             "5678:agent-1",
+		"/home/user/.gemini/antigravity-cli/brain/conv-3/transcript.jsonl":                         "conv-3",
 		"/somewhere/transcript.jsonl":                                                              "",
 		"":                                                                                         "",
 	}
@@ -115,7 +117,7 @@ func TestEachLineBackward(t *testing.T) {
 	for _, chunk := range []int64{1, 3, 5, 16, 1000} {
 		var got []string
 		var gotAt []int64
-		eachLineBackward(bytes.NewReader(data), int64(len(data)), chunk, func(line []byte, at int64) bool {
+		eachLineBackward(bytes.NewReader(data), int64(len(data)), chunk, 1<<20, func(line []byte, at int64) bool {
 			got, gotAt = append(got, string(line)), append(gotAt, at)
 			return true
 		})
@@ -124,9 +126,20 @@ func TestEachLineBackward(t *testing.T) {
 		}
 	}
 	n := 0
-	eachLineBackward(bytes.NewReader(data), int64(len(data)), 4, func([]byte, int64) bool { n++; return n < 2 })
+	eachLineBackward(bytes.NewReader(data), int64(len(data)), 4, 1<<20, func([]byte, int64) bool { n++; return n < 2 })
 	if n != 2 {
 		t.Errorf("stopping after 2 lines read %d", n)
+	}
+	// With a limit, only lines that start within the last limit bytes.
+	for _, chunk := range []int64{1, 3, 1000} {
+		var got []string
+		eachLineBackward(bytes.NewReader(data), int64(len(data)), chunk, 15, func(line []byte, _ int64) bool {
+			got = append(got, string(line))
+			return true
+		})
+		if want := []string{"last", "ddddddd"}; !slices.Equal(got, want) {
+			t.Errorf("chunk %d, limit 15: lines %q, want %q", chunk, got, want)
+		}
 	}
 }
 
@@ -205,26 +218,94 @@ func TestScanClaude(t *testing.T) {
 	}
 }
 
-// A title well before the tail is still found, across chunk boundaries;
-// the custom title wins though it is older than the AI one.
-func TestScanClaude_LongTranscript(t *testing.T) {
-	home := t.TempDir()
-	filler := `{"type":"attachment","sessionId":"s","attachment":{"content":"` + strings.Repeat("x", 4000) + `"}}`
-	var ls []string
-	ls = append(ls, `{"type":"user","sessionId":"s","cwd":"/home/user/big","message":{"role":"user","content":"go"}}`,
-		`{"type":"custom-title","customTitle":"Named by hand","sessionId":"s"}`)
-	for range 200 {
-		ls = append(ls, filler)
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	r io.ReaderAt
+	n int64
+}
+
+func (c *countingReader) ReadAt(p []byte, off int64) (int, error) {
+	n, err := c.r.ReadAt(p, off)
+	c.n += int64(n)
+	return n, err
+}
+
+var filler = `{"type":"attachment","sessionId":"s","attachment":{"content":"` + strings.Repeat("x", 4000) + `"}}`
+
+// fillers is n filler lines, about 4 KB each.
+func fillers(n int) []string { return slices.Repeat([]string{filler}, n) }
+
+// readCounted runs readClaude over data and returns the session and the
+// bytes it read.
+func readCounted(data string, subagent bool) (Session, int64) {
+	var s Session
+	r := &countingReader{r: strings.NewReader(data)}
+	readClaude(&s, r, int64(len(data)), subagent)
+	return s, r.n
+}
+
+// A listing never reads a large transcript whole: at most the head and the
+// last claudeTail bytes, whether it has no title, is a subagent's (which
+// never has one), or ends in one huge line.
+func TestReadClaude_Bounded(t *testing.T) {
+	head := `{"type":"user","sessionId":"s","cwd":"/home/user/big","message":{"role":"user","content":"go"}}`
+	meta := `{"type":"assistant","sessionId":"s","version":"2.1.310","gitBranch":"","message":{"role":"assistant","model":"m","content":[]}}`
+	limit := int64(claudeHead + claudeTail + claudeTailChunk)
+	cases := map[string]struct {
+		data     string
+		subagent bool
+	}{
+		"no title":     {lines(append(append([]string{head}, fillers(5000)...), meta)...), false},
+		"subagent":     {lines(append(append([]string{head, meta}, fillers(5000)...), meta)...), true},
+		"one big line": {lines(head, meta, `{"type":"attachment","x":"`+strings.Repeat("y", 20<<20)+`"}`), false},
 	}
+	for name, c := range cases {
+		s, n := readCounted(c.data, c.subagent)
+		if n > limit {
+			t.Errorf("%s: read %d of %d bytes, want at most %d", name, n, len(c.data), limit)
+		}
+		if s.Cwd != "/home/user/big" {
+			t.Errorf("%s: cwd = %q, want the head's", name, s.Cwd)
+		}
+	}
+	// A titled transcript stops soon after its newest title.
+	data := lines(append(append([]string{head, `{"type":"ai-title","aiTitle":"Old","sessionId":"s"}`}, fillers(5000)...),
+		`{"type":"ai-title","aiTitle":"New","sessionId":"s"}`, meta)...)
+	if s, n := readCounted(data, false); s.Title != "New" || n > claudeHead+claudeTitleSlack+2*claudeTailChunk {
+		t.Errorf("titled: title %q after reading %d bytes, want New within the slack", s.Title, n)
+	}
+}
+
+// The custom title wins over a newer AI title within the slack past it,
+// across chunk boundaries; a title older than the tail window isn't found.
+func TestReadClaude_TitleWindow(t *testing.T) {
+	user := `{"type":"user","sessionId":"s","cwd":"/home/user/big","message":{"role":"user","content":"go"}}`
+	ls := append([]string{user, `{"type":"custom-title","customTitle":"Named by hand","sessionId":"s"}`}, fillers(10)...)
 	ls = append(ls, `{"type":"ai-title","aiTitle":"Named by the model","sessionId":"s"}`)
-	for range 200 {
-		ls = append(ls, filler)
+	ls = append(ls, fillers(100)...)
+	if s, _ := readCounted(lines(ls...), false); s.Title != "Named by hand" {
+		t.Errorf("title = %q, want the custom one beside the AI one", s.Title)
 	}
-	path := filepath.Join(home, "p", "-big", "s.jsonl")
-	write(t, path, lines(ls...))
-	got := Scan([]Dir{{HarnessClaude, filepath.Join(home, "p"), OriginDefault}})
-	if len(got) != 1 || got[0].Title != "Named by hand" || got[0].Project != "big" {
-		t.Errorf("sessions = %+v, want one titled by its custom title", got)
+	ls = append([]string{user, `{"type":"ai-title","aiTitle":"Ancient","sessionId":"s"}`}, fillers(400)...)
+	if s, _ := readCounted(lines(ls...), false); s.Title != "" {
+		t.Errorf("title = %q, want none: it is older than the last %d bytes", s.Title, claudeTail)
+	}
+}
+
+// In a cwd that isn't a git repo every record's gitBranch is "": the newest
+// version-bearing record still settles version and branch, and older
+// custom titles don't replace the newest one.
+func TestReadClaude_NoGitBranch(t *testing.T) {
+	data := lines(
+		`{"type":"user","sessionId":"s","cwd":"/home/user/plain","version":"2.1.300","gitBranch":"","message":{"role":"user","content":"go"}}`,
+		`{"type":"custom-title","customTitle":"First name","sessionId":"s"}`,
+		`{"type":"ai-title","aiTitle":"AI","sessionId":"s"}`,
+		`{"type":"custom-title","customTitle":"Second name","sessionId":"s"}`,
+		`{"type":"assistant","sessionId":"s","version":"2.1.310","gitBranch":"","message":{"role":"assistant","model":"m","content":[]}}`,
+	)
+	s, _ := readCounted(data, false)
+	if s.Title != "Second name" || s.Version != "2.1.310" || s.GitBranch != "" || s.Model != "m" {
+		t.Errorf("session = title %q version %q branch %q model %q, want the newest of each", s.Title, s.Version, s.GitBranch, s.Model)
 	}
 }
 
@@ -440,6 +521,126 @@ func TestResolve_Workgroup(t *testing.T) {
 	for i := 1; i < len(sessions); i++ {
 		if sessions[i].Mtime.After(sessions[i-1].Mtime) {
 			t.Errorf("not newest first at %d: %v after %v", i, sessions[i].Mtime, sessions[i-1].Mtime)
+		}
+	}
+}
+
+func TestReconcileNative(t *testing.T) {
+	never := func() bool { return false }
+	always := func() bool { return true }
+	cases := []struct {
+		n      Native
+		report string
+		denied func() bool
+		want   int
+	}{
+		{Native{Queried: true, Listed: true, Status: "idle"}, "processing", never, NativeWins},
+		{Native{Queried: true, Listed: true, Status: "waiting"}, "idle", always, ReportDenied},
+		{Native{Queried: true, Listed: true, Status: "waiting"}, "idle", never, NativeWins},
+		{Native{Queried: true, Listed: true, Status: "unknown"}, "idle", never, ReportStands},
+		{Native{Queried: true}, "idle", never, NativeGone},
+		{Native{Queried: true}, "exited", never, ReportStands},
+		{Native{Queried: true}, "", never, ReportStands},
+		{Native{}, "idle", never, ReportStands},
+	}
+	for _, c := range cases {
+		if got := ReconcileNative(c.n, c.report, c.denied); got != c.want {
+			t.Errorf("ReconcileNative(%+v, %q) = %d, want %d", c.n, c.report, got, c.want)
+		}
+	}
+}
+
+// A workgroup agent's Claude session follows agent status's rule: a waiting
+// in the CLI's list right after a deny, or a state with no mapping, leaves
+// the report standing.
+func TestResolve_NativeRule(t *testing.T) {
+	home := t.TempDir()
+	projects := claudeFixture(t, home)
+	now := time.Now()
+	current := filepath.Join(projects, "-slug-not-the-project", "s-main.jsonl")
+	agent := Agent{Name: "lead", Store: "/s", Host: "box", Backend: "claude", Live: true, CreatedAt: now.Add(-time.Hour),
+		Status: "idle", Event: "denied", StatusAt: now.Add(-time.Second), SessionID: "s-main", Transcript: current}
+	status := func(a Agent, native string) string {
+		got := byID(Resolve(Scan([]Dir{{HarnessClaude, projects, OriginDefault}}), []Agent{a}, Live{Claude: map[string]string{"s-main": native}, Now: now}))
+		return got["s-main"].Status
+	}
+	if got := status(agent, "waiting"); got != "idle" {
+		t.Errorf("waiting just after a deny: %q, want the report's idle", got)
+	}
+	agent.StatusAt = now.Add(-time.Minute)
+	if got := status(agent, "waiting"); got != "waiting" {
+		t.Errorf("waiting a minute after a deny: %q, want waiting", got)
+	}
+	if got := status(agent, "unknown"); got != "idle" {
+		t.Errorf("a state with no mapping: %q, want the report's idle", got)
+	}
+}
+
+// A transcript only an agent's history names, outside the scanned dirs,
+// goes to the run that was live when it was written, not the newest.
+func TestResolve_HistoryOutsideDirs(t *testing.T) {
+	home := t.TempDir()
+	now := time.Now()
+	old := filepath.Join(home, "elsewhere", "-x", "s-old.jsonl")
+	write(t, old, lines(`{"type":"user","sessionId":"s-old","cwd":"/home/user/x","message":{"role":"user","content":"x"}}`))
+	touch(t, old, now.Add(-2*time.Hour))
+	agents := []Agent{
+		{Name: "lead", Parent: "first", Store: "/s", Host: "box", Backend: "claude", CreatedAt: now.Add(-3 * time.Hour), EndedAt: now.Add(-90 * time.Minute), History: []string{old}},
+		{Name: "lead", Parent: "second", Store: "/s", Host: "box", Backend: "claude", Live: true, CreatedAt: now.Add(-time.Hour), History: []string{old}},
+	}
+	got := byID(Resolve(nil, agents, Live{Now: now}))
+	if s := got["s-old"]; s.Workgroup == nil || s.Workgroup.Parent != "first" || s.Status != "exited" {
+		t.Errorf("s-old = %+v %+v, want the first run's, exited", s, s.Workgroup)
+	}
+}
+
+// A session reached through a symlinked dir and named by its real path is
+// one session, owned; so are two spellings of one store.
+func TestResolve_Symlinks(t *testing.T) {
+	home := t.TempDir()
+	real := claudeFixture(t, filepath.Join(home, "real"))
+	link := filepath.Join(home, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(home, filepath.Join(home, "store-link")); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	current := filepath.Join(real, "-slug-not-the-project", "s-main.jsonl")
+	agents := []Agent{
+		{Name: "lead", Store: home, Host: "box", Backend: "claude", Live: true, CreatedAt: now, Status: "idle", Transcript: current},
+		{Name: "lead", Store: filepath.Join(home, "store-link"), Host: "box", Backend: "claude", Live: true, CreatedAt: now, Status: "idle", Transcript: current},
+	}
+	sessions := Resolve(Scan([]Dir{{HarnessClaude, link, OriginDefault}}), agents, Live{Now: now})
+	n := 0
+	for _, s := range sessions {
+		if s.SessionID == "s-main" {
+			n++
+			if s.Workgroup == nil || s.Workgroup.Name != "lead" {
+				t.Errorf("s-main = %+v, want lead's", s)
+			}
+		}
+	}
+	if n != 1 {
+		t.Errorf("s-main listed %d times, want once", n)
+	}
+}
+
+// A subagent's subagent takes its workgroup and status from the chain above
+// it, whatever order the sessions come in.
+func TestResolve_NestedSubagents(t *testing.T) {
+	now := time.Now()
+	sessions := []Session{
+		{SessionID: "c", Harness: HarnessAgy, Path: "/b/c", Mtime: now, ParentSession: &ParentSession{SessionID: "b"}},
+		{SessionID: "b", Harness: HarnessAgy, Path: "/b/b", Mtime: now, ParentSession: &ParentSession{SessionID: "a"}},
+		{SessionID: "a", Harness: HarnessAgy, Path: "/b/a", Mtime: now, live: liveNo},
+	}
+	agents := []Agent{{Name: "lead", Store: "/s", Host: "box", Backend: "agy", Live: true, CreatedAt: now, Status: "idle", Transcript: "/b/a"}}
+	got := byID(Resolve(sessions, agents, Live{Now: now}))
+	for _, id := range []string{"a", "b", "c"} {
+		if s := got[id]; s.Workgroup == nil || s.Workgroup.Name != "lead" || s.Status != "exited" {
+			t.Errorf("%s = %+v %+v, want lead's, exited with its closed parent", id, s, s.Workgroup)
 		}
 	}
 }

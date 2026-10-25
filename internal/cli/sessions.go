@@ -40,9 +40,12 @@ AI-written one; agy's annotation title; Kimi's state.json title; a Claude
 subagent's description when it has none.
 
 STATUS (idle, processing, waiting, error, exited, unknown):
-  - a workgroup agent's current session: its last report, as agent export
-    shows it, except that a Claude session "claude agents --json" doesn't
-    list, or an agy conversation agy no longer holds open, is exited;
+  - a workgroup agent's current session: its last report, reconciled with
+    "claude agents --json" for Claude by the rule agent status uses: that
+    list's status when it lists the session in a known state (except a
+    "waiting" within 5s of a deny), exited when it doesn't list a session
+    the report says is alive. agy: exited once agy no longer holds the
+    conversation open. agent status also reads the screen; sessions doesn't;
   - an agent's earlier sessions (before /clear, a respawn, or cleanup):
     exited;
   - Claude, no workgroup: what "claude agents --json" says, or exited if it
@@ -53,6 +56,7 @@ STATUS (idle, processing, waiting, error, exited, unknown):
     changed in the last 10 minutes, else exited;
   - a subagent: exited if it recorded finishing, or its parent session is
     exited; else unknown.
+Subagents are listed under their parent, oldest last write first.
 
 Where it looks (each harness's own default dirs that exist):
   claude  $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects
@@ -88,7 +92,7 @@ var claudeSessions = namedagents.ClaudeSessions
 
 func init() {
 	sessionsCmd.Flags().BoolVar(&sessionsJSON, "json", false, "Print the sessions as a JSON array")
-	sessionsCmd.Flags().StringVar(&sessionsHarness, "harness", "", "Only this harness's sessions: claude, agy, or kimi")
+	sessionsCmd.Flags().StringVar(&sessionsHarness, "harness", "", "Only this harness's sessions: claude, agy, kimi, or the backend of a workgroup agent with no transcript (aider)")
 	sessionsCmd.Flags().BoolVar(&sessionsWorkgroup, "workgroup", false, "Only sessions a workgroup agent owns")
 	sessionsCmd.Flags().BoolVar(&sessionsLocal, "local", false, "Only sessions no workgroup agent owns")
 }
@@ -96,9 +100,6 @@ func init() {
 func runSessions(cmd *cobra.Command, args []string) error {
 	if sessionsWorkgroup && sessionsLocal {
 		return fmt.Errorf("--workgroup and --local each leave out what the other keeps: use one (or neither, for all)")
-	}
-	if sessionsHarness != "" && !slices.Contains(discovery.Harnesses, sessionsHarness) {
-		return fmt.Errorf("--harness %s: not a harness agent sessions reads; use %s", sessionsHarness, strings.Join(discovery.Harnesses, ", "))
 	}
 	ctx := getContext()
 	dirs := discovery.Dirs(discovery.Overrides{Claude: cfg.ClaudeProjectsDir, Agy: cfg.AgyBrainDir, Kimi: cfg.KimiSessionsDir})
@@ -118,6 +119,17 @@ func runSessions(cmd *cobra.Command, args []string) error {
 	}
 
 	sessions := discovery.Resolve(discovery.Scan(dirs), agents, live)
+	// A workgroup agent with no transcript is listed under its backend's
+	// name (aider, say), so that is a harness to filter on too.
+	harnesses := slices.Clone(discovery.Harnesses)
+	for _, s := range sessions {
+		if !slices.Contains(harnesses, s.Harness) {
+			harnesses = append(harnesses, s.Harness)
+		}
+	}
+	if sessionsHarness != "" && !slices.Contains(harnesses, sessionsHarness) {
+		return fmt.Errorf("--harness %s: no session has that harness; use %s", sessionsHarness, strings.Join(harnesses, ", "))
+	}
 	sessions = slices.DeleteFunc(sessions, func(s discovery.Session) bool {
 		return (sessionsHarness != "" && s.Harness != sessionsHarness) ||
 			(sessionsWorkgroup && s.Workgroup == nil) || (sessionsLocal && s.Workgroup != nil)
@@ -142,18 +154,25 @@ func workgroupAgents(ctx context.Context) ([]discovery.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	own := filepath.Clean(filepath.Dir(cfg.DatabasePath))
 	history := map[string][]string{} // by store and name: one list per name
 	var agents []discovery.Agent
 	for _, a := range snap.Agents {
 		key := a.Store + "\x00" + a.Name
 		if _, ok := history[key]; !ok {
-			for _, ref := range service.ReadTranscriptRefs(filepath.Join(a.Store, "logs", a.Name+".transcripts")) {
+			// Another binary's store keeps the list where its default
+			// config does: beside its database, under logs/.
+			list := filepath.Join(a.Store, "logs", a.Name+".transcripts")
+			if a.Store == own {
+				list = cfg.TranscriptsPath(a.Name)
+			}
+			for _, ref := range service.ReadTranscriptRefs(list) {
 				history[key] = append(history[key], ref.Path)
 			}
 		}
 		agents = append(agents, discovery.Agent{Name: a.Name, Parent: a.Parent, Store: a.Store, Host: a.Host,
 			Backend: a.Backend, Live: a.Live, CreatedAt: a.CreatedAt, EndedAt: a.EndedAt, Status: a.Status,
-			StatusAt: a.StatusAt, SessionID: a.SessionID, Transcript: a.Transcript, History: history[key]})
+			Event: a.Event, StatusAt: a.StatusAt, SessionID: a.SessionID, Transcript: a.Transcript, History: history[key]})
 	}
 	return agents, nil
 }
@@ -199,13 +218,24 @@ func printSessions(out io.Writer, sessions []discovery.Session, looked string) {
 		}
 		fmt.Fprintf(out, format, when, s.Harness, orDash(s.Project), s.Status, group, title)
 	}
+	printed := map[string]bool{}
+	var kidsOf func(s discovery.Session, depth int)
+	kidsOf = func(s discovery.Session, depth int) {
+		key := s.Harness + "\x00" + s.SessionID
+		if printed[key] {
+			return
+		}
+		printed[key] = true
+		kids := subs[key]
+		slices.Reverse(kids) // sessions are newest first; kids read oldest last write first
+		for _, k := range kids {
+			line(strings.Repeat("  ", depth)+"└ "+sessionWhen(k.Mtime, "01-02 15:04"), k)
+			kidsOf(k, depth+1)
+		}
+	}
 	for _, s := range top {
 		line(sessionWhen(s.Mtime, "2006-01-02 15:04"), s)
-		kids := subs[s.Harness+"\x00"+s.SessionID]
-		slices.Reverse(kids) // oldest first, the order they were started in
-		for _, k := range kids {
-			line("└ "+sessionWhen(k.Mtime, "01-02 15:04"), k)
-		}
+		kidsOf(s, 0)
 	}
 	fmt.Fprintf(out, "\n%s, %d in a workgroup.\n", plural(len(sessions), "session"), owned)
 }

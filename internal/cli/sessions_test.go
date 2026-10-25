@@ -11,6 +11,7 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/discovery"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
 // setupSessions is setupCLI with a temp home holding two synthetic Claude
@@ -124,5 +125,19 @@ func TestSessions_Errors(t *testing.T) {
 	sessionsWorkgroup, sessionsLocal, sessionsHarness = false, false, "codex"
 	if err := runSessions(sessionsCmd, nil); err == nil || !strings.Contains(err.Error(), "claude, agy, kimi") {
 		t.Errorf("--harness codex: err = %v", err)
+	}
+}
+
+// A live agent whose backend keeps no transcript is listed under its
+// backend's name, and --harness takes that name.
+func TestSessions_BackendWithoutTranscript(t *testing.T) {
+	setupSessions(t)
+	if err := store.CreateAgent(context.Background(), &storage.Agent{Name: "aid", SessionName: "rpc-cli-aid", Backend: "aider", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	sessionsHarness = "aider"
+	got := runSessionsJSON(t)
+	if len(got) != 1 || got[0].Harness != "aider" || got[0].Path != "" || got[0].Workgroup == nil || got[0].Workgroup.Name != "aid" {
+		t.Errorf("--harness aider = %+v, want aid with no transcript", got)
 	}
 }

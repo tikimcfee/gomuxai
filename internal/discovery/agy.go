@@ -36,6 +36,7 @@ type agyIndex struct {
 	home      string            // the dir holding brain/
 	workspace map[string]string // conversation id -> workspace, from history.jsonl
 	subagents map[string]agySubagent
+	locked    func(path string) bool // whether a process holds a lock on path
 }
 
 type agySubagent struct {
@@ -117,7 +118,7 @@ func probeAgy(idx *agyIndex, id, path string, info os.FileInfo) Session {
 	presence := filepath.Join(idx.home, "presence")
 	if isDir(presence) {
 		s.live = liveNo
-		if lockHeld(filepath.Join(presence, id+".lock")) {
+		if idx.locked(filepath.Join(presence, id+".lock")) {
 			s.live = liveYes
 		}
 	}
@@ -127,7 +128,7 @@ func probeAgy(idx *agyIndex, id, path string, info os.FileInfo) Session {
 // newAgyIndex reads the index files in home (the dir holding brain/).
 // Missing or malformed files and lines contribute nothing.
 func newAgyIndex(home string) *agyIndex {
-	idx := &agyIndex{home: home, workspace: map[string]string{}, subagents: map[string]agySubagent{}}
+	idx := &agyIndex{home: home, workspace: map[string]string{}, subagents: map[string]agySubagent{}, locked: newLockProbe()}
 	if data, err := os.ReadFile(filepath.Join(home, "history.jsonl")); err == nil {
 		for line := range bytes.SplitSeq(data, []byte{'\n'}) {
 			var e struct {
@@ -200,9 +201,11 @@ func agyAnnotationTitle(data []byte) string {
 	return strings.TrimSpace(t)
 }
 
-// lockHeld reports whether a process holds an exclusive flock on path. It
-// asks for a shared lock without waiting, and gives it back at once.
-func lockHeld(path string) bool {
+// flockHeld reports whether a process holds an exclusive flock on path. It
+// asks for a shared lock without waiting, and gives it back at once, so for
+// that moment agy's own non-blocking exclusive lock would fail: only where
+// there is no passive way (see newLockProbe).
+func flockHeld(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false

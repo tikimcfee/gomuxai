@@ -190,7 +190,7 @@ func HarnessOf(path string) string {
 	switch {
 	case strings.HasSuffix(slash, "/agents/main/wire.jsonl"), strings.Contains(slash, "/.kimi-code/"):
 		return HarnessKimi
-	case strings.Contains(slash, "/.system_generated/logs/"), strings.Contains(slash, "/antigravity-cli/brain/"),
+	case agyConversationDir(path) != "", strings.Contains(slash, "/antigravity-cli/brain/"),
 		strings.Contains(slash, "/antigravity/brain/"):
 		return HarnessAgy
 	case strings.HasSuffix(slash, ".jsonl"):
@@ -202,7 +202,8 @@ func HarnessOf(path string) string {
 // SessionIDFromPath names a session after its transcript's path:
 //   - Claude Code: <session id>.jsonl, and a subagent's
 //     <session id>/subagents/agent-<id>.jsonl is agent-<id>;
-//   - agy: brain/<conversation id>/.system_generated/logs/transcript*.jsonl;
+//   - agy: brain/<conversation id>/.system_generated/logs/transcript*.jsonl,
+//     or brain/<conversation id>/transcript*.jsonl;
 //   - Kimi Code: session_<uuid>/agents/main/wire.jsonl is <uuid>, and a
 //     subagent's agents/<agent>/wire.jsonl is <uuid>:<agent>.
 //
@@ -224,8 +225,26 @@ func SessionIDFromPath(path string) string {
 	if !strings.HasPrefix(stem, "transcript") {
 		return stem
 	}
+	if conv := agyConversationDir(path); conv != "" {
+		return filepath.Base(conv)
+	}
+	return ""
+}
+
+// agyConversationDir returns the brain/<conversation id> dir an agy
+// transcript is in, for either place agy keeps one:
+// <id>/.system_generated/logs/transcript*.jsonl or <id>/transcript*.jsonl.
+// It returns "" for a path of neither shape.
+func agyConversationDir(path string) string {
+	if !strings.HasPrefix(filepath.Base(path), "transcript") {
+		return ""
+	}
+	dir := filepath.Dir(path)
 	if filepath.Base(dir) == "logs" && filepath.Base(filepath.Dir(dir)) == ".system_generated" {
-		return filepath.Base(filepath.Dir(filepath.Dir(dir)))
+		return filepath.Dir(filepath.Dir(dir))
+	}
+	if filepath.Base(filepath.Dir(dir)) == "brain" {
+		return dir
 	}
 	return ""
 }
