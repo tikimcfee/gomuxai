@@ -321,7 +321,7 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 		if args != "" {
 			p.Text += " " + args
 		}
-	} else if strings.HasPrefix(text, "<task-notification>") {
+	} else if IsTaskNotification(text) {
 		p.Origin = OriginTaskNotification
 	}
 	// A prompt the transcript gives no prompt id opens a derived turn,
@@ -484,36 +484,81 @@ var claudeTaskStatus = map[string]string{
 	"stopped":   StatusInterrupted,
 }
 
-// notification completes the background call a task notification reports
-// on: its <result> (or <summary>) is the call's output, and a subagent's
-// <usage> what the table reads its numbers from.
-func (l *claudeLine) notification(text string) {
-	toolID, _ := tagText(text, "tool-use-id")
-	call := l.c.tools[toolID]
-	if call == nil || call.Tool.Result.Status != StatusBackground {
-		return
-	}
-	status, _ := tagText(text, "status")
-	res := &ToolResult{Status: claudeTaskStatus[status]}
-	if res.Status == "" {
-		return
-	}
-	var ok bool
-	if res.Output, ok = tagText(text, "result"); !ok {
-		res.Output, _ = tagText(text, "summary")
-	}
-	var response json.RawMessage
-	if usage, ok := tagText(text, "usage"); ok {
-		m := map[string]int{}
-		for tag, key := range map[string]string{"tool_uses": "totalToolUseCount", "subagent_tokens": "totalTokens", "duration_ms": "totalDurationMs"} {
-			var n int
-			if s, ok := tagText(usage, tag); ok && json.Unmarshal([]byte(s), &n) == nil {
-				m[key] = n
-			}
+// TaskNotification is one <task-notification> block of a Claude Code
+// message: a background task (a command, a subagent) reporting back.
+type TaskNotification struct {
+	TaskID    string
+	ToolUseID string
+	Status    string
+	Summary   string
+	Result    string
+	// Usage is the <usage> block's inner markup, if any.
+	Usage string
+}
+
+// IsTaskNotification reports whether text, a message's trimmed text, is
+// task notifications: one or more <task-notification> blocks, alone or
+// after a "[SYSTEM NOTIFICATION ...]" preamble.
+func IsTaskNotification(text string) bool {
+	return strings.HasPrefix(text, "<task-notification>") ||
+		strings.HasPrefix(text, "[SYSTEM NOTIFICATION") && strings.Contains(text, "<task-notification>")
+}
+
+// TaskNotifications returns every <task-notification> block in text, in
+// order. Claude Code puts several in one message when several tasks
+// finish while the agent works.
+func TaskNotifications(text string) []TaskNotification {
+	var out []TaskNotification
+	for {
+		_, rest, ok := strings.Cut(text, "<task-notification>")
+		if !ok {
+			return out
 		}
-		response, _ = json.Marshal(m)
+		block, after, _ := strings.Cut(rest, "</task-notification>")
+		var n TaskNotification
+		for _, f := range []struct {
+			dst *string
+			tag string
+		}{
+			{&n.TaskID, "task-id"}, {&n.ToolUseID, "tool-use-id"}, {&n.Status, "status"},
+			{&n.Summary, "summary"}, {&n.Result, "result"}, {&n.Usage, "usage"},
+		} {
+			*f.dst, _ = tagText(block, f.tag)
+		}
+		out = append(out, n)
+		text = after
 	}
-	l.update(call, res, response, "")
+}
+
+// notification completes the background calls the task notifications in
+// text report on: each one's <result> (or <summary>) is its call's output,
+// and a subagent's <usage> what the table reads its numbers from.
+func (l *claudeLine) notification(text string) {
+	for _, n := range TaskNotifications(text) {
+		call := l.c.tools[n.ToolUseID]
+		if call == nil || call.Tool.Result.Status != StatusBackground {
+			continue
+		}
+		res := &ToolResult{Status: claudeTaskStatus[n.Status], Output: n.Result}
+		if res.Status == "" {
+			continue
+		}
+		if res.Output == "" {
+			res.Output = n.Summary
+		}
+		var response json.RawMessage
+		if n.Usage != "" {
+			m := map[string]int{}
+			for tag, key := range map[string]string{"tool_uses": "totalToolUseCount", "subagent_tokens": "totalTokens", "duration_ms": "totalDurationMs"} {
+				var v int
+				if s, ok := tagText(n.Usage, tag); ok && json.Unmarshal([]byte(s), &v) == nil {
+					m[key] = v
+				}
+			}
+			response, _ = json.Marshal(m)
+		}
+		l.update(call, res, response, "")
+	}
 }
 
 // assistant reads an assistant record: thinking, text and tool calls, or
@@ -582,7 +627,7 @@ func (l *claudeLine) attachment() {
 			kind = a.Origin.Kind
 		}
 		switch {
-		case a.CommandMode == "task-notification" || kind == "task-notification" || strings.HasPrefix(strings.TrimSpace(p.Text), "<task-notification>"):
+		case a.CommandMode == "task-notification" || kind == "task-notification" || IsTaskNotification(strings.TrimSpace(p.Text)):
 			p.Origin = OriginTaskNotification
 		case kind == "peer" || kind == "channel" || kind == "coordinator":
 			p.Origin = OriginPeer

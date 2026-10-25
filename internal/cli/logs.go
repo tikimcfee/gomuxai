@@ -272,21 +272,19 @@ func formatEvent(e transcript.Event, full bool) string {
 	return head
 }
 
-// notificationSummary returns the <summary> of a task notification
-// prompt, or "".
+// notificationSummary returns the <summary> of each task notification a
+// prompt holds, joined, or "".
 func notificationSummary(p *transcript.PromptEvent) string {
 	if p.Origin != transcript.OriginTaskNotification {
 		return ""
 	}
-	_, rest, ok := strings.Cut(p.Text, "<summary>")
-	if !ok {
-		return ""
+	var summaries []string
+	for _, n := range transcript.TaskNotifications(p.Text) {
+		if n.Summary != "" {
+			summaries = append(summaries, n.Summary)
+		}
 	}
-	summary, _, ok := strings.Cut(rest, "</summary>")
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(summary)
+	return strings.Join(summaries, "; ")
 }
 
 // formatTool renders a tool call and its result: what it called, on what,

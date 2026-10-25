@@ -208,6 +208,35 @@ func TestClaudeMidTurn(t *testing.T) {
 	}
 }
 
+// One message can hold several task notifications, after a preamble: each
+// completes its own call.
+func TestClaudeTaskNotifications(t *testing.T) {
+	bg := func(n int) string {
+		return fmt.Sprintf(`{"type":"assistant","uuid":"a%d","message":{"role":"assistant","content":[{"type":"tool_use","id":"bg%d","name":"Bash","input":{"command":"job %d"}}],"stop_reason":"tool_use"}}`+"\n"+
+			`{"type":"user","uuid":"r%d","promptId":"p1","toolUseResult":{"backgroundTaskId":"t%d"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bg%d","content":"started"}]}}`, n, n, n, n, n, n)
+	}
+	notes := `[SYSTEM NOTIFICATION - two tasks finished]\n` +
+		`<task-notification>\n<tool-use-id>bg1</tool-use-id>\n<status>completed</status>\n<summary>job 1 done</summary>\n</task-notification>\n` +
+		`<task-notification>\n<tool-use-id>bg2</tool-use-id>\n<status>killed</status>\n<summary>job 2 stopped</summary>\n</task-notification>`
+	lines := []string{
+		`{"type":"user","uuid":"u1","promptId":"p1","turnPosition":{"promptIndex":1},"message":{"role":"user","content":"run both"}}`,
+		bg(1), bg(2),
+		`{"type":"user","uuid":"u2","promptId":"p2","origin":{"kind":"task-notification"},"message":{"role":"user","content":"` + notes + `"}}`,
+	}
+	_, events := parse(Claude{}, []byte(strings.Join(lines, "\n")+"\n"))
+	got := summaries(events)
+	want := []string{
+		`1 update tool Bash(job 1) ok "job 1 done"`,
+		`1 update tool Bash(job 2) interrupted "job 2 stopped"`,
+	}
+	if len(got) < 2 || !slices.Equal(got[len(got)-2:], want) || !strings.HasPrefix(got[len(got)-3], "1 add prompt(task-notification)") {
+		t.Errorf("events:\n%s\nwant to end with a notification, then:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if n := TaskNotifications(strings.ReplaceAll(notes, `\n`, "\n")); len(n) != 2 || n[1].ToolUseID != "bg2" || n[1].Status != "killed" {
+		t.Errorf("TaskNotifications = %+v", n)
+	}
+}
+
 // HarvestClaude reads the session's metadata alone, line by line, as the
 // parser does.
 func TestHarvestClaude(t *testing.T) {
