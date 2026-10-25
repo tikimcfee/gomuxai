@@ -59,7 +59,8 @@ updates an earlier one, the add comes first.
   "at": 0, "line": 0,             // byte offset and line index of the source line
   "ts": "…",
   "turn": { "id": "…", "index": 0, "derived": false },  // the prompt this event belongs to
-  "agent": "…",                   // the subagent id, on a subagent's own events
+  "agent": "…",                   // the subagent id, on a subagent's own events (Claude: its agentId;
+                                  // agy and Kimi, which record none: its session_id)
   "kind": "prompt|think|say|tool|system|request",
   "<kind>": { … } }               // exactly one, matching kind
 ```
@@ -89,7 +90,9 @@ updates an earlier one, the add comes first.
     `transcript.SummarizeTool` in `internal/transcript/tools.go`, whose doc lists each
     action's `meta`. The Claude and agy hooks' status details and `agent logs` read the same table.
   - Tools the table calls noise keep `action: "noise"`; readers may hide them.
-  - A call that starts a subagent names its session in `sub_session`.
+  - A call that starts a subagent names its session in `sub_session`. A call that starts
+    several (agy's `invoke_subagent`) names the first; each one's `parent_session` names
+    the call.
 - `system` `{subtype, text?, data?}`: harness records such as turn timing, compaction, API
   errors and interrupts.
 - `request` (only with `--requests`) `{model, params, base?, tail, blobs}`: what one model call

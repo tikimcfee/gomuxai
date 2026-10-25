@@ -54,7 +54,7 @@ installed one:
 | `internal/allowcmd` | Decides whether a shell command line is one plain run of a given binary with a safe subcommand (parsed with `mvdan.cc/sh`), for the PreToolUse approval. |
 | `internal/tmux` | `TmuxOps` over the `tmux` command: sessions, send keys, capture, pipe-pane. Errors carry tmux's own message. |
 | `internal/natsbus` | The bus: contract (subjects, ops, wire types), identity and trust, the daemon's server config, RPC server and client, status events and `Wait`. `natstest` starts throwaway NATS servers for tests. |
-| `internal/transcript` | Readers for Claude Code and agy session transcripts, into one `Session`/`Turn`/`Step` shape. |
+| `internal/transcript` | Readers for Claude Code, agy and Kimi Code session transcripts, into one event stream (`docs/EVENTS.md`). |
 | `internal/watcher` | The `agent watch` loop: delivers queued messages when their agent is idle. |
 | `internal/export` | The tree `agent export` prints: a snapshot across stores and hosts, kept current from agent events, sessions, and transcripts. |
 | `internal/config` | `Config`, its defaults (data dir next to the binary, host name, startup delay), and paths derived from it. |
@@ -573,7 +573,9 @@ cleanup and spans `/clear` and respawns under the same name. The files:
 - Claude: `~/.claude/projects/<encoded project>/<session id>.jsonl`
 - agy: `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl`
 
-**`internal/transcript`** reads both into the event stream
+**`internal/transcript`** reads both, and Kimi Code's
+`~/.kimi-code/sessions/<workspace>/session_<uuid>/agents/<agent>/wire.jsonl`
+(no hook reports it; `agent sessions` finds it), into the event stream
 [`docs/EVENTS.md`](EVENTS.md) describes (types in `events.go`): one event per
 prompt, thinking block, reply, tool call and harness record, each tagged with
 its turn, a tool's result arriving as an update of its call. A `Reader`'s
@@ -581,7 +583,10 @@ its turn, a tool's result arriving as an update of its call. A `Reader`'s
 whole lines among them, keeping what later lines need (the open turn, calls
 waiting for results); it starts at any line (`Options.From`) and reports where
 it stopped (`Pos`), so the same code reads a whole file, a window, or what a
-live session appends. `Latest` folds a stream into each event's latest state.
+live session appends. What only the files beside a transcript say
+(Kimi's `state.json`, agy's index of the subagents a conversation started,
+the parent transcript that numbers a Claude subagent's turns) comes in
+through `Options`, which `FileOptions` reads for a path. `Latest` folds a stream into each event's latest state.
 `Finals` merges the final reply a Stop hook reports (`last_assistant_message`)
 into a stream ahead of the transcript, which writes it only after the hook ran:
 a provisional say that the transcript's copy then updates. `HarvestClaude`
