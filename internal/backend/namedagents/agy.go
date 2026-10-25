@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/transcript"
@@ -163,7 +164,8 @@ func (b *AgyBackend) bundleDir(sessionID string) string {
 }
 
 // writeAgyHooksBundle writes <bundleDir>/.agents/hooks.json registering
-// PreInvocation, PreToolUse, PostToolUse, and Stop hooks that invoke reportCmd.
+// PreInvocation, PreToolUse, PostToolUse, PostInvocation, and Stop hooks
+// that invoke reportCmd.
 func writeAgyHooksBundle(bundleDir, reportCmd string) error {
 	hooksDir := filepath.Join(bundleDir, ".agents")
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
@@ -181,8 +183,9 @@ func writeAgyHooksBundle(bundleDir, reportCmd string) error {
 }
 
 // agyHooksJSON builds the .agents/hooks.json document for agy.
-// PreInvocation and Stop take flat handler arrays; PreToolUse and PostToolUse
-// take matcher-grouped arrays.
+// PreInvocation, PostInvocation, and Stop take flat handler arrays;
+// PreToolUse and PostToolUse take matcher-grouped arrays. PostInvocation
+// reports no status: it hands over held messages (DeliveryOutput).
 func agyHooksJSON(reportCmd string) ([]byte, error) {
 	cmdFor := func(event string) hookCommand {
 		return newHookCommand(fmt.Sprintf("%s --event %s", reportCmd, event))
@@ -198,7 +201,8 @@ func agyHooksJSON(reportCmd string) ([]byte, error) {
 				Matcher: "*",
 				Hooks:   []hookCommand{cmdFor("PostToolUse")},
 			}},
-			"Stop": []hookCommand{cmdFor("Stop")},
+			"PostInvocation": []hookCommand{cmdFor("PostInvocation")},
+			"Stop":           []hookCommand{cmdFor("Stop")},
 		},
 	}
 	return json.MarshalIndent(doc, "", "  ")
@@ -229,7 +233,9 @@ type agyToolCall struct {
 // ParseHookEvent maps an agy hook event and payload to a status report.
 // agy has no SessionEnd or permission hook event, so neither status comes
 // from here: the launch command reports the exit, and the service tells a
-// permission dialog from the screen (PermissionPromptVisible).
+// permission dialog from the screen (PermissionPromptVisible), as it does a
+// question dialog (QuestionPromptVisible) and a turn that Esc or Ctrl+C
+// ended, which fires no hook (AtPrompt).
 func (b *AgyBackend) ParseHookEvent(event string, payload []byte) (types.HookReport, bool, error) {
 	var p agyHookPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -258,6 +264,15 @@ func (b *AgyBackend) ParseHookEvent(event string, payload []byte) (types.HookRep
 		} else {
 			r.Detail = summary
 		}
+	case "PostInvocation":
+		// Fires after each model call and its tools, the last one too, so
+		// it is where held messages are handed over. A failed or cancelled
+		// call is left to Stop: force_continue would override the cancel.
+		if p.Error != "" || isAgyErrorTermination(p.TerminationReason) || p.TerminationReason == "USER_CANCELED" {
+			return types.HookReport{}, false, nil
+		}
+		r.Status = types.StatusProcessing
+		r.DeliveryOnly = true
 	case "Stop":
 		if p.Error != "" || isAgyErrorTermination(p.TerminationReason) {
 			r.Status = types.StatusError
@@ -305,7 +320,35 @@ func agyToolSummary(tool string, args json.RawMessage) string {
 	if tool == "" {
 		return "tool"
 	}
+	if tool == "ask_question" {
+		return agyQuestionSummary(tool, args)
+	}
 	return toolSummary(tool, args, agyToolArgKeys)
+}
+
+// agyQuestionSummary renders an ask_question call as "ask_question: <first
+// question> (<its options>)", and how many more questions it asks.
+func agyQuestionSummary(tool string, args json.RawMessage) string {
+	var call struct {
+		Questions []struct {
+			Question string   `json:"question"`
+			Options  []string `json:"options"`
+		} `json:"questions"`
+	}
+	if json.Unmarshal(args, &call) != nil || len(call.Questions) == 0 || strings.TrimSpace(call.Questions[0].Question) == "" {
+		return tool
+	}
+	q := call.Questions[0]
+	s := tool + ": " + strings.TrimSpace(q.Question)
+	if len(q.Options) > 0 {
+		s += " (" + strings.Join(q.Options, ", ") + ")"
+	}
+	if n := len(call.Questions) - 1; n == 1 {
+		s += "; 1 more question"
+	} else if n > 1 {
+		s += fmt.Sprintf("; %d more questions", n)
+	}
+	return s
 }
 
 // agyDialogTools present a multiple-choice question dialog to the user rather
@@ -329,13 +372,164 @@ var (
 
 // PermissionPromptVisible reports whether agy's permission dialog is on
 // screen: numbered "1. Yes" and "N. No" options above the "esc to cancel"
-// statusline footer. An idle prompt shows "? for shortcuts" instead, and
-// a question dialog (ask_question) shows "esc to discard".
+// statusline footer, and not a question dialog whose options happen to be
+// Yes and No. An idle prompt shows "? for shortcuts" instead.
 func (b *AgyBackend) PermissionPromptVisible(screen string) bool {
 	tail := screenTail(screen)
 	if len(tail) == 0 || !strings.Contains(strings.ToLower(tail[0]), "esc to cancel") {
 		return false
 	}
 	joined := strings.Join(tail, "\n")
-	return agyDialogYesOption.MatchString(joined) && agyDialogNoOption.MatchString(joined)
+	return agyDialogYesOption.MatchString(joined) && agyDialogNoOption.MatchString(joined) && !agyQuestionDialog.MatchString(joined)
+}
+
+// agyQuestionDialog matches what ask_question's dialog shows: its
+// "Question 1/N:" heading, or its "↑/↓ Navigate · enter Select · esc Skip"
+// hint (agy 1.4.7).
+var agyQuestionDialog = regexp.MustCompile(`(?m)^\s*Question \d+/\d+:|Navigate\b.*\besc Skip\b`)
+
+// QuestionPromptVisible reports whether ask_question's dialog is on screen:
+// its heading or hint above the "esc to cancel" footer.
+func (b *AgyBackend) QuestionPromptVisible(screen string) bool {
+	tail := screenTail(screen)
+	if len(tail) == 0 || !strings.Contains(strings.ToLower(tail[0]), "esc to cancel") {
+		return false
+	}
+	return agyQuestionDialog.MatchString(strings.Join(tail, "\n"))
+}
+
+// agyFooterBlankCols is how far a footer's text must start from the left for
+// its left part to count as blank: agy right-aligns the model name there.
+const agyFooterBlankCols = 16
+
+// agyInterrupted is the line agy prints above its prompt after Esc or Ctrl+C.
+const agyInterrupted = "Interrupted · What should Antigravity CLI do instead?"
+
+// AtPrompt reports whether agy is back at its prompt: the input box ("> ")
+// at the bottom of the screen, under its footer only, and the footer an
+// idle one ("? for shortcuts", or nothing on the left while text is typed).
+// A turn shows "esc to cancel" there instead, or "Press up to edit queued
+// messages", and a dialog replaces the box. Esc and Ctrl+C fire no hook, so
+// this is how gomuxai sees that the turn ended: how is "interrupted" when
+// agy's line saying so is right above the box.
+func (b *AgyBackend) AtPrompt(screen string) (bool, string) {
+	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	start, end, ok := inputBox(lines)
+	if !ok || end != len(lines)-2 || !strings.HasPrefix(strings.TrimLeft(lines[start], " "), ">") {
+		return false, ""
+	}
+	footer := lines[end+1]
+	text := strings.TrimLeft(footer, " ")
+	if !strings.HasPrefix(text, "? for shortcuts") && len(footer)-len(text) < agyFooterBlankCols {
+		return false, ""
+	}
+	for i := start - 2; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		if strings.Contains(lines[i], agyInterrupted) {
+			return true, "interrupted"
+		}
+		break
+	}
+	return true, ""
+}
+
+// InputText reads agy's input box: the lines between the last two rules of
+// "─" at the bottom of the screen, the first starting with the ">" prompt.
+// Text drawn dim, if any, is left out as for Claude.
+func (b *AgyBackend) InputText(screen string) (string, bool) {
+	return inputBoxText(screen, ">")
+}
+
+// CanDeliver: agy's PostInvocation, which fires after every model call and
+// its tools, including the turn's last one. With injectSteps and
+// force_continue, the model answers the messages in the same turn, and each
+// shows in the pane as a prompt of its own. Stop's "continue" works too, but
+// shows nothing, and Esc fires no hook at all.
+func (b *AgyBackend) CanDeliver(r types.HookReport) bool {
+	return r.Event == "PostInvocation"
+}
+
+// DeliveryPoint: after its current model call and tools, mid-turn or last.
+func (b *AgyBackend) DeliveryPoint() string { return "its current step ends" }
+
+// agyMaxStepBytes bounds each injected userMessage: agy cuts a longer one to
+// about 192 KB, keeping the head, and tells no one.
+const agyMaxStepBytes = 64 << 10
+
+// agyPartLabelRoom is room left in each part for its label.
+const agyPartLabelRoom = 128
+
+type agyInjectStep struct {
+	UserMessage string `json:"userMessage"`
+}
+
+// agyPostInvocationOutput is PostInvocation's output. agy parses it
+// strictly: an unknown field or a wrong type drops all of it, silently.
+type agyPostInvocationOutput struct {
+	InjectSteps         []agyInjectStep `json:"injectSteps"`
+	TerminationBehavior string          `json:"terminationBehavior"`
+}
+
+// DeliveryOutput returns the messages as PostInvocation's injectSteps, one
+// userMessage each (a long one split into labeled parts, so agy never cuts
+// it), with force_continue so the model answers them now rather than at
+// the next prompt. Never force_continue without a step: the model would
+// invent a reply. nil if there is nothing to deliver.
+func (b *AgyBackend) DeliveryOutput(messages []string) []byte {
+	var steps []agyInjectStep
+	for _, m := range messages {
+		for _, part := range agyMessageParts(m) {
+			steps = append(steps, agyInjectStep{UserMessage: part})
+		}
+	}
+	if len(steps) == 0 {
+		return nil
+	}
+	out, err := json.Marshal(agyPostInvocationOutput{InjectSteps: steps, TerminationBehavior: "force_continue"})
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// agyMessageParts splits a message longer than agyMaxStepBytes into parts
+// that fit, each labeled with where it stands.
+func agyMessageParts(m string) []string {
+	if len(m) <= agyMaxStepBytes {
+		return []string{m}
+	}
+	parts := splitText(m, agyMaxStepBytes-agyPartLabelRoom)
+	n := len(parts)
+	for i := range parts {
+		if i > 0 {
+			parts[i] = fmt.Sprintf("[part %d/%d of the message above]\n", i+1, n) + parts[i]
+		}
+		if i < n-1 {
+			parts[i] += fmt.Sprintf("\n[part %d/%d: the message goes on in the next prompt]", i+1, n)
+		}
+	}
+	return parts
+}
+
+// splitText splits s into pieces of at most max bytes, at a line break in
+// a piece's second half if there is one, and never inside a UTF-8 sequence.
+func splitText(s string, max int) []string {
+	var parts []string
+	for len(s) > max {
+		cut := max
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		if nl := strings.LastIndexByte(s[:cut], '\n'); nl >= cut/2 {
+			cut = nl + 1
+		}
+		parts = append(parts, s[:cut])
+		s = s[cut:]
+	}
+	return append(parts, s)
 }

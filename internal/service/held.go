@@ -54,10 +54,12 @@ type SendOptions struct {
 type SendResult struct {
 	Status AgentStatus // what Send found the agent doing (unknown if it couldn't tell)
 	Detail string      // the status detail, e.g. the prompt a waiting agent is at
-	// Held: stored, to be delivered when the agent's turn ends. HeldCount
-	// is how many messages are held for it now, this one included.
+	// Held: stored, to be delivered when the agent's turn ends (or, per
+	// HeldUntil, its next step). HeldCount is how many messages are held
+	// for it now, this one included.
 	Held      bool
 	HeldCount int
+	HeldUntil string // when the hook that delivers it runs, e.g. "its turn ends"
 	// InputBlocked, for a message held although the agent was at its
 	// prompt, says why: its input line isn't empty (see InputBlockedError).
 	InputBlocked string
@@ -85,6 +87,25 @@ func (s *AgentService) holdsMessages(ctx context.Context, agent *storage.Agent) 
 func (s *AgentService) HoldsMessages(ctx context.Context, name string) bool {
 	agent, err := s.getAgent(ctx, name)
 	return err == nil && s.holdsMessages(ctx, agent)
+}
+
+// DeliveryPoint says when the hook that hands name its held messages runs,
+// e.g. "its turn ends" (see backend.HookDeliverer).
+func (s *AgentService) DeliveryPoint(ctx context.Context, name string) string {
+	agent, err := s.getAgent(ctx, name)
+	if err != nil {
+		return "its turn ends"
+	}
+	return s.deliveryPoint(agent)
+}
+
+func (s *AgentService) deliveryPoint(agent *storage.Agent) string {
+	if p, err := s.provider(agent); err == nil {
+		if hd, ok := p.(backend.HookDeliverer); ok {
+			return hd.DeliveryPoint()
+		}
+	}
+	return "its turn ends"
 }
 
 // turnOver reports whether the last report says the agent's turn is over
@@ -166,6 +187,7 @@ func (s *AgentService) hold(ctx context.Context, agent *storage.Agent, res SendR
 	}
 
 	res.Held = true
+	res.HeldUntil = s.deliveryPoint(agent)
 	res.HeldCount = 1
 	if held, err := s.storage.GetPendingMessages(ctx, agent.Name, maxHeldCount); err == nil && len(held) > 0 {
 		res.HeldCount = len(held)
@@ -279,9 +301,11 @@ func contents(msgs []*storage.Message) []string {
 // its held messages, and claims them in the same transaction (see hold for
 // why). With messages claimed, the agent goes on with them: the report says
 // processing (event "delivered") and starts a turn, for wait --next, and
-// r's result, the reply to a step that wasn't the last, isn't stored. It
-// returns the hook output that hands the messages over, nil if none.
-func (s *AgentService) reportDelivering(ctx context.Context, name string, r StatusReport, hd backend.HookDeliverer) ([]byte, error) {
+// r's result, the reply to a step that wasn't the last, isn't stored. With
+// none claimed, r is recorded unless deliveryOnly (the hook says nothing
+// else; see backend.HookReport). It returns the hook output that hands the
+// messages over, nil if none.
+func (s *AgentService) reportDelivering(ctx context.Context, name string, r StatusReport, hd backend.HookDeliverer, deliveryOnly bool) ([]byte, error) {
 	now := time.Now()
 	ended, err := s.reportUpdate(ctx, name, r, now)
 	if err != nil {
@@ -296,6 +320,9 @@ func (s *AgentService) reportDelivering(ctx context.Context, name string, r Stat
 
 	claimed, err := s.storage.ClaimPendingMessages(ctx, name, func(claimed []*storage.Message) storage.StateUpdate {
 		if len(claimed) == 0 {
+			if deliveryOnly {
+				return storage.StateUpdate{}
+			}
 			return ended
 		}
 		delivering.Detail = plural(len(claimed), "held message") + " delivered"
@@ -313,7 +340,9 @@ func (s *AgentService) reportDelivering(ctx context.Context, name string, r Stat
 		return nil, err
 	}
 	if len(claimed) == 0 {
-		s.publishStatus(name, r, now)
+		if !deliveryOnly {
+			s.publishStatus(name, r, now)
+		}
 		return nil, nil
 	}
 	s.publishStatus(name, delivering, now)

@@ -298,7 +298,7 @@ func (s *AgentService) launchCommand(ctx context.Context, name, spawnedBy string
 		}
 	}
 	if ip, ok := provider.(backend.InstructionsProvider); ok {
-		path, err := s.writeInstructions(name, spawnedBy)
+		path, err := s.writeInstructions(name, spawnedBy, provider.Name())
 		if err != nil {
 			return "", false, err
 		}
@@ -416,6 +416,10 @@ func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (
 			if info.Detail != "" {
 				prompt = fmt.Sprintf("a prompt (%s)", OneLine(info.Detail))
 			}
+			if strings.HasPrefix(info.Detail, "question: ") {
+				return status, fmt.Errorf("agent %s is waiting on %s, where the message's Enter would pick an answer: %s (a person can send anyway with --force)",
+					agent.Name, prompt, answerQuestionHint(agent))
+			}
 			return status, fmt.Errorf("agent %s is waiting on %s, where the message's Enter would answer it: see it with agent status %s -v, then agent approve %s or agent deny %s (a person can send anyway with --force)",
 				agent.Name, prompt, agent.Name, agent.Name, agent.Name)
 		case AgentStatusExited:
@@ -423,6 +427,11 @@ func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (
 		}
 	}
 	return status, s.checkScreen(agent)
+}
+
+// answerQuestionHint says how to answer the question dialog agent shows.
+func answerQuestionHint(agent *storage.Agent) string {
+	return fmt.Sprintf("see it with agent capture %s, then answer it in its session (agent key %s 2 picks option 2)", agent.Name, agent.SessionName)
 }
 
 // exitedErr is the error for typing into an agent whose CLI has exited.
@@ -445,6 +454,10 @@ func (s *AgentService) checkScreen(agent *storage.Agent) error {
 	if pr, ok := provider.(backend.PermissionResponder); ok && pr.PermissionPromptVisible(screen) {
 		return fmt.Errorf("agent %s has a permission prompt on screen, where the message's Enter would answer it: agent approve %s or agent deny %s first (a person can send anyway with --force)",
 			agent.Name, agent.Name, agent.Name)
+	}
+	if qp, ok := provider.(backend.QuestionPrompter); ok && qp.QuestionPromptVisible(screen) {
+		return fmt.Errorf("agent %s has a question for the user on screen, where the message's Enter would pick an answer: %s (a person can send anyway with --force)",
+			agent.Name, answerQuestionHint(agent))
 	}
 	if tp, ok := provider.(backend.TrustPrompter); ok && tp.TrustKeys(screen) != nil {
 		return fmt.Errorf("agent %s is at a workspace trust prompt, where the message's Enter would answer it: answer it in its session (%s), or clean it up and respawn with --trust-workspace",

@@ -14,9 +14,10 @@ var queueCmd = &cobra.Command{
 	Short: "Queue a message, delivered when the agent is idle",
 	Long: `Queue adds a message to the agent's inbox, for delivery when it is ready.
 
-For a Claude agent, queue does what "agent send" does, and needs no watcher:
-the message is typed in if the agent is at its prompt, and otherwise held
-until its turn ends, when its Stop hook hands it over.
+For a Claude or agy agent, queue does what "agent send" does, and needs no
+watcher: the message is typed in if the agent is at its prompt, and
+otherwise held until a hook hands it over (Claude's Stop, agy's
+PostInvocation).
 
 For other agents, the watcher ("agent watch") delivers queued messages when
 the agent's status is idle, or error (a failed turn, back at its prompt). It

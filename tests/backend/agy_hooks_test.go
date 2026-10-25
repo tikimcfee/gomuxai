@@ -117,9 +117,22 @@ func TestAgyParseHookEvent(t *testing.T) {
 			wantOK:  false,
 		},
 		{
-			name:    "post invocation is ignored in favor of stop",
+			name:       "post invocation is reported only to deliver",
+			event:      "PostInvocation",
+			payload:    `{"conversationId":"c1","initialNumSteps":3,"invocationNum":1}`,
+			wantOK:     true,
+			wantStatus: backend.StatusProcessing,
+		},
+		{
+			name:    "failed post invocation is left to stop",
 			event:   "PostInvocation",
-			payload: `{"conversationId":"c1","error":"","executionNum":0,"invocationNum":0,"terminationReason":"NO_TOOL_CALL"}`,
+			payload: `{"conversationId":"c1","error":"quota exceeded","invocationNum":0}`,
+			wantOK:  false,
+		},
+		{
+			name:    "cancelled post invocation is left to stop",
+			event:   "PostInvocation",
+			payload: `{"conversationId":"c1","invocationNum":0,"terminationReason":"USER_CANCELED"}`,
 			wantOK:  false,
 		},
 		{
@@ -258,6 +271,10 @@ func TestAgyLaunchCommandWithHooks(t *testing.T) {
 					Command string `json:"command"`
 				} `json:"hooks"`
 			} `json:"PostToolUse"`
+			PostInvocation []struct {
+				Type    string `json:"type"`
+				Command string `json:"command"`
+			} `json:"PostInvocation"`
 			Stop []struct {
 				Type    string `json:"type"`
 				Command string `json:"command"`
@@ -278,6 +295,9 @@ func TestAgyLaunchCommandWithHooks(t *testing.T) {
 	if len(doc.Gomuxai.PostToolUse) != 1 || len(doc.Gomuxai.PostToolUse[0].Hooks) != 1 ||
 		doc.Gomuxai.PostToolUse[0].Hooks[0].Command != reportCmd+" --event PostToolUse" {
 		t.Errorf("PostToolUse = %+v", doc.Gomuxai.PostToolUse)
+	}
+	if len(doc.Gomuxai.PostInvocation) != 1 || doc.Gomuxai.PostInvocation[0].Command != reportCmd+" --event PostInvocation" {
+		t.Errorf("PostInvocation = %+v", doc.Gomuxai.PostInvocation)
 	}
 	if len(doc.Gomuxai.Stop) != 1 || doc.Gomuxai.Stop[0].Command != reportCmd+" --event Stop" {
 		t.Errorf("Stop = %+v", doc.Gomuxai.Stop)

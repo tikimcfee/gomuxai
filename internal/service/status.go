@@ -322,7 +322,9 @@ func (s *AgentService) reportHook(ctx context.Context, name, spawnID, event stri
 	}
 	var out []byte
 	if hd, ok := provider.(backend.HookDeliverer); ok && deliver && hd.CanDeliver(hr) {
-		out, err = s.reportDelivering(ctx, name, r, hd)
+		out, err = s.reportDelivering(ctx, name, r, hd, hr.DeliveryOnly)
+	} else if hr.DeliveryOnly {
+		return nil, nil
 	} else {
 		out, err = approval, s.Report(ctx, name, r)
 	}
@@ -430,6 +432,9 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 				UpdatedAt: reported.UpdatedAt,
 			}, reported, nil
 		}
+		if info, ok := s.screenStatus(agent, reported); ok {
+			return info, reported, nil
+		}
 		// Backends like agy fire PreToolUse before showing a permission
 		// dialog and fire nothing while the dialog is up. When the dialog
 		// is on screen after PreToolUse, surface the status as waiting so
@@ -450,6 +455,55 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 		return nil, nil, err
 	}
 	return &StatusInfo{Status: status, Source: StatusSourceScrape}, nil, nil
+}
+
+// turnEndLag is how long a report must stand before the screen can say the
+// turn it describes has ended: right after a hook, the CLI may not have
+// redrawn yet.
+const turnEndLag = 3 * time.Second
+
+// screenStatus reads off the screen what a processing agent's hooks can't
+// report (agy): a turn that ended with no hook (Esc, Ctrl+C), which makes it
+// idle, and a question dialog after PreToolUse, which makes it waiting, so
+// send holds rather than types into it and approve/deny refuse it. ok is
+// false if the screen changes nothing.
+func (s *AgentService) screenStatus(agent *storage.Agent, reported *StatusInfo) (*StatusInfo, bool) {
+	if reported.Status != AgentStatusProcessing {
+		return nil, false
+	}
+	provider, err := s.provider(agent)
+	if err != nil {
+		return nil, false
+	}
+	te, endsSilently := provider.(backend.TurnEndReader)
+	qp, asks := provider.(backend.QuestionPrompter)
+	// A Stop that says processing left background work running: the
+	// prompt is up, but the agent isn't done.
+	endsSilently = endsSilently && reported.Event != "Stop" && time.Since(reported.UpdatedAt) >= turnEndLag
+	asks = asks && reported.Event == "PreToolUse"
+	if !endsSilently && !asks {
+		return nil, false
+	}
+	screen, err := s.tmux.Capture(agent.SessionName, 0)
+	if err != nil {
+		return nil, false
+	}
+	if endsSilently {
+		if at, how := te.AtPrompt(screen); at {
+			detail := "at its prompt; no hook reported the turn's end"
+			if how != "" {
+				detail = how + "; at its prompt"
+			}
+			return &StatusInfo{Status: AgentStatusIdle, Source: StatusSourceScrape, Detail: detail}, true
+		}
+	}
+	if asks && qp.QuestionPromptVisible(screen) {
+		waiting := *reported
+		waiting.Status = AgentStatusWaiting
+		waiting.Detail = "question: " + waiting.Detail
+		return &waiting, true
+	}
+	return nil, false
 }
 
 // reportedStatus returns the last reported status, or nil if none was reported.

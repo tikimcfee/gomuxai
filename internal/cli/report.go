@@ -30,8 +30,8 @@ With --hook, the backend's hook payload is read from stdin. Hook mode exits 0
 even if the report fails, so a reporting problem can't disturb the agent;
 errors go to stderr. (It still exits 1 if the tool can't start, e.g. its
 database can't be opened.) It writes to stdout only to hand the agent the
-messages held for it (see "agent send"), from a hook that ends its turn
-(Claude's Stop).
+messages held for it (see "agent send"), from the hook that can: Claude's
+Stop, agy's PostInvocation (which reports nothing else).
 
 The agent name defaults to AGENT_NAME.`,
 	Example: `  agent report idle

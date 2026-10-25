@@ -22,4 +22,8 @@ var (
 	_ backend.PromptFlagProvider   = (*namedagents.AgyBackend)(nil)
 	_ backend.InstructionsProvider = (*namedagents.AgyBackend)(nil)
 	_ backend.TrustPrompter        = (*namedagents.AgyBackend)(nil)
+	_ backend.HookDeliverer        = (*namedagents.AgyBackend)(nil)
+	_ backend.InputReader          = (*namedagents.AgyBackend)(nil)
+	_ backend.TurnEndReader        = (*namedagents.AgyBackend)(nil)
+	_ backend.QuestionPrompter     = (*namedagents.AgyBackend)(nil)
 )

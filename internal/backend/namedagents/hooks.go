@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
+	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
 // Shared by the backends whose CLI reports status through hooks (claude, agy).
@@ -111,6 +113,87 @@ func screenTail(screen string) []string {
 		}
 	}
 	return tail
+}
+
+// inputBox finds the input box at the bottom of screen (lines, as split from
+// it): the lines between its last two rules of "─". It returns their
+// indexes, rules excluded, or ok false if there is no such box.
+func inputBox(lines []string) (start, end int, ok bool) {
+	var rules []int
+	for i := len(lines) - 1; i >= 0 && len(rules) < 2; i-- {
+		if isRule(util.StripANSI(lines[i])) {
+			rules = append(rules, i)
+		}
+	}
+	if len(rules) < 2 || rules[0]-rules[1] < 2 {
+		return 0, 0, false
+	}
+	return rules[1] + 1, rules[0], true
+}
+
+// inputBoxText returns the text typed in the input box of screen (with its
+// styling escapes), whose first line starts with prompt. Text drawn dim
+// (placeholders, suggestions) is left out.
+func inputBoxText(screen, prompt string) (string, bool) {
+	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
+	start, end, ok := inputBox(lines)
+	if !ok {
+		return "", false
+	}
+	var text []string
+	for i, line := range lines[start:end] {
+		line = undimmed(line)
+		if i == 0 {
+			var ok bool
+			if line, ok = strings.CutPrefix(strings.TrimLeft(line, " "), prompt); !ok {
+				return "", false
+			}
+		}
+		if t := strings.TrimSpace(strings.ReplaceAll(line, " ", " ")); t != "" {
+			text = append(text, t)
+		}
+	}
+	return strings.Join(text, "\n"), true
+}
+
+// isRule reports whether line is a horizontal rule of "─".
+func isRule(line string) bool {
+	line = strings.TrimSpace(line)
+	return utf8.RuneCountInString(line) >= 10 && strings.Trim(line, "─") == ""
+}
+
+// undimmed returns line's text without escapes, and without the text drawn
+// dim (SGR 2, until 22 or a reset).
+func undimmed(line string) string {
+	var out strings.Builder
+	dim := false
+	for i := 0; i < len(line); i++ {
+		if line[i] != '\x1b' {
+			if !dim {
+				out.WriteByte(line[i])
+			}
+			continue
+		}
+		if i+1 >= len(line) || line[i+1] != '[' {
+			continue
+		}
+		j := i + 2
+		for j < len(line) && (line[j] < 0x40 || line[j] > 0x7e) {
+			j++
+		}
+		if j < len(line) && line[j] == 'm' {
+			for _, p := range strings.Split(line[i+2:j], ";") {
+				switch p {
+				case "2":
+					dim = true
+				case "", "0", "22":
+					dim = false
+				}
+			}
+		}
+		i = j
+	}
+	return out.String()
 }
 
 func truncate(s string) string {

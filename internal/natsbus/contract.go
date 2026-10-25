@@ -199,6 +199,7 @@ type SendResponse struct {
 	Detail    string `json:"detail,omitempty"`
 	Held      bool   `json:"held,omitempty"`
 	HeldCount int    `json:"held_count,omitempty"`
+	HeldUntil string `json:"held_until,omitempty"` // e.g. "its turn ends"; older hosts leave it out
 	Typed     int    `json:"typed,omitempty"`
 	// InputBlocked says why a message to an agent at its prompt was held:
 	// its input line isn't empty.

@@ -14,26 +14,32 @@ import (
 
 var sendCmd = &cobra.Command{
 	Use:   "send <name>[@host] <message>",
-	Short: "Send a message to an agent: typed in now, or held until its turn ends",
+	Short: "Send a message to an agent: typed in now, or held while it's busy",
 	Long: `Send delivers a message to an agent, and says what it did with it and what
 status it found the agent in.
 
-An agent at its prompt gets the message typed into its terminal. A Claude
-agent that is busy (processing, or waiting on a prompt) holds it instead:
-when its turn ends, its Stop hook hands over every message held for it,
-oldest first, and Claude goes on with them as its next step (its screen shows
-them as "Stop hook feedback"). If the turn ends without that hook (Esc, a
-deny, a failed turn), the held messages are typed in once it has sat at its
-prompt for 10s, or ahead of the next message sent to it. Messages are never
-typed into a Claude agent's input line while it has text in it (a person
-typing there): they're held until it's empty. "agent status <name> -v"
-shows how many are held and what they wait for.
+An agent at its prompt gets the message typed into its terminal. A Claude or
+agy agent that is busy (processing, or waiting on a prompt or question)
+holds it instead, and a hook hands over every message held for it, oldest
+first:
+  claude  when its turn ends, from its Stop hook: Claude goes on with them as
+          its next step (its screen shows them as "Stop hook feedback").
+  agy     when its current step ends (a model call and its tools), from its
+          PostInvocation hook: each shows as a prompt of its own, and the
+          model answers them in the same turn.
+If the turn ends without that hook (Esc, a deny, a failed turn), the held
+messages are typed in once it has sat at its prompt for 10s, or ahead of the
+next message sent to it. Messages are never typed into an agent's input line
+while it has text in it (a person typing there): they're held until it's
+empty. "agent status <name> -v" shows how many are held and what they wait
+for.
 
 --now types the message in even while the agent is busy (Claude takes it at
-its next tool boundary), as send always does for other backends. Typing is
-refused while the agent is at a dialog (a permission or workspace trust
-prompt), where the Enter would answer the dialog instead; answer those with
-approve/deny. Send is also refused once the agent has exited, since the
+its next tool boundary, agy queues it for its turn's end), as send always
+does for other backends. Typing is refused while the agent is at a dialog (a
+permission, question, or workspace trust prompt), where the Enter would
+answer the dialog instead; answer permission prompts with approve/deny, and
+questions with agent key. Send is also refused once the agent has exited, since the
 message would run in the shell left behind. --force types the message in
 without these checks, for a local agent, and only works for a person at a
 terminal. An agent on another host is addressed as name@host (needs a
@@ -55,7 +61,8 @@ message, until the agent is done with it too), use
 A long message typed into Claude's terminal can arrive as a pasted block,
 which Claude may treat as data rather than as instructions: keep instructions
 short, or put them in a file and send its path. A held message arrives
-whole, however long.`,
+whole, however long (agy gets one over 64 KB in labeled parts, since it cuts
+longer ones).`,
 	Example: `  agent send researcher "analyze the codebase structure"
   agent send builder "run the tests" && agent wait builder --for idle,waiting --next
   agent send builder --now "stop: the tests are already fixed"
@@ -104,7 +111,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		printSent(name, service.SendResult{Status: service.AgentStatus(resp.Status), Detail: resp.Detail,
-			Held: resp.Held, HeldCount: resp.HeldCount, Typed: resp.Typed, InputBlocked: resp.InputBlocked})
+			Held: resp.Held, HeldCount: resp.HeldCount, HeldUntil: resp.HeldUntil, Typed: resp.Typed, InputBlocked: resp.InputBlocked})
 	case sendForce:
 		if err := agentService.SendUnchecked(getContext(), ref.Name, message); err != nil {
 			return err
@@ -142,7 +149,11 @@ func printSent(name string, res service.SendResult) {
 			fmt.Printf("Held for %s until its input line is empty%s (%s; its input line: %s).\n", name, behind, found, res.InputBlocked)
 			return
 		}
-		fmt.Printf("Held for %s until its turn ends%s (%s).\n", name, behind, found)
+		until := res.HeldUntil
+		if until == "" {
+			until = "its turn ends" // a host that predates HeldUntil
+		}
+		fmt.Printf("Held for %s until %s%s (%s).\n", name, until, behind, found)
 		if res.Status == service.AgentStatusWaiting {
 			hint("its turn goes on once the prompt is answered: agent status %s -v shows it", name)
 		}

@@ -17,8 +17,9 @@ var deliverCmd = &cobra.Command{
 	Long: `Deliver types the messages held for an agent (see "agent send") into its
 terminal, oldest first, as one prompt, if the agent is at its prompt.
 
-Held messages normally reach the agent from its Stop hook when its turn
-ends. A turn that ends without that hook (Esc, a deny, a failed turn) leaves
+Held messages normally reach the agent from a hook: Claude's Stop when its
+turn ends, agy's PostInvocation when its current step ends. A turn that
+ends without that hook (Esc, Ctrl+C, a deny, a failed turn) leaves
 them held, so send starts "agent deliver --wait <name>" in the background
 when it holds a message. That checks every 2s and types the held messages
 once the agent has sat at its prompt, with nothing typed in its input line,

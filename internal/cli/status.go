@@ -26,13 +26,18 @@ again), exited, or unknown.
 
 -v adds where the status came from, the last event, its detail (for a
 permission prompt, the full tool call: what approve would allow), the tool,
-and how many messages are held for the agent until its turn ends (see
+and how many messages are held for the agent while it's busy (see
 "agent send"). --json has the same fields.
 
 Sources, most authoritative first:
   native  the backend CLI's own session status (claude agents --json)
   report  the last status reported by backend hooks or "agent report"
-  scrape  regex over terminal output (backends without hooks)
+  scrape  terminal output: for backends without hooks, and for an agy turn
+          that Esc or Ctrl+C ended, which fires no hook ("interrupted")
+
+agy shows its permission and ask_question dialogs with no hook of their own,
+so a dialog on screen after the tool's PreToolUse makes it waiting, with
+"permission: ..." or "question: ..." as the detail.
 
 An agent on another host is addressed as name@host (needs a running bus).`,
 	Example: `  agent status researcher
@@ -142,7 +147,7 @@ func heldLine(name string, remote bool, info *service.StatusInfo) string {
 		}
 		line = "  held:   " + n + ", typed in once it has been at its prompt for 10s (agent deliver " + name + " types it now)"
 	case agentService.HoldsMessages(getContext(), name):
-		line = "  held:   " + n + ", delivered when its turn ends"
+		line = "  held:   " + n + ", delivered when " + agentService.DeliveryPoint(getContext(), name)
 	default:
 		line = "  queued: " + n + ", delivered by agent watch when it's idle"
 	}

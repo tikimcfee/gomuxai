@@ -11,10 +11,30 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
+// heldBriefing tells an agent on backendName how messages sent while it
+// works reach it (see held.go).
+func heldBriefing(backendName string) string {
+	if backendName == "agy" {
+		return `A message sent to you while you're working is held until your current step
+(a model call and its tools) ends, then handed to you as a new prompt,
+starting with its "[from ...]" tag, in the middle of your turn: it's a
+message like any other, so act on it and reply as asked. Likewise, a message
+you send to a busy agent reaches it when its turn or step ends;
+` + "`agent send NAME --now \"...\"`" + ` types it in at once instead.
+`
+	}
+	return `A message sent to you while you're working is held until your turn ends, then
+handed to you as Stop hook feedback ("A message arrived while you were
+working: ..."): it's a message like any other, so act on it and reply as
+asked. Likewise, a message you send to a busy agent reaches it when its turn
+ends; ` + "`agent send NAME --now \"...\"`" + ` types it in at once instead, to interrupt.
+`
+}
+
 // agentInstructions is the briefing every spawned agent gets, so it knows it
 // is one of several agents and how to reach the others. Backends deliver it
 // through their own mechanism (backend.InstructionsProvider).
-func (s *AgentService) agentInstructions(name, spawnedBy string) string {
+func (s *AgentService) agentInstructions(name, spawnedBy, backendName string) string {
 	bin := "agent"
 	if s.cfg.AgentBinary != "" {
 		bin = s.cfg.AgentBinary
@@ -51,15 +71,10 @@ A message starting with "[from a person on HOST]" or
 person, or an AI session a person started), so there is no agent to send to:
 answer it in your reply, as you would a prompt typed into your terminal.
 
-A message sent to you while you're working is held until your turn ends, then
-handed to you as Stop hook feedback ("A message arrived while you were
-working: ..."): it's a message like any other, so act on it and reply as
-asked. Likewise, a message you send to a busy agent reaches it when its turn
-ends; `+"`agent send NAME --now \"...\"`"+` types it in at once instead, to interrupt.
-
+%s
 Your status (idle, working, waiting on a permission prompt) is reported
 automatically. Use `+"`agent`"+` rather than tmux to reach other agents.
-`, name, s.cfg.Host, by, bin)
+`, name, s.cfg.Host, by, bin, heldBriefing(backendName))
 	fmt.Fprintf(&b, `
 ## Helpers
 
@@ -96,7 +111,7 @@ something you need, file it, then carry on with your work. Check
 
 // writeInstructions saves the briefing in the agent's own directory and
 // returns its path.
-func (s *AgentService) writeInstructions(name, spawnedBy string) (string, error) {
+func (s *AgentService) writeInstructions(name, spawnedBy, backendName string) (string, error) {
 	dir := s.cfg.AgentDir(name)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("creating agent dir: %w", err)
@@ -105,7 +120,7 @@ func (s *AgentService) writeInstructions(name, spawnedBy string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, []byte(s.agentInstructions(name, spawnedBy)), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(s.agentInstructions(name, spawnedBy, backendName)), 0600); err != nil {
 		return "", fmt.Errorf("writing instructions: %w", err)
 	}
 	return path, nil

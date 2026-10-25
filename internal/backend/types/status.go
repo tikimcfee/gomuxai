@@ -48,6 +48,10 @@ type HookReport struct {
 	// ClearResult marks the start of a new turn or conversation, after which
 	// the previous turn's Result no longer answers anything.
 	ClearResult bool
+	// DeliveryOnly marks an event that is wired only to hand the agent its
+	// held messages (agy's PostInvocation): it says nothing new about the
+	// status, so it is recorded only when it delivers.
+	DeliveryOnly bool
 
 	// Prompt is how the event changes the queue of pending permission
 	// prompts. Claude raises one PermissionRequest per call, all at once

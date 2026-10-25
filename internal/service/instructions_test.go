@@ -10,7 +10,7 @@ import (
 
 func TestBriefingExplainsSenderTags(t *testing.T) {
 	s := &AgentService{cfg: &config.Config{Host: "h"}}
-	brief := s.agentInstructions("lead", "")
+	brief := s.agentInstructions("lead", "", "claude")
 	for _, want := range []string{`"[from NAME@HOST]"`, `"[from a person on HOST]"`, `"[from a Claude session on HOST]"`, "no agent record",
 		"Stop hook feedback", "--now", "not through a shell variable"} {
 		if !strings.Contains(brief, want) {
@@ -19,9 +19,21 @@ func TestBriefingExplainsSenderTags(t *testing.T) {
 	}
 }
 
+// agy gets held messages as prompts after a step, not as Stop hook feedback.
+func TestBriefingForAgy(t *testing.T) {
+	s := &AgentService{cfg: &config.Config{Host: "h"}}
+	brief := s.agentInstructions("lead", "", "agy")
+	if strings.Contains(brief, "Stop hook") || !strings.Contains(brief, "current step") || !strings.Contains(brief, "--now") {
+		t.Errorf("agy briefing on held messages:\n%s", brief)
+	}
+	if !strings.Contains(brief, "rather than tmux to reach other agents.\n") {
+		t.Error("agy briefing lost the paragraph after held messages")
+	}
+}
+
 func TestBriefingCoversFriction(t *testing.T) {
 	s := &AgentService{cfg: &config.Config{Host: "h", AgentBinary: "/opt/x/agent"}}
-	brief := s.agentInstructions("lead", "")
+	brief := s.agentInstructions("lead", "", "claude")
 	for _, want := range []string{"## When the agent tool gets in your way", "`agent friction list`",
 		"`agent friction +1 ID`", "    agent friction add \"summary\" --kind help|error|missing|bug|docs|other\n"} {
 		if !strings.Contains(brief, want) {
