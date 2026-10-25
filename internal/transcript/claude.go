@@ -1,7 +1,6 @@
 package transcript
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -28,7 +27,7 @@ func (Claude) NewParser(opts Options) *Parser {
 	if opts.Requests {
 		c.blobs = map[string]json.RawMessage{}
 	}
-	return newParser("claude", c, opts.From)
+	return newParser("claude", c)
 }
 
 // claudeRecord is the part of a transcript line the parser reads.
@@ -100,7 +99,10 @@ type claudeBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"is_error"`
-	Source    *struct {
+	// A model fallback's models.
+	From   json.RawMessage `json:"from"`
+	To     json.RawMessage `json:"to"`
+	Source *struct {
 		MediaType string `json:"media_type"`
 		Data      string `json:"data"`
 	} `json:"source"`
@@ -161,10 +163,13 @@ type claudeLines struct {
 	opts Options
 	sess Session
 	turn *TurnRef
-	// index is the last promptIndex seen; derived counts the turns
-	// derived from records with no prompt id.
-	index   int
-	derived int
+	// index is the last turn index known (from a promptIndex, or
+	// Options.Turns); numbered is set once the file has given a
+	// promptIndex. prompts counts the human prompts of a file that gives
+	// none: its turns' indexes.
+	index    int
+	numbered bool
+	prompts  int
 	// tools holds each call's latest event, for its updates; pending,
 	// the ids of calls with no result yet, oldest first.
 	tools   map[string]*Event
@@ -172,6 +177,10 @@ type claudeLines struct {
 	// blobs holds the messages api-request-blob lines define, by hash
 	// (with Options.Requests).
 	blobs map[string]json.RawMessage
+	// closing is a reply that ends its message without a stop reason
+	// (older versions): final if its turn ends with nothing more from the
+	// model.
+	closing *Event
 }
 
 func (c *claudeLines) session() Session { return c.sess }
@@ -207,19 +216,11 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	}
 	harvestClaude(&c.sess, r)
 	if r.PromptID != "" {
-		index := c.index
-		if r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil {
-			index = *r.TurnPosition.PromptIndex
-			c.index = index
-		} else if i, ok := c.opts.Turns[r.PromptID]; ok {
-			index = i
-		}
-		if c.turn == nil || c.turn.ID != r.PromptID || c.turn.Index != index || c.turn.Derived {
-			c.turn = &TurnRef{ID: r.PromptID, Index: index}
-		}
+		c.enter(r)
 	}
 
 	l := &claudeLine{c: c, r: r, raw: line, at: at, n: n}
+	closing := c.closing
 	switch r.Type {
 	case "user":
 		if r.Message != nil {
@@ -236,15 +237,68 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	case "system":
 		l.system()
 	case "api-request-blob":
-		if c.blobs != nil && r.Hash != "" && r.Message != nil {
-			c.blobs[r.Hash], _ = json.Marshal(r.Message)
+		// The message whole, as it was sent: not the fields claudeRecord reads.
+		var blob struct {
+			Message json.RawMessage `json:"message"`
+		}
+		if c.blobs != nil && r.Hash != "" && json.Unmarshal(line, &blob) == nil && len(blob.Message) > 0 {
+			c.blobs[r.Hash] = blob.Message
 		}
 	case "api-request":
 		if c.opts.Requests {
 			l.request()
 		}
 	}
+	// A new turn closes the last one.
+	if closing != nil && c.closing == closing && c.turn != nil && (closing.Turn == nil || c.turn.ID != closing.Turn.ID) {
+		l.close()
+	}
 	return append(l.adds, l.updates...), true
+}
+
+// close marks the reply that ended its turn's last message without a stop
+// reason final, now that the turn has ended: an update of it.
+func (l *claudeLine) close() {
+	e := *l.c.closing
+	l.c.closing = nil
+	e.Op, e.At, e.Line, e.TS = OpUpdate, l.at, l.n, l.r.Timestamp
+	e.Say = &SayEvent{Text: e.Say.Text, Final: true}
+	l.updates = append(l.updates, e)
+}
+
+// enter makes the turn a record with a prompt id names the current one.
+// Its index is the record's promptIndex; for a record without one, the
+// index Options.Turns gives (a subagent's records name the parent's
+// turn), else the last index known; in a file that gives no promptIndex
+// at all, the count of human prompts so far (prompt bumps it).
+func (c *claudeLines) enter(r *claudeRecord) {
+	index := c.index
+	switch {
+	case r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil:
+		index = *r.TurnPosition.PromptIndex
+		c.index, c.numbered = index, true
+	case c.opts.Turns != nil:
+		if i, ok := c.opts.Turns(r.PromptID); ok {
+			index = i
+			c.index = i
+		}
+	case !c.numbered:
+		index = c.prompts
+	}
+	c.setTurn(r.PromptID, index, false)
+}
+
+// setTurn makes the turn id, index the current one.
+func (c *claudeLines) setTurn(id string, index int, derived bool) {
+	if c.turn == nil || c.turn.ID != id || c.turn.Index != index || c.turn.Derived != derived {
+		c.turn = &TurnRef{ID: id, Index: index, Derived: derived}
+	}
+}
+
+// counted reports whether r's turn index is the count of human prompts:
+// the file gives no promptIndex, and nothing else numbers its turns.
+func (c *claudeLines) counted(r *claudeRecord) bool {
+	return r.PromptID == "" || !c.numbered && c.opts.Turns == nil && (r.TurnPosition == nil || r.TurnPosition.PromptIndex == nil)
 }
 
 // claudeInterrupted is how the record Claude Code writes when a person
@@ -300,10 +354,13 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 		return false
 	case strings.HasPrefix(text, claudeInterrupted):
 		system("interrupt")
+		l.c.closing = nil // the turn didn't end with that reply
 		return true
-	case r.IsMeta && r.Origin == nil:
+	case r.IsMeta && r.Origin == nil && r.PromptSource != "system":
 		// A caveat, a reminder, a skill's expanded body: the harness
-		// talking to the model, not a message into the agent.
+		// talking to the model, not a message into the agent. One the
+		// harness sends as a prompt (promptSource system: a /loop wakeup,
+		// an idle notice, Stop hook feedback) is one.
 		return false
 	case strings.HasPrefix(text, "<local-command-caveat>"):
 		return false
@@ -321,19 +378,13 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 		if args != "" {
 			p.Text += " " + args
 		}
-	} else if strings.HasPrefix(text, "<task-notification>") {
+	} else if IsTaskNotification(text) {
 		p.Origin = OriginTaskNotification
+	} else if m := claudePlainCommand.FindStringSubmatch(text); m != nil && p.Origin == OriginHuman && r.Origin == nil {
+		// Older versions wrote some commands (/compact) as typed.
+		p.Origin, p.Command = OriginCommand, m[1]
 	}
-	// A prompt the transcript gives no prompt id opens a derived turn,
-	// unless it arrived mid-turn.
-	if r.PromptID == "" && (p.Origin == OriginHuman || p.Origin == OriginCommand || p.Origin == OriginTaskNotification) {
-		index := l.c.derived
-		if p.Origin != OriginTaskNotification || index == 0 {
-			l.c.derived++
-			index = l.c.derived
-		}
-		l.c.turn = &TurnRef{ID: id, Index: index, Derived: true}
-	}
+	l.number(id, p.Origin)
 	e := l.event(id, KindPrompt)
 	e.Prompt = p
 	l.add(e)
@@ -343,11 +394,42 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 	return false
 }
 
+// number counts a prompt the transcript doesn't number: a human prompt
+// (typed, a command, or queued until the last turn ended) is the next
+// turn. A prompt with no prompt id opens a derived turn, its id the
+// prompt event's id, as does a task notification there (with the index
+// of the human prompt before it); a message that arrives mid-turn stays
+// in the current turn. A prompt with a prompt id is in that turn; numbered
+// by count when the file gives no promptIndex.
+func (l *claudeLine) number(id, origin string) {
+	c, r := l.c, l.r
+	if !c.counted(r) {
+		return
+	}
+	human := origin == OriginHuman || origin == OriginCommand || origin == OriginQueued
+	switch {
+	case human:
+		c.prompts++
+	case r.PromptID != "" || origin != OriginTaskNotification:
+		return
+	case c.prompts == 0:
+		c.prompts = 1
+	}
+	if r.PromptID != "" {
+		c.setTurn(r.PromptID, c.prompts, false)
+	} else {
+		c.setTurn(id, c.prompts, true)
+	}
+}
+
 // claudeOrigins says where a user record's prompt came from, by the
 // origin and prompt source the record carries.
 func claudeOrigins(r *claudeRecord) string {
 	if r.PromptSource == "queued" {
 		return OriginQueued
+	}
+	if r.PromptSource == "system" && r.Origin == nil {
+		return OriginSystem
 	}
 	kind := ""
 	if r.Origin != nil {
@@ -370,6 +452,11 @@ func claudeOrigins(r *claudeRecord) string {
 	}
 	return OriginSystem
 }
+
+// claudePlainCommand matches a slash command typed as text, with no
+// markup: "/compact keep the plan". A path ("/etc/hosts is gone") has a
+// second slash, and isn't one.
+var claudePlainCommand = regexp.MustCompile(`^(/[a-z][a-z0-9_:-]*)(?:\s|$)`)
 
 // slashCommand reads a slash command's markup, in either tag order:
 // <command-name>/review</command-name> <command-message>review</command-message>
@@ -452,10 +539,14 @@ func (l *claudeLine) update(call *Event, res *ToolResult, response json.RawMessa
 }
 
 // settled records a call's new status: one that isn't pending any more
-// leaves the pending list.
+// leaves the pending list, and one that is done for good, the parser's
+// memory (only a running call has updates to come).
 func (c *claudeLines) settled(id, status string) {
 	if status == StatusPending {
 		return
+	}
+	if status != StatusBackground {
+		delete(c.tools, id)
 	}
 	for i, p := range c.pending {
 		if p == id {
@@ -484,36 +575,81 @@ var claudeTaskStatus = map[string]string{
 	"stopped":   StatusInterrupted,
 }
 
-// notification completes the background call a task notification reports
-// on: its <result> (or <summary>) is the call's output, and a subagent's
-// <usage> what the table reads its numbers from.
-func (l *claudeLine) notification(text string) {
-	toolID, _ := tagText(text, "tool-use-id")
-	call := l.c.tools[toolID]
-	if call == nil || call.Tool.Result.Status != StatusBackground {
-		return
-	}
-	status, _ := tagText(text, "status")
-	res := &ToolResult{Status: claudeTaskStatus[status]}
-	if res.Status == "" {
-		return
-	}
-	var ok bool
-	if res.Output, ok = tagText(text, "result"); !ok {
-		res.Output, _ = tagText(text, "summary")
-	}
-	var response json.RawMessage
-	if usage, ok := tagText(text, "usage"); ok {
-		m := map[string]int{}
-		for tag, key := range map[string]string{"tool_uses": "totalToolUseCount", "subagent_tokens": "totalTokens", "duration_ms": "totalDurationMs"} {
-			var n int
-			if s, ok := tagText(usage, tag); ok && json.Unmarshal([]byte(s), &n) == nil {
-				m[key] = n
-			}
+// TaskNotification is one <task-notification> block of a Claude Code
+// message: a background task (a command, a subagent) reporting back.
+type TaskNotification struct {
+	TaskID    string
+	ToolUseID string
+	Status    string
+	Summary   string
+	Result    string
+	// Usage is the <usage> block's inner markup, if any.
+	Usage string
+}
+
+// IsTaskNotification reports whether text, a message's trimmed text, is
+// task notifications: one or more <task-notification> blocks, alone or
+// after a "[SYSTEM NOTIFICATION ...]" preamble.
+func IsTaskNotification(text string) bool {
+	return strings.HasPrefix(text, "<task-notification>") ||
+		strings.HasPrefix(text, "[SYSTEM NOTIFICATION") && strings.Contains(text, "<task-notification>")
+}
+
+// TaskNotifications returns every <task-notification> block in text, in
+// order. Claude Code puts several in one message when several tasks
+// finish while the agent works.
+func TaskNotifications(text string) []TaskNotification {
+	var out []TaskNotification
+	for {
+		_, rest, ok := strings.Cut(text, "<task-notification>")
+		if !ok {
+			return out
 		}
-		response, _ = json.Marshal(m)
+		block, after, _ := strings.Cut(rest, "</task-notification>")
+		var n TaskNotification
+		for _, f := range []struct {
+			dst *string
+			tag string
+		}{
+			{&n.TaskID, "task-id"}, {&n.ToolUseID, "tool-use-id"}, {&n.Status, "status"},
+			{&n.Summary, "summary"}, {&n.Result, "result"}, {&n.Usage, "usage"},
+		} {
+			*f.dst, _ = tagText(block, f.tag)
+		}
+		out = append(out, n)
+		text = after
 	}
-	l.update(call, res, response, "")
+}
+
+// notification completes the background calls the task notifications in
+// text report on: each one's <result> (or <summary>) is its call's output,
+// and a subagent's <usage> what the table reads its numbers from.
+func (l *claudeLine) notification(text string) {
+	for _, n := range TaskNotifications(text) {
+		call := l.c.tools[n.ToolUseID]
+		if call == nil || call.Tool.Result.Status != StatusBackground {
+			continue
+		}
+		res := &ToolResult{Status: claudeTaskStatus[n.Status], Output: n.Result}
+		if res.Status == "" {
+			continue
+		}
+		if res.Output == "" {
+			res.Output = n.Summary
+		}
+		var response json.RawMessage
+		if n.Usage != "" {
+			m := map[string]int{}
+			for tag, key := range map[string]string{"tool_uses": "totalToolUseCount", "subagent_tokens": "totalTokens", "duration_ms": "totalDurationMs"} {
+				var v int
+				if s, ok := tagText(n.Usage, tag); ok && json.Unmarshal([]byte(s), &v) == nil {
+					m[key] = v
+				}
+			}
+			response, _ = json.Marshal(m)
+		}
+		l.update(call, res, response, "")
+	}
 }
 
 // assistant reads an assistant record: thinking, text and tool calls, or
@@ -521,6 +657,8 @@ func (l *claudeLine) notification(text string) {
 func (l *claudeLine) assistant() {
 	r := l.r
 	content, blocks := readClaudeContent(r.Message.Content)
+	// More from the model: the last reply didn't close its turn.
+	l.c.closing = nil
 	if r.IsAPIErrorMessage {
 		e := l.event(r.blockID(l.n, 0), KindSystem)
 		data := objectFields(l.raw, func(key string) bool { return key == "error" || key == "apiErrorStatus" })
@@ -528,10 +666,13 @@ func (l *claudeLine) assistant() {
 		l.add(e)
 		return
 	}
-	lastText := -1
+	lastText, calls := -1, false
 	for i, b := range blocks {
-		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+		switch {
+		case b.Type == "text" && strings.TrimSpace(b.Text) != "":
 			lastText = i
+		case b.Type == "tool_use":
+			calls = true
 		}
 	}
 	for i, b := range blocks {
@@ -544,8 +685,20 @@ func (l *claudeLine) assistant() {
 			if strings.TrimSpace(b.Text) == "" {
 				continue
 			}
+			// A message that ends the turn ends with end_turn or a stop
+			// sequence; older versions wrote no stop reason, so their last
+			// reply is final once the turn ends with nothing more.
 			e := l.event(r.blockID(l.n, i), KindSay)
-			e.Say = &SayEvent{Text: b.Text, Final: i == lastText && r.Message.StopReason == "end_turn"}
+			stop := r.Message.StopReason
+			e.Say = &SayEvent{Text: b.Text, Final: i == lastText && (stop == "end_turn" || stop == "stop_sequence")}
+			l.add(e)
+			if i == lastText && stop == "" && !calls {
+				l.c.closing = &e
+			}
+		case "fallback":
+			// The harness switched models for this message.
+			e := l.event(r.blockID(l.n, i), KindSystem)
+			e.System = &SystemEvent{Subtype: "model_fallback", Data: modelFallback(b)}
 			l.add(e)
 		case "tool_use":
 			e := l.event(b.ID, KindTool)
@@ -556,6 +709,28 @@ func (l *claudeLine) assistant() {
 			l.c.pending = append(l.c.pending, b.ID)
 		}
 	}
+}
+
+// modelFallback is a fallback block's data: the models it switched from
+// and to, as the block holds them.
+func modelFallback(b claudeBlock) json.RawMessage {
+	var out bytes.Buffer
+	out.WriteByte('{')
+	for _, f := range []struct {
+		key string
+		v   json.RawMessage
+	}{{"from", b.From}, {"to", b.To}} {
+		if len(f.v) == 0 {
+			continue
+		}
+		if out.Len() > 1 {
+			out.WriteByte(',')
+		}
+		fmt.Fprintf(&out, "%q:", f.key)
+		out.Write(f.v)
+	}
+	out.WriteByte('}')
+	return out.Bytes()
 }
 
 // claudeDelivered matches the head line of gomuxai's held-message
@@ -582,7 +757,7 @@ func (l *claudeLine) attachment() {
 			kind = a.Origin.Kind
 		}
 		switch {
-		case a.CommandMode == "task-notification" || kind == "task-notification" || strings.HasPrefix(strings.TrimSpace(p.Text), "<task-notification>"):
+		case a.CommandMode == "task-notification" || kind == "task-notification" || IsTaskNotification(strings.TrimSpace(p.Text)):
 			p.Origin = OriginTaskNotification
 		case kind == "peer" || kind == "channel" || kind == "coordinator":
 			p.Origin = OriginPeer
@@ -625,6 +800,9 @@ func (l *claudeLine) system() {
 	e.System = &SystemEvent{Subtype: l.r.Subtype, Data: objectFields(l.raw, func(key string) bool { return !claudeEnvelope[key] })}
 	json.Unmarshal(l.r.Content, &e.System.Text)
 	l.add(e)
+	if s := l.r.Subtype; l.c.closing != nil && (s == "turn_duration" || s == "stop_hook_summary") {
+		l.close() // the turn ended
+	}
 }
 
 // request reads an api-request line: what one model call was sent, with
@@ -755,33 +933,62 @@ func HarvestClaude(s *Session, line []byte) bool {
 }
 
 // ClaudeSubagentTurns returns, for the Claude subagent transcript at path
-// (<session id>/subagents/agent-<agent id>.jsonl), the index of each turn
-// its parent's transcript (<session id>.jsonl beside that folder) numbers,
-// by prompt id: Options.Turns for parsing it, so the subagent's events
-// carry the turn of the call that started it. It returns nil for any other
-// path, or a parent it can't read.
-func ClaudeSubagentTurns(path string) map[string]int {
+// (<session id>/subagents/agent-<agent id>.jsonl), the lookup of its
+// parent's turn indexes by prompt id that Options.Turns takes. A
+// subagent's records name the parent's current turn by its prompt id only;
+// its index is what the parent's transcript (<session id>.jsonl beside
+// that folder) gives it, by the same rules. The lookup reads the parent as
+// far as it has been written; a prompt id it doesn't know yet makes it
+// read what the parent has added since. It returns nil for any other
+// path.
+func ClaudeSubagentTurns(path string) func(promptID string) (int, bool) {
 	dir := filepath.Dir(path)
 	if filepath.Base(dir) != "subagents" || !strings.HasPrefix(filepath.Base(path), "agent-") {
 		return nil
 	}
-	f, err := os.Open(filepath.Dir(dir) + ".jsonl")
+	t := &parentTurns{path: filepath.Dir(dir) + ".jsonl", p: Claude{}.NewParser(Options{}), turns: map[string]int{}}
+	return t.lookup
+}
+
+// parentTurns reads a parent transcript's turns as it grows.
+type parentTurns struct {
+	path    string
+	p       *Parser
+	pending []byte // read, but not a whole line yet
+	turns   map[string]int
+}
+
+func (t *parentTurns) lookup(promptID string) (int, bool) {
+	if i, ok := t.turns[promptID]; ok {
+		return i, true
+	}
+	t.read()
+	i, ok := t.turns[promptID]
+	return i, ok
+}
+
+// read parses what the parent's transcript holds past what was read.
+func (t *parentTurns) read() {
+	f, err := os.Open(t.path)
 	if err != nil {
-		return nil
+		return
 	}
 	defer f.Close()
-	turns := map[string]int{}
-	br := bufio.NewReader(f)
+	off := t.p.Pos().At + int64(len(t.pending))
+	buf := make([]byte, readChunk)
 	for {
-		line, err := br.ReadBytes('\n')
-		if bytes.Contains(line, []byte(`"promptIndex"`)) {
-			var r claudeRecord
-			if json.Unmarshal(line, &r) == nil && r.PromptID != "" && r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil {
-				turns[r.PromptID] = *r.TurnPosition.PromptIndex
+		n, err := f.ReadAt(buf, off)
+		off += int64(n)
+		t.pending = append(t.pending, buf[:n]...)
+		start := t.p.Pos().At
+		for _, e := range t.p.Feed(t.pending) {
+			if e.Turn != nil && !e.Turn.Derived {
+				t.turns[e.Turn.ID] = e.Turn.Index
 			}
 		}
-		if err != nil {
-			return turns
+		t.pending = append(t.pending[:0], t.pending[t.p.Pos().At-start:]...)
+		if n == 0 || err != nil {
+			return
 		}
 	}
 }

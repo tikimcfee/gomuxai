@@ -53,7 +53,7 @@ func (Agy) NewParser(opts Options) *Parser {
 	if opts.Session.ParentSession != nil {
 		a.agent = opts.Session.SessionID
 	}
-	return newParser("agy", a, opts.From)
+	return newParser("agy", a)
 }
 
 // agyLines is the agy half of a Parser.

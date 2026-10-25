@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
+	"github.com/tikimcfee/gomuxai/internal/discovery"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
@@ -403,17 +404,23 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 		return nil, nil, err
 	}
 
-	native, found, queried := s.nativeStatus(ctx, agent)
-	if found && native == AgentStatusWaiting && s.deniedSince(agent, reported) {
+	native := s.nativeStatus(ctx, agent)
+	reportStatus := ""
+	if reported != nil {
+		reportStatus = string(reported.Status)
+	}
+	// The same rule agent sessions applies (discovery.ReconcileNative).
+	decision := discovery.ReconcileNative(native, reportStatus, func() bool { return s.deniedSince(agent, reported) })
+	switch decision {
+	case discovery.ReportDenied:
 		// Claude's session list still says waiting for a moment after a
 		// deny (which fires no hook), so a send right after deny was refused.
 		return reported, reported, nil
-	}
-	if found {
-		info := &StatusInfo{Status: native, Source: StatusSourceNative}
+	case discovery.NativeWins:
+		info := &StatusInfo{Status: AgentStatus(native.Status), Source: StatusSourceNative}
 		// Hook detail is only trustworthy while it agrees with the backend;
 		// e.g. an interrupted permission prompt fires no hook at all.
-		if reported != nil && reported.Status == native {
+		if reported != nil && reported.Status == info.Status {
 			info.Event, info.Detail, info.Tool, info.ToolInput, info.UpdatedAt = reported.Event, reported.Detail, reported.Tool, reported.ToolInput, reported.UpdatedAt
 		}
 		return info, reported, nil
@@ -423,7 +430,7 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 		// report says it's alive: the CLI died without its SessionEnd hook
 		// (crash, kill -9, OOM). Echoing the stale report would let the
 		// watcher type queued messages into the bare shell left behind.
-		if queried && reported.Status != AgentStatusExited {
+		if decision == discovery.NativeGone {
 			return &StatusInfo{
 				Status:    AgentStatusExited,
 				Source:    StatusSourceNative,
@@ -539,45 +546,34 @@ func (s *AgentService) reportedStatus(ctx context.Context, name string) (*Status
 	return info, nil
 }
 
-// nativeStatus asks the backend CLI for the session's status, if it can.
-// queried reports whether the CLI answered at all; found, whether it knows
-// the session and gave a usable status.
-func (s *AgentService) nativeStatus(ctx context.Context, agent *storage.Agent) (status AgentStatus, found, queried bool) {
+// nativeStatus asks the backend CLI what its own session list says about
+// the agent's session, if it can: not queried when there is no session id,
+// no such CLI, or it didn't answer.
+func (s *AgentService) nativeStatus(ctx context.Context, agent *storage.Agent) discovery.Native {
 	sessionID := s.stateValue(ctx, agent.Name, StateKeySessionID)
 	if sessionID == "" {
-		return "", false, false
+		return discovery.Native{}
 	}
 	provider, err := s.provider(agent)
 	if err != nil {
-		return "", false, false
+		return discovery.Native{}
 	}
 	np, ok := provider.(backend.NativeStatusProvider)
 	if !ok {
-		return "", false, false
+		return discovery.Native{}
 	}
 	st, known, err := np.NativeStatus(ctx, sessionID)
 	if err != nil {
-		return "", false, false
+		return discovery.Native{}
 	}
-	if !known {
-		return "", false, true
-	}
-	if st == backend.StatusUnknown {
-		// Listed, but in a state we don't map: alive, so not a crash.
-		return "", false, false
-	}
-	return fromBackendStatus(st), true, true
+	return discovery.Native{Queried: true, Listed: known, Status: string(fromBackendStatus(st))}
 }
 
-// deniedLag bounds how long after a deny native status may still say
-// waiting before it is believed again. Observed: under a second.
-const deniedLag = 5 * time.Second
-
 // deniedSince reports whether the last report is a deny recorded within
-// deniedLag that left no prompt pending or on screen: a native "waiting"
-// then is the CLI catching up, not a prompt.
+// discovery.DeniedLag that left no prompt pending or on screen: a native
+// "waiting" then is the CLI catching up, not a prompt.
 func (s *AgentService) deniedSince(agent *storage.Agent, reported *StatusInfo) bool {
-	return reported != nil && reported.Event == "denied" && time.Since(reported.UpdatedAt) < deniedLag &&
+	return reported != nil && reported.Event == "denied" && time.Since(reported.UpdatedAt) < discovery.DeniedLag &&
 		len(reported.pending) == 0 && !s.permissionPromptVisible(agent)
 }
 

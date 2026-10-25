@@ -3,6 +3,7 @@ package transcript
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"path"
 	"time"
 )
@@ -207,26 +208,6 @@ func (s *Session) setCWD(cwd string) {
 	s.Project = path.Base(path.Clean(cwd))
 }
 
-// fill copies into s the metadata it lacks from other: what the start of a
-// transcript said, for a parse of its end.
-func (s *Session) fill(other Session) {
-	for _, f := range []struct{ dst, src *string }{
-		{&s.SessionID, &other.SessionID}, {&s.Title, &other.Title}, {&s.AgentName, &other.AgentName},
-		{&s.Model, &other.Model}, {&s.Version, &other.Version}, {&s.GitBranch, &other.GitBranch},
-		{&s.ContinuedIn, &other.ContinuedIn},
-	} {
-		if *f.dst == "" {
-			*f.dst = *f.src
-		}
-	}
-	if s.CWD == "" {
-		s.setCWD(other.CWD)
-	}
-	if s.ParentSession == nil {
-		s.ParentSession = other.ParentSession
-	}
-}
-
 // Pos is a place in a transcript: the byte offset where a line starts,
 // that line's index, and the Seq the next event gets.
 type Pos struct {
@@ -240,25 +221,20 @@ type Options struct {
 	// Requests adds the request channel: Claude Code's api-request lines
 	// as request events.
 	Requests bool
-	// From is where the data starts: the zero Pos for a whole transcript,
-	// or the start of a line (an event's At and Line) to read a window of
-	// one. A window's parse knows nothing of the lines before it: a
-	// result whose call came earlier is dropped, and events have no turn
-	// until a line names one.
-	From Pos
-	// Turns gives the index of turns the transcript names but doesn't
+	// Turns looks up the index of a turn the transcript names but doesn't
 	// number, by prompt id: a Claude subagent's records hold its parent's
 	// prompt id, and only the parent's transcript its index
 	// (ClaudeSubagentTurns).
-	Turns map[string]int
+	Turns func(promptID string) (index int, ok bool)
 	// Session is what files beside the transcript say about its session,
 	// where its records don't (Kimi Code's state.json, agy's subagent
-	// index): the parse starts from it. On a subagent's (ParentSession
-	// set), its SessionID is the Agent of every event. FileOptions reads
-	// it.
+	// index, which of agy's logs it is): the parse starts from it. On a
+	// subagent's (ParentSession set), its SessionID is the Agent of every
+	// event.
 	Session Session
-	// Turn is the turn events carry until a prompt opens one: for an agy
-	// subagent, the parent's turn whose call started it.
+	// Turn is the turn events carry until a prompt opens one, for a
+	// transcript whose records name no turn at all: an agy subagent's
+	// carry the parent's turn whose call started it.
 	Turn *TurnRef
 }
 
@@ -266,7 +242,7 @@ type Options struct {
 type Reader interface {
 	// Harness names the format, e.g. "claude".
 	Harness() string
-	// NewParser returns a parser for one transcript, or a window of one.
+	// NewParser returns a parser for one transcript, from its start.
 	NewParser(opts Options) *Parser
 }
 
@@ -283,7 +259,10 @@ type lineReader interface {
 }
 
 // Parser turns a transcript's lines into events. Feed it the transcript's
-// bytes, in order, as they arrive.
+// bytes, in order, from the start, as they arrive. A parse always starts
+// at the start: what a line means depends on the lines before it (the
+// turn it is in, the call a result answers). To resume after a line, skip
+// the lines before (ResumeAfter).
 type Parser struct {
 	harness string
 	lines   lineReader
@@ -294,8 +273,8 @@ type Parser struct {
 	Skipped int
 }
 
-func newParser(harness string, lines lineReader, from Pos) *Parser {
-	return &Parser{harness: harness, lines: lines, pos: from}
+func newParser(harness string, lines lineReader) *Parser {
+	return &Parser{harness: harness, lines: lines}
 }
 
 // Feed parses the whole lines at the start of data, which starts at
@@ -329,6 +308,36 @@ func (p *Parser) Feed(data []byte) []Event {
 		p.pos.Line++
 		data = data[nl+1:]
 	}
+}
+
+// Skip reads data as Feed does, keeping what later lines need, but
+// returns nothing: the lines before the point a parse resumes at. Their
+// events still count in Seq, so the events after it are numbered as the
+// whole stream numbers them.
+func (p *Parser) Skip(data []byte) {
+	p.Feed(data)
+}
+
+// ResumeAfter returns a parser of r's for the transcript data holds from
+// its start, that has read, silently, every line up to and including the
+// one that starts at byte offset at: the At of the last event a reader
+// holds. Feed it the transcript from Pos().At on, and it sends what comes
+// after that line, numbered and turned as the whole stream is. An at of
+// -1 resumes at the start.
+func ResumeAfter(r Reader, opts Options, data []byte, at int64) (*Parser, error) {
+	p := r.NewParser(opts)
+	if at < 0 {
+		return p, nil
+	}
+	if at >= int64(len(data)) || at > 0 && data[at-1] != '\n' {
+		return nil, fmt.Errorf("offset %d is not the start of a line of the transcript (%d bytes)", at, len(data))
+	}
+	nl := bytes.IndexByte(data[at:], '\n')
+	if nl < 0 {
+		return nil, fmt.Errorf("the line at offset %d has no end yet", at)
+	}
+	p.Skip(data[:at+int64(nl)+1])
+	return p, nil
 }
 
 // Pos returns where the parse stopped: the start of the first line it

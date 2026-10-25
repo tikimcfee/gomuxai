@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/discovery"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
@@ -449,7 +450,10 @@ func (t *Tree) apply(ctx context.Context, s *store, ev *storage.AgentEvent) (any
 		}
 		a := t.fromRun(s, run)
 		if prev := s.live[ev.Agent]; prev != nil {
-			a.Event, a.Detail, a.Tool, a.StatusAt, a.SessionID = prev.Event, prev.Detail, prev.Tool, prev.StatusAt, prev.SessionID
+			a.Event, a.Detail, a.Tool, a.StatusAt = prev.Event, prev.Detail, prev.Tool, prev.StatusAt
+			if prev.SessionID != "" {
+				a.SessionID = prev.SessionID
+			}
 		}
 		delete(s.live, ev.Agent)
 		if t.all {
@@ -536,6 +540,8 @@ func (t *Tree) fromRun(s *store, run *storage.Run) Agent {
 		// the newest one.
 		a.Transcript = lastTranscript(filepath.Join(s.dir, "logs", run.Name+".transcripts"))
 	}
+	// Runs don't record the session id; the transcript's path names it.
+	a.SessionID = discovery.SessionIDFromPath(a.Transcript)
 	a.Dialect = dialect(a.Backend, a.Transcript)
 	statTranscript(&a)
 	return a

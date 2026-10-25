@@ -32,7 +32,7 @@ func (Kimi) NewParser(opts Options) *Parser {
 	if opts.Session.ParentSession != nil {
 		k.agent = opts.Session.SessionID
 	}
-	return newParser("kimi", k, opts.From)
+	return newParser("kimi", k)
 }
 
 // kimiFields is a JSON object's fields, read one at a time.

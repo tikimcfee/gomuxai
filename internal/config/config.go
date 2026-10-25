@@ -44,6 +44,14 @@ type Config struct {
 	// Host names this machine on the agent bus ("name@host" addressing and
 	// bus subjects). Default: the short hostname, made subject-safe.
 	Host string `json:"host"`
+
+	// ClaudeProjectsDir, AgyBrainDir and KimiSessionsDir are where agent
+	// sessions looks for each harness's transcripts. Unset (nil) means the
+	// app's default locations that exist; a path is the only place looked;
+	// an empty string turns that harness off. A leading ~ is the home dir.
+	ClaudeProjectsDir *string `json:"claude_projects_dir,omitempty"`
+	AgyBrainDir       *string `json:"agy_brain_dir,omitempty"`
+	KimiSessionsDir   *string `json:"kimi_sessions_dir,omitempty"`
 }
 
 // DefaultStartupDelay is the default StartupDelay.

@@ -27,6 +27,8 @@ func TestCommandArgs(t *testing.T) {
 		{captureCmd, []string{"agent"}, true},
 		{listCmd, nil, true},
 		{listCmd, []string{"unexpected"}, false},
+		{sessionsCmd, nil, true},
+		{sessionsCmd, []string{"unexpected"}, false},
 		{statusCmd, []string{"agent"}, true},
 		{statusCmd, []string{"a", "b"}, false},
 		{cleanupCmd, nil, false},

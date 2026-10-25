@@ -57,6 +57,7 @@ installed one:
 | `internal/transcript` | Readers for Claude Code, agy and Kimi Code session transcripts, into one event stream (`docs/EVENTS.md`). |
 | `internal/watcher` | The `agent watch` loop: delivers queued messages when their agent is idle. |
 | `internal/export` | The tree `agent export` prints: a snapshot across stores and hosts, kept current from agent events, sessions, and transcripts. |
+| `internal/discovery` | `agent sessions`: where each harness keeps its transcripts (the one dir table), each session's metadata, the join to workgroup agents, and every session's status. |
 | `internal/config` | `Config`, its defaults (data dir next to the binary, host name, startup delay), and paths derived from it. |
 | `internal/macos` | Local Network support for the bus on macOS: Info.plist detection and disclaimed spawn. |
 | `internal/buildinfo` | The build id (`c7253f9-dirty`, a version, or `devel`) from the Go toolchain's embedded VCS info. |
@@ -394,7 +395,8 @@ from three sources, most authoritative first:
    lines of the screen, for backends with neither. A custom backend needs
    its `--backend-config` loaded for this.
 
-The rules between them:
+The rules between native and report are one function,
+`discovery.ReconcileNative`, which `agent sessions` applies too:
 
 - Native wins when it disagrees with the report. An interrupted Claude
   permission prompt fires no hook, so the report would stay `waiting`
@@ -581,12 +583,17 @@ prompt, thinking block, reply, tool call and harness record, each tagged with
 its turn, a tool's result arriving as an update of its call. A `Reader`'s
 `Parser` takes a transcript's bytes in order and returns the events of the
 whole lines among them, keeping what later lines need (the open turn, calls
-waiting for results); it starts at any line (`Options.From`) and reports where
-it stopped (`Pos`), so the same code reads a whole file, a window, or what a
-live session appends. What only the files beside a transcript say
-(Kimi's `state.json`, agy's index of the subagents a conversation started,
+waiting for results), and reports where it stopped (`Pos`), so the same code
+reads a whole file or what a live session appends. A parse always starts at
+the file's start, because what a line means depends on the lines before it;
+`ResumeAfter` resumes after a line by reading the lines up to it silently
+(`Skip`), so what follows is numbered and turned as the whole stream is.
+What only the files beside a transcript say (Kimi's `state.json`, which of
+agy's two logs it is, agy's index of the subagents a conversation started,
 the parent transcript that numbers a Claude subagent's turns) comes in
-through `Options`, which `FileOptions` reads for a path. `Latest` folds a stream into each event's latest state.
+through `Options`, which `FileOptions` reads for a path; `ReadFile` and a
+resumed parse take the same ones. `Latest` folds a stream into each event's
+latest state.
 `Finals` merges the final reply a Stop hook reports (`last_assistant_message`)
 into a stream ahead of the transcript, which writes it only after the hook ran:
 a provisional say that the transcript's copy then updates. `HarvestClaude`
@@ -594,9 +601,10 @@ reads a session's metadata alone, line by line, by the same rules.
 Backends hand out their reader through `backend.TranscriptProvider`. The
 behaviour was ported from glyph3d-rs `native/src/agent_transcript/` and
 glyph3d-js's session adapter, and `testdata/corpus` holds the transcripts
-with the exact events they must produce. `ReadFile` reads the last 1 MiB
-first and doubles the window until it holds enough events, plus 256 KiB of
-the head for metadata, since transcripts run to tens of megabytes. The
+with the exact events they must produce. `ReadFile` parses the whole file a
+megabyte at a time but keeps only the last events it was asked for and their
+updates, since transcripts run to tens of megabytes (75 MB parses in about
+0.2 s); the parser forgets calls once they are done. The
 formats are the CLIs' internal files, not APIs: lines that aren't JSON
 objects are counted in `Parser.Skipped`, and unknown records are ignored.
 
@@ -681,6 +689,8 @@ runs of one name apart. Every agent object has the same fields:
 didn't start). Absent fields are empty: `parent` for a person's agent,
 `ended_at` while live, `store` and `attached` for another host's agents.
 A departed agent (`live: false`, `ended_at` set) keeps its last report.
+Runs don't record the session id, so a departed agent's `session_id` is
+the one its transcript's path names (`discovery.SessionIDFromPath`).
 
 | `type` | Fields | When |
 |---|---|---|
@@ -706,6 +716,89 @@ Every status report is a line, even one superseded before the follower
 read it (a prompt answered within 250ms still shows as `waiting`).
 Without `--json`, `--follow` prints a line of text per change, and skips
 transcript growth.
+
+## Sessions
+
+`agent sessions` (`internal/cli/sessions.go`, `internal/discovery`) lists
+every agent session on the host: workgroup agents' and the ones a person
+ran, in one shape, the Session of [`docs/EVENTS.md`](EVENTS.md). It only
+reads, and runs one backend CLI, `claude agents --json`.
+
+**Where.** One table (`discovery.Dirs`, ported from glyph3d-rs
+`crates/glyph-session-dirs`):
+
+| harness | default dirs (each kept only if it exists) | app config key |
+|---|---|---|
+| claude | `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` | `claude_projects_dir` |
+| agy | `~/.gemini/antigravity/brain` (desktop), `~/.gemini/antigravity-cli/brain` (CLI) | `agy_brain_dir` |
+| kimi | `~/.kimi-code/sessions` | `kimi_sessions_dir` |
+
+A configured path (in the JSON app config `--backend-config` loads) is the
+only dir scanned for its harness, even if missing; `""` turns the harness
+off.
+
+**What.** Each session's fields come from the harness's own files, never
+the storage folder's name, and only the head and tail are read:
+
+| field | claude | agy | kimi |
+|---|---|---|---|
+| `session_id` | file stem; a subagent's `agent-<id>` | the brain dir's name | `session_<uuid>` without the prefix; a subagent's `<uuid>:<agent>` |
+| `cwd` | the first record's `cwd` (else the newest) | `history.jsonl`'s first `workspace` for it, else a subagent's `workspaceUris` | `state.json` `workDir`/`cwd`, else `session_index.jsonl` |
+| `title` | newest `custom-title`, else newest `ai-title`; a subagent's meta.json `description` when none | `annotations/<id>.pbtxt`, else a subagent's role | `state.json` `title` |
+| `model` | newest assistant `message.model` (not `<synthetic>`) | - | newest `llm.request` `model` |
+| `version`, `git_branch` | newest record's | - | - |
+| `parent_session` | the `<uuid>/subagents/` dir; `tool_id` = meta.json `toolUseId` | `brain/<parent>/.system_generated/subagents/<id>.json` | the session dir of `agents/<agent>/` |
+| `continued_in` | newest `continued-in` record | - | - |
+
+A Claude transcript is never read whole: the head grows from 16 KiB until
+a record has a cwd (at most 256 KiB), and the end is read backwards, at
+most its last 1 MiB, until the metadata is found and, for a main session,
+a title. Claude re-appends the custom title beside every AI title it
+writes, so the search stops 64 KiB past the newest AI title; a title older
+than the last 1 MiB isn't found. A subagent's transcript holds no title,
+so only its metadata is looked for. Measured on 1851 transcripts (896 MB):
+117 MB read, at most about 0.5 MB per file. `project` is the cwd's last
+part.
+
+**Workgroup join.** The agents come from export's tree with `--all` (this
+store and those its tmux sessions point at), each with its name's
+`logs/<name>.transcripts`. A transcript belongs to the run whose current or
+last transcript it is; one only the history names, to that name's newest
+run created before the file's last write. A subagent's session belongs to
+its parent session's agent, at any depth. Every transcript an agent names
+is read first, wherever it lives, so the history rule knows its last write.
+Paths and stores are compared with symlinks resolved, so a symlinked
+`~/.claude` lists a session once. A live agent with no transcript yet is
+listed with an empty `path` and its backend as `harness`.
+
+**Status** (`discovery.Resolve`):
+- a live agent's current session: its last report, reconciled with
+  `claude agents --json` by `discovery.ReconcileNative`, the one rule
+  `agent status` uses too: the list's status when it lists the session in
+  a mapped state (but not a `waiting` within 5s of a deny), `exited` when
+  it doesn't list a session the report says is alive, else the report.
+  `agent status` then reads the screen as well; `sessions` doesn't. agy:
+  `exited` once agy no longer holds the conversation open;
+- an agent's other sessions, and a departed run's: `exited`;
+- Claude, no workgroup: `claude agents --json`, `exited` if unlisted,
+  `unknown` if the CLI can't be run;
+- agy, no workgroup: agy holds an exclusive `flock` on
+  `presence/<conversation id>.lock` while a conversation is open. On Linux
+  that is read from `/proc/locks`, taking no lock: a lock on the file's
+  inode whose holder has the file open (its `/proc/<pid>/fd`; the device
+  `/proc/locks` names is the superblock's, which differs from `stat`'s on
+  btrfs). Elsewhere a non-blocking shared `flock`, released at once, which
+  for that moment would make agy's own non-blocking lock fail. `unknown` while held
+  (idle and busy look the same), else `exited`. A subagent conversation
+  without its own lock is open while its record says `ALIVE` and its parent
+  is open;
+- Kimi, which records nothing about running: `unknown` if its transcript
+  changed in the last 10 minutes, else `exited`;
+- a subagent: `exited` if it recorded finishing (Claude's meta.json
+  `finished`, agy's state) or its parent is `exited`, else `unknown`.
+
+`status_at` is the report's time where the report stands, else the
+transcript's last write (a departed run's: when it ended).
 
 ## The bus
 

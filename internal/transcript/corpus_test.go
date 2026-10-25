@@ -104,6 +104,8 @@ func marshalLine(t *testing.T, typ string, v any) []byte {
 
 // comparable decodes a stream line for comparison: fields with zero values
 // dropped, and on a session line, the fields the corpus doesn't compare.
+// A request's payload is compared as it is: it repeats what the harness
+// sent, so a field added or dropped, even an empty one, is a difference.
 func comparable(t *testing.T, line []byte) any {
 	t.Helper()
 	var v map[string]any
@@ -115,7 +117,13 @@ func comparable(t *testing.T, line []byte) any {
 		delete(v, "status")
 		delete(v, "status_at")
 	}
-	return dropZero(v)
+	request, isRequest := v["request"]
+	delete(v, "request")
+	v = dropZero(v).(map[string]any)
+	if isRequest {
+		v["request"] = request
+	}
+	return v
 }
 
 // dropZero returns v without the object fields whose values are zero

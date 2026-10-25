@@ -77,9 +77,12 @@ func TestClaudeParse(t *testing.T) {
 		`1 update tool Bash(go test ./...) ok "ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s"`,
 		`1 update tool Read(go.mod) ok "1\tmodule example.com/proj"`,
 		`1 add say "All tests pass."`,
-		// The caveat is meta: not a prompt. A task notification opens a
-		// turn of its own, with the index of the human prompt before it.
+		// The caveat is meta: not a prompt. The next prompt ends the turn,
+		// so its last reply, which recorded no stop reason, is final. A
+		// task notification opens a turn of its own, with the index of the
+		// human prompt before it.
 		`2 add prompt(command) "/review high"`,
+		`1 update say final "All tests pass."`,
 		`2 add tool Bash(make lint) pending ""`,
 		`2 update tool Bash(make lint) error "Exit code 2\nlint: 1 issue"`,
 		`2 add prompt(task-notification) "<task-notification>background task finished</task-notification>"`,
@@ -154,6 +157,10 @@ func TestClaudeUserRecords(t *testing.T) {
 		{`"isMeta":true,"origin":{"kind":"channel"},`, `"<channel source=\"chat\">hi</channel>"`, `- add prompt(peer) "<channel source=\"chat\">hi</channel>"`},
 		{`"isMeta":true,"origin":{"kind":"coordinator"},`, `"next step"`, `- add prompt(peer) "next step"`},
 		{`"isMeta":true,"origin":{"kind":"auto-continuation"},`, `"continue"`, `- add prompt(system) "continue"`},
+		// The harness's own prompts: a /loop wakeup or an idle notice opens
+		// its turn; Stop hook feedback continues the current one.
+		{`"isMeta":true,"promptSource":"system","promptId":"w1","turnPosition":{"promptIndex":4},`, `"[Cross-session idle notice] nothing new"`, `4 add prompt(system) "[Cross-session idle notice] nothing new"`},
+		{`"isMeta":true,"promptSource":"system",`, `"Stop hook feedback:\nrun the linter"`, `- add prompt(system) "Stop hook feedback:\nrun the linter"`},
 		// With no prompt id, a task notification opens a (derived) turn.
 		{`"isMeta":true,"origin":{"kind":"task-notification"},`, `"<task-notification>done</task-notification>"`, `1 add prompt(task-notification) "<task-notification>done</task-notification>"`},
 		{``, `"<local-command-stdout>Set model</local-command-stdout>"`, `- add system local_command "<local-command-stdout>Set model</local-command-stdout>"`},
@@ -205,6 +212,104 @@ func TestClaudeMidTurn(t *testing.T) {
 	}
 	if e := events[8]; e.ID != "u3#1" {
 		t.Errorf("interrupt id %q, want its block's, u3#1", e.ID)
+	}
+}
+
+// One message can hold several task notifications, after a preamble: each
+// completes its own call.
+func TestClaudeTaskNotifications(t *testing.T) {
+	bg := func(n int) string {
+		return fmt.Sprintf(`{"type":"assistant","uuid":"a%d","message":{"role":"assistant","content":[{"type":"tool_use","id":"bg%d","name":"Bash","input":{"command":"job %d"}}],"stop_reason":"tool_use"}}`+"\n"+
+			`{"type":"user","uuid":"r%d","promptId":"p1","toolUseResult":{"backgroundTaskId":"t%d"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bg%d","content":"started"}]}}`, n, n, n, n, n, n)
+	}
+	notes := `[SYSTEM NOTIFICATION - two tasks finished]\n` +
+		`<task-notification>\n<tool-use-id>bg1</tool-use-id>\n<status>completed</status>\n<summary>job 1 done</summary>\n</task-notification>\n` +
+		`<task-notification>\n<tool-use-id>bg2</tool-use-id>\n<status>killed</status>\n<summary>job 2 stopped</summary>\n</task-notification>`
+	lines := []string{
+		`{"type":"user","uuid":"u1","promptId":"p1","turnPosition":{"promptIndex":1},"message":{"role":"user","content":"run both"}}`,
+		bg(1), bg(2),
+		`{"type":"user","uuid":"u2","promptId":"p2","origin":{"kind":"task-notification"},"message":{"role":"user","content":"` + notes + `"}}`,
+	}
+	_, events := parse(Claude{}, []byte(strings.Join(lines, "\n")+"\n"))
+	got := summaries(events)
+	want := []string{
+		`1 update tool Bash(job 1) ok "job 1 done"`,
+		`1 update tool Bash(job 2) interrupted "job 2 stopped"`,
+	}
+	if len(got) < 2 || !slices.Equal(got[len(got)-2:], want) || !strings.HasPrefix(got[len(got)-3], "1 add prompt(task-notification)") {
+		t.Errorf("events:\n%s\nwant to end with a notification, then:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if n := TaskNotifications(strings.ReplaceAll(notes, `\n`, "\n")); len(n) != 2 || n[1].ToolUseID != "bg2" || n[1].Status != "killed" {
+		t.Errorf("TaskNotifications = %+v", n)
+	}
+}
+
+// Older versions' replies carry no stop reason: the last one of a turn
+// becomes final once the turn ends (its timing record, or the next
+// prompt), not when the model goes on or the turn is interrupted. A stop
+// sequence ends a turn too. A model fallback is a system event.
+func TestClaudeClosingReplies(t *testing.T) {
+	say := func(uuid, text, stop string) string {
+		return fmt.Sprintf(`{"type":"assistant","uuid":"%s","message":{"role":"assistant","content":[{"type":"text","text":"%s"}],"stop_reason":%s}}`, uuid, text, stop)
+	}
+	prompt := func(uuid, text string) string {
+		return fmt.Sprintf(`{"type":"user","uuid":"%s","message":{"role":"user","content":"%s"}}`, uuid, text)
+	}
+	lines := []string{
+		prompt("u1", "one"),
+		say("a1", "thinking aloud", "null"),
+		say("a2", "done with one", "null"),
+		`{"type":"system","subtype":"turn_duration","uuid":"s1","durationMs":5}`,
+		prompt("u2", "two"),
+		say("a3", "done with two", "null"),
+		prompt("u3", "/compact keep the plan"),
+		say("a4", "partial", "null"),
+		prompt("u4", "[Request interrupted by user]"),
+		prompt("u5", "/etc/hosts is empty"),
+		`{"type":"assistant","uuid":"a5","message":{"role":"assistant","content":[{"type":"fallback","from":"model-a","to":"model-b"},{"type":"text","text":"checked"}],"stop_reason":"stop_sequence"}}`,
+	}
+	_, events := parse(Claude{}, []byte(strings.Join(lines, "\n")+"\n"))
+	want := []string{
+		`1 add prompt(human) "one"`,
+		`1 add say "thinking aloud"`,
+		`1 add say "done with one"`,
+		`1 add system turn_duration ""`,
+		`1 update say final "done with one"`,
+		`2 add prompt(human) "two"`,
+		`2 add say "done with two"`,
+		`3 add prompt(command) "/compact keep the plan"`,
+		`2 update say final "done with two"`,
+		`3 add say "partial"`,
+		`3 add system interrupt "[Request interrupted by user]"`,
+		`4 add prompt(human) "/etc/hosts is empty"`,
+		`4 add system model_fallback ""`,
+		`4 add say final "checked"`,
+	}
+	if got := summaries(events); !slices.Equal(got, want) {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if e := events[7]; e.Prompt.Command != "/compact" {
+		t.Errorf("command %q, want /compact", e.Prompt.Command)
+	}
+	if e := events[8]; e.Line != 6 || e.ID != "a3#0" {
+		t.Errorf("closing update at line %d, id %s; want the next prompt's line 6, a3#0", e.Line, e.ID)
+	}
+	if e := events[12]; string(e.System.Data) != `{"from":"model-a","to":"model-b"}` {
+		t.Errorf("fallback data %s", e.System.Data)
+	}
+}
+
+// A request's blobs are the messages as the blob lines hold them, whole:
+// no field the reader doesn't know is lost, none is added.
+func TestClaudeRequestBlobs(t *testing.T) {
+	blob := `{"role":"assistant","content":[{"type":"text","text":"hi"}],"output_config":{"effort":"high"}}`
+	lines := []string{
+		`{"type":"api-request-blob","hash":"h1","message":` + blob + `}`,
+		`{"type":"api-request","id":"q1","params":{"model":"m"},"tail":["h1"]}`,
+	}
+	events := Claude{}.NewParser(Options{Requests: true}).Feed([]byte(strings.Join(lines, "\n") + "\n"))
+	if len(events) != 1 || string(events[0].Request.Blobs["h1"]) != blob {
+		t.Errorf("events %+v, want one request whose blob is %s", events, blob)
 	}
 }
 
@@ -710,12 +815,75 @@ func TestParser_FeedInPieces(t *testing.T) {
 		t.Errorf("stopped at %+v, want the end: %d bytes, 20 lines, %d events", pos, len(data), len(whole))
 	}
 
-	// A window that starts on a later line numbers its events from there.
-	from := Pos{At: int64(bytes.Index(data, []byte(`{"type":"user","isMeta":true`))), Line: 14, Seq: 100}
-	w := Claude{}.NewParser(Options{From: from})
-	events := w.Feed(data[from.At:])
-	if len(events) == 0 || events[0].Seq != 100 || events[0].Line != 15 || events[0].At != from.At+int64(bytes.IndexByte(data[from.At:], '\n'))+1 {
-		t.Errorf("window: first event %+v", events[0])
+}
+
+// Resumed after any line, a parse sends exactly what the whole stream
+// sends after that line: same events, seq, turns, and updates to calls
+// made before it.
+func TestResumeAfter(t *testing.T) {
+	claude, err := filepath.Glob(filepath.Join(corpusDir, "claude", "*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcripts := map[Reader][]string{
+		Claude{}: append(claude, filepath.Join("testdata", "claude.jsonl")),
+		Agy{}: {
+			filepath.Join(corpusDir, "agy", "conversation", "b51e7553-7a08-532d-a2c7-2b5cc6769489", ".system_generated", "logs", "transcript_full.jsonl"),
+			filepath.Join("testdata", "agy.jsonl"),
+		},
+		Kimi{}: {filepath.Join(corpusDir, "kimi", "interleaved", "session_f0aa1fb8-41b1-5485-a887-ecd00a0bf053", "agents", "main", "wire.jsonl")},
+	}
+	for r, paths := range transcripts {
+		for _, path := range paths {
+			if strings.HasSuffix(path, ".events.jsonl") {
+				continue
+			}
+			testResumeAfter(t, r, path)
+		}
+	}
+
+	data := readFixture(t, "claude.jsonl")
+	for _, at := range []int64{1, int64(len(data)), int64(len(data)) + 5} {
+		if _, err := ResumeAfter(Claude{}, Options{}, data, at); err == nil {
+			t.Errorf("offset %d: no error", at)
+		}
+	}
+	if _, err := ResumeAfter(Claude{}, Options{}, []byte(`{"type":"user"`), 0); err == nil || !strings.Contains(err.Error(), "no end yet") {
+		t.Errorf("unfinished line: %v", err)
+	}
+}
+
+// testResumeAfter resumes r's parse of the transcript at path after each of
+// its lines, with the options ReadFile gives it, and compares what follows
+// to the whole stream's.
+func testResumeAfter(t *testing.T, r Reader, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, requests := range []bool{false, true} {
+		opts := FileOptions(r.Harness(), path)
+		opts.Requests = requests
+		whole := r.NewParser(opts).Feed(data)
+		for at, line := int64(0), 0; at < int64(len(data)); line++ {
+			p, err := ResumeAfter(r, opts, data, at)
+			if err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			got := p.Feed(data[p.Pos().At:])
+			var want []Event
+			for _, e := range whole {
+				if e.Line > line {
+					want = append(want, e)
+				}
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s, after line %d (requests %v):\n%s\nwant:\n%s", path, line, requests,
+					strings.Join(summaries(got), "\n"), strings.Join(summaries(want), "\n"))
+			}
+			at += int64(bytes.IndexByte(data[at:], '\n')) + 1
+		}
 	}
 }
 
@@ -727,7 +895,7 @@ func TestLatest(t *testing.T) {
 		`1 add think "go test should do it"`,
 		`1 add tool Bash(go test ./...) ok "ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s"`,
 		`1 add tool Read(go.mod) ok "1\tmodule example.com/proj"`,
-		`1 add say "All tests pass."`,
+		`1 add say final "All tests pass."`,
 		`2 add prompt(command) "/review high"`,
 		`2 add tool Bash(make lint) error "Exit code 2\nlint: 1 issue"`,
 		`2 add prompt(task-notification) "<task-notification>background task finished</task-notification>"`,
@@ -762,7 +930,7 @@ func TestReadFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Events) != 13 || f.Partial || f.Session.Path != path || f.Session.Size != int64(len(readFixture(t, "claude.jsonl"))) ||
+	if len(f.Events) != 14 || f.Partial || f.Session.Path != path || f.Session.Size != int64(len(readFixture(t, "claude.jsonl"))) ||
 		f.Session.SessionID != "00000000-0000-0000-0000-00000000c1a0" {
 		t.Errorf("got %d events, partial %v, session %+v", len(f.Events), f.Partial, f.Session)
 	}
@@ -846,11 +1014,16 @@ func TestReadFile_Errors(t *testing.T) {
 func TestReadFile_SubagentTurn(t *testing.T) {
 	path := filepath.Join(corpusDir, "claude", "subagent", "subagents", "agent-a3f9c2e17b4d5e608.jsonl")
 	turns := ClaudeSubagentTurns(path)
-	if want := map[string]int{
+	for id, want := range map[string]int{
 		"b92d70b1-18b1-5ccf-96b7-bd5d1ce10135": 1, // the prompt
 		"f6c51b03-1d25-579e-8362-5a8ab18cb715": 1, // the task notification, sharing its index
-	}; !reflect.DeepEqual(turns, want) {
-		t.Errorf("turns = %v, want %v", turns, want)
+	} {
+		if got, ok := turns(id); !ok || got != want {
+			t.Errorf("turn %s = %d, %v; want %d", id, got, ok, want)
+		}
+	}
+	if _, ok := turns("unknown"); ok {
+		t.Error("a turn the parent doesn't have")
 	}
 	f, err := ReadFile(path, Claude{}, 50)
 	if err != nil {
@@ -863,6 +1036,67 @@ func TestReadFile_SubagentTurn(t *testing.T) {
 	}
 	if ClaudeSubagentTurns(filepath.Join(corpusDir, "claude", "subagent.jsonl")) != nil {
 		t.Error("turns for a transcript that isn't a subagent's")
+	}
+}
+
+// A background subagent outlives the parent's turn that started it: its
+// later records name the parent's current turn, which the lookup finds
+// in what the parent has written since. A turn the parent doesn't number
+// keeps the last index known.
+func TestClaudeSubagentTurns_Grow(t *testing.T) {
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "s1.jsonl")
+	prompt := func(id string, index int) string {
+		return fmt.Sprintf(`{"type":"user","uuid":"%s","promptId":"%s","turnPosition":{"promptIndex":%d},"sessionId":"s1","message":{"role":"user","content":"go"}}`+"\n", id, id, index)
+	}
+	writeTestFile := func(path, content string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(parent, prompt("p1", 1))
+	sub := filepath.Join(dir, "s1", "subagents", "agent-x.jsonl")
+	say := func(uuid, promptID string) string {
+		return fmt.Sprintf(`{"type":"user","uuid":"%s","promptId":"%s","agentId":"x","sessionId":"s1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"none","content":""}]}}`+"\n", uuid, promptID) +
+			fmt.Sprintf(`{"type":"assistant","uuid":"%s-a","agentId":"x","message":{"role":"assistant","content":[{"type":"text","text":"working"}],"stop_reason":"tool_use"}}`+"\n", uuid)
+	}
+	p := Claude{}.NewParser(Options{Turns: ClaudeSubagentTurns(sub)})
+	var events []Event
+	events = append(events, p.Feed([]byte(say("r1", "p1")))...)
+	// The parent moves on to its second turn; the subagent follows.
+	writeTestFile(parent, prompt("p1", 1)+prompt("p2", 2))
+	events = append(events, p.Feed([]byte(say("r2", "p2")))...)
+	events = append(events, p.Feed([]byte(say("r3", "p9")))...)
+	var got []string
+	for _, e := range events {
+		got = append(got, fmt.Sprintf("%s %d", e.Turn.ID, e.Turn.Index))
+	}
+	if want := []string{"p1 1", "p2 2", "p9 2"}; !slices.Equal(got, want) {
+		t.Errorf("turns %q, want %q", got, want)
+	}
+}
+
+// Claude Code versions that wrote promptId but no turnPosition: a turn's
+// index counts the human prompts, as a derived turn's does.
+func TestClaudeCountedTurns(t *testing.T) {
+	lines := []string{
+		`{"type":"user","uuid":"u1","promptId":"p1","message":{"role":"user","content":"first"}}`,
+		`{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"one"}],"stop_reason":"end_turn"}}`,
+		`{"type":"user","uuid":"u2","promptId":"p2","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<summary>done</summary>\n</task-notification>"}}`,
+		`{"type":"assistant","uuid":"a2","message":{"role":"assistant","content":[{"type":"text","text":"noted"}],"stop_reason":"end_turn"}}`,
+		`{"type":"user","uuid":"u3","promptId":"p3","message":{"role":"user","content":"<command-name>/review</command-name>"}}`,
+		`{"type":"assistant","uuid":"a3","message":{"role":"assistant","content":[{"type":"text","text":"reviewed"}],"stop_reason":"end_turn"}}`,
+	}
+	_, events := parse(Claude{}, []byte(strings.Join(lines, "\n")+"\n"))
+	var got []string
+	for _, e := range events {
+		got = append(got, fmt.Sprintf("%s %d %v", e.Turn.ID, e.Turn.Index, e.Turn.Derived))
+	}
+	if want := []string{"p1 1 false", "p1 1 false", "p2 1 false", "p2 1 false", "p3 2 false", "p3 2 false"}; !slices.Equal(got, want) {
+		t.Errorf("turns %q, want %q", got, want)
 	}
 }
 
@@ -905,6 +1139,9 @@ func TestRealTranscriptsIfPresent(t *testing.T) {
 			kinds[e.Kind]++
 			if e.Tool != nil {
 				kinds[e.Tool.Result.Status]++
+			}
+			if e.Turn != nil && e.Turn.Index == 0 {
+				kinds["turn index 0"]++
 			}
 		}
 		t.Logf("%s: %s, %d events, %d lines, %d skipped, %v", filepath.Base(path), r.Harness(), len(f.Events), f.Lines, f.Skipped, kinds)
