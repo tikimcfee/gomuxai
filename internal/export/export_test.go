@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -174,6 +175,45 @@ func TestSnapshot(t *testing.T) {
 	g := snap.Agents[2]
 	if g.Name != "gone" || g.Live || g.EndedAt.IsZero() || g.Attached == nil || *g.Attached || g.Parent != "lead" {
 		t.Errorf("departed = %+v, want gone, not live, ended, detached", g)
+	}
+}
+
+// Runs don't record the session id, so a departed agent's comes from its
+// transcript's path: in a snapshot, and in the removed line of a follower
+// that never saw a _session_id for it.
+func TestDepartedSessionID(t *testing.T) {
+	f := newFixture(t)
+	claude := "/home/user/.claude/projects/-w/11111111-2222-3333-4444-555555555555.jsonl"
+	agy := "/home/user/.gemini/antigravity-cli/brain/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/.system_generated/logs/transcript_full.jsonl"
+	f.spawn(f.w, "cl", "")
+	f.report("cl", "idle", "", claude)
+	f.spawn(f.w, "ag", "")
+	f.report("ag", "idle", "", agy)
+	f.spawn(f.w, "none", "")
+
+	tr := f.tree(true)
+	if _, err := tr.Snapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.cleanup("cl")
+	lines := poll(t, tr)
+	if len(lines) != 1 || lines[0].(AgentLine).Agent.SessionID != "11111111-2222-3333-4444-555555555555" {
+		t.Errorf("removed line = %+v, want cl with its transcript's session id", lines)
+	}
+
+	f.cleanup("ag")
+	f.cleanup("none")
+	snap, err := f.tree(true).Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, a := range snap.Agents {
+		got[a.Name] = a.SessionID
+	}
+	want := map[string]string{"cl": "11111111-2222-3333-4444-555555555555", "ag": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "none": ""}
+	if !maps.Equal(got, want) {
+		t.Errorf("departed session ids = %v, want %v", got, want)
 	}
 }
 

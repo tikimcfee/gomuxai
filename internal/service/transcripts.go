@@ -23,7 +23,7 @@ type TranscriptRef struct {
 // the current one.
 func (s *AgentService) recordTranscript(name, backendName, path string) error {
 	listPath := s.cfg.TranscriptsPath(name)
-	if refs := readTranscriptRefs(listPath); len(refs) > 0 && refs[len(refs)-1].Path == path {
+	if refs := ReadTranscriptRefs(listPath); len(refs) > 0 && refs[len(refs)-1].Path == path {
 		return nil
 	}
 	f, err := os.OpenFile(listPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -42,7 +42,7 @@ func (s *AgentService) recordTranscript(name, backendName, path string) error {
 // it works after cleanup; for an agent with no list yet, it falls back to
 // the _transcript state key.
 func (s *AgentService) Transcripts(ctx context.Context, name string) []TranscriptRef {
-	if refs := readTranscriptRefs(s.cfg.TranscriptsPath(name)); len(refs) > 0 {
+	if refs := ReadTranscriptRefs(s.cfg.TranscriptsPath(name)); len(refs) > 0 {
 		return refs
 	}
 	agent, err := s.storage.GetAgent(ctx, name)
@@ -55,9 +55,10 @@ func (s *AgentService) Transcripts(ctx context.Context, name string) []Transcrip
 	return nil
 }
 
-// readTranscriptRefs reads a transcript list, dropping malformed lines and
-// repeats (two hooks can record the same new path at once).
-func readTranscriptRefs(listPath string) []TranscriptRef {
+// ReadTranscriptRefs reads a transcript list (an agent's .transcripts file,
+// in any store), dropping malformed lines and repeats (two hooks can record
+// the same new path at once).
+func ReadTranscriptRefs(listPath string) []TranscriptRef {
 	data, err := os.ReadFile(listPath)
 	if err != nil {
 		return nil
