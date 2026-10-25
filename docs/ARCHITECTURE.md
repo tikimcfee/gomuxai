@@ -184,7 +184,9 @@ typing, `checkCanSend` refuses an `exited` agent (the text would run in the
 shell left behind), a `waiting` agent, and any agent with a permission or
 trust dialog on screen (the Enter would answer it). `--force` skips the
 checks, and only works for a person at a terminal: it is refused when
-`AGENT_NAME` is set or stdin isn't a TTY.
+`AGENT_NAME` is set or stdin isn't a TTY. Right before typing,
+`SendUnchecked` records `_sent_at` (spawn does too, for the first message),
+for `wait --next`.
 
 `agent queue` stores a `pending` row in `messages`. `agent watch`
 (`internal/watcher`) delivers it: every `--interval` (2s) it checks each
@@ -237,7 +239,9 @@ The rules between them:
   without `--force`.
 
 `StatusInfo` also returns the last report as recorded (`ReportedStatus`,
-`ReportedAt`), which `wait --next` uses to spot a whole turn between checks.
+`ReportedAt`), which `wait --next` uses to spot a whole turn between checks,
+and the times of the last send and turn start (`SentAt`, `TurnAt`), which it
+uses to spot a whole turn before the wait.
 
 ### Reports and the reserved state keys
 
@@ -254,6 +258,8 @@ The rules between them:
 | `_result` | Claude's last reply (`Stop`'s `last_assistant_message`); written only when set or cleared |
 | `_session_id` | the CLI's session id; spawn sets it, hooks update it (`/clear`, `/resume`, agy's conversation id) |
 | `_spawn_id` | the spawn's uuid, set once by spawn |
+| `_turn_at` | when the last turn started: written with a report that is `processing` and clears `_result` (Claude `UserPromptSubmit`, agy's first `PreInvocation`) |
+| `_sent_at` | when a message was last typed in; written by `send` (and queued deliveries and spawn's first message), not by `Report` |
 | `_transcript` | the CLI's transcript path from the last hook payload that named one |
 | `_prompt.<nanos>` | one per unanswered Claude permission prompt: its call key, subagent, tool, input, and detail (JSON) |
 
@@ -302,7 +308,7 @@ What the code maps them to:
 | `PostToolUseFailure` | processing | detail `failed: ...`; ends the call's pending prompt |
 | `PermissionRequest` | waiting | detail `permission: ...` (plus `(from the <type> agent)` for a subagent's); stores `_tool_input` and a pending prompt |
 | `PreCompact` | processing | |
-| `Notification` | idle | only `idle_prompt`; `permission_prompt` arrives ~6s late and is ignored |
+| `Notification` | idle | only `idle_prompt`; `permission_prompt` arrives ~6s late and is ignored. `idle_prompt` also fires ~60s into background work, so `ReportHook` drops it while the last report is a `Stop` that left the agent `processing` |
 | `Stop` | idle | sets `_result`; stays processing while background tasks (shells, subagents) are running, since their completion starts a new turn |
 | `StopFailure` | error | e.g. API error, rate limit |
 | `SessionEnd` | exited | ignored for `reason: clear` (a `SessionStart` follows) |
@@ -511,8 +517,23 @@ Events are hints: the hub routes them and could forge one, so an event that
 would end the wait only triggers a real check. `--next` ignores the `--for`
 statuses until a check has seen the agent in another one, or seen a report
 newer than the first check's that is already back in a `--for` status (a
-whole turn between checks). Unless `exited` is in `--for`, the wait fails
-as soon as the agent is `exited`. A timeout exits 2.
+whole turn between checks), or seen `SentAt < TurnAt < ReportedAt` with the
+report in a `--for` status (a whole turn after the last send, before the
+wait). The send marker only counts a turn that started after the send, so a
+turn already running when the message was typed (Claude queues it) doesn't
+end the wait when it finishes. `WaitOptions.After` replaces the send marker
+with "a `--for` report newer than this", which `--follow` uses to report each
+arrival once. Unless `exited` is in `--for`, the wait fails as soon as the
+agent is `exited`. A timeout exits 2.
+
+`agent wait` with several names (`internal/cli/wait.go`) runs one
+`natsbus.WaitObservation` per agent, in goroutines that share the bus
+connection, and prints each arrival as it comes. Local names are looked up
+first, so a typo fails at once instead of waiting out the timeout. With no
+names, `--any`/`--follow` list this host's agents (minus `AGENT_NAME`), and
+`--follow` lists them again every 10s to pick up new ones; there, an agent
+that has exited or been cleaned up is dropped silently. A single named agent
+without `--follow` keeps the original output (`name: status`) and errors.
 
 ### Security model, in short
 
@@ -715,8 +736,12 @@ make lint          # golangci-lint
   `state set` (the state table's foreign key).
 - A reused parent name inherits the old parent's helpers (`spawned_by` is a
   name).
-- No multi-agent wait, and `wait --next` misses a turn that ends before the
-  wait starts.
+- `wait --next` catches a turn that ended before the wait only for backends
+  that report turn starts (`claude`, `agy`). The marker isn't consumed: a
+  second `wait --next` with no new send returns the same turn.
+- `wait` polls between events, so a prompt answered between two checks is
+  never reported, and with several quick prompts `--follow` may print only
+  the last.
 - `_result` is Claude-only; agy agents' replies are only in their
   transcripts.
 - Long messages typed into a Claude TUI arrive as pasted content.

@@ -18,7 +18,7 @@ doesn't say what to do, don't hack around it. File it, then carry on:
 ```bash
 agent friction list                                  # already filed? then:
 agent friction +1 12 "hit it again with --next"
-agent friction add "wait can't watch several agents" --kind missing
+agent friction add "logs can't show just one turn" --kind missing
 ```
 
 People working on the tool fix what's filed and resolve the entries.
@@ -124,13 +124,30 @@ agent send helper "run the tests" && agent wait helper --for idle,waiting --next
 
 - `--next` is required right after a send: until the agent picks the
   message up, it still looks idle from its last turn, so plain `--for idle`
-  returns at once. Start the wait right after the send; a turn that ends
-  before `wait` starts is missed, which the timeout catches.
+  returns at once. `--next` waits for the turn the last send started, and
+  counts it even if it ended before `wait` began (`send` records when it
+  sent). So a second `wait --next` with no new send returns that same turn
+  at once.
 - Include `waiting`. A helper blocked on a permission prompt stays
   `waiting` until someone answers. Without it in `--for`, `wait` says once
   on stderr that it saw `waiting`, and keeps waiting.
 - `wait` prints the status it reached. Exit `2` is a timeout; exit `1` is
   an error, including the agent exiting.
+- Name several agents to wait on them all at once (see Fan out, below).
+
+### Who needs a person?
+
+```bash
+agent wait --any --for waiting          # blocks until any agent here is at a prompt
+agent wait --follow --for waiting       # a line per new prompt, until Ctrl-C
+```
+
+With no names, `wait` watches every agent on this host except you. It
+prints which agent and what it's asking, e.g. `helper: waiting (permission:
+Bash: rm -rf build)`. Run it again once you've answered: an agent still at
+its prompt is reported again at once. `--follow` reports each prompt once,
+and picks up agents spawned while it runs: leave it in a spare terminal, or
+read its lines from a script.
 
 ### 4. Read the result
 
@@ -192,19 +209,24 @@ theirs, never yourself. It never removes an agent you didn't name.
 agent spawn lead-api --backend claude tasks/api.md
 agent spawn lead-db --backend claude tasks/db.md
 
-# Start both waits at once: one after the other can miss a turn.
-agent wait lead-api --for idle,waiting --next --timeout 30m & api=$!
-agent wait lead-db --for idle,waiting --next --timeout 30m & db=$!
-wait $api; wait $db
+# One wait for both: prints a line as each one's turn ends.
+agent wait lead-api lead-db --for idle,waiting --next --timeout 30m
+# lead-db: idle
+# lead-api: waiting (permission: Bash: go test ./...)    <- see step 5
 
-agent status lead-api; agent status lead-db   # waiting? see step 5
 agent state get lead-api _result
 agent state get lead-db _result
 agent cleanup lead-api lead-db
 ```
 
-Spawning with a task file sends it as the first message, so start the waits
-right after the spawns.
+Spawning with a task file sends it as the first message, and `--next`
+counts a turn that started after it even if it has already ended, so a
+helper that finishes before the wait starts is still caught. `--any`
+returns at the first one instead, to handle each as it comes: run the wait
+again for the rest. Names on other hosts (`name@host`) mix with local ones.
+An agent that exits is reported on stderr and the others are still waited
+on; `wait` then exits 1. A timeout exits 2, naming the agents that didn't
+get there.
 
 ### Replies by message
 
@@ -328,8 +350,13 @@ before assuming. Then, if the tool was the obstacle, `agent friction add`.
 
 Known gaps; `agent friction list` has the rest.
 
-- No multi-agent wait, and `wait --next` misses a turn that ends before it
-  starts. Start waits right after the send, in parallel, with `--timeout`.
+- `wait --next` catches a turn that ended before it started only for
+  agents that report turns (`claude`, `agy`); for other backends, start the
+  wait right after the send, with `--timeout`. A second `wait --next` with
+  no send in between returns the same turn again; `--follow` reports each
+  arrival once.
+- `wait` checks status every few seconds (and on events, with a bus), so a
+  prompt answered between two checks is never reported.
 - A coordinator not spawned by `agent` has no record: it can't `state set`
   or be sent messages. It reads its helpers' `_result` and state.
 - A custom backend (`--backend-config <file>`) isn't remembered after spawn:
@@ -365,7 +392,8 @@ Everything lives in `.gomuxai/` next to the binary:
 ```
 
 State keys starting with `_` are written by status reports (`_status`,
-`_detail`, `_tool`, `_tool_input`, `_result`, `_transcript`, ...). Delete
+`_detail`, `_tool`, `_tool_input`, `_result`, `_transcript`, `_turn_at`,
+...) and by `send` (`_sent_at`). Delete
 the folder to reset that binary's agents.
 
 ## Working on gomuxai

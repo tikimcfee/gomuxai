@@ -90,6 +90,7 @@ $ agent send helper "Run the shell command: curl -sI https://example.com" \
     && agent wait helper --for idle,waiting --next --timeout 10m
 Sent to helper (it was idle).
 helper: waiting
+hint: helper is asking: permission: Bash: curl -sI https://example.com; agent status helper -v shows all of it, then agent approve helper or agent deny helper
 ```
 
 `waiting` means it is blocked on a person: here, a permission prompt. See
@@ -133,6 +134,11 @@ Other ways in:
   task saved with `agent task set`.
 - `agent queue helper "..."` delivers when the agent is next idle, but only
   while `agent watch` runs somewhere on the host.
+- `agent wait a b c --for idle,waiting --next` waits on several agents at
+  once and prints a line as each one gets there (`--any`: the first).
+- `agent wait --any --for waiting` blocks until any agent on the host is at
+  a prompt and says which one and what it's asking; `agent wait --follow
+  --for waiting` prints each new prompt until Ctrl-C, for a spare terminal.
 - Agents run these same commands. An agent's helpers show under PARENT in
   `agent list`, and it can clean up only its own.
 
@@ -248,6 +254,7 @@ bus prints a note about it in its `gomux-bus` session
 | `agent capture NAME` | The agent's screen now, plus scrollback |
 | `agent logs NAME` | What it did, from its CLI's own transcript: prompts, thinking, tool calls, replies. Works after cleanup. `--terminal` for the raw terminal log |
 | `agent history` | Every `agent` command run on this host, by whom, and its exit code; `--failed` for failures |
+| `agent wait --follow --for waiting` | A line each time any agent here is at a new prompt, with what it's asking |
 | `agent events` | Status events as they're reported (needs a running bus) |
 | `agent friction list` | Open requests and complaints about the tool |
 

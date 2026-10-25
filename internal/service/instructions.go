@@ -64,6 +64,11 @@ CLI's built-in subagents are still fine for quick lookups. Name helpers
     agent state get %[1]s-review _result
     agent cleanup %[1]s-review
 
+With several helpers, wait on them in one command, which prints a line as
+each one's turn ends (--any returns at the first):
+
+    agent wait %[1]s-api %[1]s-db --for idle,waiting --next --timeout 30m
+
 Clean up your helpers when you're done with them. You can clean up only your
 own helpers and theirs; `+"`agent list`"+` shows each agent's parent.
 `, name)
