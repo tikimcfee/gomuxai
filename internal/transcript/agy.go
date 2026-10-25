@@ -35,7 +35,7 @@ type agyStep struct {
 }
 
 func (Agy) NewParser(opts Options) *Parser {
-	return newParser("agy", &agyLines{}, opts.From)
+	return newParser("agy", &agyLines{})
 }
 
 // agyLines is the agy half of a Parser.

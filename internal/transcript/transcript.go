@@ -56,21 +56,21 @@ func Detect(data []byte) Reader {
 // object: not a format any Reader knows.
 var ErrUnparseable = errors.New("unparseable transcript")
 
-// Window sizes ReadFile reads: the first tail window, and the head it
-// reads for metadata when the tail doesn't reach the start. Transcripts run
-// to tens of megabytes, much of them tool output and request copies.
+// Read sizes for ReadFile: how much it reads at a time, and how much of
+// the head it reads to detect the format.
 const (
-	tailChunk = 1 << 20
+	readChunk = 1 << 20
 	headChunk = 256 << 10
 )
 
-// File is a transcript ReadFile read: all of it, or its end.
+// File is a transcript ReadFile read.
 type File struct {
 	Session Session
-	// Events is the stream the lines read make, updates included.
+	// Events is the end of the stream the transcript makes, updates
+	// included: its last events, as Latest counts them, and the updates to
+	// them.
 	Events []Event
-	// Partial is set when only the end of the file was read: events whose
-	// lines came before it are missing, and so are the updates to them.
+	// Partial is set when the stream had more events than Events keeps.
 	Partial bool
 	// Lines counts the non-blank lines read; Skipped, those that weren't
 	// records of the format.
@@ -78,11 +78,12 @@ type File struct {
 	Skipped int
 }
 
-// ReadFile reads the transcript at path with r. It reads the end of the
-// file first, doubling the window until it holds at least minEvents events
-// (counted as Latest counts them) or the whole file, so the last events of
-// a large transcript cost a fraction of it. A last line with no newline
-// yet is left out. A nil r detects the format from the file's first lines.
+// ReadFile reads the transcript at path with r and keeps the last
+// minEvents events it makes (counted as Latest counts them), with their
+// updates. It parses the whole file, since what a line means depends on
+// the lines before it, but holds only those events. A last line with no
+// newline yet is left out. A nil r detects the format from the file's
+// first lines.
 func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -94,37 +95,38 @@ func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 		return nil, err
 	}
 	size := info.Size()
-	var head []byte
-	if r == nil || size > tailChunk {
-		if head, _, err = readLines(f, 0, min(headChunk, size)); err != nil {
-			return nil, err
-		}
-	}
 	if r == nil {
-		r = Detect(head)
+		head := make([]byte, min(headChunk, size))
+		n, err := f.ReadAt(head, 0)
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("reading transcript: %w", err)
+		}
+		r = Detect(head[:n])
 	}
 
-	var turns map[string]int
+	var opts Options
 	if r.Harness() == "claude" {
-		turns = ClaudeSubagentTurns(path)
+		opts.Turns = ClaudeSubagentTurns(path)
 	}
-	var p *Parser
-	var events []Event
-	var start int64
-	for chunk := int64(tailChunk); ; chunk *= 2 {
-		var data []byte
-		if data, start, err = readLines(f, max(size-chunk, 0), size); err != nil {
-			return nil, err
+	p := r.NewParser(opts)
+	t := newTail(minEvents)
+	// pending holds the bytes read but not yet parsed: a line not yet
+	// whole. It starts at p.Pos().At.
+	var pending []byte
+	buf := make([]byte, readChunk)
+	for off := int64(0); off < size; {
+		n, err := f.ReadAt(buf[:min(int64(len(buf)), size-off)], off)
+		off += int64(n)
+		pending = append(pending, buf[:n]...)
+		start := p.Pos().At
+		for _, e := range p.Feed(pending) {
+			t.push(e)
 		}
-		from := Pos{At: start}
-		if start > 0 {
-			if from.Line, err = linesBefore(f, start); err != nil {
-				return nil, err
-			}
+		pending = append(pending[:0], pending[p.Pos().At-start:]...)
+		if err != nil && err != io.EOF {
+			return nil, fmt.Errorf("reading transcript: %w", err)
 		}
-		p = r.NewParser(Options{From: from, Turns: turns})
-		events = p.Feed(data)
-		if start == 0 || len(Latest(events)) >= minEvents {
+		if n == 0 {
 			break
 		}
 	}
@@ -132,14 +134,55 @@ func ReadFile(path string, r Reader, minEvents int) (*File, error) {
 		return nil, fmt.Errorf("%w: none of its %d lines is a JSON object", ErrUnparseable, p.Lines)
 	}
 
-	file := &File{Session: p.Session(), Events: events, Partial: start > 0, Lines: p.Lines, Skipped: p.Skipped}
-	if file.Partial {
-		h := r.NewParser(Options{})
-		h.Feed(head)
-		file.Session.fill(h.Session())
-	}
+	file := &File{Session: p.Session(), Events: t.events(), Partial: t.cut, Lines: p.Lines, Skipped: p.Skipped}
 	file.Session.file(path, size)
 	return file, nil
+}
+
+// tail keeps the end of a stream: the events of the last n ids it adds,
+// and the updates to them.
+type tail struct {
+	n      int
+	stream []Event
+	// added lists the kept ids, oldest first; kept holds them.
+	added []string
+	kept  map[string]bool
+	// cut is set once an id was dropped.
+	cut bool
+}
+
+func newTail(n int) *tail {
+	return &tail{n: max(n, 0), kept: map[string]bool{}}
+}
+
+func (t *tail) push(e Event) {
+	if !t.kept[e.ID] {
+		if e.Op != OpAdd {
+			return // an update of a dropped event
+		}
+		t.kept[e.ID] = true
+		t.added = append(t.added, e.ID)
+	}
+	t.stream = append(t.stream, e)
+	if len(t.added) > t.n {
+		delete(t.kept, t.added[0])
+		t.added = t.added[1:]
+		t.cut = true
+	}
+	if len(t.stream) > 2*t.n+1024 {
+		t.stream = t.events()
+	}
+}
+
+// events returns the kept events, in stream order.
+func (t *tail) events() []Event {
+	var out []Event
+	for _, e := range t.stream {
+		if t.kept[e.ID] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // file records in s the transcript file it was read from, and what the
@@ -153,44 +196,6 @@ func (s *Session) file(path string, size int64) {
 	if s.ParentSession != nil && s.ParentSession.ToolID == "" {
 		s.ParentSession.ToolID = claudeSubagentTool(path)
 	}
-}
-
-// readLines returns f's bytes [off, end), less a partial first line when
-// off is mid-file, and the offset they start at: the start of a line.
-func readLines(f *os.File, off, end int64) ([]byte, int64, error) {
-	// A window that starts mid-file reads one byte early: a newline there
-	// means the window already starts on a line.
-	start := max(off-1, 0)
-	buf := make([]byte, end-start)
-	n, err := f.ReadAt(buf, start)
-	if err != nil && err != io.EOF {
-		return nil, 0, fmt.Errorf("reading transcript: %w", err)
-	}
-	buf = buf[:n]
-	if off == 0 {
-		return buf, 0, nil
-	}
-	nl := bytes.IndexByte(buf, '\n')
-	if nl < 0 {
-		return nil, end, nil
-	}
-	return buf[nl+1:], start + int64(nl) + 1, nil
-}
-
-// linesBefore returns how many lines f's first n bytes hold: the index of
-// the line that starts at n.
-func linesBefore(f *os.File, n int64) (int, error) {
-	lines := 0
-	buf := make([]byte, 1<<20)
-	for off := int64(0); off < n; {
-		m, err := f.ReadAt(buf[:min(int64(len(buf)), n-off)], off)
-		lines += bytes.Count(buf[:m], []byte{'\n'})
-		off += int64(m)
-		if err != nil && (err != io.EOF || off < n) {
-			return 0, fmt.Errorf("reading transcript: %w", err)
-		}
-	}
-	return lines, nil
 }
 
 // sessionIDFromPath names a session after its transcript: Claude Code's is

@@ -579,9 +579,12 @@ prompt, thinking block, reply, tool call and harness record, each tagged with
 its turn, a tool's result arriving as an update of its call. A `Reader`'s
 `Parser` takes a transcript's bytes in order and returns the events of the
 whole lines among them, keeping what later lines need (the open turn, calls
-waiting for results); it starts at any line (`Options.From`) and reports where
-it stopped (`Pos`), so the same code reads a whole file, a window, or what a
-live session appends. `Latest` folds a stream into each event's latest state.
+waiting for results), and reports where it stopped (`Pos`), so the same code
+reads a whole file or what a live session appends. A parse always starts at
+the file's start, because what a line means depends on the lines before it;
+`ResumeAfter` resumes after a line by reading the lines up to it silently
+(`Skip`), so what follows is numbered and turned as the whole stream is.
+`Latest` folds a stream into each event's latest state.
 `Finals` merges the final reply a Stop hook reports (`last_assistant_message`)
 into a stream ahead of the transcript, which writes it only after the hook ran:
 a provisional say that the transcript's copy then updates. `HarvestClaude`
@@ -589,9 +592,10 @@ reads a session's metadata alone, line by line, by the same rules.
 Backends hand out their reader through `backend.TranscriptProvider`. The
 behaviour was ported from glyph3d-rs `native/src/agent_transcript/` and
 glyph3d-js's session adapter, and `testdata/corpus` holds the transcripts
-with the exact events they must produce. `ReadFile` reads the last 1 MiB
-first and doubles the window until it holds enough events, plus 256 KiB of
-the head for metadata, since transcripts run to tens of megabytes. The
+with the exact events they must produce. `ReadFile` parses the whole file a
+megabyte at a time but keeps only the last events it was asked for and their
+updates, since transcripts run to tens of megabytes (75 MB parses in about
+0.2 s); the parser forgets calls once they are done. The
 formats are the CLIs' internal files, not APIs: lines that aren't JSON
 objects are counted in `Parser.Skipped`, and unknown records are ignored.
 

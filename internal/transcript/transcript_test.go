@@ -369,12 +369,57 @@ func TestParser_FeedInPieces(t *testing.T) {
 		t.Errorf("stopped at %+v, want the end: %d bytes, 20 lines, %d events", pos, len(data), len(whole))
 	}
 
-	// A window that starts on a later line numbers its events from there.
-	from := Pos{At: int64(bytes.Index(data, []byte(`{"type":"user","isMeta":true`))), Line: 14, Seq: 100}
-	w := Claude{}.NewParser(Options{From: from})
-	events := w.Feed(data[from.At:])
-	if len(events) == 0 || events[0].Seq != 100 || events[0].Line != 15 || events[0].At != from.At+int64(bytes.IndexByte(data[from.At:], '\n'))+1 {
-		t.Errorf("window: first event %+v", events[0])
+}
+
+// Resumed after any line, a parse sends exactly what the whole stream
+// sends after that line: same events, seq, turns, and updates to calls
+// made before it.
+func TestResumeAfter(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join(corpusDir, "claude", "*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths = append(paths, filepath.Join("testdata", "claude.jsonl"))
+	for _, path := range paths {
+		if strings.HasSuffix(path, ".events.jsonl") {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, requests := range []bool{false, true} {
+			opts := Options{Requests: requests}
+			whole := Claude{}.NewParser(opts).Feed(data)
+			for at, line := int64(0), 0; at < int64(len(data)); line++ {
+				p, err := ResumeAfter(Claude{}, opts, data, at)
+				if err != nil {
+					t.Fatalf("%s: %v", path, err)
+				}
+				got := p.Feed(data[p.Pos().At:])
+				var want []Event
+				for _, e := range whole {
+					if e.Line > line {
+						want = append(want, e)
+					}
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("%s, after line %d (requests %v):\n%s\nwant:\n%s", path, line, requests,
+						strings.Join(summaries(got), "\n"), strings.Join(summaries(want), "\n"))
+				}
+				at += int64(bytes.IndexByte(data[at:], '\n')) + 1
+			}
+		}
+	}
+
+	data := readFixture(t, "claude.jsonl")
+	for _, at := range []int64{1, int64(len(data)), int64(len(data)) + 5} {
+		if _, err := ResumeAfter(Claude{}, Options{}, data, at); err == nil {
+			t.Errorf("offset %d: no error", at)
+		}
+	}
+	if _, err := ResumeAfter(Claude{}, Options{}, []byte(`{"type":"user"`), 0); err == nil || !strings.Contains(err.Error(), "no end yet") {
+		t.Errorf("unfinished line: %v", err)
 	}
 }
 

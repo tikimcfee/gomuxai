@@ -28,7 +28,7 @@ func (Claude) NewParser(opts Options) *Parser {
 	if opts.Requests {
 		c.blobs = map[string]json.RawMessage{}
 	}
-	return newParser("claude", c, opts.From)
+	return newParser("claude", c)
 }
 
 // claudeRecord is the part of a transcript line the parser reads.
@@ -452,10 +452,14 @@ func (l *claudeLine) update(call *Event, res *ToolResult, response json.RawMessa
 }
 
 // settled records a call's new status: one that isn't pending any more
-// leaves the pending list.
+// leaves the pending list, and one that is done for good, the parser's
+// memory (only a running call has updates to come).
 func (c *claudeLines) settled(id, status string) {
 	if status == StatusPending {
 		return
+	}
+	if status != StatusBackground {
+		delete(c.tools, id)
 	}
 	for i, p := range c.pending {
 		if p == id {
