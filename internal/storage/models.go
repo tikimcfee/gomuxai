@@ -11,6 +11,7 @@ type Agent struct {
 	TaskFile    string    `json:"task_file,omitempty"`
 	LogFile     string    `json:"log_file,omitempty"`
 	SpawnedBy   string    `json:"spawned_by,omitempty"` // agent that spawned it; "" for a person
+	Cwd         string    `json:"cwd,omitempty"`        // where it was spawned; "" if spawned before this was recorded
 	CreatedAt   time.Time `json:"created_at"`
 }
 

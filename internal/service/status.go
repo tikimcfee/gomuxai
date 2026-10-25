@@ -167,7 +167,13 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 	for key, value := range values {
 		entries = append(entries, &storage.StateEntry{AgentName: name, Key: key, Value: value, UpdatedAt: now})
 	}
-	if err := s.storage.UpdateStates(ctx, entries, name, del); err != nil {
+	ev := &storage.AgentEvent{At: now, Kind: storage.AgentStatus, Agent: name,
+		Status: string(r.Status), Event: r.Event, Detail: r.Detail, Tool: r.Tool,
+		SessionID: r.SessionID, Transcript: r.Transcript}
+	if r.Status == AgentStatusWaiting {
+		ev.ToolInput = r.ToolInput // only prompts: every tool call's input would bloat the log
+	}
+	if err := s.storage.RecordReport(ctx, entries, name, del, ev); err != nil {
 		return err
 	}
 	s.publishStatus(name, r, now)

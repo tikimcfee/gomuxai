@@ -13,6 +13,9 @@ import (
 // SQLiteStorage implements Storage using SQLite.
 type SQLiteStorage struct {
 	db *sql.DB
+	// schema is what a store opened read-only has; nil for a migrated
+	// store, which has everything.
+	schema *schema
 }
 
 // NewSQLiteStorage creates a new SQLite storage instance.
@@ -52,7 +55,8 @@ func (s *SQLiteStorage) migrate() error {
 		task_file TEXT,
 		log_file TEXT,
 		created_at TEXT NOT NULL,
-		spawned_by TEXT
+		spawned_by TEXT,
+		cwd TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS messages (
@@ -84,12 +88,15 @@ func (s *SQLiteStorage) migrate() error {
 		PRIMARY KEY (agent_name, key),
 		FOREIGN KEY (agent_name) REFERENCES agents(name) ON DELETE CASCADE
 	);
-	` + commandLogSchema + frictionSchema
+	` + commandLogSchema + frictionSchema + treeSchema
 
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
-	return s.addColumn("agents", "spawned_by", "TEXT")
+	if err := s.addColumn("agents", "spawned_by", "TEXT"); err != nil {
+		return err
+	}
+	return s.addColumn("agents", "cwd", "TEXT")
 }
 
 // addColumn adds a column that databases created before it lack.
@@ -171,28 +178,43 @@ func parseTime(s string) time.Time {
 	return t
 }
 
-const agentColumns = `name, session_name, backend, task_file, log_file, created_at, spawned_by`
+const agentColumns = `name, session_name, backend, task_file, log_file, created_at, spawned_by, cwd`
 
 func scanAgent(row scanner) (*Agent, error) {
 	var agent Agent
 	var createdAt string
-	var taskFile, logFile, spawnedBy sql.NullString
-	if err := row.Scan(&agent.Name, &agent.SessionName, &agent.Backend, &taskFile, &logFile, &createdAt, &spawnedBy); err != nil {
+	var taskFile, logFile, spawnedBy, cwd sql.NullString
+	if err := row.Scan(&agent.Name, &agent.SessionName, &agent.Backend, &taskFile, &logFile, &createdAt, &spawnedBy, &cwd); err != nil {
 		return nil, err
 	}
 	agent.TaskFile = taskFile.String
 	agent.LogFile = logFile.String
 	agent.SpawnedBy = spawnedBy.String
+	agent.Cwd = cwd.String
 	agent.CreatedAt = parseTime(createdAt)
 	return &agent, nil
 }
 
-// CreateAgent creates a new agent record.
+// CreateAgent creates a new agent record, opens its run, and records its
+// spawned event, in one transaction.
 func (s *SQLiteStorage) CreateAgent(ctx context.Context, agent *Agent) error {
-	return s.exec(ctx, "inserting agent",
-		`INSERT INTO agents (`+agentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		agent.Name, agent.SessionName, agent.Backend, agent.TaskFile, agent.LogFile,
-		agent.CreatedAt.Format(time.RFC3339), agent.SpawnedBy)
+	return s.inTx(ctx, func(tx *sql.Tx) error { return createAgentTx(ctx, tx, agent) })
+}
+
+// inTx runs fn in a transaction, committing if it succeeds.
+func (s *SQLiteStorage) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing: %w", err)
+	}
+	return nil
 }
 
 // GetAgent retrieves an agent by name.
@@ -215,9 +237,10 @@ func (s *SQLiteStorage) ListAgents(ctx context.Context) ([]*Agent, error) {
 	return agents, nil
 }
 
-// DeleteAgent removes an agent record.
+// DeleteAgent removes an agent record, closes its run, and records its
+// removed event, in one transaction.
 func (s *SQLiteStorage) DeleteAgent(ctx context.Context, name string) error {
-	return s.exec(ctx, "deleting agent", `DELETE FROM agents WHERE name = ?`, name)
+	return s.inTx(ctx, func(tx *sql.Tx) error { return deleteAgentTx(ctx, tx, name) })
 }
 
 const messageColumns = `id, sender_id, receiver_id, content, status, created_at`
@@ -354,26 +377,28 @@ func (s *SQLiteStorage) SetStates(ctx context.Context, entries []*StateEntry) er
 // UpdateStates sets entries and deletes agentName's keys in del, in one
 // transaction.
 func (s *SQLiteStorage) UpdateStates(ctx context.Context, entries []*StateEntry, agentName string, del []string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
-	}
-	defer tx.Rollback()
+	return s.RecordReport(ctx, entries, agentName, del, nil)
+}
 
-	for _, entry := range entries {
-		if _, err := tx.ExecContext(ctx, setStateQuery, stateArgs(entry)...); err != nil {
-			return fmt.Errorf("setting state %s: %w", entry.Key, err)
+// RecordReport is UpdateStates that also appends ev (if not nil) to the
+// agent events, in the same transaction.
+func (s *SQLiteStorage) RecordReport(ctx context.Context, entries []*StateEntry, agentName string, del []string, ev *AgentEvent) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		for _, entry := range entries {
+			if _, err := tx.ExecContext(ctx, setStateQuery, stateArgs(entry)...); err != nil {
+				return fmt.Errorf("setting state %s: %w", entry.Key, err)
+			}
 		}
-	}
-	for _, key := range del {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM state WHERE agent_name = ? AND key = ?`, agentName, key); err != nil {
-			return fmt.Errorf("deleting state %s: %w", key, err)
+		for _, key := range del {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM state WHERE agent_name = ? AND key = ?`, agentName, key); err != nil {
+				return fmt.Errorf("deleting state %s: %w", key, err)
+			}
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing state: %w", err)
-	}
-	return nil
+		if ev == nil {
+			return nil
+		}
+		return insertAgentEvent(ctx, tx, ev)
+	})
 }
 
 const setStateQuery = `

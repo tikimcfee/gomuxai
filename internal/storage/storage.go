@@ -29,6 +29,8 @@ type Storage interface {
 	SetStates(ctx context.Context, entries []*StateEntry) error // atomic
 	// UpdateStates sets entries and deletes agentName's keys in del, atomically.
 	UpdateStates(ctx context.Context, entries []*StateEntry, agentName string, del []string) error
+	// RecordReport is UpdateStates plus an agent event, atomically.
+	RecordReport(ctx context.Context, entries []*StateEntry, agentName string, del []string, ev *AgentEvent) error
 	GetState(ctx context.Context, agentName, key string) (*StateEntry, error)
 	ListState(ctx context.Context, agentName string) ([]*StateEntry, error)
 	DeleteState(ctx context.Context, agentName string) error

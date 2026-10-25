@@ -246,7 +246,9 @@ func (s *AgentService) newSession(ctx context.Context, name string) (string, err
 
 // storeAgent records a spawned agent, killing its session if that fails.
 func (s *AgentService) storeAgent(ctx context.Context, opts SpawnOptions, sessionName string) (*storage.Agent, error) {
+	cwd, _ := os.Getwd() // the session started here
 	agent := &storage.Agent{
+		Cwd:         cwd,
 		Name:        opts.Name,
 		SessionName: sessionName,
 		Backend:     opts.Backend,
