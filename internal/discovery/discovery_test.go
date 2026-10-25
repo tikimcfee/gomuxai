@@ -352,6 +352,20 @@ func TestReadClaude_NoGitBranch(t *testing.T) {
 	}
 }
 
+// An api-request line carries a version but no branch: the branch stays
+// the newest conversation record's when one is the newest line.
+func TestReadClaude_APIRequestKeepsBranch(t *testing.T) {
+	data := lines(
+		`{"type":"user","sessionId":"s","cwd":"/home/user/repo","version":"2.1.310","gitBranch":"feature","message":{"role":"user","content":"go"}}`,
+		`{"type":"assistant","sessionId":"s","version":"2.1.310","gitBranch":"feature","message":{"role":"assistant","model":"m","content":[]}}`,
+		`{"type":"api-request-shape","sessionId":"s","version":"2.1.311","shapeHash":"h"}`,
+		`{"type":"api-request","sessionId":"s","version":"2.1.311","id":"q1","params":{"model":"m"},"tail":[]}`,
+	)
+	if s, _ := readCounted(data, false); s.Version != "2.1.310" || s.GitBranch != "feature" {
+		t.Errorf("version %q, branch %q; want 2.1.310 on feature, the assistant record's", s.Version, s.GitBranch)
+	}
+}
+
 // agyFixture writes an agy home: a conversation with a workspace and
 // annotation title, its subagent, and one with no presence lock.
 func agyFixture(t *testing.T, home string) (brain string, lock string) {

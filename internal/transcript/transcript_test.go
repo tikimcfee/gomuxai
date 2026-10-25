@@ -354,6 +354,8 @@ func TestHarvestClaude(t *testing.T) {
 		`{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[]}}`,
 		`{"type":"user","sessionId":"s","cwd":"/elsewhere","version":"9.9.9","gitBranch":""}`,
 		`{"type":"assistant","isSidechain":true,"version":"9.9.10","message":{"model":"another-session's"}}`,
+		`{"type":"api-request","sessionId":"s","version":"9.9.11","id":"q1","params":{"model":"m"},"tail":[]}`,
+		`{"type":"api-request-shape","sessionId":"s","version":"9.9.12","shapeHash":"h"}`,
 	} {
 		HarvestClaude(&s, []byte(line), end+int64(i))
 	}
@@ -365,7 +367,7 @@ func TestHarvestClaude(t *testing.T) {
 	case s.Model != want.Model:
 		t.Errorf("model %q, want %q: neither an API error's nor a sidechain's", s.Model, want.Model)
 	case s.Version != "9.9.9" || s.GitBranch != "":
-		t.Errorf("version %q, branch %q; want the newest version's record, with its empty branch", s.Version, s.GitBranch)
+		t.Errorf("version %q, branch %q; want the newest conversation record's, with its empty branch, not an api-request's", s.Version, s.GitBranch)
 	case s.CWD != want.CWD:
 		t.Errorf("cwd %q, want the first recorded, %q", s.CWD, want.CWD)
 	}

@@ -158,8 +158,10 @@ func HarvestClaude(s *Session, line []byte, at int64) {
 // says about its session, model being its message's: the oldest working
 // directory; the newest title, a custom one (a person's /rename) winning
 // over AI titles; the newest agent name, continued-in and model, but not
-// an API error's (<synthetic>); and the newest record with a version sets
-// the version and the git branch, even an empty branch. A sidechain record
+// an API error's (<synthetic>); and the newest conversation record with a
+// version sets the version and the git branch, even an empty branch.
+// (api-request and api-request-shape lines carry a version but no branch,
+// so they would empty it whenever one is the newest.) A sidechain record
 // with no agent id (before subagents had their own files, they were
 // sidechains of the main transcript) is another session's and says
 // nothing about this one.
@@ -196,7 +198,10 @@ func harvestClaude(s *Session, r *claudeMeta, model string, at int64) {
 		s.SessionID = r.SessionID
 	}
 	s.setCWD(r.CWD, at)
-	s.setVersion(r.Version, r.GitBranch, at)
+	switch r.Type {
+	case "user", "assistant", "attachment", "system":
+		s.setVersion(r.Version, r.GitBranch, at)
+	}
 }
 
 // ClaudeSubagentMeta is the meta.json Claude Code keeps beside a
