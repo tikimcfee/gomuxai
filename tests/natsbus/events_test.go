@@ -182,8 +182,25 @@ type statusSource struct {
 	// The last recorded report, as StatusInfo exposes it.
 	reported   string
 	reportedAt time.Time
+	// The send and turn-start markers.
+	sentAt, turnAt time.Time
 	// onFirst runs inside the first call, after the status is read.
 	onFirst func()
+}
+
+// send simulates a message typed into the agent.
+func (s *statusSource) send() {
+	s.mu.Lock()
+	s.sentAt = time.Now()
+	s.mu.Unlock()
+}
+
+// startTurn simulates the report that starts a turn (UserPromptSubmit).
+func (s *statusSource) startTurn() {
+	s.record("processing")
+	s.mu.Lock()
+	s.turnAt = s.reportedAt
+	s.mu.Unlock()
 }
 
 func (s *statusSource) set(status string) {
@@ -201,7 +218,7 @@ func (s *statusSource) record(status string) {
 
 func (s *statusSource) current(context.Context) (natsbus.Observation, error) {
 	s.mu.Lock()
-	obs := natsbus.Observation{Status: s.status, ReportedStatus: s.reported, ReportedAt: s.reportedAt}
+	obs := natsbus.Observation{Status: s.status, ReportedStatus: s.reported, ReportedAt: s.reportedAt, SentAt: s.sentAt, TurnAt: s.turnAt}
 	s.calls++
 	first := s.calls == 1
 	s.mu.Unlock()
@@ -507,5 +524,95 @@ func TestWait_NextNotArmedBySameReport(t *testing.T) {
 	defer cancel()
 	if status, err := natsbus.Wait(ctx, nil, opts); err == nil {
 		t.Fatalf("Wait returned %q without any new turn", status)
+	}
+}
+
+// tick separates timestamps that must compare as before and after.
+func tick() { time.Sleep(time.Millisecond) }
+
+// A turn the last send started, already over when Wait begins, is the
+// arrival --next waits for.
+func TestWait_NextArmedByTurnAfterSend(t *testing.T) {
+	for _, end := range []string{"idle", "waiting"} {
+		src := &statusSource{}
+		src.record("idle") // the previous turn
+		tick()
+		src.send()
+		tick()
+		src.startTurn()
+		tick()
+		src.record(end)
+		opts := waitOpts(src, time.Hour, "idle", "waiting")
+		opts.Next = true
+
+		status, err := natsbus.Wait(testCtx(t), nil, opts)
+		if err != nil || status != end {
+			t.Fatalf("Wait = %q, %v; want %s from the turn after the send", status, err, end)
+		}
+	}
+}
+
+// A turn already running at the send, ending after it, is not the send's.
+func TestWait_NextNotArmedByTurnBeforeSend(t *testing.T) {
+	src := &statusSource{}
+	src.startTurn()
+	tick()
+	src.send() // typed in mid-turn
+	tick()
+	src.record("idle") // the earlier turn's end
+	opts := waitOpts(src, 20*time.Millisecond, "idle")
+	opts.Next = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if status, err := natsbus.Wait(ctx, nil, opts); err == nil {
+		t.Fatalf("Wait returned %q from the turn that was running at the send", status)
+	}
+}
+
+// Without a report since the turn started, the turn hasn't arrived
+// anywhere yet, whatever the (lagging) status says.
+func TestWait_NextNotArmedByTurnStartAlone(t *testing.T) {
+	src := &statusSource{}
+	src.send()
+	tick()
+	src.startTurn()
+	src.set("idle") // native status lagging the hook
+	opts := waitOpts(src, 20*time.Millisecond, "idle")
+	opts.Next = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if status, err := natsbus.Wait(ctx, nil, opts); err == nil {
+		t.Fatalf("Wait returned %q before the turn reported anything", status)
+	}
+}
+
+// After replaces the send marker: the arrival already seen doesn't count
+// again, a newer one does even if no check saw the agent leave.
+func TestWait_NextAfterCountsOnlyNewerArrivals(t *testing.T) {
+	src := &statusSource{}
+	src.send()
+	tick()
+	src.startTurn()
+	tick()
+	src.record("waiting") // the prompt the caller already saw
+	src.mu.Lock()
+	seen := src.reportedAt
+	src.mu.Unlock()
+
+	opts := waitOpts(src, 20*time.Millisecond, "waiting")
+	opts.Next, opts.After = true, seen
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if status, err := natsbus.Wait(ctx, nil, opts); err == nil {
+		t.Fatalf("Wait returned %q for the prompt already seen", status)
+	}
+
+	tick()
+	src.record("waiting") // the next prompt, before this Wait's first check
+	status, err := natsbus.Wait(testCtx(t), nil, opts)
+	if err != nil || status != "waiting" {
+		t.Fatalf("Wait = %q, %v; want the newer prompt", status, err)
 	}
 }

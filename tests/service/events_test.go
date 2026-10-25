@@ -203,5 +203,57 @@ func observe(ctx context.Context, env *testEnv, name string) (natsbus.Observatio
 		Status:         string(info.Status),
 		ReportedStatus: string(info.ReportedStatus),
 		ReportedAt:     info.ReportedAt,
+		SentAt:         info.SentAt,
+		TurnAt:         info.TurnAt,
 	}, nil
+}
+
+// Send and a turn-starting report record the markers wait --next uses, so a
+// turn that started after the send and ended before the wait still counts.
+func TestWait_NextCatchesTurnThatEndedBeforeWait(t *testing.T) {
+	env := setupEventsEnv(t)
+	ctx := context.Background()
+	if _, err := env.service.Spawn(ctx, service.SpawnOptions{Name: "quick", Backend: "claude"}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	report := func(r service.StatusReport) {
+		t.Helper()
+		if err := env.service.Report(ctx, "quick", r); err != nil {
+			t.Fatalf("Report: %v", err)
+		}
+	}
+	report(service.StatusReport{Status: service.AgentStatusIdle, Event: "Stop"}) // the previous turn
+	if _, err := env.service.Send(ctx, "quick", "say hi"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	report(service.StatusReport{Status: service.AgentStatusProcessing, Event: "UserPromptSubmit", ClearResult: true})
+	report(service.StatusReport{Status: service.AgentStatusIdle, Event: "Stop", Result: "hi"})
+
+	info, err := env.service.StatusInfo(ctx, "quick")
+	if err != nil {
+		t.Fatalf("StatusInfo: %v", err)
+	}
+	if !(info.SentAt.Before(info.TurnAt) && info.TurnAt.Before(info.ReportedAt)) {
+		t.Fatalf("want sent < turn < reported, got %v, %v, %v", info.SentAt, info.TurnAt, info.ReportedAt)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	status, err := natsbus.Wait(waitCtx, nil, natsbus.WaitOptions{
+		Agent:    "quick",
+		For:      []string{"idle"},
+		Next:     true,
+		Current:  func(ctx context.Context) (natsbus.Observation, error) { return observe(ctx, env, "quick") },
+		Interval: 50 * time.Millisecond,
+	})
+	if err != nil || status != "idle" {
+		t.Fatalf("Wait = %q, %v; want idle from the turn that already ended", status, err)
+	}
+
+	// A report that doesn't start a turn (e.g. the next tool call) moves
+	// nothing.
+	report(service.StatusReport{Status: service.AgentStatusProcessing, Event: "PreToolUse"})
+	if again, _ := env.service.StatusInfo(ctx, "quick"); !again.TurnAt.Equal(info.TurnAt) {
+		t.Errorf("TurnAt moved on a report that starts no turn: %v -> %v", info.TurnAt, again.TurnAt)
+	}
 }

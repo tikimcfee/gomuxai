@@ -31,6 +31,13 @@ const (
 	// carry it, so hooks from a previous agent with the same name (e.g. the
 	// SessionEnd fired while cleanup kills it) can't write into a respawn.
 	StateKeySpawnID = "_spawn_id"
+	// StateKeySentAt is when a message was last typed into the agent (send,
+	// a queued delivery, or spawn's first message), and StateKeyTurnAt when
+	// its last turn started (a report that is processing and clears the
+	// result). wait --next compares them to catch a turn that started after
+	// a send and ended before the wait began.
+	StateKeySentAt = "_sent_at"
+	StateKeyTurnAt = "_turn_at"
 )
 
 // Status sources, from most to least authoritative.
@@ -102,6 +109,11 @@ type StatusInfo struct {
 	ReportedStatus AgentStatus
 	ReportedAt     time.Time
 
+	// When a message was last typed into the agent, and when its last turn
+	// started; zero if never, or if the agent has never reported.
+	SentAt time.Time
+	TurnAt time.Time
+
 	pending []pendingPrompt // unanswered permission prompts, oldest first
 	prompt  *pendingPrompt  // while waiting: the one on screen, which Tool and Detail describe
 }
@@ -144,6 +156,9 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 		values[StateKeyTranscript] = r.Transcript
 	}
 	now := time.Now()
+	if r.ClearResult && r.Status == AgentStatusProcessing {
+		values[StateKeyTurnAt] = now.Format(time.RFC3339Nano)
+	}
 	del, err := s.promptChanges(ctx, name, r, now, values)
 	if err != nil {
 		return err
@@ -293,6 +308,7 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 	}
 	if reported != nil {
 		info.ReportedStatus, info.ReportedAt = reported.Status, reported.UpdatedAt
+		info.SentAt, info.TurnAt = reported.SentAt, reported.TurnAt
 		info.pending = reported.pending
 	}
 	if info.Status == AgentStatusWaiting && len(info.pending) > 0 {
@@ -387,15 +403,22 @@ func (s *AgentService) reportedStatus(ctx context.Context, name string) (*Status
 	}
 	values := make(map[string]string, len(entries))
 	var info *StatusInfo
+	var sentAt, turnAt time.Time
 	for _, e := range entries {
 		values[e.Key] = e.Value
-		if e.Key == StateKeyStatus {
+		switch e.Key {
+		case StateKeyStatus:
 			info = &StatusInfo{Status: AgentStatus(e.Value), Source: StatusSourceReport, UpdatedAt: e.UpdatedAt}
+		case StateKeySentAt:
+			sentAt = e.UpdatedAt
+		case StateKeyTurnAt:
+			turnAt = e.UpdatedAt
 		}
 	}
 	if info == nil {
 		return nil, nil
 	}
+	info.SentAt, info.TurnAt = sentAt, turnAt
 	info.Event = values[StateKeyEvent]
 	info.Detail = values[StateKeyDetail]
 	info.Tool = values[StateKeyTool]

@@ -135,7 +135,16 @@ type WaitOptions struct {
 	// the wait ends at the next arrival, not at a status it's already in.
 	// For waiting right after sending work: until the agent picks the
 	// message up, it still looks idle from its previous turn.
+	//
+	// A turn can also start and end before Wait's first check. So Next is
+	// armed, too, by a report in For from a turn that started after the last
+	// send (Observation.SentAt < TurnAt < ReportedAt).
 	Next bool
+	// After, if set, replaces that send marker for Next: a report in For
+	// newer than After arms it. For a caller waiting again on an agent it
+	// has already seen arrive, at that arrival's ReportedAt, so the next
+	// arrival counts even if it comes before this Wait's first check.
+	After time.Time
 
 	// Current observes the agent's status now. Wait calls it once right
 	// after subscribing, every Interval as a backstop for status changes that
@@ -151,12 +160,31 @@ type WaitOptions struct {
 // Observation is one real status check.
 type Observation struct {
 	Status string // the agent's status, which ends the wait
+	Detail string // what it is doing or asking, e.g. "permission: Bash: ls"
 
 	// The agent's latest recorded report, if known. A report newer than the
 	// first one Wait saw that is already back in a For status means a whole
 	// turn happened between checks, which arms Next.
 	ReportedStatus string
 	ReportedAt     time.Time
+
+	// When a message was last sent to the agent and when its last turn
+	// started, if known: see WaitOptions.Next.
+	SentAt time.Time
+	TurnAt time.Time
+}
+
+// arrivedSince reports whether obs shows an arrival in For that Next should
+// count although no check saw the agent leave For: one newer than
+// opts.After, or, without After, one from a turn started after the last send.
+func (opts *WaitOptions) arrivedSince(obs Observation) bool {
+	if !slices.Contains(opts.For, obs.ReportedStatus) {
+		return false
+	}
+	if !opts.After.IsZero() {
+		return obs.ReportedAt.After(opts.After)
+	}
+	return !obs.SentAt.IsZero() && obs.TurnAt.After(obs.SentAt) && obs.ReportedAt.After(obs.TurnAt)
 }
 
 // subscribeFlushTimeout bounds the round trip that confirms the subscription
@@ -176,14 +204,21 @@ const subscribeFlushTimeout = 2 * time.Second
 // ends, the error wraps ctx.Err(), so a timeout satisfies
 // errors.Is(err, context.DeadlineExceeded).
 func Wait(ctx context.Context, nc *nats.Conn, opts WaitOptions) (string, error) {
+	obs, err := WaitObservation(ctx, nc, opts)
+	return obs.Status, err
+}
+
+// WaitObservation is Wait, returning the whole check that ended the wait
+// (on error, the last check made, if any).
+func WaitObservation(ctx context.Context, nc *nats.Conn, opts WaitOptions) (Observation, error) {
 	if len(opts.For) == 0 {
-		return "", fmt.Errorf("no statuses to wait for")
+		return Observation{}, fmt.Errorf("no statuses to wait for")
 	}
 	if opts.Current == nil {
-		return "", fmt.Errorf("no current-status check")
+		return Observation{}, fmt.Errorf("no current-status check")
 	}
 	if opts.Interval <= 0 {
-		return "", fmt.Errorf("check interval must be positive, got %v", opts.Interval)
+		return Observation{}, fmt.Errorf("check interval must be positive, got %v", opts.Interval)
 	}
 
 	var events chan *nats.Msg // stays nil without a bus: never ready
@@ -191,23 +226,22 @@ func Wait(ctx context.Context, nc *nats.Conn, opts WaitOptions) (string, error) 
 		events = make(chan *nats.Msg, 64)
 		sub, err := nc.ChanSubscribe(SubjectStatus(opts.Host, opts.Agent), events)
 		if err != nil {
-			return "", fmt.Errorf("subscribing to status events: %w", err)
+			return Observation{}, fmt.Errorf("subscribing to status events: %w", err)
 		}
 		defer sub.Unsubscribe()
 		// The server only routes events to the subscription once it has
 		// processed the SUB. Confirm that before the first check, or a
 		// transition right after the check could still be missed.
 		if err := nc.FlushTimeout(subscribeFlushTimeout); err != nil {
-			return "", fmt.Errorf("subscribing to status events: %w", err)
+			return Observation{}, fmt.Errorf("subscribing to status events: %w", err)
 		}
 	}
 
-	last := ""
+	var last Observation
 	armed := !opts.Next
 	var first *Observation // the initial check, for spotting newer reports
 	// settle reports whether status ends the wait, and with what error.
 	settle := func(status string) (bool, error) {
-		last = status
 		switch {
 		case slices.Contains(opts.For, status):
 			return armed, nil
@@ -227,10 +261,14 @@ func Wait(ctx context.Context, nc *nats.Conn, opts WaitOptions) (string, error) 
 			}
 			return true, err
 		}
+		last = obs
 		if first == nil {
 			first = &obs
 		} else if !armed && obs.ReportedAt.After(first.ReportedAt) && slices.Contains(opts.For, obs.ReportedStatus) {
 			armed = true // a turn started and finished between two checks
+		}
+		if !armed && opts.arrivedSince(obs) {
+			armed = true // ... or before the first check
 		}
 		return settle(obs.Status)
 	}

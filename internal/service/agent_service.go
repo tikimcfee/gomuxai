@@ -150,6 +150,9 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	if err != nil {
 		return abort(err)
 	}
+	if promptInLaunch {
+		s.markSent(ctx, opts.Name)
+	}
 	if err := s.sendLine(sessionName, runCmd); err != nil {
 		return abort(fmt.Errorf("launching backend: %w", err))
 	}
@@ -170,6 +173,7 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 
 	// Send initial message if it was not already passed on the launch command line
 	if !promptInLaunch && initMsg != "" {
+		s.markSent(ctx, opts.Name)
 		if err := s.sendLine(sessionName, initMsg); err != nil {
 			return abort(fmt.Errorf("sending init message: %w", err))
 		}
@@ -456,7 +460,16 @@ func (s *AgentService) SendUnchecked(ctx context.Context, name string, message s
 		return sessionGone(agent)
 	}
 
+	s.markSent(ctx, name)
 	return s.sendLine(agent.SessionName, message)
+}
+
+// markSent records that a message is about to be typed into the agent
+// (StateKeySentAt). It's written first, so the turn the message starts is
+// always later. Best-effort: without it, wait --next only misses a turn
+// that ends before the wait starts, as it would anyway.
+func (s *AgentService) markSent(ctx context.Context, name string) {
+	_ = s.setState(ctx, name, StateKeySentAt, time.Now().Format(time.RFC3339Nano))
 }
 
 // Queue queues a message for delivery when agent is idle.

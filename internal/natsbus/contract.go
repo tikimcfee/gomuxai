@@ -164,6 +164,10 @@ type StatusResponse struct {
 	// The last recorded report, which Status may lag or override.
 	ReportedStatus string    `json:"reported_status,omitempty"`
 	ReportedAt     time.Time `json:"reported_at,omitempty"`
+	// When a message was last sent to the agent, and when its last turn
+	// started (see Observation); zero from hosts that predate them.
+	SentAt time.Time `json:"sent_at,omitempty"`
+	TurnAt time.Time `json:"turn_at,omitempty"`
 }
 
 type CaptureRequest struct {
