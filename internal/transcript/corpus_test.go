@@ -47,7 +47,11 @@ func TestCorpusClaude(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			p := Claude{}.NewParser(Options{Requests: strings.HasSuffix(want, ".requests.events.jsonl")})
+			// As ReadFile reads it: a subagent's turns numbered from its parent's transcript.
+			p := Claude{}.NewParser(Options{
+				Requests: strings.HasSuffix(want, ".requests.events.jsonl"),
+				Turns:    ClaudeSubagentTurns(filepath.Join(corpusDir, session.Path)),
+			})
 			events := p.Feed(data)
 			s := p.Session()
 			s.file(filepath.Join(corpusDir, session.Path), int64(len(data)))

@@ -103,7 +103,8 @@ updates an earlier one, the add comes first.
   it records them. Otherwise they are derived and marked `derived`; never a silent mix.
   - `promptIndex` counts human prompts, so a turn a task notification or a peer opens has
     its own id but the index of the human prompt before it. A record with a `promptId` and
-    no `promptIndex` takes the last index seen in its file, or 0.
+    no `promptIndex` takes the last index seen in its file, or 0; a subagent's records,
+    which hold the parent's `promptId`, take the index the parent's transcript gives it.
   - A derived turn's id is the id of the prompt event that opened it, and its index counts
     such prompts from 1.
 - `api-request*` lines are never conversation events, only `request` events, and only when asked.

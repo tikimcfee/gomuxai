@@ -81,8 +81,9 @@ should check the rest.
 - Claude turns: the id is the record's `promptId`, and the index is
   `turnPosition.promptIndex`. Records without a `promptId` (assistant, attachment and
   system records) take the current turn. A record whose `promptId` has no `promptIndex`
-  (a local slash command, a task notification from older versions, a subagent's records)
-  takes the last `promptIndex` seen in the same file, or 0 if there is none.
+  (a local slash command, a task notification from older versions) takes the last
+  `promptIndex` seen in the same file, or 0 if there is none; a subagent's records, the
+  parent's (below).
 - `promptIndex` counts human prompts. A turn opened by a task notification or a peer gets
   its own `promptId`, but shares the index of the human prompt before it.
 - Derived turns (no `promptId`: older Claude, agy, Kimi): the id is the `id` of the prompt
@@ -90,8 +91,11 @@ should check the rest.
   `promptIndex` does. Prompts that open a derived turn are a typed prompt, a slash command
   and an idle-time task notification (Claude), `USER_INPUT` (agy), and `turn.prompt`
   (Kimi). Messages that arrive mid-turn stay in the current turn.
-- A subagent's events carry the parent's turn id (its records hold the parent's
-  `promptId`) with index 0, since its file holds no `promptIndex`.
+- A subagent's events carry the parent's turn: the turn whose call started it. Its
+  records hold the parent's `promptId` but no `promptIndex`, so the index is the one the
+  parent's transcript (`<session id>.jsonl` beside the `<session id>/subagents/` folder)
+  records for that `promptId`: 1 in `claude/subagent`. (Index 0 would read as a turn
+  of its own that no prompt opened.) If the parent's transcript is gone, it is 0.
 
 **Prompts**
 
