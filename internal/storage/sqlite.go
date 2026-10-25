@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -289,6 +290,74 @@ func (s *SQLiteStorage) UpdateMessageStatus(ctx context.Context, id int64, statu
 	return s.exec(ctx, "updating message status", `UPDATE messages SET status = ? WHERE id = ?`, status, id)
 }
 
+// ClaimMessage marks a pending message delivered, reporting whether this
+// call did: of two callers racing to deliver it, only one gets true.
+func (s *SQLiteStorage) ClaimMessage(ctx context.Context, id int64) (bool, error) {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE messages SET status = 'delivered' WHERE id = ? AND status = 'pending'`, id)
+	if err != nil {
+		return false, fmt.Errorf("claiming message: %w", err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+// ClaimPendingMessages marks every pending message for receiverID
+// delivered and returns them, oldest first. If update is non-nil, the state
+// change it returns for them is applied in the same transaction. The claim
+// is the transaction's first statement, so it takes the write lock at once:
+// a message stored concurrently is either claimed here or committed after
+// the state change, where whoever stored it can see that change.
+func (s *SQLiteStorage) ClaimPendingMessages(ctx context.Context, receiverID string, update func(claimed []*Message) StateUpdate) ([]*Message, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `
+		UPDATE messages SET status = 'delivered'
+		WHERE receiver_id = ? AND status = 'pending'
+		RETURNING `+messageColumns, receiverID)
+	if err != nil {
+		return nil, fmt.Errorf("claiming messages: %w", err)
+	}
+	var claimed []*Message
+	for rows.Next() {
+		msg, err := scanMessage(rows)
+		if err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("claiming messages: %w", err)
+		}
+		claimed = append(claimed, msg)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("claiming messages: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("claiming messages: %w", err)
+	}
+	// RETURNING has no order; GetPendingMessages' order is the one queued.
+	sort.Slice(claimed, func(i, j int) bool {
+		a, b := claimed[i], claimed[j]
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return a.ID < b.ID
+	})
+
+	if update != nil {
+		u := update(claimed)
+		if err := applyStateUpdate(ctx, tx, u.Entries, u.AgentName, u.Delete); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing claim: %w", err)
+	}
+	return claimed, nil
+}
+
 // DeleteMessagesByAgent removes all messages involving an agent.
 func (s *SQLiteStorage) DeleteMessagesByAgent(ctx context.Context, agentName string) error {
 	return s.exec(ctx, "deleting messages",
@@ -384,21 +453,29 @@ func (s *SQLiteStorage) UpdateStates(ctx context.Context, entries []*StateEntry,
 // agent events, in the same transaction.
 func (s *SQLiteStorage) RecordReport(ctx context.Context, entries []*StateEntry, agentName string, del []string, ev *AgentEvent) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
-		for _, entry := range entries {
-			if _, err := tx.ExecContext(ctx, setStateQuery, stateArgs(entry)...); err != nil {
-				return fmt.Errorf("setting state %s: %w", entry.Key, err)
-			}
-		}
-		for _, key := range del {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM state WHERE agent_name = ? AND key = ?`, agentName, key); err != nil {
-				return fmt.Errorf("deleting state %s: %w", key, err)
-			}
+		if err := applyStateUpdate(ctx, tx, entries, agentName, del); err != nil {
+			return err
 		}
 		if ev == nil {
 			return nil
 		}
 		return insertAgentEvent(ctx, tx, ev)
 	})
+}
+
+// applyStateUpdate sets entries and deletes agentName's keys in del, in tx.
+func applyStateUpdate(ctx context.Context, tx *sql.Tx, entries []*StateEntry, agentName string, del []string) error {
+	for _, entry := range entries {
+		if _, err := tx.ExecContext(ctx, setStateQuery, stateArgs(entry)...); err != nil {
+			return fmt.Errorf("setting state %s: %w", entry.Key, err)
+		}
+	}
+	for _, key := range del {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM state WHERE agent_name = ? AND key = ?`, agentName, key); err != nil {
+			return fmt.Errorf("deleting state %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 const setStateQuery = `

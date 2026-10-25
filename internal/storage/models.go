@@ -138,6 +138,14 @@ type FrictionFilter struct {
 	DuplicateOf int64
 }
 
+// StateUpdate is a change to an agent's state: Entries to set, and
+// AgentName's keys in Delete to remove.
+type StateUpdate struct {
+	Entries   []*StateEntry
+	AgentName string
+	Delete    []string
+}
+
 // StateEntry represents a key-value state entry.
 type StateEntry struct {
 	AgentName string    `json:"agent_name"`

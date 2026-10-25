@@ -16,6 +16,13 @@ type Storage interface {
 	CreateMessage(ctx context.Context, msg *Message) error
 	GetPendingMessages(ctx context.Context, receiverID string, limit int) ([]*Message, error)
 	UpdateMessageStatus(ctx context.Context, id int64, status MessageStatus) error
+	// ClaimMessage marks a pending message delivered; false if it wasn't
+	// pending (someone else delivered it).
+	ClaimMessage(ctx context.Context, id int64) (bool, error)
+	// ClaimPendingMessages marks receiverID's pending messages delivered,
+	// returning them oldest first, and applies update's state change for
+	// them in the same transaction (update may be nil).
+	ClaimPendingMessages(ctx context.Context, receiverID string, update func(claimed []*Message) StateUpdate) ([]*Message, error)
 	DeleteMessagesByAgent(ctx context.Context, agentName string) error
 
 	// Task operations (standalone task repository)
