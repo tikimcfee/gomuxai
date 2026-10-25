@@ -67,7 +67,7 @@ failed and what to try. Most read commands take `--json`.
 ### What a spawned Claude agent may run without asking
 
 Spawn pre-allows these for the agent's session: `send`, `deliver`, `list`,
-`status`, `wait`, `events`, `capture`, `logs`, `state get`, `history`,
+`status`, `wait`, `events`, `capture`, `logs`, `sessions`, `state get`, `history`,
 `friction add`, `friction +1`, `friction list`, `friction show`.
 
 Everything else prompts the person, on purpose: `spawn` and `cleanup` start

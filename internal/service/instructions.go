@@ -147,8 +147,9 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 }
 
 // agentSafeCommands are the agent subcommands a spawned agent may run without
-// a permission prompt: they read status, screens, transcripts, or history (a
-// coordinator needs capture and logs to see why a helper is stuck), deliver
+// a permission prompt: they read status, screens, transcripts, sessions, or
+// history (a coordinator needs capture and logs to see why a helper is stuck,
+// and sessions to find its peers), deliver
 // messages that
 // the recipient's own permission prompts still guard, or file and vote on
 // friction, which only writes a note. approve/deny, keys, and send --force
@@ -157,7 +158,7 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 // agents: the user approves each one. So are friction accept and resolve,
 // which are for the people working on the tool.
 var agentSafeCommands = []string{
-	"send", "deliver", "list", "status", "wait", "events", "capture", "logs", "state get", "history",
+	"send", "deliver", "list", "status", "wait", "events", "capture", "logs", "sessions", "state get", "history",
 	"friction add", "friction +1", "friction list", "friction show",
 }
 
