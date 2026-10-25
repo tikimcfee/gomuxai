@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/GianlucaP106/gotmux/gotmux"
 	"github.com/tikimcfee/gomuxai/internal/util"
@@ -271,4 +272,28 @@ func (c *Client) Clear(session string) error {
 	}
 
 	return nil
+}
+
+// SessionNames lists the sessions' names, cheaper than ListSessions. With no
+// tmux server running there are none.
+func (c *Client) SessionNames() ([]string, error) {
+	out, err := c.tmux.Command("list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		if msg := err.Error(); strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing sessions: %w", err)
+	}
+	return strings.Fields(out), nil
+}
+
+// SessionEnv returns a variable from a session's environment, or "" if it
+// isn't set there.
+func (c *Client) SessionEnv(session, name string) string {
+	out, err := c.tmux.Command("show-environment", "-t", session, name)
+	if err != nil {
+		return ""
+	}
+	_, value, _ := strings.Cut(strings.TrimSpace(out), "=")
+	return value
 }

@@ -132,6 +132,9 @@ func OpenReadOnly(dbPath string) (*SQLiteStorage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
+	// One connection: data_version is per connection, so it must be
+	// compared on the same one.
+	db.SetMaxOpenConns(1)
 	s := &SQLiteStorage{db: db}
 	if s.schema, err = readSchema(db); err != nil {
 		db.Close()
