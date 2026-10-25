@@ -268,6 +268,9 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 	if err != nil || !ok {
 		return err
 	}
+	if s.backgroundWorkRunning(ctx, name, hr) {
+		return nil
+	}
 	err = s.Report(ctx, name, StatusReport{
 		Status:    fromBackendStatus(hr.Status),
 		Event:     hr.Event,
@@ -288,6 +291,21 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 		return err
 	}
 	return s.recordTranscript(name, agent.Backend, hr.Transcript)
+}
+
+// backgroundWorkRunning reports whether hr is Claude's idle_prompt
+// Notification arriving while the turn's Stop said background tasks are
+// still running. The notification fires ~60s into any stay at the prompt,
+// background work or not; recorded, it would turn "processing, N background
+// task(s) running" into idle with no result, which a coordinator waiting
+// for idle takes for done whenever native status can't overrule it. The
+// task's completion starts a new turn, whose hooks report as usual.
+func (s *AgentService) backgroundWorkRunning(ctx context.Context, name string, hr backend.HookReport) bool {
+	if hr.Event != "Notification" || hr.Status != backend.StatusIdle {
+		return false
+	}
+	last, err := s.reportedStatus(ctx, name)
+	return err == nil && last != nil && last.Status == AgentStatusProcessing && last.Event == "Stop"
 }
 
 // Status checks the current status of an agent.

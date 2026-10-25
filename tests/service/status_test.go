@@ -156,6 +156,38 @@ func TestReportHook_StopStoresResult(t *testing.T) {
 	}
 }
 
+// Claude's idle_prompt Notification, ~60s into background work after a
+// Stop, must not record idle (with no result) before that work is done.
+func TestReportHook_IdlePromptDuringBackgroundWork(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	ctx := context.Background()
+	spawnFake(t, env, "worker")
+	hook := func(payload string) *service.StatusInfo {
+		t.Helper()
+		if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
+			t.Fatalf("ReportHook: %v", err)
+		}
+		info, err := env.service.StatusInfo(ctx, "worker")
+		if err != nil {
+			t.Fatalf("StatusInfo: %v", err)
+		}
+		return info
+	}
+	const idlePrompt = `{"hook_event_name":"Notification","session_id":"s","notification_type":"idle_prompt"}`
+
+	hook(`{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"started","background_tasks":[{"type":"subagent","status":"running"}]}`)
+	if info := hook(idlePrompt); info.Status != service.AgentStatusProcessing || !strings.Contains(info.Detail, "background") {
+		t.Errorf("after idle_prompt: %s (%s), want processing with the background detail", info.Status, info.Detail)
+	}
+
+	// Once the work is done and its turn has ended, idle_prompt records as usual.
+	hook(`{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"done","background_tasks":[]}`)
+	if info := hook(idlePrompt); info.Status != service.AgentStatusIdle || info.Event != "Notification" {
+		t.Errorf("after the last Stop: %s from %s, want idle from Notification", info.Status, info.Event)
+	}
+}
+
 func TestReportHook_StoresTranscript(t *testing.T) {
 	env := setupTestEnv(t)
 	defer env.cleanup()
