@@ -99,7 +99,10 @@ type claudeBlock struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
 	IsError   bool            `json:"is_error"`
-	Source    *struct {
+	// A model fallback's models.
+	From   json.RawMessage `json:"from"`
+	To     json.RawMessage `json:"to"`
+	Source *struct {
 		MediaType string `json:"media_type"`
 		Data      string `json:"data"`
 	} `json:"source"`
@@ -174,6 +177,10 @@ type claudeLines struct {
 	// blobs holds the messages api-request-blob lines define, by hash
 	// (with Options.Requests).
 	blobs map[string]json.RawMessage
+	// closing is a reply that ends its message without a stop reason
+	// (older versions): final if its turn ends with nothing more from the
+	// model.
+	closing *Event
 }
 
 func (c *claudeLines) session() Session { return c.sess }
@@ -213,6 +220,7 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	}
 
 	l := &claudeLine{c: c, r: r, raw: line, at: at, n: n}
+	closing := c.closing
 	switch r.Type {
 	case "user":
 		if r.Message != nil {
@@ -241,7 +249,21 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 			l.request()
 		}
 	}
+	// A new turn closes the last one.
+	if closing != nil && c.closing == closing && c.turn != nil && (closing.Turn == nil || c.turn.ID != closing.Turn.ID) {
+		l.close()
+	}
 	return append(l.adds, l.updates...), true
+}
+
+// close marks the reply that ended its turn's last message without a stop
+// reason final, now that the turn has ended: an update of it.
+func (l *claudeLine) close() {
+	e := *l.c.closing
+	l.c.closing = nil
+	e.Op, e.At, e.Line, e.TS = OpUpdate, l.at, l.n, l.r.Timestamp
+	e.Say = &SayEvent{Text: e.Say.Text, Final: true}
+	l.updates = append(l.updates, e)
 }
 
 // enter makes the turn a record with a prompt id names the current one.
@@ -332,6 +354,7 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 		return false
 	case strings.HasPrefix(text, claudeInterrupted):
 		system("interrupt")
+		l.c.closing = nil // the turn didn't end with that reply
 		return true
 	case r.IsMeta && r.Origin == nil && r.PromptSource != "system":
 		// A caveat, a reminder, a skill's expanded body: the harness
@@ -357,6 +380,9 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 		}
 	} else if IsTaskNotification(text) {
 		p.Origin = OriginTaskNotification
+	} else if m := claudePlainCommand.FindStringSubmatch(text); m != nil && p.Origin == OriginHuman && r.Origin == nil {
+		// Older versions wrote some commands (/compact) as typed.
+		p.Origin, p.Command = OriginCommand, m[1]
 	}
 	l.number(id, p.Origin)
 	e := l.event(id, KindPrompt)
@@ -426,6 +452,11 @@ func claudeOrigins(r *claudeRecord) string {
 	}
 	return OriginSystem
 }
+
+// claudePlainCommand matches a slash command typed as text, with no
+// markup: "/compact keep the plan". A path ("/etc/hosts is gone") has a
+// second slash, and isn't one.
+var claudePlainCommand = regexp.MustCompile(`^(/[a-z][a-z0-9_:-]*)(?:\s|$)`)
 
 // slashCommand reads a slash command's markup, in either tag order:
 // <command-name>/review</command-name> <command-message>review</command-message>
@@ -626,6 +657,8 @@ func (l *claudeLine) notification(text string) {
 func (l *claudeLine) assistant() {
 	r := l.r
 	content, blocks := readClaudeContent(r.Message.Content)
+	// More from the model: the last reply didn't close its turn.
+	l.c.closing = nil
 	if r.IsAPIErrorMessage {
 		e := l.event(r.blockID(l.n, 0), KindSystem)
 		data := objectFields(l.raw, func(key string) bool { return key == "error" || key == "apiErrorStatus" })
@@ -633,10 +666,13 @@ func (l *claudeLine) assistant() {
 		l.add(e)
 		return
 	}
-	lastText := -1
+	lastText, calls := -1, false
 	for i, b := range blocks {
-		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+		switch {
+		case b.Type == "text" && strings.TrimSpace(b.Text) != "":
 			lastText = i
+		case b.Type == "tool_use":
+			calls = true
 		}
 	}
 	for i, b := range blocks {
@@ -649,8 +685,20 @@ func (l *claudeLine) assistant() {
 			if strings.TrimSpace(b.Text) == "" {
 				continue
 			}
+			// A message that ends the turn ends with end_turn or a stop
+			// sequence; older versions wrote no stop reason, so their last
+			// reply is final once the turn ends with nothing more.
 			e := l.event(r.blockID(l.n, i), KindSay)
-			e.Say = &SayEvent{Text: b.Text, Final: i == lastText && r.Message.StopReason == "end_turn"}
+			stop := r.Message.StopReason
+			e.Say = &SayEvent{Text: b.Text, Final: i == lastText && (stop == "end_turn" || stop == "stop_sequence")}
+			l.add(e)
+			if i == lastText && stop == "" && !calls {
+				l.c.closing = &e
+			}
+		case "fallback":
+			// The harness switched models for this message.
+			e := l.event(r.blockID(l.n, i), KindSystem)
+			e.System = &SystemEvent{Subtype: "model_fallback", Data: modelFallback(b)}
 			l.add(e)
 		case "tool_use":
 			e := l.event(b.ID, KindTool)
@@ -661,6 +709,28 @@ func (l *claudeLine) assistant() {
 			l.c.pending = append(l.c.pending, b.ID)
 		}
 	}
+}
+
+// modelFallback is a fallback block's data: the models it switched from
+// and to, as the block holds them.
+func modelFallback(b claudeBlock) json.RawMessage {
+	var out bytes.Buffer
+	out.WriteByte('{')
+	for _, f := range []struct {
+		key string
+		v   json.RawMessage
+	}{{"from", b.From}, {"to", b.To}} {
+		if len(f.v) == 0 {
+			continue
+		}
+		if out.Len() > 1 {
+			out.WriteByte(',')
+		}
+		fmt.Fprintf(&out, "%q:", f.key)
+		out.Write(f.v)
+	}
+	out.WriteByte('}')
+	return out.Bytes()
 }
 
 // claudeDelivered matches the head line of gomuxai's held-message
@@ -730,6 +800,9 @@ func (l *claudeLine) system() {
 	e.System = &SystemEvent{Subtype: l.r.Subtype, Data: objectFields(l.raw, func(key string) bool { return !claudeEnvelope[key] })}
 	json.Unmarshal(l.r.Content, &e.System.Text)
 	l.add(e)
+	if s := l.r.Subtype; l.c.closing != nil && (s == "turn_duration" || s == "stop_hook_summary") {
+		l.close() // the turn ended
+	}
 }
 
 // request reads an api-request line: what one model call was sent, with
