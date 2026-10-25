@@ -171,8 +171,10 @@ should check the rest.
   log, `transcript.jsonl`, JSON-encodes every string arg a second time and writes
   `AllowMultiple` as `"true"`/`"false"`. But it also truncates long fields
   (`truncated_fields`; 34 of 49 conversations on the survey host). Readers take
-  `transcript_full.jsonl`. A reader that meets a string arg that is itself a JSON string
-  should decode it once, so `input` carries the decoded value either way.
+  `transcript_full.jsonl`, where a plain arg may legitimately be a quoted phrase, so a
+  single quoted arg is never decoded. Decoding is per call: only when every arg is a
+  string of valid JSON is the call taken as encoded and each arg decoded once (agy.go's
+  `agyArgs`). A `transcript.jsonl` case, if one is added, would expect the decoded values.
 
 **System events**
 
