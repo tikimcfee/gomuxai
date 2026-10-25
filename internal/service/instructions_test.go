@@ -11,7 +11,7 @@ import (
 func TestBriefingExplainsSenderTags(t *testing.T) {
 	s := &AgentService{cfg: &config.Config{Host: "h"}}
 	brief := s.agentInstructions("lead", "")
-	for _, want := range []string{`"[from NAME@HOST]"`, `"[from a person on HOST]"`} {
+	for _, want := range []string{`"[from NAME@HOST]"`, `"[from a person on HOST]"`, `"[from a Claude session on HOST]"`, "no agent record"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("briefing lacks %s", want)
 		}

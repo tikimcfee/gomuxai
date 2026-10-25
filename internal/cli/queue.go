@@ -26,7 +26,8 @@ another host is refused, since queueing isn't served over the bus (use
 
 Use --from to specify the sender (defaults to AGENT_NAME env var or "user").
 Messages are marked with the sender as "agent send" marks them: an agent's
-address, or "[from a person on host]" for "user".`,
+address, or for "user", "[from a person on host]" (or "[from a Claude
+session on host]" from an AI CLI a person started).`,
 	Example: `  agent queue researcher "when you're free, check the test results"
   agent queue builder --from coordinator "priority: fix the auth bug"`,
 	Args: cobra.MinimumNArgs(2),

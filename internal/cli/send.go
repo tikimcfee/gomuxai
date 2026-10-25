@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -27,8 +28,10 @@ wait until the agent is idle. An agent on another host is addressed as
 name@host (needs a running bus).
 
 A message sent by an agent (AGENT_NAME set) starts with "[from name@host]",
-so the recipient knows where to reply. One sent by a person starts with
-"[from a person on host]", unless it is a slash command like "/compact".
+so the recipient knows where to reply. One sent without AGENT_NAME starts
+with "[from a person on host]", or "[from a Claude session on host]" from an
+AI CLI a person started (AI_AGENT or CLAUDECODE=1 set): neither has an agent
+record to reply to. A slash command like "/compact" is left unmarked.
 
 "Sent" means the message was typed into the agent's terminal, not that the
 agent has read it: right after a send, the agent still looks idle until it
@@ -104,18 +107,44 @@ func fromAgent(message string) string {
 }
 
 // markSender prefixes message with its sender's address on this host, so
-// the recipient knows who to reply to, or for a person (sender ""), with
-// "[from a person on host]": a person has no agent record to reply to with
-// agent send. A person's slash command ("/compact") stays unmarked, since a
-// prefix would turn it into a plain message.
+// the recipient knows who to reply to. A sender without an agent record
+// (sender "") has no address to reply to with agent send, so the tag only
+// says what it is: "[from a person on host]", or "[from a Claude session on
+// host]" for an AI CLI a person started (see unrecordedSender). Their slash
+// commands ("/compact") stay unmarked, since a prefix would turn them into
+// plain messages.
 func markSender(sender, message string) string {
 	if sender == "" {
 		if strings.HasPrefix(message, "/") {
 			return message
 		}
-		return fmt.Sprintf("[from a person on %s] %s", cfg.Host, message)
+		return fmt.Sprintf("[from %s on %s] %s", unrecordedSender(), cfg.Host, message)
 	}
 	return fmt.Sprintf("[from %s@%s] %s", sender, cfg.Host, message)
+}
+
+// aiToolName matches a usable tool name: the part of AI_AGENT before its
+// first "_" (e.g. "claude-code" in "claude-code_2-1-310_agent").
+var aiToolName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,23}$`)
+
+// unrecordedSender describes a sender without AGENT_NAME: an AI CLI if its
+// environment says so (AI_AGENT names the tool; Claude Code also sets
+// CLAUDECODE=1), else a person.
+func unrecordedSender() string {
+	if v := os.Getenv("AI_AGENT"); v != "" {
+		tool, _, _ := strings.Cut(v, "_")
+		switch {
+		case strings.HasPrefix(strings.ToLower(tool), "claude"):
+			return "a Claude session"
+		case aiToolName.MatchString(tool):
+			return "a " + tool + " session"
+		}
+		return "an AI session"
+	}
+	if os.Getenv("CLAUDECODE") == "1" {
+		return "a Claude session"
+	}
+	return "a person"
 }
 
 // stdinIsTerminal is a real isatty check: /dev/null, which agents' commands

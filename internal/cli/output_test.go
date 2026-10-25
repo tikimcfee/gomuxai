@@ -123,6 +123,31 @@ func TestQueueHintsOnlyWithoutAWatcher(t *testing.T) {
 	}
 }
 
+// queue tags a message from "user" as send does: a person, or an AI session
+// a person started.
+func TestQueueTagsUnrecordedSenders(t *testing.T) {
+	setupCLI(t)
+	forbidBus(t)
+	t.Setenv("AGENT_NAME", "")
+	t.Setenv("AI_AGENT", "")
+	for claudecode, want := range map[string]string{
+		"":  "[from a person on local] hi",
+		"1": "[from a Claude session on local] hi",
+	} {
+		t.Setenv("CLAUDECODE", claudecode)
+		if _, err := stdout(t, func() error { return runQueue(queueCmd, []string{"worker", "hi"}) }); err != nil {
+			t.Fatal(err)
+		}
+		pending, err := store.GetPendingMessages(context.Background(), "worker", 100)
+		if err != nil || len(pending) == 0 {
+			t.Fatalf("pending = %v, err %v", pending, err)
+		}
+		if got := pending[len(pending)-1].Content; got != want {
+			t.Errorf("CLAUDECODE=%q: queued %q, want %q", claudecode, got, want)
+		}
+	}
+}
+
 func TestSendRefusesExitedAgent(t *testing.T) {
 	setupCLI(t)
 	if err := agentService.Report(context.Background(), "worker", service.StatusReport{Status: service.AgentStatusExited}); err != nil {

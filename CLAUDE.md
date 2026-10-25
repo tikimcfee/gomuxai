@@ -101,9 +101,11 @@ agent send helper "review internal/auth for injection bugs"
 (Claude and agy queue it), and says the status it saw: `Sent to helper (it
 was idle).` "Sent" means typed, not read. Messages from an agent start with
 `[from name@host]`, so the recipient knows where to reply. Messages from
-anyone without `AGENT_NAME` (a person, or a coordinator a person started)
-start with `[from a person on host]`, which the recipient answers in its
-reply; a slash command like `/compact` is left unmarked. It refuses an
+anyone without `AGENT_NAME` start with `[from a person on host]`, or
+`[from a Claude session on host]` from an AI CLI a person started (it sets
+`AI_AGENT` or `CLAUDECODE=1`). Neither has an agent record, so the recipient
+answers in its reply. A slash command like `/compact` is left unmarked. It
+refuses an
 agent at a dialog (the Enter would answer it; use `approve`/`deny`) and an
 agent that has exited.
 

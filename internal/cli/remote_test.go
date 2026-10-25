@@ -290,12 +290,32 @@ func TestFromAgent(t *testing.T) {
 	t.Cleanup(func() { cfg = old })
 	cfg = &config.Config{Host: "h1"}
 	t.Setenv("AGENT_NAME", "")
+	t.Setenv("AI_AGENT", "")
+	t.Setenv("CLAUDECODE", "")
 	if got := fromAgent("hi"); got != "[from a person on h1] hi" {
 		t.Errorf("person's message = %q", got)
 	}
 	if got := fromAgent("/compact"); got != "/compact" {
 		t.Errorf("person's slash command changed: %q", got)
 	}
+
+	// An AI CLI a person started has no agent record either, but isn't a
+	// person: its environment says what it is.
+	for env, want := range map[[2]string]string{
+		{"", "1"}:                         "[from a Claude session on h1] hi",
+		{"claude-code_2-1-310_agent", ""}: "[from a Claude session on h1] hi",
+		{"cursor_1-4_agent", ""}:          "[from a cursor session on h1] hi",
+		{"cursor_1-4_agent", "1"}:         "[from a cursor session on h1] hi", // AI_AGENT names the tool
+		{"$(rm -rf ~)_1_agent", ""}:       "[from an AI session on h1] hi",
+	} {
+		t.Setenv("AI_AGENT", env[0])
+		t.Setenv("CLAUDECODE", env[1])
+		if got := fromAgent("hi"); got != want {
+			t.Errorf("AI_AGENT=%q CLAUDECODE=%q: %q, want %q", env[0], env[1], got, want)
+		}
+	}
+	t.Setenv("AI_AGENT", "")
+	t.Setenv("CLAUDECODE", "")
 	t.Setenv("AGENT_NAME", "lead")
 	if got := fromAgent("hi"); got != "[from lead@h1] hi" {
 		t.Errorf("agent message = %q", got)
