@@ -61,8 +61,9 @@ should check the rest.
 
 **Stream**
 
-- `seq` is the event's 0-based position in the stream it is in. The `--requests` stream
-  numbers its own events, so the same event can have a different `seq` in each.
+- `seq` is the event's 0-based position in the stream it is in. The request channel
+  numbers its own events, from 0, so a conversation event has the same `seq` with or
+  without `--requests`.
 - An update is the whole event again with the same `id`, `turn` and `kind`. Its `at`,
   `line` and `ts` are those of the line that caused it.
 - When one line both adds an event and updates an earlier one, the add comes first: a

@@ -58,7 +58,8 @@ type Event struct {
 	// otherwise the source record's id and the block's index ("<uuid>#2").
 	ID string `json:"id"`
 	Op string `json:"op"`
-	// Seq is the event's 0-based position in its stream; At and Line
+	// Seq is the event's 0-based position in its stream (a request
+	// event's, in the request channel, which numbers its own); At and Line
 	// locate the source line (byte offset, line index), so a reader can
 	// page and resume.
 	Seq  int   `json:"seq"`
@@ -209,11 +210,13 @@ func (s *Session) setCWD(cwd string) {
 }
 
 // Pos is a place in a transcript: the byte offset where a line starts,
-// that line's index, and the Seq the next event gets.
+// that line's index, and the Seq the next event gets; RequestSeq, the Seq
+// the next request event gets (the request channel numbers its own).
 type Pos struct {
-	At   int64 `json:"at"`
-	Line int   `json:"line"`
-	Seq  int   `json:"seq"`
+	At         int64 `json:"at"`
+	Line       int   `json:"line"`
+	Seq        int   `json:"seq"`
+	RequestSeq int   `json:"request_seq"`
 }
 
 // Options choose what a parse reads and emits.
@@ -278,9 +281,10 @@ func newParser(harness string, lines lineReader) *Parser {
 }
 
 // Feed parses the whole lines at the start of data, which starts at
-// Pos().At, and returns their events, numbered from Pos().Seq. A last line
-// with no newline yet is left for the next Feed: that one's data starts
-// again at Pos().At.
+// Pos().At, and returns their events, numbered from Pos().Seq (request
+// events from Pos().RequestSeq: the conversation is numbered the same with
+// or without them). A last line with no newline yet is left for the next
+// Feed: that one's data starts again at Pos().At.
 func (p *Parser) Feed(data []byte) []Event {
 	var events []Event
 	for {
@@ -299,8 +303,13 @@ func (p *Parser) Feed(data []byte) []Event {
 				p.Skipped++
 			}
 			for _, e := range evs {
-				e.Seq = p.pos.Seq
-				p.pos.Seq++
+				if e.Kind == KindRequest {
+					e.Seq = p.pos.RequestSeq
+					p.pos.RequestSeq++
+				} else {
+					e.Seq = p.pos.Seq
+					p.pos.Seq++
+				}
 				events = append(events, e)
 			}
 		}

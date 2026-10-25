@@ -197,6 +197,9 @@ func checkEventsFile(t *testing.T, path string) {
 	}
 	var transcript []byte
 	var lineStarts []int
+	// seqs is the next seq of the conversation and of the request channel,
+	// which numbers its own.
+	seqs := map[bool]int{}
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(nil, 16<<20)
 	for n := 0; sc.Scan(); n++ {
@@ -260,9 +263,11 @@ func checkEventsFile(t *testing.T, path string) {
 		if e.Op != "add" && e.Op != "update" {
 			t.Errorf("line %d: op %q", n, e.Op)
 		}
-		if e.Seq != n-1 {
-			t.Errorf("line %d: seq %d, want %d", n, e.Seq, n-1)
+		request := e.Kind == "request"
+		if e.Seq != seqs[request] {
+			t.Errorf("line %d: seq %d, want %d", n, e.Seq, seqs[request])
 		}
+		seqs[request]++
 		if !slices.Contains([]string{"prompt", "think", "say", "tool", "system", "request"}, e.Kind) {
 			t.Errorf("line %d: kind %q", n, e.Kind)
 		} else if _, ok := rec[e.Kind]; !ok {
