@@ -166,6 +166,48 @@ func TestClaudeParseHookEvent_ClearResult(t *testing.T) {
 	}
 }
 
+// Each PermissionRequest opens a pending prompt that its call's PostToolUse
+// (same tool and input) resolves; a subagent's carries its id and says
+// whose it is, as Claude's dialog does.
+func TestClaudeParseHookEvent_PendingPrompts(t *testing.T) {
+	provider := namedagents.NewClaudeBackend()
+	parse := func(payload string) backend.HookReport {
+		t.Helper()
+		r, ok, err := provider.ParseHookEvent("", []byte(payload))
+		if err != nil || !ok {
+			t.Fatalf("%s: ok=%v err=%v", payload, ok, err)
+		}
+		return r
+	}
+	req := parse(`{"hook_event_name":"PermissionRequest","agent_id":"a1","agent_type":"general-purpose","tool_name":"Bash","tool_input":{"command":"rmdir sub1"}}`)
+	if req.Prompt != backend.PromptOpened || req.Agent != "a1" || req.CallKey == "" {
+		t.Errorf("PermissionRequest: prompt %v, agent %q, call %q", req.Prompt, req.Agent, req.CallKey)
+	}
+	if want := "permission: Bash: rmdir sub1 (from the general-purpose agent)"; req.Detail != want {
+		t.Errorf("detail = %q, want %q", req.Detail, want)
+	}
+	post := parse(`{"hook_event_name":"PostToolUse","agent_id":"a1","tool_name":"Bash","tool_input":{ "command": "rmdir sub1" },"tool_response":{}}`)
+	if post.Prompt != backend.PromptResolved || post.CallKey != req.CallKey {
+		t.Errorf("PostToolUse: prompt %v, call %q, want resolved %q", post.Prompt, post.CallKey, req.CallKey)
+	}
+	if other := parse(`{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"rmdir sub2"}}`); other.CallKey == req.CallKey {
+		t.Error("another call has the same call key")
+	}
+	for payload, want := range map[string]backend.PromptChange{
+		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}`:                    backend.PromptNone,
+		`{"hook_event_name":"UserPromptSubmit","prompt":"hi"}`:                                   backend.PromptsMainEnded,
+		`{"hook_event_name":"Stop","last_assistant_message":"done"}`:                             backend.PromptsAllEnded,
+		`{"hook_event_name":"Stop","background_tasks":[{"type":"subagent","status":"running"}]}`: backend.PromptNone,
+		`{"hook_event_name":"SessionEnd","reason":"other"}`:                                      backend.PromptsAllEnded,
+		`{"hook_event_name":"StopFailure","error":"rate_limit"}`:                                 backend.PromptsAllEnded,
+		`{"hook_event_name":"SessionStart","source":"startup"}`:                                  backend.PromptsAllEnded,
+	} {
+		if r := parse(payload); r.Prompt != want {
+			t.Errorf("%s: prompt change %v, want %v", payload, r.Prompt, want)
+		}
+	}
+}
+
 // Every payload names the session's transcript; agent logs reads it.
 func TestClaudeParseHookEvent_Transcript(t *testing.T) {
 	payload := `{"hook_event_name":"PreToolUse","session_id":"s1","transcript_path":"/home/user/.claude/projects/-home-user-proj/s1.jsonl","tool_name":"Bash","tool_input":{"command":"ls"}}`

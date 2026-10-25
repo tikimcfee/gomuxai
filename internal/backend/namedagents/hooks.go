@@ -2,6 +2,8 @@ package namedagents
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -50,6 +52,18 @@ func toolSummary(tool string, input json.RawMessage, keys []string) string {
 		}
 	}
 	return tool
+}
+
+// callKey identifies a tool call by its tool and input, for
+// HookReport.CallKey. It hashes the input, which may be too large to store.
+func callKey(tool string, input json.RawMessage) string {
+	var b bytes.Buffer
+	if json.Compact(&b, input) != nil {
+		b.Reset()
+		b.Write(input)
+	}
+	sum := sha256.Sum256(append([]byte(tool+"\x00"), b.Bytes()...))
+	return hex.EncodeToString(sum[:12])
 }
 
 // toolInput returns input, compacted, for HookReport.ToolInput, or "" if

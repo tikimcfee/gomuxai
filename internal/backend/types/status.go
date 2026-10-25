@@ -48,7 +48,29 @@ type HookReport struct {
 	// ClearResult marks the start of a new turn or conversation, after which
 	// the previous turn's Result no longer answers anything.
 	ClearResult bool
+
+	// Prompt is how the event changes the queue of pending permission
+	// prompts. Claude raises one PermissionRequest per call, all at once
+	// for parallel calls, and shows them one at a time ("1 of 4"), so the
+	// last report alone doesn't say which prompt is on screen.
+	Prompt PromptChange
+	// CallKey identifies the tool call (its tool and input), matching a
+	// call's result to its pending prompt.
+	CallKey string
+	// Agent is the subagent the event came from ("" for the main agent).
+	Agent string
 }
+
+// PromptChange is how a hook event changes the pending permission prompts.
+type PromptChange int
+
+const (
+	PromptNone       PromptChange = iota
+	PromptOpened                  // a call asks for permission
+	PromptResolved                // a call finished: its prompt, if any, was answered
+	PromptsMainEnded              // the main agent takes a prompt, so none of its own are pending
+	PromptsAllEnded               // the turn or session ended: none are pending
+)
 
 // PermissionResponse is an answer to a pending permission prompt.
 type PermissionResponse int

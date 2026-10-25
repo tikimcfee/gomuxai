@@ -163,6 +163,13 @@ agent is `waiting`, and refuse questions for the user (Claude's
 different prompt having replaced the one you read. These commands prompt the
 person when an agent runs them.
 
+Claude can queue several prompts (parallel tool calls, or a subagent's, which
+can still be asking after the main turn ends). `status -v` describes the one
+on screen and says how many more are queued (`permission: Read: /etc/hosts;
+2 more queued`, `... (from the general-purpose agent)`); answer them one at a
+time. Denying a main-agent prompt cancels the rest of its batch and the
+turn; denying a subagent's ends only that call.
+
 ### 6. Clean up
 
 ```bash

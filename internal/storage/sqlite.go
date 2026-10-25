@@ -348,6 +348,12 @@ func (s *SQLiteStorage) SetState(ctx context.Context, entry *StateEntry) error {
 // SetStates creates or updates several state entries atomically, so readers
 // never see a mix of two concurrent writes.
 func (s *SQLiteStorage) SetStates(ctx context.Context, entries []*StateEntry) error {
+	return s.UpdateStates(ctx, entries, "", nil)
+}
+
+// UpdateStates sets entries and deletes agentName's keys in del, in one
+// transaction.
+func (s *SQLiteStorage) UpdateStates(ctx context.Context, entries []*StateEntry, agentName string, del []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -357,6 +363,11 @@ func (s *SQLiteStorage) SetStates(ctx context.Context, entries []*StateEntry) er
 	for _, entry := range entries {
 		if _, err := tx.ExecContext(ctx, setStateQuery, stateArgs(entry)...); err != nil {
 			return fmt.Errorf("setting state %s: %w", entry.Key, err)
+		}
+	}
+	for _, key := range del {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM state WHERE agent_name = ? AND key = ?`, agentName, key); err != nil {
+			return fmt.Errorf("deleting state %s: %w", key, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

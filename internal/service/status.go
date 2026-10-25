@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +59,32 @@ type StatusReport struct {
 	// current _spawn_id matches, so a stale exit wrapper can't overwrite
 	// a respawned agent.
 	SpawnID string
+
+	// Prompt, CallKey, and Agent update the pending permission prompts
+	// (see backend.HookReport).
+	Prompt  backend.PromptChange
+	CallKey string
+	Agent   string
+	// DropPrompts are pending prompts' state keys to delete: the prompts
+	// approve or deny answered.
+	DropPrompts []string
+}
+
+// stateKeyPromptPrefix starts the key of each pending permission prompt,
+// followed by the time it was raised (zero-padded nanoseconds, so keys sort
+// oldest first). Each prompt has its own key, so concurrent hooks add and
+// remove prompts without losing each other's.
+const stateKeyPromptPrefix = "_prompt."
+
+// pendingPrompt is a permission prompt raised and not yet answered, stored
+// as JSON under its stateKeyPromptPrefix key.
+type pendingPrompt struct {
+	key    string
+	Call   string `json:"call"`
+	Agent  string `json:"agent,omitempty"`
+	Tool   string `json:"tool"`
+	Input  string `json:"input,omitempty"`
+	Detail string `json:"detail"`
 }
 
 // StatusInfo describes an agent's status and where it came from.
@@ -72,6 +101,9 @@ type StatusInfo struct {
 	// lag it (native status trails hooks) or override it (interrupts).
 	ReportedStatus AgentStatus
 	ReportedAt     time.Time
+
+	pending []pendingPrompt // unanswered permission prompts, oldest first
+	prompt  *pendingPrompt  // while waiting: the one on screen, which Tool and Detail describe
 }
 
 // ParseAgentStatus validates a status name.
@@ -112,15 +144,77 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 		values[StateKeyTranscript] = r.Transcript
 	}
 	now := time.Now()
+	del, err := s.promptChanges(ctx, name, r, now, values)
+	if err != nil {
+		return err
+	}
 	entries := make([]*storage.StateEntry, 0, len(values))
 	for key, value := range values {
 		entries = append(entries, &storage.StateEntry{AgentName: name, Key: key, Value: value, UpdatedAt: now})
 	}
-	if err := s.storage.SetStates(ctx, entries); err != nil {
+	if err := s.storage.UpdateStates(ctx, entries, name, del); err != nil {
 		return err
 	}
 	s.publishStatus(name, r, now)
 	return nil
+}
+
+// promptChanges applies r's change to the pending permission prompts: a new
+// prompt goes into values, and the keys of prompts that ended are returned.
+func (s *AgentService) promptChanges(ctx context.Context, name string, r StatusReport, now time.Time, values map[string]string) ([]string, error) {
+	del := r.DropPrompts
+	if r.Prompt == backend.PromptOpened {
+		data, err := json.Marshal(pendingPrompt{Call: r.CallKey, Agent: r.Agent, Tool: r.Tool, Input: r.ToolInput, Detail: r.Detail})
+		if err != nil {
+			return nil, err
+		}
+		values[fmt.Sprintf("%s%020d", stateKeyPromptPrefix, now.UnixNano())] = string(data)
+		return del, nil
+	}
+	if r.Prompt == backend.PromptNone {
+		return del, nil
+	}
+	pending, err := s.pendingPrompts(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range pending {
+		switch {
+		case r.Prompt == backend.PromptsAllEnded,
+			r.Prompt == backend.PromptsMainEnded && p.Agent == "":
+			del = append(del, p.key)
+		case r.Prompt == backend.PromptResolved && p.Call == r.CallKey && p.Agent == r.Agent:
+			return append(del, p.key), nil // the oldest of identical calls
+		}
+	}
+	return del, nil
+}
+
+// pendingPrompts returns the agent's unanswered permission prompts, oldest
+// first.
+func (s *AgentService) pendingPrompts(ctx context.Context, name string) ([]pendingPrompt, error) {
+	entries, err := s.storage.ListState(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("reading pending prompts: %w", err)
+	}
+	return promptsIn(entries), nil
+}
+
+// promptsIn picks the pending prompts out of an agent's state entries,
+// oldest first.
+func promptsIn(entries []*storage.StateEntry) []pendingPrompt {
+	var pending []pendingPrompt
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Key, stateKeyPromptPrefix) {
+			continue
+		}
+		p := pendingPrompt{key: e.Key}
+		if json.Unmarshal([]byte(e.Value), &p) == nil {
+			pending = append(pending, p)
+		}
+	}
+	sort.Slice(pending, func(i, j int) bool { return pending[i].key < pending[j].key })
+	return pending
 }
 
 // checkSpawn refuses a report (or hook, per what) sent by spawnID, unless
@@ -170,6 +264,10 @@ func (s *AgentService) ReportHook(ctx context.Context, name, spawnID, event stri
 
 		Transcript:  hr.Transcript,
 		ClearResult: hr.ClearResult,
+
+		Prompt:  hr.Prompt,
+		CallKey: hr.CallKey,
+		Agent:   hr.Agent,
 	})
 	if err != nil || hr.Transcript == "" {
 		return err
@@ -195,6 +293,23 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 	}
 	if reported != nil {
 		info.ReportedStatus, info.ReportedAt = reported.Status, reported.UpdatedAt
+		info.pending = reported.pending
+	}
+	if info.Status == AgentStatusWaiting && len(info.pending) > 0 {
+		// Describe the prompt on screen: the oldest unanswered one, as
+		// Claude shows them in the order they were raised. The last report
+		// may be a later prompt of the same batch, or a hook that fired
+		// since (an answered call's PostToolUse, the Stop of a turn whose
+		// background subagent is asking).
+		p := info.pending[0]
+		info.prompt = &p
+		info.Event, info.Detail, info.Tool, info.ToolInput = "PermissionRequest", p.Detail, p.Tool, p.Input
+		if n := len(info.pending) - 1; n > 0 {
+			info.Detail += fmt.Sprintf("; %d more queued", n)
+		}
+		if nanos, err := strconv.ParseInt(strings.TrimPrefix(p.key, stateKeyPromptPrefix), 10, 64); err == nil {
+			info.UpdatedAt = time.Unix(0, nanos)
+		}
 	}
 	return info, nil
 }
@@ -280,6 +395,7 @@ func (s *AgentService) reportedStatus(ctx context.Context, name string) (*Status
 	info.Detail = values[StateKeyDetail]
 	info.Tool = values[StateKeyTool]
 	info.ToolInput = values[StateKeyToolInput]
+	info.pending = promptsIn(entries)
 	return info, nil
 }
 
@@ -435,6 +551,23 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 	report := StatusReport{Status: AgentStatusProcessing, Event: "approved", Tool: info.Tool}
 	if resp == backend.PermissionDeny {
 		report = StatusReport{Status: AgentStatusIdle, Event: "denied"}
+	}
+	if p := info.prompt; p != nil {
+		// The answered prompt leaves the queue now, so the next one is
+		// described while the approved call runs.
+		report.DropPrompts = []string{p.key}
+		if resp == backend.PermissionDeny {
+			// Escape cancels the rest of that agent's batch too. Denying a
+			// subagent's call ends only that call: the turn goes on.
+			for _, q := range info.pending[1:] {
+				if q.Agent == p.Agent {
+					report.DropPrompts = append(report.DropPrompts, q.key)
+				}
+			}
+			if p.Agent != "" {
+				report.Status = AgentStatusProcessing
+			}
+		}
 	}
 	return info, s.Report(ctx, name, report)
 }

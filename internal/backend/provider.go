@@ -22,6 +22,15 @@ const (
 
 type HookReport = types.HookReport
 type PermissionResponse = types.PermissionResponse
+type PromptChange = types.PromptChange
+
+const (
+	PromptNone       = types.PromptNone
+	PromptOpened     = types.PromptOpened
+	PromptResolved   = types.PromptResolved
+	PromptsMainEnded = types.PromptsMainEnded
+	PromptsAllEnded  = types.PromptsAllEnded
+)
 
 const (
 	PermissionApprove       = types.PermissionApprove

@@ -248,6 +248,22 @@ The rules between them:
 | `_session_id` | the CLI's session id; spawn sets it, hooks update it (`/clear`, `/resume`, agy's conversation id) |
 | `_spawn_id` | the spawn's uuid, set once by spawn |
 | `_transcript` | the CLI's transcript path from the last hook payload that named one |
+| `_prompt.<nanos>` | one per unanswered Claude permission prompt: its call key, subagent, tool, input, and detail (JSON) |
+
+**Pending prompts.** Claude raises one `PermissionRequest` per call, all at
+once for parallel calls, and shows them one at a time ("1 of 4"), oldest
+first; a background subagent's prompts fire in the main session too, with
+`agent_id`, and can outlive the main turn's `Stop`. So the last report alone
+can't say which prompt is on screen. Each `PermissionRequest` also stores a
+`_prompt.<nanos>` key (its own key, so concurrent hook processes can't lose
+each other's), and while the status is `waiting`, `StatusInfo` describes the
+oldest one, adding "; N more queued". A prompt ends when its call's
+`PostToolUse`/`PostToolUseFailure` arrives (matched by a hash of tool and
+input, and the subagent), when `approve`/`deny` answers it, when the main
+agent takes a prompt (`UserPromptSubmit`, for its own prompts), or when a
+turn ends with nothing running (`Stop` with no background tasks,
+`StopFailure`, `SessionStart`, `SessionEnd`). Report writes and deletes in
+one transaction (`UpdateStates`).
 
 Timestamps are stored with nanoseconds: a whole turn can fit in one second,
 and `wait --next` tells reports apart by time. Every recorded report also
@@ -275,9 +291,9 @@ What the code maps them to:
 |---|---|---|
 | `SessionStart` | idle | clears `_result`, except after `compact` |
 | `UserPromptSubmit` | processing | clears `_result` |
-| `PreToolUse`, `PostToolUse` | processing | detail `Tool: <most telling input>` |
-| `PostToolUseFailure` | processing | detail `failed: ...` |
-| `PermissionRequest` | waiting | detail `permission: ...`; stores `_tool_input` |
+| `PreToolUse`, `PostToolUse` | processing | detail `Tool: <most telling input>`; `PostToolUse` ends the call's pending prompt |
+| `PostToolUseFailure` | processing | detail `failed: ...`; ends the call's pending prompt |
+| `PermissionRequest` | waiting | detail `permission: ...` (plus `(from the <type> agent)` for a subagent's); stores `_tool_input` and a pending prompt |
 | `PreCompact` | processing | |
 | `Notification` | idle | only `idle_prompt`; `permission_prompt` arrives ~6s late and is ignored |
 | `Stop` | idle | sets `_result`; stays processing while background tasks (shells, subagents) are running, since their completion starts a new turn |
@@ -310,7 +326,11 @@ requires the dialog to still be there: Claude's deny key is Escape, and
 Escape on a running turn interrupts it. That narrows the race to a few tmux
 calls; it doesn't close it. Keys: `1` approve, `2` approve always, Escape
 deny. It then records the expected outcome (`processing`/`approved`, or
-`idle`/`denied`), because a denied prompt fires no hook.
+`idle`/`denied`), because a denied prompt fires no hook, and drops the
+answered pending prompt, so the next one is described while the approved
+call runs. Deny drops the rest of that agent's batch too (Escape cancels
+it), and denying a subagent's call records `processing`: only that call
+ends, and the turn goes on.
 
 ## Results and transcripts
 

@@ -68,6 +68,10 @@ type claudeHookPayload struct {
 	LastAssistantMessage string          `json:"last_assistant_message"`
 	Reason               string          `json:"reason"`
 	Error                string          `json:"error"`
+	// AgentID and AgentType name the subagent a tool event came from;
+	// subagents' tool hooks fire in the main session, without them.
+	AgentID   string `json:"agent_id"`
+	AgentType string `json:"agent_type"`
 	// BackgroundTasks (Stop) lists work the session started that outlives
 	// the turn. Observed entries: {"id", "type": "shell" | "subagent",
 	// "status": "running", "description", "command" | "agent_type"};
@@ -104,27 +108,42 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		p.Event = event
 	}
 
-	r := types.HookReport{Event: p.Event, SessionID: p.SessionID, Tool: p.ToolName, Transcript: p.TranscriptPath}
+	r := types.HookReport{Event: p.Event, SessionID: p.SessionID, Tool: p.ToolName, Transcript: p.TranscriptPath, Agent: p.AgentID}
 	switch p.Event {
 	case "SessionStart":
 		r.Status = types.StatusIdle
 		r.Detail = "session " + p.Source
 		// startup, resume, clear: a different conversation. compact keeps it.
 		r.ClearResult = p.Source != "compact"
+		r.Prompt = types.PromptsAllEnded
 	case "UserPromptSubmit":
 		r.Status = types.StatusProcessing
 		r.Detail = "prompt received"
 		r.ClearResult = true
-	case "PreToolUse", "PostToolUse":
+		r.Prompt = types.PromptsMainEnded
+	case "PreToolUse":
 		r.Status = types.StatusProcessing
 		r.Detail = claudeToolSummary(p.ToolName, p.ToolInput)
+	case "PostToolUse":
+		r.Status = types.StatusProcessing
+		r.Detail = claudeToolSummary(p.ToolName, p.ToolInput)
+		r.Prompt, r.CallKey = types.PromptResolved, callKey(p.ToolName, p.ToolInput)
 	case "PostToolUseFailure":
 		r.Status = types.StatusProcessing
 		r.Detail = "failed: " + claudeToolSummary(p.ToolName, p.ToolInput)
+		r.Prompt, r.CallKey = types.PromptResolved, callKey(p.ToolName, p.ToolInput)
 	case "PermissionRequest":
 		r.Status = types.StatusWaiting
 		r.Detail = "permission: " + claudeToolSummary(p.ToolName, p.ToolInput)
+		switch {
+		case p.AgentType != "":
+			// As Claude's dialog says: "Bash command · from the general-purpose agent".
+			r.Detail += fmt.Sprintf(" (from the %s agent)", p.AgentType)
+		case p.AgentID != "":
+			r.Detail += " (from a subagent)"
+		}
 		r.ToolInput = toolInput(p.ToolInput)
+		r.Prompt, r.CallKey = types.PromptOpened, callKey(p.ToolName, p.ToolInput)
 	case "PreCompact":
 		r.Status = types.StatusProcessing
 		r.Detail = "compacting"
@@ -144,12 +163,16 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 			r.Detail = fmt.Sprintf("turn finished, %d background task(s) running", n)
 			break
 		}
+		// Nothing left running, so nothing can be asking. (While background
+		// subagents run, their prompts outlive the turn.)
 		r.Status = types.StatusIdle
 		r.Detail = "turn finished"
 		r.Result = p.LastAssistantMessage
+		r.Prompt = types.PromptsAllEnded
 	case "StopFailure":
 		r.Status = types.StatusError
 		r.Detail = truncate(firstNonEmpty(p.Error, "turn failed"))
+		r.Prompt = types.PromptsAllEnded
 	case "SessionEnd":
 		// /clear ends the session but not the CLI; SessionStart follows.
 		if p.Reason == "clear" {
@@ -157,6 +180,7 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		}
 		r.Status = types.StatusExited
 		r.Detail = p.Reason
+		r.Prompt = types.PromptsAllEnded
 	default:
 		return types.HookReport{}, false, nil
 	}
