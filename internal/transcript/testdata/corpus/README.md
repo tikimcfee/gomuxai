@@ -76,8 +76,13 @@ should check the rest.
   id. A `request`'s id is its `api-request` line's `id`, which `base` refers to. agy
   records have no uuid, so its ids are `step_<step_index>#<n>`, with `n` counting from 0
   over the parts the step has, thinking before content; agy tool ids are `step_<step_index>_tool_<j>`, as the
-  existing parsers make them. Kimi's ids are `L<line index>#0`; its tool ids are
-  `toolCallId`.
+  existing parsers make them. agy can rewrite steps it already wrote (a step's index
+  goes back): a step whose index is not above every earlier step's is `step_<step_index>.<g>`,
+  `g` counting from 2 the times the index went back, so no two events share an id. A
+  window that starts after such a rewind can't know of it, and names those steps plainly.
+  Kimi's ids are `L<line index>#0`; its tool ids are `toolCallId` (else the event's
+  `uuid`), and `<toolCallId>@L<line index>` for a call that reuses an id an earlier call
+  had (Kimi numbers calls per response, `functions.Read:0`).
 - Claude turns: the id is the record's `promptId`, and the index is
   `turnPosition.promptIndex`. Records without a `promptId` (assistant, attachment and
   system records) take the current turn. A record whose `promptId` has no `promptIndex`
@@ -116,8 +121,8 @@ should check the rest.
 - `images` is `[{media_type, data}]`, with the base64 data whole.
 - agy: the prompt is the text inside `<USER_REQUEST>`, trimmed. Each `[Message]` entry
   of a SYSTEM_MESSAGE is a prompt: `task-notification` when the sender is a `…/task-N`,
-  `peer` when it is another conversation, `system` with no header. The text is the
-  entry's `content=` part, trimmed.
+  `system` when it is `system` (agy's own notices) or there is no header, `peer` when it
+  is another conversation. The text is the entry's `content=` part, trimmed.
 
 **Replies and thinking**
 
@@ -169,18 +174,24 @@ should check the rest.
   `{output, stdout}` for `run_command`, and `{output, file}` from the `Showing lines` /
   `Total Lines` header for `view_file`. `target` is relative to the session cwd; Kimi's
   `path` names the file, and `input` keeps Kimi's own key.
+- agy: a GENERIC step answers a call of the latest PLANNER_RESPONSE by its distance from
+  it: the GENERIC at step `g` answers call `g - s - 1` of the PLANNER_RESPONSE at step `s`
+  (no other step comes between them, in all 8,074 results on the survey host). A result
+  agy never wrote then leaves only its own call unanswered; pairing in order would shift
+  every later result onto the wrong call.
 - agy: output is the GENERIC content without its leading `Created At:`/`Completed At:`
   lines, trimmed; there is no `structured`. A `RUNNING` result is `background`. Its
   completion (`Task id "…" finished with result:`) makes it `ok`, with that text as output.
 - agy: the corpus models `transcript_full.jsonl`, whose tool args are plain JSON (strings
   as strings, `AllowMultiple` a boolean), so `input` is the args as recorded. agy's other
-  log, `transcript.jsonl`, JSON-encodes every string arg a second time and writes
-  `AllowMultiple` as `"true"`/`"false"`. But it also truncates long fields
-  (`truncated_fields`; 34 of 49 conversations on the survey host). Readers take
-  `transcript_full.jsonl`, where a plain arg may legitimately be a quoted phrase, so a
-  single quoted arg is never decoded. Decoding is per call: only when every arg is a
-  string of valid JSON is the call taken as encoded and each arg decoded once (agy.go's
-  `agyArgs`). A `transcript.jsonl` case, if one is added, would expect the decoded values.
+  log, `transcript.jsonl`, JSON-encodes every arg value a second time (`"\"ls\""`, `"500"`,
+  `"false"`). Which log a parse reads comes from the file's name, not its content: in
+  `transcript_full.jsonl` no arg is ever decoded, so a search for `"exact phrase"` keeps
+  its quotes; in `transcript.jsonl` every arg that is a string of valid JSON is decoded
+  once, and one agy cut short there (`truncated_fields`) stays as written. On the survey
+  host, no `transcript_full.jsonl` call had every arg a string of valid JSON, and every
+  untruncated `transcript.jsonl` call did. A `transcript.jsonl` case, if one is added,
+  would expect the decoded values.
 
 **System events**
 
@@ -230,15 +241,24 @@ tests (`TestClaudeUserRecords`, `TestClaudeMidTurn`) pin them.
 
 Shapes found in real agy transcripts (no Kimi session was on the survey host), and Kimi
 shapes from glyph3d-rs and glyph3d-js. The readers' unit tests (`TestAgyParse`,
-`TestAgySubagent`, `TestKimiParse`, `TestKimiSubagent`) pin them.
+`TestAgySubagent`, `TestAgyMissingResult`, `TestAgyRewind`, `TestAgyBackgroundEnds`,
+`TestKimiParse`, `TestKimiLenient`, `TestKimiSubagent`) pin them.
 
 - agy: a `USER_INPUT` with `source: SYSTEM_SDK` was injected by a hook (gomuxai's held
   delivery, PostInvocation's `injectSteps`): `delivered` when its text starts with
-  `[from `, else `system`, in the current turn. An `EPHEMERAL_MESSAGE` is the same.
-- agy: a typed `USER_INPUT` interrupts the calls still waiting for a GENERIC step, after
-  its prompt is added. A `background` call still running stays `background`.
-- agy: `Task id "…" was canceled with result:` ends a background call `interrupted`; a
-  completion whose output says the command exited non-zero is `error`.
+  `[from `, else `system`, in the current turn. An `EPHEMERAL_MESSAGE` is the same, and
+  so is a SYSTEM_MESSAGE entry led by `The following system message was injected by a
+  <hook> hook:`, whose text is what follows that line.
+- agy: a typed `USER_INPUT`, or the next PLANNER_RESPONSE, interrupts the calls no GENERIC
+  step answered, after its own events are added. A `background` call stays `background`
+  until agy records its end.
+- agy: a background call ends with a message from its task: `Task id "…" finished with
+  result:` is `ok` (`error` when the output says the command exited non-zero), `Task id
+  "…" was canceled with result:` is `interrupted`, and a `schedule` call's timer firing
+  (the task's message is the schedule's `Prompt`) is `ok`, with that text as output. A
+  `manage_task` kill whose result is `Task "…" cancelled.` interrupts that task's call,
+  after the kill's own update. agy's `[Notice] All your subagents and background tasks
+  have been stopped` (sender `system`) interrupts every background call, oldest first.
 - agy: `CHECKPOINT` is `{subtype: compact_summary, text}`; `ERROR_MESSAGE` is
   `{subtype: api_error, text, data: {error}}`.
 - agy subagents: a subagent is a conversation of its own, its `session_id` its
@@ -250,7 +270,11 @@ shapes from glyph3d-rs and glyph3d-js. The readers' unit tests (`TestAgyParse`,
   turn and `agent: <its session_id>`. The subagent's first message, a SYSTEM_MESSAGE from
   the parent's conversation, is `peer`.
 - Kimi: `turn.steer` (a message sent mid-turn) is `queued`, in the current turn. A
-  `turn.prompt` with a `prompt` string instead of `input` (older logs) reads the same.
+  `turn.prompt` with a `prompt` string instead of `input` (older logs), or an `input`
+  that is a string, reads the same; the text is trimmed. Every field is read on its own,
+  as glyph3d-rs and glyph3d-js read them: one of a type the reader doesn't expect (a
+  fractional `time`, a `model` object, a `display` string) reads as absent, and the rest
+  of the line still counts.
   `tool.result` with `isError: true` is `error`; an `output` that is a list of parts is
   their text joined with `\n`. A result logged before its call is applied as the call is
   added: the add, then its update, at the call's line.
