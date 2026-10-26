@@ -341,7 +341,8 @@ delivers a held message:
 that holds messages) first reads the input line off a styled capture
 (`TmuxOps.CaptureStyled`, `capture-pane -e`) through the backend's
 `InputReader`. Claude's is the text between the last two `─` rules, after
-the `❯` prompt, with dim text (SGR 2: the `Try "..."` placeholder and
+the `❯` prompt (a named session, from `--name` or `/rename`, has its name
+set into the top rule: `──── name ─` counts as a rule), with dim text (SGR 2: the `Try "..."` placeholder and
 suggestions) left out; agy's is the same box after its `>` prompt. After
 Esc, agy moves text a person queued during the turn back into it. If it has text in it, or isn't on screen, typing
 would land in a person's draft, so `typeHeld` returns `InputBlockedError`:

@@ -156,10 +156,23 @@ func inputBoxText(screen, prompt string) (string, bool) {
 	return strings.Join(text, "\n"), true
 }
 
-// isRule reports whether line is a horizontal rule of "─".
+// isRule reports whether line is a horizontal rule of "─", plain or with a
+// label set into it: Claude draws a named session's name (--name, /rename)
+// into its input box's top rule, as in "──────── worker ─".
 func isRule(line string) bool {
 	line = strings.TrimSpace(line)
-	return utf8.RuneCountInString(line) >= 10 && strings.Trim(line, "─") == ""
+	rest := strings.TrimLeft(line, "─")
+	label := strings.TrimRight(rest, "─")
+	dashes := utf8.RuneCountInString(line) - utf8.RuneCountInString(label)
+	if dashes < 10 {
+		return false
+	}
+	if label == "" {
+		return true
+	}
+	// A label: both ends of the rule, and a space either side of the text.
+	return rest != line && label != rest && len(label) > 2 &&
+		label[0] == ' ' && label[len(label)-1] == ' ' && !strings.Contains(label, "─")
 }
 
 // undimmed returns line's text without escapes, and without the text drawn

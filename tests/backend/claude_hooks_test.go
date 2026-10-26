@@ -507,6 +507,10 @@ func TestClaudeInputText(t *testing.T) {
 	screen := func(box ...string) string {
 		return strings.Join(append(append([]string{"● ok", "", rule}, box...), rule, footer), "\n") + "\n"
 	}
+	named := func(box ...string) string {
+		top := "\x1b[38;5;244m" + strings.Repeat("─", 50) + " worker ─"
+		return strings.Join(append(append([]string{"● ok", "", top}, box...), rule, footer), "\n") + "\n"
+	}
 	tests := []struct {
 		name   string
 		screen string
@@ -521,6 +525,12 @@ func TestClaudeInputText(t *testing.T) {
 		{"a shell", "$ ls\nfile\n$ \n", "", false},
 		{"a dialog", "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel\n", "", false},
 		{"rules without a prompt", screen("  1. Apple"), "", false},
+		// A named session (--name, /rename) has its name in the top rule.
+		// Missing it left every message to an idle agent held until a
+		// person started its next turn.
+		{"named session, empty", named("\x1b[39m❯ "), "", true},
+		{"named session, typed", named("\x1b[39m❯ half typed"), "half typed", true},
+		{"a label without its rule", strings.Join([]string{"● ok", "─ worker ─", "\x1b[39m❯ ", rule, footer}, "\n"), "", false},
 	}
 	b := namedagents.NewClaudeBackend()
 	for _, tt := range tests {
