@@ -36,6 +36,19 @@ type ToolSummary struct {
 	// running, or its harness's result doesn't carry them), an edit's and
 	// a write's numbers come from the input: what the call asked for.
 	Meta json.RawMessage `json:"meta,omitempty"`
+	// File is the target's text as the call saw it (a read: the lines it
+	// read) or left it (a write: what it wrote; an edit: the file after
+	// it), when the result holds it. A reader shows it instead of reading
+	// the file, which has moved on since, or lies where it can't reach.
+	File *FileText `json:"file,omitempty"`
+}
+
+// FileText is part or all of a file's text: its lines from Start
+// (1-based), of the file's Total lines when the result says.
+type FileText struct {
+	Text  string `json:"text"`
+	Start int    `json:"start"`
+	Total int    `json:"total,omitempty"`
 }
 
 // ActionNoise is the action of the bookkeeping tools (TodoWrite,
@@ -51,6 +64,8 @@ type toolSpec struct {
 	target []string
 	detail func(in object) string
 	meta   func(in, out object) any
+	// file reads the target's text from the call's result.
+	file func(in, out object) *FileText
 }
 
 // fileKeys name a file tool's file: Claude Code's key, then Kimi Code's.
@@ -60,11 +75,11 @@ var fileKeys = []string{"file_path", "path"}
 // names (Kimi shares most of Claude's), then agy's. Add a tool here, and a
 // case to tools_test.go.
 var tools = map[string]toolSpec{
-	"Read":         {action: "read", target: fileKeys, meta: readMeta},
-	"Edit":         {action: "edit", target: fileKeys, meta: editMeta},
-	"MultiEdit":    {action: "edit", target: fileKeys, meta: editMeta},
+	"Read":         {action: "read", target: fileKeys, meta: readMeta, file: readFile},
+	"Edit":         {action: "edit", target: fileKeys, meta: editMeta, file: editedFile},
+	"MultiEdit":    {action: "edit", target: fileKeys, meta: editMeta, file: editedFile},
 	"NotebookEdit": {action: "edit", target: []string{"notebook_path", "file_path", "path"}, meta: notebookMeta},
-	"Write":        {action: "write", target: fileKeys, meta: writeMeta},
+	"Write":        {action: "write", target: fileKeys, meta: writeMeta, file: writtenFile},
 	"Bash":         {action: "bash", detail: field("command"), meta: bashMeta},
 	// The matches are the result, so a search's path (often a directory)
 	// isn't its target.
@@ -122,10 +137,18 @@ var fallbackKeys = []string{
 func SummarizeTool(name string, input, response json.RawMessage, cwd string) ToolSummary {
 	in := parseObject(input)
 	s := describe(name, in, cwd)
-	if spec := tools[name]; spec.meta != nil {
-		if m := spec.meta(in, parseObject(response)); m != nil {
+	spec := tools[name]
+	if spec.meta == nil && spec.file == nil {
+		return s
+	}
+	out := parseObject(response)
+	if spec.meta != nil {
+		if m := spec.meta(in, out); m != nil {
 			s.Meta, _ = json.Marshal(m)
 		}
+	}
+	if spec.file != nil && out != nil {
+		s.File = spec.file(in, out)
 	}
 	return s
 }
@@ -532,6 +555,85 @@ func taskMeta(_, out object) any {
 		return nil
 	}
 	return m
+}
+
+// --- file text --------------------------------------------------------------
+
+// readFile is the lines a read read: Claude Code's result file. An image's
+// has no text.
+func readFile(_, out object) *FileText {
+	f := out.obj("file")
+	text, ok := f.text("content")
+	if !ok {
+		return nil
+	}
+	start, _ := f.num("startLine")
+	total, _ := f.num("totalLines")
+	return &FileText{Text: text, Start: max(start, 1), Total: total}
+}
+
+// writtenFile is what a write wrote: the result's content.
+func writtenFile(_, out object) *FileText {
+	text, ok := out.text("content")
+	if !ok {
+		return nil
+	}
+	return &FileText{Text: text, Start: 1, Total: countLines(text)}
+}
+
+// editedFile is the file after an edit: the file before it (the result's
+// originalFile, or MultiEdit's originalFileContents) with the replacements
+// made, each as the harness makes it (the first match, or every one under
+// replace_all). The replacements are the ones the result says it made
+// (Claude Code records the strings it matched, which may differ from the
+// input's), else the input's. A result without the file before it, or a
+// replacement that doesn't match it, gives none.
+func editedFile(in, out object) *FileText {
+	text, ok := out.text("originalFile", "originalFileContents")
+	if !ok {
+		return nil
+	}
+	type repl struct {
+		old, new string
+		all      bool
+	}
+	var rs []repl
+	if old, ok := out.text("oldString"); ok {
+		n, _ := out.text("newString")
+		rs = append(rs, repl{old, n, out["replaceAll"] == true})
+	} else {
+		edits := out.objects("edits")
+		if len(edits) == 0 {
+			edits = in.objects("edits")
+		}
+		if len(edits) == 0 {
+			edits = []object{in}
+		}
+		for _, e := range edits {
+			old, ok1 := e.text("old_string")
+			n, ok2 := e.text("new_string")
+			if !ok1 || !ok2 {
+				return nil
+			}
+			rs = append(rs, repl{old, n, e["replace_all"] == true})
+		}
+	}
+	for _, r := range rs {
+		switch {
+		case r.old == "":
+			if text != "" {
+				return nil
+			}
+			text = r.new
+		case !strings.Contains(text, r.old):
+			return nil
+		case r.all:
+			text = strings.ReplaceAll(text, r.old, r.new)
+		default:
+			text = strings.Replace(text, r.old, r.new, 1)
+		}
+	}
+	return &FileText{Text: text, Start: 1, Total: countLines(text)}
 }
 
 // countLines counts s's lines; a final newline doesn't start another.

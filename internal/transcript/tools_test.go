@@ -81,7 +81,7 @@ func TestSummarizeTool(t *testing.T) {
 		{
 			name: "write: kind and lines",
 			tool: "Write", input: `{"file_path":"/home/user/proj/w.js"}`, response: `{"type":"create","content":"a\nb\nc"}`,
-			want:     ToolSummary{Action: "write", Target: "w.js"},
+			want:     ToolSummary{Action: "write", Target: "w.js", File: &FileText{Text: "a\nb\nc", Start: 1, Total: 3}},
 			wantMeta: `{"kind":"create","lines":3}`,
 		},
 		{
@@ -459,5 +459,68 @@ func TestDescribeTool(t *testing.T) {
 	got := DescribeTool("Edit", input, "/home/user/proj")
 	if want := (ToolSummary{Action: "edit", Target: "a.go"}); !reflect.DeepEqual(got, want) {
 		t.Errorf("DescribeTool = %+v, want %+v (no meta)", got, want)
+	}
+}
+
+func TestSummarizeTool_File(t *testing.T) {
+	tests := []struct {
+		name, tool, input, response string
+		want                        *FileText
+	}{
+		{
+			name: "read: the lines it read, from where they start",
+			tool: "Read", input: `{"file_path":"/p/a.go","offset":5,"limit":2}`,
+			response: `{"type":"text","file":{"filePath":"/p/a.go","content":"five\nsix\n","numLines":2,"startLine":5,"totalLines":9}}`,
+			want:     &FileText{Text: "five\nsix\n", Start: 5, Total: 9},
+		},
+		{
+			name: "read of an image: no text",
+			tool: "Read", input: `{"file_path":"/p/a.png"}`,
+			response: `{"type":"image","file":{"base64":"iVBO","type":"image/png","originalSize":4}}`,
+		},
+		{
+			name: "edit: the file before it, with the replacement the result made",
+			tool: "Edit", input: `{"file_path":"/p/a.go","old_string":"x","new_string":"input's"}`,
+			response: `{"oldString":"one","newString":"1","originalFile":"one two one\n","replaceAll":false}`,
+			want:     &FileText{Text: "1 two one\n", Start: 1, Total: 1},
+		},
+		{
+			name: "edit: replace_all replaces every match",
+			tool: "Edit", input: `{"file_path":"/p/a.go","old_string":"one","new_string":"1","replace_all":true}`,
+			response: `{"oldString":"one","newString":"1","originalFile":"one two one\n","replaceAll":true}`,
+			want:     &FileText{Text: "1 two 1\n", Start: 1, Total: 1},
+		},
+		{
+			name: "multiedit: the edits in order over originalFileContents",
+			tool: "MultiEdit", input: `{"file_path":"/p/a.go","edits":[{"old_string":"a","new_string":"b"},{"old_string":"b\n","new_string":"c\nd\n"}]}`,
+			response: `{"filePath":"/p/a.go","originalFileContents":"a\n"}`,
+			want:     &FileText{Text: "c\nd\n", Start: 1, Total: 2},
+		},
+		{
+			name: "edit: a result without the file before it gives none",
+			tool: "Edit", input: `{"file_path":"/p/a.go","old_string":"one","new_string":"1"}`,
+			response: `{"oldString":"one","newString":"1","originalFile":null}`,
+		},
+		{
+			name: "edit: a replacement that doesn't match gives none",
+			tool: "Edit", input: `{"file_path":"/p/a.go","old_string":"three","new_string":"3"}`,
+			response: `{"oldString":"three","newString":"3","originalFile":"one two\n"}`,
+		},
+		{
+			name: "write while running: none (the file isn't written yet)",
+			tool: "Write", input: `{"file_path":"/p/a.go","content":"x"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var response json.RawMessage
+			if tt.response != "" {
+				response = json.RawMessage(tt.response)
+			}
+			got := SummarizeTool(tt.tool, json.RawMessage(tt.input), response, "/p").File
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("file = %+v, want %+v", got, tt.want)
+			}
+		})
 	}
 }

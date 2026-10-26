@@ -143,14 +143,21 @@ updates an earlier one, the add comes first.
     later updates of the copy keep the provisional reply's id. A Stop that hands over
     held messages makes none (the turn goes on), so the first final reply of such a turn
     lands as a plain add, and the next Stop's reply is `#final2`.
-- `tool` `{name, input, result?, action, target?, detail?, meta?, sub_sessions?}`: one event
-  per call.
+- `tool` `{name, input, result?, action, target?, detail?, meta?, file?, sub_sessions?}`: one
+  event per call.
   - `result` is `{status: pending|ok|error|interrupted|background, output?, structured?}`. A
     call is added as `pending`, with any `meta` the table reads from its input (an edit's
     line counts); its result, and the `meta` read from that, arrive as an update.
   - `action`, `target`, `detail` and `meta` come from the one tool table,
     `transcript.SummarizeTool` in `internal/transcript/tools.go`, whose doc lists each
     action's `meta`. The Claude and agy hooks' status details and `agent logs` read the same table.
+  - `file` `{text, start, total?}` is the target's text as the call saw it (a read: the lines
+    it read, from line `start`) or left it (a write: what it wrote; an edit: the whole file
+    after it), taken from the result where the harness records it: Claude Code's Read and
+    Write results, and its Edit and MultiEdit results when they hold the file before the
+    edit. `total` is the file's line count when known. A reader shows it rather than reading
+    the file, which may have changed since or lie outside what the reader can reach; without
+    it, the reader reads `target` itself, against the session's `cwd`.
   - Tools the table calls noise keep `action: "noise"`; readers may hide them.
   - A call that starts subagents names their sessions in `sub_sessions`, in the order its
     result gives them: one for Claude's Agent, one or more for agy's `invoke_subagent`.
