@@ -22,6 +22,9 @@ type AgyConfig struct {
 	// AgentDir is the per-agent directory (e.g. .gomuxai/agents/<name>) where
 	// the generated .agents/hooks.json bundle is written for --add-dir.
 	AgentDir string
+
+	// Resume is the conversation id agy continues (--conversation), or "".
+	Resume string
 }
 
 // AgyBackend implements Provider, and most optional backend interfaces, for
@@ -52,10 +55,14 @@ func (b *AgyBackend) Name() string {
 const agyEnv = "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY "
 
 func (b *AgyBackend) LaunchCommand() string {
+	cmd := agyEnv + "agy"
 	if b.config.SkipPermissions {
-		return agyEnv + "agy --dangerously-skip-permissions"
+		cmd += " --dangerously-skip-permissions"
 	}
-	return agyEnv + "agy"
+	if b.config.Resume != "" {
+		cmd += " --conversation " + util.ShellQuote(b.config.Resume)
+	}
+	return cmd
 }
 
 // TrustKeys accepts agy's workspace trust prompt, whose default is "Yes".

@@ -19,6 +19,10 @@ type ProviderConfig struct {
 
 	// AgentDir is the per-agent bundle directory under .gomuxai/agents/<name>
 	AgentDir string
+
+	// Resume is the session Claude or Agy continues instead of starting a
+	// new one: Claude's session id, agy's conversation id.
+	Resume string
 }
 
 // ProviderFactory creates a new Provider instance with the given config.
@@ -48,6 +52,7 @@ func NewRegistry() *Registry {
 	r.RegisterFactory("claude", func(cfg ProviderConfig) Provider {
 		return namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{
 			SkipPermissions: cfg.SkipPermissions,
+			Resume:          cfg.Resume,
 		})
 	})
 	r.RegisterFactory("aider", func(cfg ProviderConfig) Provider {
@@ -57,6 +62,7 @@ func NewRegistry() *Registry {
 		return namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{
 			SkipPermissions: cfg.SkipPermissions,
 			AgentDir:        cfg.AgentDir,
+			Resume:          cfg.Resume,
 		})
 	})
 

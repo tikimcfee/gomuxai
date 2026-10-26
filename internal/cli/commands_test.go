@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/tikimcfee/gomuxai/internal/discovery"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
@@ -217,22 +220,76 @@ func exampleWords(s string) []string {
 func TestSpawnSummary(t *testing.T) {
 	agent := &storage.Agent{Name: "lead-review", SessionName: "agent-lead-review", Backend: "claude"}
 	tests := []struct {
-		parent, task, taskFile, want string
+		parent, task, taskFile, resume, want string
 	}{
-		{"", "", "", `Spawned agent lead-review (session agent-lead-review, backend claude).
+		{"", "", "", "", `Spawned agent lead-review (session agent-lead-review, backend claude).
 It has no task yet: agent send lead-review "..."
 `},
-		{"lead", "review-auth", "tasks/review.md", `Spawned agent lead-review (session agent-lead-review, backend claude), a helper of lead.
+		{"lead", "review-auth", "tasks/review.md", "", `Spawned agent lead-review (session agent-lead-review, backend claude), a helper of lead.
 Sent it task review-auth.
 `},
-		{"lead", "", "tasks/review.md", `Spawned agent lead-review (session agent-lead-review, backend claude), a helper of lead.
+		{"lead", "", "tasks/review.md", "", `Spawned agent lead-review (session agent-lead-review, backend claude), a helper of lead.
 Asked it to read tasks/review.md.
+`},
+		{"", "", "", "3f34adff", `Spawned agent lead-review (session agent-lead-review, backend claude).
+It continues session 3f34adff.
 `},
 	}
 	for _, tt := range tests {
 		agent.SpawnedBy = tt.parent
-		if got := spawnSummary(agent, tt.task, tt.taskFile); got != tt.want {
-			t.Errorf("spawnSummary(%q, %q, %q) =\n%s\nwant:\n%s", tt.parent, tt.task, tt.taskFile, got, tt.want)
+		if got := spawnSummary(agent, tt.task, tt.taskFile, tt.resume); got != tt.want {
+			t.Errorf("spawnSummary(%q, %q, %q, %q) =\n%s\nwant:\n%s", tt.parent, tt.task, tt.taskFile, tt.resume, got, tt.want)
+		}
+	}
+}
+
+func TestCheckResumable(t *testing.T) {
+	dir := t.TempDir()
+	ok := discovery.Session{SessionID: "s1", Harness: "claude", Cwd: dir, Status: discovery.StatusExited}
+	with := func(f func(*discovery.Session)) discovery.Session { s := ok; f(&s); return s }
+	tests := []struct {
+		name    string
+		s       discovery.Session
+		backend string
+		want    string // "" = resumable; else a part of the error
+	}{
+		{"an exited claude session", ok, "claude", ""},
+		{"an exited agy session", with(func(s *discovery.Session) { s.Harness = "agy" }), "agy", ""},
+		{"the wrong backend", ok, "agy", "spawn it with --backend claude"},
+		{"a harness that can't resume", with(func(s *discovery.Session) { s.Harness = "kimi" }), "kimi", "continues claude and agy sessions"},
+		{"still running", with(func(s *discovery.Session) { s.Status = "idle" }), "claude", "is idle, not exited"},
+		{"run by a workgroup agent", with(func(s *discovery.Session) {
+			s.Status = "processing"
+			s.Workgroup = &discovery.Workgroup{Name: "lead"}
+		}), "claude", "(agent lead runs it)"},
+		{"unknown is not exited", with(func(s *discovery.Session) { s.Status = "unknown" }), "claude", "quit the CLI running it first"},
+		{"a subagent", with(func(s *discovery.Session) { s.ParentSession = &discovery.ParentSession{SessionID: "p1"} }), "claude", "resume the session that started it, p1"},
+		{"no working directory", with(func(s *discovery.Session) { s.Cwd = "" }), "claude", "no working directory"},
+		{"a directory that's gone", with(func(s *discovery.Session) { s.Cwd = filepath.Join(dir, "gone") }), "claude", "no longer a directory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkResumable(tt.s, tt.backend)
+			switch {
+			case tt.want == "" && err != nil:
+				t.Errorf("checkResumable = %v, want nil", err)
+			case tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)):
+				t.Errorf("checkResumable = %v, want an error containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestAttachArgs(t *testing.T) {
+	if got := attachArgs("agent-lead", false); !slices.Equal(got, []string{"attach-session", "-t", "=agent-lead"}) {
+		t.Errorf("outside tmux: %q", got)
+	}
+	if got := attachArgs("agent-lead", true); !slices.Equal(got, []string{"switch-client", "-t", "=agent-lead"}) {
+		t.Errorf("inside tmux: %q", got)
+	}
+	for _, inside := range []bool{false, true} {
+		if slices.Contains(attachArgs("agent-lead", inside), "-r") {
+			t.Errorf("attach is never read-only (inside tmux: %v)", inside)
 		}
 	}
 }

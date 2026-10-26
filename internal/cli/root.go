@@ -85,7 +85,7 @@ var commandGroups = []struct {
 	group *cobra.Group
 	cmds  []*cobra.Command
 }{
-	{&cobra.Group{ID: "agents", Title: "Agents:"}, []*cobra.Command{spawnCmd, listCmd, cleanupCmd, exportCmd, sessionsCmd}},
+	{&cobra.Group{ID: "agents", Title: "Agents:"}, []*cobra.Command{spawnCmd, attachCmd, listCmd, cleanupCmd, exportCmd, sessionsCmd}},
 	{&cobra.Group{ID: "messages", Title: "Messages:"}, []*cobra.Command{sendCmd, queueCmd, deliverCmd, watchCmd}},
 	{&cobra.Group{ID: "status", Title: "Status and waiting:"}, []*cobra.Command{statusCmd, waitCmd, approveCmd, denyCmd, captureCmd, logsCmd, transcriptCmd, eventsCmd, reportCmd}},
 	{&cobra.Group{ID: "state", Title: "State and tasks:"}, []*cobra.Command{stateCmd, taskCmd}},

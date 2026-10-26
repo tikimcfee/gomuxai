@@ -33,10 +33,15 @@ var claudeHookEvents = []string{
 }
 
 // LaunchCommandWithHooks injects status hooks via --settings, so nothing is
-// written into the agent's project directory.
+// written into the agent's project directory. A new session takes sessionID
+// as its id; a resumed one keeps its own (Claude refuses --session-id with
+// --resume unless it forks).
 func (b *ClaudeBackend) LaunchCommandWithHooks(reportCmd, sessionID string) string {
-	return fmt.Sprintf("%s --session-id %s --settings %s",
-		b.LaunchCommand(), util.ShellQuote(sessionID), util.ShellQuote(claudeHookSettings(reportCmd)))
+	cmd := b.LaunchCommand()
+	if b.config.Resume == "" {
+		cmd += " --session-id " + util.ShellQuote(sessionID)
+	}
+	return cmd + " --settings " + util.ShellQuote(claudeHookSettings(reportCmd))
 }
 
 // WithInstructions appends the briefing to Claude's system prompt. Unlike a

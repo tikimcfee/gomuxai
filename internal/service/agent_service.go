@@ -88,6 +88,9 @@ type SpawnOptions struct {
 	SkipPermissions bool   // Pass --dangerously-skip-permissions to Claude / Agy
 	TrustWorkspace  bool   // Confirm the CLI's workspace trust prompt on launch
 	SpawnedBy       string // agent that requested the spawn ("" for a user)
+	// Resume is the session the agent continues (Claude's session id, agy's
+	// conversation id) instead of starting a new one; claude and agy only.
+	Resume string
 }
 
 // agentNamePattern keeps names safe as tmux session names and as path
@@ -107,12 +110,16 @@ func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.A
 	if err := ValidateAgentName(opts.Name); err != nil {
 		return nil, err
 	}
+	if opts.Resume != "" && opts.Backend != "claude" && opts.Backend != "agy" {
+		return nil, fmt.Errorf("--resume continues a claude or agy session; backend %s can't resume one", opts.Backend)
+	}
 
 	// A fresh provider, configured for this agent. Custom JSON backends
 	// (--backend-config) have no factory, and spawn from their Backend.
 	provider, err := s.backends.CreateProvider(opts.Backend, backend.ProviderConfig{
 		SkipPermissions: opts.SkipPermissions,
 		AgentDir:        s.cfg.AgentDir(opts.Name),
+		Resume:          opts.Resume,
 	})
 	if err != nil {
 		be, err := s.backends.Get(opts.Backend)
@@ -145,7 +152,7 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	}
 
 	initMsg := initMessage(opts, provider.InitMessage)
-	launchCmd, promptInLaunch, err := s.launchCommand(ctx, opts.Name, opts.SpawnedBy, provider, initMsg)
+	launchCmd, promptInLaunch, err := s.launchCommand(ctx, opts, provider, initMsg)
 	if err != nil {
 		return abort(err)
 	}
@@ -282,23 +289,29 @@ func initMessage(opts SpawnOptions, fromFile func(taskFile string) string) strin
 // launchCommand builds the command that starts a built-in backend's CLI,
 // wired up with each optional capability the backend has. promptInLaunch
 // reports whether initMsg went into the command too.
-func (s *AgentService) launchCommand(ctx context.Context, name, spawnedBy string, provider backend.Provider, initMsg string) (cmd string, promptInLaunch bool, err error) {
+func (s *AgentService) launchCommand(ctx context.Context, opts SpawnOptions, provider backend.Provider, initMsg string) (cmd string, promptInLaunch bool, err error) {
+	name := opts.Name
 	cmd = provider.LaunchCommand()
 	if hp, ok := provider.(backend.HookProvider); ok && s.cfg.AgentBinary != "" {
 		// The spawn-time session id doubles as the spawn id: it is unique per
-		// spawn, while _session_id itself moves on /clear and /resume.
-		sessionID := uuid.NewString()
+		// spawn, while _session_id itself moves on /clear and /resume. A
+		// resumed agent's session is the one it continues.
+		spawnID := uuid.NewString()
 		reportCmd := fmt.Sprintf("%s report --hook --as %s --spawn-id %s",
-			util.ShellQuote(s.cfg.AgentBinary), util.ShellQuote(name), util.ShellQuote(sessionID))
-		cmd = hp.LaunchCommandWithHooks(reportCmd, sessionID)
-		for _, key := range []string{StateKeySpawnID, StateKeySessionID} {
-			if err := s.setState(ctx, name, key, sessionID); err != nil {
+			util.ShellQuote(s.cfg.AgentBinary), util.ShellQuote(name), util.ShellQuote(spawnID))
+		cmd = hp.LaunchCommandWithHooks(reportCmd, spawnID)
+		sessionID := spawnID
+		if opts.Resume != "" {
+			sessionID = opts.Resume
+		}
+		for key, value := range map[string]string{StateKeySpawnID: spawnID, StateKeySessionID: sessionID} {
+			if err := s.setState(ctx, name, key, value); err != nil {
 				return "", false, fmt.Errorf("storing %s: %w", key, err)
 			}
 		}
 	}
 	if ip, ok := provider.(backend.InstructionsProvider); ok {
-		path, err := s.writeInstructions(name, spawnedBy, provider.Name())
+		path, err := s.writeInstructions(name, opts.SpawnedBy, provider.Name())
 		if err != nil {
 			return "", false, err
 		}

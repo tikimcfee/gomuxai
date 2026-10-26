@@ -70,7 +70,7 @@ tmux gives:
 
 1. **Process isolation.** An agent can crash without taking others down.
 2. **Persistent terminals.** Sessions survive disconnects, and a person can
-   `tmux attach` to watch or steer any agent.
+   attach (`agent attach <name>`) to watch or steer any agent.
 3. **Scriptable I/O.** `send-keys` types messages and answers prompts;
    `capture-pane` reads the screen; `pipe-pane` logs everything.
 4. **Escape hatches.** `agent session`, `keys`, `key`, and `clear` expose

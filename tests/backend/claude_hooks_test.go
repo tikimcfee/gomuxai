@@ -312,6 +312,19 @@ func TestClaudeLaunchCommandWithHooks_KeepsSkipPermissions(t *testing.T) {
 	}
 }
 
+// A resumed agent continues its session: --resume names it, and the spawn's
+// own id isn't passed (Claude refuses --session-id with --resume).
+func TestClaudeLaunchCommandWithHooks_Resume(t *testing.T) {
+	provider := namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{Resume: "3f34adff-9ebe-405a-aac0-8f69e8fd85f5"})
+	cmd := provider.LaunchCommandWithHooks("agent report --hook", "spawn-id")
+	if !strings.HasPrefix(cmd, "claude --resume '3f34adff-9ebe-405a-aac0-8f69e8fd85f5' --settings ") {
+		t.Errorf("unexpected launch command: %s", cmd)
+	}
+	if strings.Contains(cmd, "--session-id") || strings.Contains(cmd, "spawn-id") {
+		t.Errorf("a resumed session takes no --session-id: %s", cmd)
+	}
+}
+
 func TestParseClaudeAgentsJSON(t *testing.T) {
 	// Shape from `claude agents --json`: interactive sessions use "status",
 	// background sessions use "state".

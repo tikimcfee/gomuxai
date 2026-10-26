@@ -82,10 +82,12 @@ It has no task yet: agent send helper "..."
 It is idle: ready for a message.
 ```
 
-Watch it any time with `tmux attach -t agent-helper` (detach with
-`Ctrl-b d`). Avoid `tmux attach -r`: while a read-only client is attached,
-tmux refuses `send-keys` to every session, and `agent` has to paste around
-it. Give it a task, and wait for the turn that message starts:
+Watch or steer it any time with `agent attach helper`, which opens its
+tmux session in your terminal (detach with `Ctrl-b d`); `agent spawn
+--attach` spawns and attaches in one step. Avoid `tmux attach -r`: while a
+read-only client is attached, tmux refuses `send-keys` to every session, and
+`agent` has to paste around it. Give it a task, and wait for the turn that
+message starts:
 
 ```console
 $ agent send helper "Run the shell command: curl -sI https://example.com" \
@@ -134,6 +136,10 @@ Other ways in:
 - `agent spawn builder --backend claude tasks/build.md` sends the agent a
   request to read that file as its first message; `--task <name>` sends a
   task saved with `agent task set`.
+- `agent spawn lead --backend claude --resume <session> --attach` brings
+  a Claude or agy session you ran in a terminal into the workgroup: quit
+  that CLI, and the agent continues the same conversation in its own tmux
+  session, in the directory it ran in, where `agent send` reaches it.
 - `agent send` to a busy Claude or agy agent holds the message (`Held for
   helper until its turn ends`) and a hook hands it over: Claude's Stop when
   the turn ends, agy's PostInvocation when its current step ends;

@@ -1,11 +1,17 @@
 package namedagents
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/tikimcfee/gomuxai/internal/util"
+)
 
 // ClaudeConfig holds configuration options for the Claude backend.
 type ClaudeConfig struct {
 	// SkipPermissions passes --dangerously-skip-permissions to claude CLI
 	SkipPermissions bool
+	// Resume is the session id claude continues (--resume), or "".
+	Resume string
 }
 
 // ClaudeBackend implements Provider for Claude Code CLI.
@@ -28,10 +34,14 @@ func (b *ClaudeBackend) Name() string {
 }
 
 func (b *ClaudeBackend) LaunchCommand() string {
+	cmd := "claude"
 	if b.config.SkipPermissions {
-		return "claude --dangerously-skip-permissions"
+		cmd += " --dangerously-skip-permissions"
 	}
-	return "claude"
+	if b.config.Resume != "" {
+		cmd += " --resume " + util.ShellQuote(b.config.Resume)
+	}
+	return cmd
 }
 
 func (b *ClaudeBackend) InitMessage(taskFile string) string {

@@ -333,6 +333,22 @@ func TestAgyLaunchCommandWithHooks_KeepsSkipPermissions(t *testing.T) {
 	}
 }
 
+// A resumed agy continues its conversation, and the exit report still ends
+// the command (it runs after agy, in the shell).
+func TestAgyLaunchCommandWithHooks_Resume(t *testing.T) {
+	provider := namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{
+		AgentDir: t.TempDir(),
+		Resume:   "83d95154-d7a6-496b-a811-2496b2c39a84",
+	})
+	cmd := provider.LaunchCommandWithHooks("agent report --hook", "sid")
+	if !strings.HasPrefix(cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --conversation '83d95154-d7a6-496b-a811-2496b2c39a84' --add-dir ") {
+		t.Errorf("unexpected launch command: %s", cmd)
+	}
+	if !strings.Contains(cmd, "; agent report exited") {
+		t.Errorf("the exit report is gone: %s", cmd)
+	}
+}
+
 func TestAgyAppendPromptFlag(t *testing.T) {
 	provider := namedagents.NewAgyBackend()
 	got := provider.AppendPromptFlag("agy --add-dir '/tmp/a'", "Please run viewer's task")
