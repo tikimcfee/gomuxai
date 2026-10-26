@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -250,8 +251,13 @@ func kimiOutput(raw json.RawMessage) string {
 
 // kimiResponse is the structured response the tool table reads from a
 // Kimi result, as glyph3d-js's kimiResponse builds it: the result object,
-// plus a Read's file {numLines, startLine} counted from its output (Kimi
-// numbers each line "N\t") and its line_offset.
+// plus a Read's file {numLines, startLine, content?} counted from its
+// output (Kimi numbers each line "N\t") and its line_offset; content is
+// the lines with their numbers taken off, when every one is there.
+// kimiLine is one line of a Kimi Read's output: its number (right-aligned
+// or not), a tab, its text.
+var kimiLine = regexp.MustCompile(`^\s*(\d+)\t(.*)$`)
+
 func kimiResponse(name string, input, result json.RawMessage, output string) json.RawMessage {
 	r := parseObject(result)
 	if r == nil || name != "Read" || r["file"] != nil {
@@ -261,7 +267,12 @@ func kimiResponse(name string, input, result json.RawMessage, output string) jso
 	if n, ok := parseObject(input).num("line_offset"); ok && n > 0 {
 		start = n
 	}
-	r["file"] = map[string]int{"numLines": countLines(output), "startLine": start}
+	n := countLines(output)
+	f := map[string]any{"numLines": n, "startLine": start}
+	if text, ok := numberedText(output, kimiLine, start, n); ok {
+		f["content"] = text
+	}
+	r["file"] = f
 	out, _ := json.Marshal(r)
 	return out
 }

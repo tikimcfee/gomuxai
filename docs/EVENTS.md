@@ -14,11 +14,12 @@ The Go types are in `internal/transcript/events.go`; the Session is
 
 ## Commands
 
-- `agent sessions [--json] [--harness h] [--workgroup|--local]`: every agent session on the
+- `agent sessions [--json] [--harness h] [--workgroup|--local] [--dirs]`: every agent session on the
   host, newest first. That includes workgroup agents (spawned by gomuxai, with a name, parent
   and status) and local transcripts that no workgroup owns (a plain Claude Code, agy or Kimi
   session). Both kinds have the same fields; `workgroup` says which one a session is.
-  `--json` prints an array of Sessions. `docs/ARCHITECTURE.md` ("Sessions") says where each
+  `--json` prints an array of Sessions. `--dirs` prints the directories it scans instead
+  (`--dirs --json`: `[{harness, path, origin: config|default, exists}]`). `docs/ARCHITECTURE.md` ("Sessions") says where each
   field comes from and how status is decided.
 - `agent transcript <name|session-id|path> [--follow] [--from <byte>] [--until <byte>]
   [--requests]`: one session's events, as JSON lines. The session is a workgroup agent's
@@ -154,8 +155,9 @@ updates an earlier one, the add comes first.
   - `file` `{text, start, total?}` is the target's text as the call saw it (a read: the lines
     it read, from line `start`) or left it (a write: what it wrote; an edit: the whole file
     after it), taken from the result where the harness records it: Claude Code's Read and
-    Write results, and its Edit and MultiEdit results when they hold the file before the
-    edit. `total` is the file's line count when known. A reader shows it rather than reading
+    Write results, its Edit and MultiEdit results when they hold the file before the edit,
+    and agy's and Kimi Code's reads, whose numbered output gives the lines when every one
+    of them is there. `total` is the file's line count when known. A reader shows it rather than reading
     the file, which may have changed since or lie outside what the reader can reach; without
     it, the reader reads `target` itself, against the session's `cwd`.
   - Tools the table calls noise keep `action: "noise"`; readers may hide them.

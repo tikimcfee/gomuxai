@@ -524,3 +524,32 @@ func TestSummarizeTool_File(t *testing.T) {
 		})
 	}
 }
+
+// numberedText takes the numbers off a read's printed lines, and gives
+// nothing unless every line read is there in order.
+func TestNumberedText(t *testing.T) {
+	tests := []struct {
+		name, output string
+		start, n     int
+		want         string
+		ok           bool
+	}{
+		{"agy: header skipped, numbers off", "File Path: `file:///p/a.go`\nShowing lines 3 to 4\nThe following code...\n3: x := 1\n4: \nThe above content...", 3, 2, "x := 1\n\n", true},
+		{"kimi: right-aligned numbers", "     9\tfoo\n    10\t\tbar", 9, 2, "foo\n\tbar\n", true},
+		{"a line missing (truncated output)", "1: a\n3: c", 1, 3, "", false},
+		{"fewer lines than read", "1: a\n2: b", 1, 3, "", false},
+		{"nothing numbered", "no lines here", 1, 1, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			line := agyNumberedLine
+			if strings.Contains(tt.output, "\t") {
+				line = kimiLine
+			}
+			got, ok := numberedText(tt.output, line, tt.start, tt.n)
+			if got != tt.want || ok != tt.ok {
+				t.Errorf("numberedText = %q, %v; want %q, %v", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}

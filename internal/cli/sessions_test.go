@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +49,9 @@ func setupSessions(t *testing.T) (home string) {
 	claudeSessions = func(context.Context) (map[string]types.Status, error) {
 		return map[string]types.Status{"sess-w": types.StatusWaiting, "sess-l": types.StatusIdle}, nil
 	}
-	reset := func() { sessionsJSON, sessionsHarness, sessionsWorkgroup, sessionsLocal = false, "", false, false }
+	reset := func() {
+		sessionsJSON, sessionsHarness, sessionsWorkgroup, sessionsLocal, sessionsDirs = false, "", false, false, false
+	}
 	reset()
 	t.Cleanup(func() { claudeSessions = oldClaude; reset() })
 	return home
@@ -139,5 +142,38 @@ func TestSessions_BackendWithoutTranscript(t *testing.T) {
 	got := runSessionsJSON(t)
 	if len(got) != 1 || got[0].Harness != "aider" || got[0].Path != "" || got[0].Workgroup == nil || got[0].Workgroup.Name != "aid" {
 		t.Errorf("--harness aider = %+v, want aid with no transcript", got)
+	}
+}
+
+// --dirs prints where sessions looks: as the table's opening line, or each
+// dir as JSON with whether it exists.
+func TestSessions_Dirs(t *testing.T) {
+	home := setupSessions(t)
+	missing := filepath.Join(home, "no-such-kimi")
+	cfg.KimiSessionsDir = &missing
+	t.Cleanup(func() { cfg.KimiSessionsDir = nil })
+	sessionsDirs = true
+	out, err := stdout(t, func() error { return runSessions(sessionsCmd, nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "Looked in: claude ~/.claude/projects (default)") || !strings.Contains(out, "(config, missing)") {
+		t.Errorf("--dirs = %q", out)
+	}
+	sessionsJSON = true
+	out, err = stdout(t, func() error { return runSessions(sessionsCmd, nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []sessionDir
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decoding %q: %v", out, err)
+	}
+	want := []sessionDir{
+		{Dir: discovery.Dir{Harness: "claude", Path: filepath.Join(home, ".claude", "projects"), Origin: "default"}, Exists: true},
+		{Dir: discovery.Dir{Harness: "kimi", Path: missing, Origin: "config"}, Exists: false},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("--dirs --json = %+v, want %+v", got, want)
 	}
 }

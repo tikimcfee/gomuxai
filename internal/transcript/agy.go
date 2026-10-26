@@ -553,39 +553,79 @@ func agyResponse(name string, input json.RawMessage, output string) json.RawMess
 }
 
 var (
-	agyShowing  = regexp.MustCompile(`(?m)^Showing lines (\d+)\s*(?:-|to)\s*(\d+)(?: of (\d+))?`)
-	agyTotal    = regexp.MustCompile(`(?m)^Total Lines: (\d+)`)
-	agyNumbered = regexp.MustCompile(`(?m)^\d+: `)
-	agyReplaced = regexp.MustCompile(`(?m)^Made 1 replacement in .* starting at line (\d+) \(\+(\d+)/-(\d+) lines\)`)
-	agyHunk     = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+	agyShowing      = regexp.MustCompile(`(?m)^Showing lines (\d+)\s*(?:-|to)\s*(\d+)(?: of (\d+))?`)
+	agyTotal        = regexp.MustCompile(`(?m)^Total Lines: (\d+)`)
+	agyNumbered     = regexp.MustCompile(`(?m)^\d+: `)
+	agyNumberedLine = regexp.MustCompile(`^(\d+): ?(.*)$`)
+	agyReplaced     = regexp.MustCompile(`(?m)^Made 1 replacement in .* starting at line (\d+) \(\+(\d+)/-(\d+) lines\)`)
+	agyHunk         = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
 )
 
 // agyReadFile reads a read's header ("Showing lines A to B", "Total Lines:
-// T") into Claude Code's file shape, {numLines, startLine, totalLines?};
-// without a Showing line, it counts the numbered lines.
-func agyReadFile(output string, in object) map[string]int {
-	f := map[string]int{}
+// T") into Claude Code's file shape, {numLines, startLine, totalLines?,
+// content?}; without a Showing line, it counts the numbered lines. content
+// is the lines read, their "N: " numbers taken off, when every one of them
+// is in the output.
+func agyReadFile(output string, in object) map[string]any {
+	f := map[string]any{}
 	if m := agyTotal.FindStringSubmatch(output); m != nil {
 		f["totalLines"], _ = strconv.Atoi(m[1])
 	}
+	var start, n int
 	if m := agyShowing.FindStringSubmatch(output); m != nil {
-		start, _ := strconv.Atoi(m[1])
+		start, _ = strconv.Atoi(m[1])
 		end, _ := strconv.Atoi(m[2])
 		if m[3] != "" {
 			f["totalLines"], _ = strconv.Atoi(m[3])
 		}
-		f["startLine"], f["numLines"] = start, max(0, end-start+1)
-		return f
+		n = max(0, end-start+1)
+	} else {
+		if n = len(agyNumbered.FindAllStringIndex(output, -1)); n == 0 {
+			return nil
+		}
+		start = 1
+		if s, ok := in.num("StartLine"); ok && s > 0 {
+			start = s
+		}
 	}
-	n := len(agyNumbered.FindAllStringIndex(output, -1))
-	if n == 0 {
-		return nil
-	}
-	f["numLines"], f["startLine"] = n, 1
-	if start, ok := in.num("StartLine"); ok && start > 0 {
-		f["startLine"] = start
+	f["startLine"], f["numLines"] = start, n
+	if text, ok := numberedText(output, agyNumberedLine, start, n); ok {
+		f["content"] = text
 	}
 	return f
+}
+
+// numberedText is the text of the n lines a tool printed numbered from
+// start, each line matching line (its number, then its text), with the
+// numbers taken off. Lines before the first are a header and are skipped;
+// ok is false unless all n are there, in order.
+func numberedText(output string, line *regexp.Regexp, start, n int) (text string, ok bool) {
+	if n <= 0 {
+		return "", false
+	}
+	var b strings.Builder
+	want := start
+	for l := range strings.SplitSeq(output, "\n") {
+		m := line.FindStringSubmatch(l)
+		if m == nil {
+			if want > start {
+				break
+			}
+			continue
+		}
+		if num, _ := strconv.Atoi(m[1]); num != want {
+			if want > start {
+				break
+			}
+			continue
+		}
+		b.WriteString(m[2])
+		b.WriteByte('\n')
+		if want++; want == start+n {
+			return b.String(), true
+		}
+	}
+	return "", false
 }
 
 // agyDiffPatch reads the [diff_block_start]...[diff_block_end] unified diff

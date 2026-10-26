@@ -103,8 +103,8 @@ var tools = map[string]toolSpec{
 
 	// agy: its own names and argument keys. view_file is read_file's older
 	// name.
-	"view_file":            {action: "read", target: []string{"AbsolutePath"}, meta: readMeta},
-	"read_file":            {action: "read", target: []string{"Path"}, meta: readMeta},
+	"view_file":            {action: "read", target: []string{"AbsolutePath"}, meta: readMeta, file: readFile},
+	"read_file":            {action: "read", target: []string{"Path"}, meta: readMeta, file: readFile},
 	"replace_file_content": {action: "edit", target: []string{"TargetFile"}, meta: editMeta},
 	"edit_file":            {action: "edit", target: []string{"Path"}, meta: replaceMeta},
 	"write_to_file":        {action: "write", target: []string{"TargetFile"}, meta: writeMeta},
@@ -559,8 +559,9 @@ func taskMeta(_, out object) any {
 
 // --- file text --------------------------------------------------------------
 
-// readFile is the lines a read read: Claude Code's result file. An image's
-// has no text.
+// readFile is the lines a read read: the result's file content (Claude
+// Code's; agy's and Kimi's readers take it from the numbered output). An
+// image's has no text.
 func readFile(_, out object) *FileText {
 	f := out.obj("file")
 	text, ok := f.text("content")

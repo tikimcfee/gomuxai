@@ -66,7 +66,8 @@ Where it looks (each harness's own default dirs that exist):
 In the JSON app config (--backend-config), claude_projects_dir,
 agy_brain_dir and kimi_sessions_dir replace a harness's dirs with one path,
 and "" turns the harness off. A workgroup agent's transcript elsewhere is
-listed too.
+listed too. --dirs prints the directories it scans (with --json: each one's
+harness, path, origin, config or default, and whether it exists).
 
 Workgroup agents come from this binary's store and the stores its tmux
 sessions point at, live and departed, as agent export --all reads them.
@@ -85,6 +86,7 @@ var (
 	sessionsHarness   string
 	sessionsWorkgroup bool
 	sessionsLocal     bool
+	sessionsDirs      bool
 )
 
 // claudeSessions lists the Claude sessions running on this host; a
@@ -96,6 +98,30 @@ func init() {
 	sessionsCmd.Flags().StringVar(&sessionsHarness, "harness", "", "Only this harness's sessions: claude, agy, kimi, or the backend of a workgroup agent with no transcript (aider)")
 	sessionsCmd.Flags().BoolVar(&sessionsWorkgroup, "workgroup", false, "Only sessions a workgroup agent owns")
 	sessionsCmd.Flags().BoolVar(&sessionsLocal, "local", false, "Only sessions no workgroup agent owns")
+	sessionsCmd.Flags().BoolVar(&sessionsDirs, "dirs", false, "Print the directories sessions scans instead of the sessions (--json: harness, path, origin, exists)")
+}
+
+// sessionDir is a directory agent sessions scans, as --dirs --json prints
+// it.
+type sessionDir struct {
+	discovery.Dir
+	Exists bool `json:"exists"`
+}
+
+// printDirs prints the directories agent sessions scans: the line its
+// table opens with, or a JSON array.
+func printDirs(out io.Writer, dirs []discovery.Dir) error {
+	if sessionsJSON {
+		list := make([]sessionDir, len(dirs))
+		for i, d := range dirs {
+			info, err := os.Stat(d.Path)
+			list[i] = sessionDir{Dir: d, Exists: err == nil && info.IsDir()}
+		}
+		return printJSON(list)
+	}
+	home, _ := os.UserHomeDir()
+	fmt.Fprintf(out, "Looked in: %s\n", discovery.DescribeDirs(dirs, home))
+	return nil
 }
 
 func runSessions(cmd *cobra.Command, args []string) error {
@@ -104,6 +130,9 @@ func runSessions(cmd *cobra.Command, args []string) error {
 	}
 	ctx := getContext()
 	dirs := sessionDirs()
+	if sessionsDirs {
+		return printDirs(cmd.OutOrStdout(), dirs)
+	}
 	agents, err := workgroupAgents(ctx)
 	if err != nil {
 		return err
