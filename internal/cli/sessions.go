@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -189,8 +190,10 @@ func printSessions(out io.Writer, sessions []discovery.Session, looked string) {
 		}
 		top = append(top, s)
 	}
-	format := "%-19s %-8s %-18s %-10s %-20s %s\n"
-	fmt.Fprintf(out, "\n"+format, "WHEN", "HARNESS", "PROJECT", "STATUS", "WORKGROUP", "TITLE")
+	fmt.Fprintln(out)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	format := "%s\t%s\t%s\t%s\t%s\t%s\n"
+	fmt.Fprintf(tw, format, "WHEN", "HARNESS", "PROJECT", "STATUS", "WORKGROUP", "TITLE")
 	owned := 0
 	line := func(when string, s discovery.Session) {
 		group := "-"
@@ -206,7 +209,7 @@ func printSessions(out io.Writer, sessions []discovery.Session, looked string) {
 		default:
 			title = "(" + s.SessionID + ")"
 		}
-		fmt.Fprintf(out, format, when, s.Harness, orDash(s.Project), s.Status, group, title)
+		fmt.Fprintf(tw, format, when, s.Harness, orDash(s.Project), s.Status, group, title)
 	}
 	printed := map[string]bool{}
 	var kidsOf func(s discovery.Session, depth int)
@@ -227,6 +230,7 @@ func printSessions(out io.Writer, sessions []discovery.Session, looked string) {
 		line(sessionWhen(s.Mtime, "2006-01-02 15:04"), s)
 		kidsOf(s, 0)
 	}
+	tw.Flush()
 	fmt.Fprintf(out, "\n%s, %d in a workgroup.\n", plural(len(sessions), "session"), owned)
 }
 

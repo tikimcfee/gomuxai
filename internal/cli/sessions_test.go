@@ -106,8 +106,8 @@ func TestSessions_Human(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Looked in: claude ~/.claude/projects (default)\n",
-		"claude   shop               waiting    worker               Worker's task\n",
-		"claude   shop               idle       -                    A person's own session\n",
+		"claude   shop     waiting  worker     Worker's task\n",
+		"claude   shop     idle     -          A person's own session\n",
 		"2 sessions, 1 in a workgroup.\n",
 	} {
 		if !strings.Contains(out, want) {
