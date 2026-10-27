@@ -376,6 +376,12 @@ func (b *ClaudeBackend) InputText(screen string) (string, bool) {
 	return inputBoxText(screen, "❯")
 }
 
+// EnterCanBeANewline: Claude takes input that arrives in one read with more
+// than a keystroke in it for a paste, where "\r" is a newline. A message
+// typed while its event loop is busy (a long render, a paste it is still
+// collecting) arrives in one read with the Enter typed after it.
+func (b *ClaudeBackend) EnterCanBeANewline() {}
+
 // AllowCommands pre-approves Bash commands by prefix for this session only,
 // via --allowedTools rules like Bash(agent status:*).
 func (b *ClaudeBackend) AllowCommands(launchCmd string, prefixes []string) string {

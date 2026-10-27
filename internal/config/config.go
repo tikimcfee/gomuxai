@@ -36,6 +36,12 @@ type Config struct {
 	// Default: 2s (can be set to 0 for testing)
 	StartupDelay time.Duration `json:"startup_delay"`
 
+	// SubmitWait bounds each wait while typing a message into a CLI that
+	// can take its Enter for a newline (Claude): for the input box to show
+	// the typed text before Enter, and for it to empty after each Enter.
+	// Default: 3s; 0 types and presses Enter without looking.
+	SubmitWait time.Duration `json:"submit_wait"`
+
 	// AgentBinary is the absolute path of the agent binary that backend hooks
 	// call to report status. Empty disables hook-based status reporting.
 	// Default: the running executable.
@@ -56,6 +62,9 @@ type Config struct {
 
 // DefaultStartupDelay is the default StartupDelay.
 const DefaultStartupDelay = 2 * time.Second
+
+// DefaultSubmitWait is the default SubmitWait.
+const DefaultSubmitWait = 3 * time.Second
 
 // StorageDirName is the name of the data directory.
 const StorageDirName = ".gomuxai"
@@ -113,6 +122,7 @@ func DefaultConfig() *Config {
 		SessionPrefix:     "agent-",
 		DefaultScrollback: 500,
 		StartupDelay:      DefaultStartupDelay,
+		SubmitWait:        DefaultSubmitWait,
 		AgentBinary:       agentBinaryPath(),
 		Host:              defaultHost(),
 	}

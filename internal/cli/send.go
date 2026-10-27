@@ -58,6 +58,13 @@ picks the message up. To wait for the turn it starts (or, for a held
 message, until the agent is done with it too), use
 "agent wait <name> --for idle,waiting --next".
 
+Typing into Claude waits for its input box to show the message before
+pressing Enter (a busy Claude reads an Enter that arrives with the text as
+a newline), then checks that the box emptied, pressing Enter again while it
+still shows the message, 3 times in all. If it is still there, send fails
+saying so: don't send it again; "agent key agent-<name> Enter" submits it,
+and "agent status <name>" shows it as unsent until then.
+
 A long message typed into Claude's terminal can arrive as a pasted block,
 which Claude may treat as data rather than as instructions: keep instructions
 short, or put them in a file and send its path. A held message arrives

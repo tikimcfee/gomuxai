@@ -29,6 +29,10 @@ permission prompt, the full tool call: what approve would allow), the tool,
 and how many messages are held for the agent while it's busy (see
 "agent send"). --json has the same fields.
 
+An "unsent:" line, with or without -v, means a message typed into a Claude
+agent's input box is still there because Enter didn't submit it: "agent key
+agent-<name> Enter" does.
+
 Sources, most authoritative first:
   native  the backend CLI's own session status (claude agents --json)
   report  the last status reported by backend hooks or "agent report"
@@ -70,6 +74,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// A message Enter failed to submit sits in its input box: say so even
+	// without -v, since nothing reaches it until someone presses Enter.
+	var unsubmittedAt time.Time
+	var session string
+	unsubmitted := false
+	if !remote {
+		unsubmittedAt, session, unsubmitted = agentService.Unsubmitted(getContext(), ref.Name)
+	}
+
 	if statusJSON {
 		host := cfg.Host
 		if remote {
@@ -90,6 +103,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 		if !info.UpdatedAt.IsZero() {
 			out.UpdatedAt = &info.UpdatedAt
+		}
+		if unsubmitted {
+			out.UnsubmittedAt = &unsubmittedAt
 		}
 		return printJSON(out)
 	}
@@ -120,6 +136,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		if info.Held > 0 {
 			fmt.Println(heldLine(ref.Name, remote, info))
 		}
+	}
+	if unsubmitted {
+		fmt.Printf("  unsent: a message typed into its input box at %s wasn't submitted; it sits there: agent key %s Enter submits it\n",
+			unsubmittedAt.Format("15:04:05"), session)
 	}
 	switch {
 	case info.Status == service.AgentStatusExited:
@@ -173,6 +193,9 @@ type statusJSONOut struct {
 	// Held is how many messages wait for the agent: held for the end of
 	// its turn, or queued for agent watch.
 	Held int `json:"held,omitempty"`
+	// UnsubmittedAt is when a message was typed into the agent's input box
+	// that Enter failed to submit, if it still sits there.
+	UnsubmittedAt *time.Time `json:"unsubmitted_at,omitempty"`
 }
 
 // statusWrapWidth is the width status -v wraps a detail to, and

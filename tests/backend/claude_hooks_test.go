@@ -531,6 +531,15 @@ func TestClaudeInputText(t *testing.T) {
 		{"named session, empty", named("\x1b[39m❯ "), "", true},
 		{"named session, typed", named("\x1b[39m❯ half typed"), "half typed", true},
 		{"a label without its rule", strings.Join([]string{"● ok", "─ worker ─", "\x1b[39m❯ ", rule, footer}, "\n"), "", false},
+		// What sending reads to tell a message took in, then submitted.
+		// Prompts are drawn with a no-break space after the "❯".
+		{"a paste's placeholder", screen("\x1b[39m❯\u00a0[Pasted text #17 +60 lines]"), "[Pasted text #17 +60 lines]", true},
+		{"an image path, converted", screen("\x1b[39m❯\u00a0[Image #21] [Pasted text #3 +4 lines]"), "[Image #21] [Pasted text #3 +4 lines]", true},
+		// An Enter that arrived in one read with the text: a newline, and
+		// the message sits there.
+		{"a message with its Enter as a newline", screen("\x1b[39m❯\u00a0[from lead@hub] run the tests", ""), "[from lead@hub] run the tests", true},
+		// Mid-turn, a submitted message is queued, and the box says so dim.
+		{"queued, dim hint", screen("\x1b[38;5;246m❯\u00a0\x1b[2m\x1b[39mPress up to edit queued messages\x1b[0m"), "", true},
 	}
 	b := namedagents.NewClaudeBackend()
 	for _, tt := range tests {

@@ -180,9 +180,11 @@ func (s *AgentService) hold(ctx context.Context, agent *storage.Agent, res SendR
 	// reports in one transaction, so if it missed this message, its report
 	// is visible now: type the message.
 	if reported, err := s.reportedStatus(ctx, agent.Name); err == nil && turnOver(reported) {
-		if n, err := s.typeHeld(ctx, agent, ""); err == nil && n > 0 {
+		n, err := s.typeHeld(ctx, agent, "")
+		var unsubmitted *UnsubmittedError
+		if err == nil && n > 0 || errors.As(err, &unsubmitted) {
 			res.Typed = n
-			return res, nil
+			return res, err
 		}
 	}
 
@@ -220,8 +222,9 @@ func (e *InputBlockedError) Error() string {
 }
 
 // inputBlocked returns why typing into the agent would land in a person's
-// input: "" if its input line is empty, or the backend can't read it.
-func (s *AgentService) inputBlocked(agent *storage.Agent) string {
+// input, or behind a message Enter failed to submit: "" if its input line
+// is empty, or the backend can't read it.
+func (s *AgentService) inputBlocked(ctx context.Context, agent *storage.Agent) string {
 	p, err := s.provider(agent)
 	if err != nil {
 		return ""
@@ -237,6 +240,8 @@ func (s *AgentService) inputBlocked(agent *storage.Agent) string {
 	switch text, found := ir.InputText(screen); {
 	case !found:
 		return "it isn't on screen"
+	case s.unsubmitted(ctx, agent, text):
+		return fmt.Sprintf("a message typed into it wasn't submitted: agent key %s Enter submits it", agent.SessionName)
 	case text != "":
 		return "it has text in it"
 	}
@@ -250,7 +255,7 @@ func (s *AgentService) InputBlocked(ctx context.Context, name string) string {
 	if err != nil {
 		return ""
 	}
-	return s.inputBlocked(agent)
+	return s.inputBlocked(ctx, agent)
 }
 
 // typeHeld types the agent's held messages, oldest first, then extra if
@@ -265,7 +270,7 @@ func (s *AgentService) typeHeld(ctx context.Context, agent *storage.Agent, extra
 	if held, err := s.storage.GetPendingMessages(ctx, agent.Name, 1); err == nil && len(held) == 0 && extra == "" {
 		return 0, nil
 	}
-	if why := s.inputBlocked(agent); why != "" {
+	if why := s.inputBlocked(ctx, agent); why != "" {
 		return 0, &InputBlockedError{Agent: agent.Name, Why: why}
 	}
 	claimed, err := s.storage.ClaimPendingMessages(ctx, agent.Name, nil)
@@ -280,6 +285,10 @@ func (s *AgentService) typeHeld(ctx context.Context, agent *storage.Agent, extra
 		return 0, nil
 	}
 	if err := s.SendUnchecked(ctx, agent.Name, strings.Join(texts, "\n\n")); err != nil {
+		var unsubmitted *UnsubmittedError
+		if errors.As(err, &unsubmitted) {
+			return len(texts), err // typed: they sit in its input box
+		}
 		for _, m := range claimed {
 			_ = s.storage.UpdateMessageStatus(ctx, m.ID, storage.MessageStatusPending)
 		}
@@ -407,7 +416,7 @@ func (s *AgentService) DeliverHeld(ctx context.Context, name string, opts Delive
 				name, plural(len(held), "message"), name)
 		case info.Status == AgentStatusIdle || info.Status == AgentStatusError ||
 			info.Status == AgentStatusProcessing && turnOver(reported):
-			if opts.Wait && s.inputBlocked(agent) != "" {
+			if opts.Wait && s.inputBlocked(ctx, agent) != "" {
 				// A person is typing: the grace starts once the line is
 				// empty, so a pause in their typing isn't typed over.
 				atPromptSince = time.Time{}

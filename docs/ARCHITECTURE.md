@@ -154,6 +154,7 @@ applies each one it finds:
 | `HookDeliverer`: held messages from a hook's output | `Stop` → `additionalContext` | `PostInvocation` → `injectSteps` + `force_continue` | — |
 | `HookAllower`: approves a safe `agent` command from a hook | `PreToolUse` → `permissionDecision: allow` | — | — |
 | `InputReader`: the input line, so typing never lands in a draft | after `❯` | after `>` | — |
+| `SubmitChecker`: a typed message's Enter can arrive as a newline, so typing checks it submitted | yes | — | — |
 | `TurnEndReader`: a turn that ended with no hook | — (native status) | the footer under the input box | — |
 | `QuestionPrompter`: a question dialog with no hook | — (`PermissionRequest`) | `ask_question`'s `Question 1/N:` | — |
 
@@ -359,6 +360,42 @@ be delivered) until `cleanup` deletes them. `StatusInfo.Held` counts the
 pending rows, shown by `status -v`, `--json`, the orientation, and the
 `status` RPC.
 
+**Submitting a typed message.** Typing a message and pressing Enter are two
+writes to the pane (`send-keys -l`, then `send-keys Enter`), and Claude
+handles whatever has arrived by the time it reads as one input. While its
+event loop is busy (a long render, a paste it is still collecting), the
+text and the Enter arrive in the same read; Claude takes that for a paste,
+the Enter becomes a newline in it, and the message sits in the input box
+until someone presses Enter. The first Enter after that is often eaten too.
+So `SendUnchecked`, for a backend that is a `SubmitChecker` (Claude), types
+through `typeMessage` (`internal/service/submit.go`):
+
+1. It reads the input box (`InputReader`), types the text, and waits for
+   the box to show something new that stays unchanged for 150ms: the text,
+   a `[Pasted text #N +M lines]` placeholder, or an image path turned into
+   `[Image #N]`. Only then does it press Enter, which arrives on its own.
+2. It waits for the box to empty. A box that shows the message only now
+   (the text and the Enter arrived together) restarts the wait.
+3. While the box still shows what was typed, it presses Enter again, up to
+   3 Enters in all.
+4. If the message is still there, it records the box's text as
+   `_unsubmitted` and returns `UnsubmittedError`, which says not to send the
+   message again and that `agent key <session> Enter` submits it.
+
+It presses no further Enter once the box is off screen (a dialog may have
+replaced it) or shows anything other than what was typed (a person typing),
+and a box it couldn't read before typing gets the old type-then-Enter.
+`Config.SubmitWait` (`submit_wait`, default 3s) bounds each wait; 0 turns
+the checks off. A responsive Claude takes about 0.3s per message.
+
+`typeHeld` leaves messages that were typed but not submitted claimed (they
+sit in the box) rather than holding them again. While the box still shows
+`_unsubmitted`, `status` prints an `unsent:` line (`unsubmitted_at` in
+`--json`), and the input-line check says `a message typed into it wasn't
+submitted: agent key <session> Enter submits it` instead of `it has text in
+it`, so `send` and `status -v` name the cause. `send --now` types after it
+and submits both.
+
 Remote sends get this on the receiving host: `SendRequest.now` (ignored by
 older hosts, which always type) and an optional `SendResponse` (older hosts
 send none, and the CLI says just `Sent`); `SendResponse.held_until` is the
@@ -470,6 +507,7 @@ uses to spot a whole turn before the wait.
 | `_spawn_id` | the spawn's uuid, set once by spawn |
 | `_turn_at` | when the last turn started: written with a report that is `processing` and clears `_result` (Claude `UserPromptSubmit`, agy's first `PreInvocation`) |
 | `_sent_at` | when a message was last typed in; written by `send` (and queued deliveries and spawn's first message), not by `Report` |
+| `_unsubmitted` | what Claude's input box showed when Enter failed to submit a typed message; deleted by the next typing whose message doesn't stay in the box |
 | `_transcript` | the CLI's transcript path from the last hook payload that named one |
 | `_prompt.<nanos>` | one per unanswered Claude permission prompt: its call key, subagent, tool, input, and detail (JSON) |
 
@@ -1245,7 +1283,8 @@ make lint          # golangci-lint
   `_result` and `wait --next` cover its reply too.
 - The input line is read off the screen: a Claude or agy redesign of it
   would leave held messages waiting ("it isn't on screen") until the reader
-  is updated. A person who starts typing between the check and the typing
+  is updated, and typing into Claude would press Enter without checking,
+  as before. A person who starts typing between the check and the typing
   (milliseconds) still gets the message mixed in.
 - agy's interrupted turns and question dialogs are read off the screen too:
   a redesign of its footer would leave an interrupted agent `processing`

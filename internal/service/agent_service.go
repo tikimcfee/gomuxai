@@ -514,7 +514,7 @@ func (s *AgentService) SendUnchecked(ctx context.Context, name string, message s
 	}
 
 	s.markSent(ctx, name)
-	return s.sendLine(agent.SessionName, message)
+	return s.typeMessage(ctx, agent, message)
 }
 
 // markSent records that a message is about to be typed into the agent

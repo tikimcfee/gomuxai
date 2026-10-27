@@ -91,6 +91,17 @@ type InputReader interface {
 	InputText(screen string) (text string, found bool)
 }
 
+// SubmitChecker is implemented by backends whose CLI can take the Enter
+// that follows a typed message for a newline: when both reach a busy CLI in
+// one read, Claude reads them as a paste, and the message sits in its input
+// box. Typing a message into one waits for its input box to show the text
+// before pressing Enter, and checks that the box emptied after.
+type SubmitChecker interface {
+	InputReader
+	// EnterCanBeANewline is a marker: the CLI behaves as described above.
+	EnterCanBeANewline()
+}
+
 // TurnEndReader is implemented by backends whose CLI can end a turn without
 // firing any hook (agy on Esc or Ctrl+C), so the screen has to tell that it
 // is back at its prompt.

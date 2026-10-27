@@ -301,6 +301,7 @@ add` found a similar entry.
 | A tmux session `agent-NAME` with no agent record | Leftover session | `agent session kill agent-NAME` |
 | Status `unknown` | aider and custom backends have no hooks; the screen matched no pattern | `agent capture NAME`; adjust the backend's patterns |
 | A long message arrives in Claude as pasted content | Claude treats long typed input as a paste, i.e. data | Keep instructions short, or write them to a file and send its path (a message held for a busy agent arrives whole) |
+| `send` says the message is still in the input box after 3 Enters; `status` shows `unsent:` | Claude took each Enter as a newline or ignored it. `send` waits for the box to show the text before pressing Enter, and presses again while it stays (see ARCHITECTURE, "Submitting a typed message") | Don't send it again: `agent capture NAME` shows it, `agent key agent-NAME Enter` submits it |
 
 Known gaps are listed in [`CLAUDE.md`](CLAUDE.md); open requests are in
 `agent friction list`. If the tool gets in your way, `agent friction add

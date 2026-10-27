@@ -144,6 +144,13 @@ at a dialog (the Enter would answer it; use `approve`/`deny`, or `agent key`
 for a question), and `send` refuses an agent that has exited. Slash commands
 are always typed, never held.
 
+Typing into Claude waits for its input box to show the message before
+pressing Enter, then checks the box emptied, pressing Enter again (3 in
+all) while it still shows the message: a busy Claude otherwise takes an
+Enter that arrives with the text for a newline. If the message still sits
+there, `send` fails saying so (don't send it again), `agent status` prints
+an `unsent:` line, and `agent key agent-<name> Enter` submits it.
+
 Messages from an agent start with `[from name@host]`, so the recipient knows
 where to reply. Messages from anyone without `AGENT_NAME` start with
 `[from a person on host]`, or `[from a Claude session on host]` from an AI
@@ -444,6 +451,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | A key fails: "a read-only client is attached" | Detach the client it names (`tmux detach-client -t /dev/pts/N`); watch with `agent capture` instead of `tmux attach -r`. |
 | Queued messages never arrive (not Claude) | Start `agent watch` (one per host is enough). |
 | A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's (or agy's step's) end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there); `agent deliver <name>` types it now if the agent is at its prompt. |
+| `send` says the message is still in the input box; `status` shows `unsent:` | Enter didn't submit it: `agent key agent-<name> Enter` does. Don't send it again. |
 | Leftover tmux session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |
@@ -535,7 +543,7 @@ Everything lives in `.gomuxai/` next to the binary:
 
 State keys starting with `_` are written by status reports (`_status`,
 `_detail`, `_tool`, `_tool_input`, `_result`, `_transcript`, `_turn_at`,
-...) and by `send` (`_sent_at`). Delete
+...) and by `send` (`_sent_at`, `_unsubmitted`). Delete
 the folder to reset that binary's agents.
 
 ## Working on gomuxai
