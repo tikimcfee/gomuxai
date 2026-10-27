@@ -149,7 +149,10 @@ pressing Enter, then checks the box emptied, pressing Enter again (3 in
 all) while it still shows the message: a busy Claude otherwise takes an
 Enter that arrives with the text for a newline. If the message still sits
 there, `send` fails saying so (don't send it again), `agent status` prints
-an `unsent:` line, and `agent key agent-<name> Enter` submits it.
+an `unsent:` line, and `agent key agent-<name> Enter` submits it. If the
+input box can't be read at all, `send` still types the message but says
+`Typed into <name> without checking it was submitted: <why>`, and `agent
+status` shows an `unchecked:` line until a turn starts.
 
 Messages from an agent start with `[from name@host]`, so the recipient knows
 where to reply. Messages from anyone without `AGENT_NAME` start with
@@ -543,7 +546,7 @@ Everything lives in `.gomuxai/` next to the binary:
 
 State keys starting with `_` are written by status reports (`_status`,
 `_detail`, `_tool`, `_tool_input`, `_result`, `_transcript`, `_turn_at`,
-...) and by `send` (`_sent_at`, `_unsubmitted`). Delete
+...) and by `send` (`_sent_at`, `_unsubmitted`, `_unchecked`). Delete
 the folder to reset that binary's agents.
 
 ## Working on gomuxai

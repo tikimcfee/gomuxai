@@ -36,6 +36,7 @@ type claudeTerminal struct {
 	deafEnter bool     // no Enter submits (to see what send says then)
 	dialogOn  int      // the Enter after which a dialog replaces the box (1-based)
 	dialog    bool
+	strange   bool // a screen with no input box agent recognizes
 	enters    int
 	submitted []string
 	pastes    int
@@ -123,6 +124,9 @@ func (c *claudeTerminal) enter() {
 }
 
 func (c *claudeTerminal) screen() string {
+	if c.strange {
+		return "● ok\n\n> " + strings.Join(c.box, "\n") + "\n"
+	}
 	if c.dialog {
 		return "Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel\n"
 	}
@@ -181,7 +185,7 @@ func TestSubmit_WaitsForTheBoxToShowTheText(t *testing.T) {
 		// Without looking, as before: the stall merges text and Enter.
 		term := &claudeTerminal{stalled: 3}
 		svc, _ := setupClaudeTerminal(t, term, 0)
-		if err := svc.SendUnchecked(context.Background(), "worker", msg); err != nil {
+		if _, err := svc.SendUnchecked(context.Background(), "worker", msg); err != nil {
 			t.Fatal(err)
 		}
 		term.CaptureStyled("", 0)
@@ -193,7 +197,7 @@ func TestSubmit_WaitsForTheBoxToShowTheText(t *testing.T) {
 
 		term = &claudeTerminal{stalled: 3}
 		svc, _ = setupClaudeTerminal(t, term, submitTestWait)
-		if err := svc.SendUnchecked(context.Background(), "worker", msg); err != nil {
+		if _, err := svc.SendUnchecked(context.Background(), "worker", msg); err != nil {
 			t.Fatalf("%q: %v", msg, err)
 		}
 		enters, submitted, box := term.state()
@@ -212,7 +216,7 @@ func TestSubmit_WaitsForTheBoxToShowTheText(t *testing.T) {
 func TestSubmit_PressesEnterUntilTheBoxEmpties(t *testing.T) {
 	term := &claudeTerminal{stalled: 10}
 	svc, _ := setupClaudeTerminal(t, term, submitTestWait)
-	if err := svc.SendUnchecked(context.Background(), "worker", "[from lead@hub] run the tests"); err != nil {
+	if _, err := svc.SendUnchecked(context.Background(), "worker", "[from lead@hub] run the tests"); err != nil {
 		t.Fatal(err)
 	}
 	enters, submitted, box := term.state()
@@ -233,7 +237,7 @@ func TestSubmit_SaysWhenTheMessageSitsInTheBox(t *testing.T) {
 	ctx := context.Background()
 	term := &claudeTerminal{deafEnter: true}
 	svc, _ := setupClaudeTerminal(t, term, submitTestWait)
-	err := svc.SendUnchecked(ctx, "worker", "[from lead@hub] run the tests")
+	_, err := svc.SendUnchecked(ctx, "worker", "[from lead@hub] run the tests")
 	var unsubmitted *service.UnsubmittedError
 	if !errors.As(err, &unsubmitted) {
 		t.Fatalf("err %v; want UnsubmittedError", err)
@@ -270,7 +274,7 @@ func TestSubmit_SaysWhenTheMessageSitsInTheBox(t *testing.T) {
 func TestSubmit_NoEnterOnceTheBoxIsGone(t *testing.T) {
 	term := &claudeTerminal{deafEnter: true, dialogOn: 1}
 	svc, _ := setupClaudeTerminal(t, term, submitTestWait)
-	if err := svc.SendUnchecked(context.Background(), "worker", "[from lead@hub] run the tests"); err != nil {
+	if _, err := svc.SendUnchecked(context.Background(), "worker", "[from lead@hub] run the tests"); err != nil {
 		t.Fatalf("err %v; want none (it can't tell)", err)
 	}
 	if enters, _, _ := term.state(); enters != 1 {
@@ -301,5 +305,49 @@ func TestSubmit_UnsubmittedHeldMessagesStayDelivered(t *testing.T) {
 	}
 	if held := svc.HeldCount(ctx, "worker"); held != 0 {
 		t.Errorf("%d held after typing; want 0", held)
+	}
+}
+
+// When the input box can't be read before typing, send still types the
+// message and presses Enter, but says it couldn't check, and status shows
+// that until a turn starts: a box that goes unrecognized (as a named
+// session's once did) mustn't fail quietly.
+func TestSubmit_SaysWhenItCannotCheck(t *testing.T) {
+	ctx := context.Background()
+	term := &claudeTerminal{strange: true}
+	svc, store := setupClaudeTerminal(t, term, submitTestWait)
+	res, err := svc.Send(ctx, "worker", "[from lead@hub] run the tests", service.SendOptions{Now: true})
+	if err != nil || res.Typed != 1 {
+		t.Fatalf("Send = %+v, %v; want typed", res, err)
+	}
+	if !strings.Contains(res.Unchecked, "input box isn't on screen") {
+		t.Errorf("Unchecked = %q; want why it couldn't check", res.Unchecked)
+	}
+	if enters, submitted, _ := term.state(); enters != 1 || len(submitted) != 1 {
+		t.Errorf("%d Enters, submitted %q; want typed and Enter pressed once, as before", enters, submitted)
+	}
+	why, at, ok := svc.Unchecked(ctx, "worker")
+	if !ok || why != res.Unchecked || time.Since(at) > time.Minute {
+		t.Errorf("Unchecked = %q, %v, %v; want it recorded", why, at, ok)
+	}
+
+	// A turn that starts after it shows the message was taken.
+	time.Sleep(10 * time.Millisecond)
+	if err := svc.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusProcessing, Event: "UserPromptSubmit", ClearResult: true}); err != nil {
+		t.Fatal(err)
+	}
+	if why, _, ok := svc.Unchecked(ctx, "worker"); ok {
+		t.Errorf("Unchecked = %q after a turn started; want none", why)
+	}
+
+	// A message it could check clears the record.
+	term.mu.Lock()
+	term.strange = false
+	term.mu.Unlock()
+	if _, err := svc.SendUnchecked(ctx, "worker", "[from lead@hub] again"); err != nil {
+		t.Fatal(err)
+	}
+	if entry, _ := store.GetState(ctx, "worker", service.StateKeyUnchecked); entry != nil {
+		t.Errorf("%s = %q after a checked message; want it deleted", service.StateKeyUnchecked, entry.Value)
 	}
 }

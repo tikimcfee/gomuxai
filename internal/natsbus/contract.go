@@ -204,6 +204,9 @@ type SendResponse struct {
 	// InputBlocked says why a message to an agent at its prompt was held:
 	// its input line isn't empty.
 	InputBlocked string `json:"input_blocked,omitempty"`
+	// Unchecked says why the host couldn't check a typed message was
+	// submitted (its input box isn't on screen); older hosts leave it out.
+	Unchecked string `json:"unchecked,omitempty"`
 }
 
 // RespondRequest answers a permission prompt (agent approve / deny).

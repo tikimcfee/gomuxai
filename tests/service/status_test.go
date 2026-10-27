@@ -443,7 +443,7 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	fake.promptGone = true
 
 	// Claude's trust dialog on screen (shown here by the shell echoing it).
-	if err := env.service.SendUnchecked(ctx, "worker", "printf ' ❯ No, exit\\n   Yes, I trust this folder\\n'"); err != nil {
+	if _, err := env.service.SendUnchecked(ctx, "worker", "printf ' ❯ No, exit\\n   Yes, I trust this folder\\n'"); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)

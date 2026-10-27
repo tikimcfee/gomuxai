@@ -63,7 +63,10 @@ pressing Enter (a busy Claude reads an Enter that arrives with the text as
 a newline), then checks that the box emptied, pressing Enter again while it
 still shows the message, 3 times in all. If it is still there, send fails
 saying so: don't send it again; "agent key agent-<name> Enter" submits it,
-and "agent status <name>" shows it as unsent until then.
+and "agent status <name>" shows it as unsent until then. If the input box
+can't be read (not on screen), send types the message and presses Enter
+without checking, and says so; status shows it as unchecked until a turn
+starts.
 
 A long message typed into Claude's terminal can arrive as a pasted block,
 which Claude may treat as data rather than as instructions: keep instructions
@@ -118,12 +121,15 @@ func runSend(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		printSent(name, service.SendResult{Status: service.AgentStatus(resp.Status), Detail: resp.Detail,
-			Held: resp.Held, HeldCount: resp.HeldCount, HeldUntil: resp.HeldUntil, Typed: resp.Typed, InputBlocked: resp.InputBlocked})
+			Held: resp.Held, HeldCount: resp.HeldCount, HeldUntil: resp.HeldUntil, Typed: resp.Typed, InputBlocked: resp.InputBlocked,
+			Unchecked: resp.Unchecked})
 	case sendForce:
-		if err := agentService.SendUnchecked(getContext(), ref.Name, message); err != nil {
+		unchecked, err := agentService.SendUnchecked(getContext(), ref.Name, message)
+		if err != nil {
 			return err
 		}
 		fmt.Printf("Sent to %s (unchecked: --force).\n", name)
+		printUnchecked(name, unchecked)
 	default:
 		res, err := agentService.Send(getContext(), ref.Name, message, service.SendOptions{Now: sendNow, From: senderID()})
 		if err != nil {
@@ -169,6 +175,16 @@ func printSent(name string, res service.SendResult) {
 	default:
 		fmt.Printf("Sent to %s (%s).\n", name, found)
 	}
+	printUnchecked(name, res.Unchecked)
+}
+
+// printUnchecked says, when why is set, that a message was typed into a
+// Claude agent without checking that its Enter submitted it.
+func printUnchecked(name, why string) {
+	if why == "" {
+		return
+	}
+	fmt.Printf("Typed into %s without checking it was submitted: %s. agent capture %s shows whether it sits in its input box.\n", name, why, name)
 }
 
 // senderID is who a message is from, as held messages record it: the

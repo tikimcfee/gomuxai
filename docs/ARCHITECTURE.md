@@ -383,8 +383,13 @@ through `typeMessage` (`internal/service/submit.go`):
    message again and that `agent key <session> Enter` submits it.
 
 It presses no further Enter once the box is off screen (a dialog may have
-replaced it) or shows anything other than what was typed (a person typing),
-and a box it couldn't read before typing gets the old type-then-Enter.
+replaced it) or shows anything other than what was typed (a person typing).
+A box it can't read before typing (not on screen, or the capture failed)
+gets type-then-Enter without the checks, and says so: `SendResult.Unchecked`
+(`unchecked` on the bus) names why, `send` prints `Typed into X without
+checking it was submitted: <why>`, the deliverer logs it, and `_unchecked`
+records it, so `status` prints an `unchecked:` line (`unchecked`,
+`unchecked_at` in `--json`) until a turn starts after it.
 `Config.SubmitWait` (`submit_wait`, default 3s) bounds each wait; 0 turns
 the checks off. A responsive Claude takes about 0.3s per message.
 
@@ -508,6 +513,7 @@ uses to spot a whole turn before the wait.
 | `_turn_at` | when the last turn started: written with a report that is `processing` and clears `_result` (Claude `UserPromptSubmit`, agy's first `PreInvocation`) |
 | `_sent_at` | when a message was last typed in; written by `send` (and queued deliveries and spawn's first message), not by `Report` |
 | `_unsubmitted` | what Claude's input box showed when Enter failed to submit a typed message; deleted by the next typing whose message doesn't stay in the box |
+| `_unchecked` | why a message was typed into Claude without checking it was submitted (its input box couldn't be read); `status` shows it until a turn starts after it, and a checked typing deletes it |
 | `_transcript` | the CLI's transcript path from the last hook payload that named one |
 | `_prompt.<nanos>` | one per unanswered Claude permission prompt: its call key, subagent, tool, input, and detail (JSON) |
 

@@ -31,7 +31,9 @@ and how many messages are held for the agent while it's busy (see
 
 An "unsent:" line, with or without -v, means a message typed into a Claude
 agent's input box is still there because Enter didn't submit it: "agent key
-agent-<name> Enter" does.
+agent-<name> Enter" does. An "unchecked:" line means a message was typed in
+without that check (its input box couldn't be read) and no turn has started
+since: "agent capture <name>" shows whether it sits there.
 
 Sources, most authoritative first:
   native  the backend CLI's own session status (claude agents --json)
@@ -76,11 +78,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// A message Enter failed to submit sits in its input box: say so even
 	// without -v, since nothing reaches it until someone presses Enter.
-	var unsubmittedAt time.Time
-	var session string
+	var unsubmittedAt, uncheckedAt time.Time
+	var session, unchecked string
 	unsubmitted := false
 	if !remote {
 		unsubmittedAt, session, unsubmitted = agentService.Unsubmitted(getContext(), ref.Name)
+		// Likewise one typed without checking, until a turn starts.
+		unchecked, uncheckedAt, _ = agentService.Unchecked(getContext(), ref.Name)
 	}
 
 	if statusJSON {
@@ -106,6 +110,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 		if unsubmitted {
 			out.UnsubmittedAt = &unsubmittedAt
+		}
+		if unchecked != "" {
+			out.Unchecked, out.UncheckedAt = unchecked, &uncheckedAt
 		}
 		return printJSON(out)
 	}
@@ -140,6 +147,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if unsubmitted {
 		fmt.Printf("  unsent: a message typed into its input box at %s wasn't submitted; it sits there: agent key %s Enter submits it\n",
 			unsubmittedAt.Format("15:04:05"), session)
+	}
+	if unchecked != "" {
+		fmt.Printf("  unchecked: a message typed in at %s wasn't checked for submission (%s), and no turn has started since: agent capture %s shows whether it sits in its input box\n",
+			uncheckedAt.Format("15:04:05"), unchecked, name)
 	}
 	switch {
 	case info.Status == service.AgentStatusExited:
@@ -196,6 +207,10 @@ type statusJSONOut struct {
 	// UnsubmittedAt is when a message was typed into the agent's input box
 	// that Enter failed to submit, if it still sits there.
 	UnsubmittedAt *time.Time `json:"unsubmitted_at,omitempty"`
+	// Unchecked is why a message typed in at UncheckedAt wasn't checked
+	// for submission, while no turn has started since.
+	Unchecked   string     `json:"unchecked,omitempty"`
+	UncheckedAt *time.Time `json:"unchecked_at,omitempty"`
 }
 
 // statusWrapWidth is the width status -v wraps a detail to, and

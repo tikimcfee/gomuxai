@@ -409,10 +409,11 @@ func (s *AgentService) Send(ctx context.Context, name string, message string, op
 	if err != nil {
 		return res, err
 	}
-	if err := s.SendUnchecked(ctx, name, message); err != nil {
+	unchecked, err := s.SendUnchecked(ctx, name, message)
+	if err != nil {
 		return res, err
 	}
-	res.Typed = 1
+	res.Typed, res.Unchecked = 1, unchecked
 	return res, nil
 }
 
@@ -498,19 +499,21 @@ func sessionGone(agent *storage.Agent) error {
 }
 
 // SendUnchecked types a message into an agent without checking for dialogs.
-func (s *AgentService) SendUnchecked(ctx context.Context, name string, message string) error {
+// For a backend whose typed messages need checking (see submit.go), it
+// returns why it couldn't check this one was submitted, or "" if it did.
+func (s *AgentService) SendUnchecked(ctx context.Context, name string, message string) (string, error) {
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Check session exists
 	exists, err := s.tmux.SessionExists(agent.SessionName)
 	if err != nil {
-		return fmt.Errorf("checking session: %w", err)
+		return "", fmt.Errorf("checking session: %w", err)
 	}
 	if !exists {
-		return sessionGone(agent)
+		return "", sessionGone(agent)
 	}
 
 	s.markSent(ctx, name)

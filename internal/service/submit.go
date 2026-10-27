@@ -31,6 +31,11 @@ import (
 // It presses no more Enters once the box is off screen (a dialog may have
 // taken its place) or shows anything else (a person typing). Each wait is
 // bounded by the config's SubmitWait; 0 turns all this off.
+//
+// If it can't read the box before typing (it isn't on screen, or the screen
+// can't be captured), it types and presses Enter without checking, and says
+// so: the sender's result names why, and StateKeyUnchecked records it, so
+// status shows it until a turn starts.
 
 // submitEnters is how many times Enter is pressed for one message, at most.
 const submitEnters = 3
@@ -46,6 +51,10 @@ const submitQuiet = 150 * time.Millisecond
 // StateKeyUnsubmitted is what a message's input box showed when Enter
 // failed to submit it: status compares it with what the box shows now.
 const StateKeyUnsubmitted = "_unsubmitted"
+
+// StateKeyUnchecked is why a message was typed without checking it was
+// submitted (see typeMessage); its time is when.
+const StateKeyUnchecked = "_unchecked"
 
 // UnsubmittedError is the error for a message typed into the agent's input
 // box that is still there after submitEnters Enters.
@@ -84,40 +93,61 @@ func (s *AgentService) readInput(agent *storage.Agent, ir backend.InputReader) (
 }
 
 // typeMessage types text into the agent and presses Enter, making sure
-// the Enter submitted it where the backend needs that (see above).
-func (s *AgentService) typeMessage(ctx context.Context, agent *storage.Agent, text string) error {
+// the Enter submitted it where the backend needs that (see above). It
+// returns why it couldn't check, or "" if it did or the backend needs no
+// checking.
+func (s *AgentService) typeMessage(ctx context.Context, agent *storage.Agent, text string) (string, error) {
 	sc, ok := s.submitChecker(agent)
 	if !ok {
-		return s.sendLine(agent.SessionName, text)
+		return "", s.sendLine(agent.SessionName, text)
 	}
-	before, found := s.readInput(agent, sc)
-	if !found {
-		return s.sendLine(agent.SessionName, text) // can't watch it: as before
+	before, why := s.inputBefore(agent, sc)
+	if why != "" {
+		if err := s.sendLine(agent.SessionName, text); err != nil {
+			return "", err
+		}
+		_ = s.setState(ctx, agent.Name, StateKeyUnchecked, why)
+		return why, nil
 	}
 	if err := s.tmux.SendKeys(agent.SessionName, text); err != nil {
-		return err
+		return "", err
 	}
 	typed, seen, err := s.settledInput(ctx, agent, sc, before)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for enters := 1; ; enters++ {
 		if err := s.tmux.SendSpecialKey(agent.SessionName, "Enter"); err != nil {
-			return err
+			return "", err
 		}
 		var sits bool
 		typed, seen, sits, err = s.awaitSubmit(ctx, agent, sc, before, typed, seen)
 		if err != nil || !sits {
 			if err == nil {
 				_ = s.storage.DeleteStateKey(ctx, agent.Name, StateKeyUnsubmitted)
+				_ = s.storage.DeleteStateKey(ctx, agent.Name, StateKeyUnchecked)
 			}
-			return err
+			return "", err
 		}
 		if enters == submitEnters {
 			_ = s.setState(ctx, agent.Name, StateKeyUnsubmitted, typed)
-			return &UnsubmittedError{Agent: agent.Name, Session: agent.SessionName, Enters: enters}
+			return "", &UnsubmittedError{Agent: agent.Name, Session: agent.SessionName, Enters: enters}
 		}
 	}
+}
+
+// inputBefore reads the agent's input box before a message is typed. It
+// returns what the box shows, or why it can't be read.
+func (s *AgentService) inputBefore(agent *storage.Agent, ir backend.InputReader) (string, string) {
+	screen, err := s.tmux.CaptureStyled(agent.SessionName, 0)
+	if err != nil {
+		return "", fmt.Sprintf("its screen couldn't be captured (%v)", err)
+	}
+	text, found := ir.InputText(screen)
+	if !found {
+		return "", "its input box isn't on screen (a dialog, or a screen agent doesn't recognize)"
+	}
+	return text, ""
 }
 
 // settledInput waits, up to SubmitWait, for the input box to show
@@ -209,4 +239,17 @@ func (s *AgentService) Unsubmitted(ctx context.Context, name string) (at time.Ti
 	}
 	text, found := s.readInput(agent, ir)
 	return entry.UpdatedAt, agent.SessionName, found && text == entry.Value
+}
+
+// Unchecked reports a message typed into name without checking it was
+// submitted, if no turn has started since: why, and when it was typed.
+func (s *AgentService) Unchecked(ctx context.Context, name string) (why string, at time.Time, ok bool) {
+	entry, err := s.storage.GetState(ctx, name, StateKeyUnchecked)
+	if err != nil || entry == nil || entry.Value == "" {
+		return "", time.Time{}, false
+	}
+	if reported, err := s.reportedStatus(ctx, name); err == nil && reported != nil && reported.TurnAt.After(entry.UpdatedAt) {
+		return "", time.Time{}, false
+	}
+	return entry.Value, entry.UpdatedAt, true
 }

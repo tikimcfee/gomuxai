@@ -66,6 +66,10 @@ type SendResult struct {
 	// Typed is how many messages were typed in: this one, after any held
 	// ones it overtook (oldest first, as one prompt).
 	Typed int
+	// Unchecked, for messages typed into a CLI whose Enter can turn into a
+	// newline (Claude), says why send couldn't check they were submitted,
+	// e.g. its input box isn't on screen (see submit.go).
+	Unchecked string
 }
 
 // holdsMessages reports whether messages to agent can be held for the end
@@ -140,7 +144,7 @@ func (s *AgentService) sendHeld(ctx context.Context, agent *storage.Agent, messa
 		// the prompt is answered, the turn's end delivers it.
 		return s.hold(ctx, agent, res, message, from)
 	}
-	n, err := s.typeHeld(ctx, agent, message)
+	n, unchecked, err := s.typeHeld(ctx, agent, message)
 	var blocked *InputBlockedError
 	if errors.As(err, &blocked) {
 		// A person may be typing: hold this one (behind any held), for
@@ -151,7 +155,7 @@ func (s *AgentService) sendHeld(ctx context.Context, agent *storage.Agent, messa
 		}
 		return res, err
 	}
-	res.Typed = n
+	res.Typed, res.Unchecked = n, unchecked
 	return res, err
 }
 
@@ -180,10 +184,10 @@ func (s *AgentService) hold(ctx context.Context, agent *storage.Agent, res SendR
 	// reports in one transaction, so if it missed this message, its report
 	// is visible now: type the message.
 	if reported, err := s.reportedStatus(ctx, agent.Name); err == nil && turnOver(reported) {
-		n, err := s.typeHeld(ctx, agent, "")
+		n, unchecked, err := s.typeHeld(ctx, agent, "")
 		var unsubmitted *UnsubmittedError
 		if err == nil && n > 0 || errors.As(err, &unsubmitted) {
-			res.Typed = n
+			res.Typed, res.Unchecked = n, unchecked
 			return res, err
 		}
 	}
@@ -262,39 +266,41 @@ func (s *AgentService) InputBlocked(ctx context.Context, name string) string {
 // set, as one prompt. It claims them first, so the agent's hook (or
 // another sender) can't deliver them too, and holds them again if typing
 // fails. It refuses (InputBlockedError) unless the agent's input line is
-// empty or unreadable. It returns how many messages it typed.
-func (s *AgentService) typeHeld(ctx context.Context, agent *storage.Agent, extra string) (int, error) {
+// empty or unreadable. It returns how many messages it typed, and why it
+// couldn't check they were submitted (see SendUnchecked).
+func (s *AgentService) typeHeld(ctx context.Context, agent *storage.Agent, extra string) (int, string, error) {
 	if err := s.checkScreen(agent); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if held, err := s.storage.GetPendingMessages(ctx, agent.Name, 1); err == nil && len(held) == 0 && extra == "" {
-		return 0, nil
+		return 0, "", nil
 	}
 	if why := s.inputBlocked(ctx, agent); why != "" {
-		return 0, &InputBlockedError{Agent: agent.Name, Why: why}
+		return 0, "", &InputBlockedError{Agent: agent.Name, Why: why}
 	}
 	claimed, err := s.storage.ClaimPendingMessages(ctx, agent.Name, nil)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	texts := contents(claimed)
 	if extra != "" {
 		texts = append(texts, extra)
 	}
 	if len(texts) == 0 {
-		return 0, nil
+		return 0, "", nil
 	}
-	if err := s.SendUnchecked(ctx, agent.Name, strings.Join(texts, "\n\n")); err != nil {
+	unchecked, err := s.SendUnchecked(ctx, agent.Name, strings.Join(texts, "\n\n"))
+	if err != nil {
 		var unsubmitted *UnsubmittedError
 		if errors.As(err, &unsubmitted) {
-			return len(texts), err // typed: they sit in its input box
+			return len(texts), "", err // typed: they sit in its input box
 		}
 		for _, m := range claimed {
 			_ = s.storage.UpdateMessageStatus(ctx, m.ID, storage.MessageStatusPending)
 		}
-		return 0, err
+		return 0, "", err
 	}
-	return len(texts), nil
+	return len(texts), unchecked, nil
 }
 
 // contents returns the messages' texts, each with its "[from ...]" tag.
@@ -426,8 +432,11 @@ func (s *AgentService) DeliverHeld(ctx context.Context, name string, opts Delive
 				atPromptSince = time.Now()
 			}
 			if !opts.Wait || time.Since(atPromptSince) >= opts.Grace {
-				n, err := s.typeHeld(ctx, agent, "")
+				n, unchecked, err := s.typeHeld(ctx, agent, "")
 				typed += n
+				if unchecked != "" {
+					fmt.Fprintf(os.Stderr, "%s: typed %s's held messages without checking they were submitted: %s\n", time.Now().Format(time.RFC3339), name, unchecked)
+				}
 				var blocked *InputBlockedError
 				switch {
 				case err != nil && !opts.Wait:
