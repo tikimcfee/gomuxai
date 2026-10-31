@@ -143,6 +143,8 @@ type AgentInfo struct {
 	// Status is the agent's resolved status, as StatusResponse.Status;
 	// empty from hosts that predate it.
 	Status string `json:"status,omitempty"`
+	// EndReason says how its session ended, with a status of ended.
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 type StatusRequest struct {
@@ -151,7 +153,9 @@ type StatusRequest struct {
 
 // StatusResponse mirrors service.StatusInfo.
 type StatusResponse struct {
-	Status    string    `json:"status"`
+	Status string `json:"status"`
+	// EndReason says how the session ended, with a status of ended.
+	EndReason string    `json:"end_reason,omitempty"`
 	Source    string    `json:"source"`
 	Event     string    `json:"event,omitempty"`
 	Detail    string    `json:"detail,omitempty"`
@@ -233,13 +237,15 @@ type KeysRequest struct {
 // StatusEvent is published on SubjectStatus whenever an agent's reported
 // status is recorded. It mirrors the report, not the resolved StatusInfo.
 type StatusEvent struct {
-	Host   string    `json:"host"`
-	Agent  string    `json:"agent"`
-	Status string    `json:"status"`
-	Event  string    `json:"event,omitempty"`
-	Detail string    `json:"detail,omitempty"`
-	Tool   string    `json:"tool,omitempty"`
-	At     time.Time `json:"at"`
+	Host   string `json:"host"`
+	Agent  string `json:"agent"`
+	Status string `json:"status"`
+	// EndReason says how the session ended, with a status of ended.
+	EndReason string    `json:"end_reason,omitempty"`
+	Event     string    `json:"event,omitempty"`
+	Detail    string    `json:"detail,omitempty"`
+	Tool      string    `json:"tool,omitempty"`
+	At        time.Time `json:"at"`
 }
 
 // ErrNoBus means no bus is running on this host. Callers fall back to

@@ -21,7 +21,7 @@ import (
 
 // Default status re-check intervals for wait. With a bus, events carry the
 // transitions and the check is only a backstop; without one, it is the only
-// source. A check can run the backend CLI (claude agents --json), so keep it slow.
+// source. A check reads the backend CLI's session registry and may read the screen, so keep it slow.
 const (
 	waitBackstopInterval = 5 * time.Second
 	waitPollInterval     = 2 * time.Second
@@ -47,7 +47,8 @@ var waitCmd = &cobra.Command{
 	Use:   "wait [name[@host]...] --for <status[,status...]>",
 	Short: "Block until agents reach a status (exit 2 on timeout)",
 	Long: `Wait blocks until an agent's status is one of the given statuses, prints
-it, and exits 0. Statuses: idle, processing, waiting, error, exited, unknown.
+it, and exits 0. Statuses: idle, processing, waiting, error, ended, unknown
+("agent statuses" says what each means).
 
 With --timeout, wait gives up after that long and exits 2. It exits 1 on
 errors, including the agent exiting while you wait for another status.
@@ -163,9 +164,9 @@ func runWait(cmd *cobra.Command, args []string) error {
 		}
 	}
 	w := &waiter{nc: nc, statuses: statuses, interval: interval}
-	// An exited agent never reaches anything else.
-	if !slices.Contains(statuses, string(service.AgentStatusExited)) {
-		w.fail = []string{string(service.AgentStatusExited)}
+	// An ended agent never reaches anything else.
+	if !slices.Contains(statuses, string(service.AgentStatusEnded)) {
+		w.fail = []string{string(service.AgentStatusEnded)}
 	}
 
 	if waitTimeout > 0 {
@@ -328,8 +329,8 @@ type waitOutcome struct {
 }
 
 // several waits for refs at once, until all of them (or, with --any, the
-// first) get there. everyAgent says refs weren't named: an agent that has
-// exited is then skipped, not reported.
+// first) get there. everyAgent says refs weren't named: an agent whose
+// session has ended is then skipped, not reported.
 func (w *waiter) several(ctx context.Context, cmd *cobra.Command, refs []natsbus.AgentRef, everyAgent bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -355,7 +356,7 @@ func (w *waiter) several(ctx context.Context, cmd *cobra.Command, refs []natsbus
 			}
 		case errors.Is(o.err, context.DeadlineExceeded):
 			timedOut = append(timedOut, fmt.Sprintf("%s %s", o.ref, orUnknown(o.obs.Status)))
-		case everyAgent && o.obs.Status == string(service.AgentStatusExited):
+		case everyAgent && o.obs.Status == string(service.AgentStatusEnded):
 			// Not one you asked about, and it will never need anything.
 		default:
 			fmt.Fprintf(hintOut, "agent wait: %v\n", o.err)
@@ -380,7 +381,7 @@ func (w *waiter) several(ctx context.Context, cmd *cobra.Command, refs []natsbus
 			waitTimeout, which, plural(len(timedOut), "agent"), want, strings.Join(timedOut, ", "))}
 	}
 	if reached == 0 {
-		return fmt.Errorf("none of the %s can become %s: they have exited", plural(len(refs), "agent"), want)
+		return fmt.Errorf("none of the %s can become %s: their sessions have ended", plural(len(refs), "agent"), want)
 	}
 	return nil
 }
@@ -413,7 +414,7 @@ func (w *waiter) follow(ctx context.Context, cmd *cobra.Command, refs []natsbus.
 			switch {
 			case err == nil:
 				fmt.Fprintln(out, arrivalLine(ref, obs))
-			case everyAgent && obs.Status == string(service.AgentStatusExited):
+			case everyAgent && obs.Status == string(service.AgentStatusEnded):
 			case everyAgent && errors.As(err, new(*service.AgentNotFoundError)):
 			default:
 				fmt.Fprintf(hintOut, "agent wait: %v; no longer watching %s\n", err, ref)

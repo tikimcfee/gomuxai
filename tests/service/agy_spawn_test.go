@@ -127,13 +127,13 @@ func TestReport_RejectsStaleSpawnID(t *testing.T) {
 	env.cfg.AgentBinary = "/bin/agent"
 	ctx := context.Background()
 
-	old := spawnFake(t, env, "worker")
+	old := spawnFakeAgy(t, env, service.SpawnOptions{Name: "worker"})
 	oldSpawn := spawnIDOf(t, old.reportCmd)
 	if err := env.service.Cleanup(ctx, "worker"); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 
-	fresh := spawnFake(t, env, "worker")
+	fresh := spawnFakeAgy(t, env, service.SpawnOptions{Name: "worker"})
 	newSpawn := spawnIDOf(t, fresh.reportCmd)
 	if err := env.service.Report(ctx, "worker", service.StatusReport{
 		Status: service.AgentStatusIdle,
@@ -144,7 +144,7 @@ func TestReport_RejectsStaleSpawnID(t *testing.T) {
 
 	// Late exit wrapper from the previous spawn arrives: must be rejected.
 	_ = env.service.Report(ctx, "worker", service.StatusReport{
-		Status:  service.AgentStatusExited,
+		Status:  service.AgentStatusEnded,
 		Event:   "report",
 		SpawnID: oldSpawn,
 	})
@@ -154,13 +154,13 @@ func TestReport_RejectsStaleSpawnID(t *testing.T) {
 
 	// Current spawn's exit wrapper succeeds.
 	if err := env.service.Report(ctx, "worker", service.StatusReport{
-		Status:  service.AgentStatusExited,
+		Status:  service.AgentStatusEnded,
 		Event:   "report",
 		SpawnID: newSpawn,
 	}); err != nil {
 		t.Fatalf("Report(exited, current spawn): %v", err)
 	}
-	if st, _ := env.service.Status(ctx, "worker"); st != service.AgentStatusExited {
+	if st, _ := env.service.Status(ctx, "worker"); st != service.AgentStatusEnded {
 		t.Errorf("status = %s, want exited", st)
 	}
 }

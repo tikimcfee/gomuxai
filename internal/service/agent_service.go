@@ -26,7 +26,7 @@ const (
 	AgentStatusProcessing AgentStatus = "processing"
 	AgentStatusWaiting    AgentStatus = "waiting" // blocked on a human, e.g. a permission prompt
 	AgentStatusError      AgentStatus = "error"
-	AgentStatusExited     AgentStatus = "exited"
+	AgentStatusEnded      AgentStatus = "ended"
 	AgentStatusUnknown    AgentStatus = "unknown"
 )
 
@@ -292,7 +292,22 @@ func initMessage(opts SpawnOptions, fromFile func(taskFile string) string) strin
 func (s *AgentService) launchCommand(ctx context.Context, opts SpawnOptions, provider backend.Provider, initMsg string) (cmd string, promptInLaunch bool, err error) {
 	name := opts.Name
 	cmd = provider.LaunchCommand()
-	if hp, ok := provider.(backend.HookProvider); ok && s.cfg.AgentBinary != "" {
+	if gh, ok := provider.(backend.GlobalHooker); ok && s.cfg.AgentBinary != "" {
+		// Its hooks are every session's (agent hook), and place it by its
+		// pane, so no spawn id is needed: a dying predecessor's CLI isn't
+		// under this agent's pane.
+		if err := gh.HooksInstalled(s.cfg.AgentBinary); err != nil {
+			return "", false, err
+		}
+		sessionID := uuid.NewString()
+		cmd = gh.LaunchCommandWithSession(sessionID)
+		if opts.Resume != "" {
+			sessionID = opts.Resume
+		}
+		if err := s.setState(ctx, name, StateKeySessionID, sessionID); err != nil {
+			return "", false, fmt.Errorf("storing %s: %w", StateKeySessionID, err)
+		}
+	} else if hp, ok := provider.(backend.SpawnHooker); ok && s.cfg.AgentBinary != "" {
 		// The spawn-time session id doubles as the spawn id: it is unique per
 		// spawn, while _session_id itself moves on /clear and /resume. A
 		// resumed agent's session is the one it continues.
@@ -417,7 +432,7 @@ func (s *AgentService) Send(ctx context.Context, name string, message string, op
 	return res, nil
 }
 
-// checkCanSend fails if the agent has exited, is waiting on a prompt, or
+// checkCanSend fails if the agent's session has ended, is waiting on a prompt, or
 // shows a permission or trust dialog on screen. It returns the agent's
 // status.
 func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (AgentStatus, error) {
@@ -436,7 +451,7 @@ func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (
 			}
 			return status, fmt.Errorf("agent %s is waiting on %s, where the message's Enter would answer it: see it with agent status %s -v, then agent approve %s or agent deny %s (a person can send anyway with --force)",
 				agent.Name, prompt, agent.Name, agent.Name, agent.Name)
-		case AgentStatusExited:
+		case AgentStatusEnded:
 			return status, exitedErr(agent)
 		}
 	}
@@ -450,7 +465,7 @@ func answerQuestionHint(agent *storage.Agent) string {
 
 // exitedErr is the error for typing into an agent whose CLI has exited.
 func exitedErr(agent *storage.Agent) error {
-	return fmt.Errorf("agent %s has exited, so the message would be typed into the shell left behind: agent logs %s shows how it ended, and agent cleanup %s removes it",
+	return fmt.Errorf("agent %s's session has ended, so the message would be typed into the shell left behind: agent logs %s shows how it ended, and agent cleanup %s removes it",
 		agent.Name, agent.Name, agent.Name)
 }
 

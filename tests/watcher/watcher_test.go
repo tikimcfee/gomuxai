@@ -61,6 +61,7 @@ func (f *fakeTmux) CaptureStyled(string, int) (string, error)     { return "", n
 func (f *fakeTmux) PipePane(string, string) error                 { return nil }
 func (f *fakeTmux) StopPipePane(string) error                     { return nil }
 func (f *fakeTmux) Clear(string) error                            { return nil }
+func (f *fakeTmux) PanePIDs() (map[int]string, error)             { return nil, nil }
 
 func (f *fakeTmux) SendKeys(_ string, text string) error {
 	f.mu.Lock()
@@ -171,7 +172,7 @@ func TestWatcher_DeliversToIdleOrErroredAgent(t *testing.T) {
 // Repro: an agent's CLI exits (or crashes) with messages queued. The watcher
 // skipped every status but idle and unknown, so they sat pending forever.
 func TestWatcher_FailsMessagesToExitedAgent(t *testing.T) {
-	env := setupDelivery(t, service.AgentStatusExited)
+	env := setupDelivery(t, service.AgentStatusEnded)
 
 	if env.runWatcher(t, time.Second) {
 		t.Fatal("message to an exited agent is still pending, want failed")

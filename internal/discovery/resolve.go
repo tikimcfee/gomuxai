@@ -6,26 +6,33 @@ import (
 	"sort"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
-// Statuses a session can have: an agent's (internal/backend/types), and
-// exited for one that is over.
+// Statuses a session can have: an agent's (internal/backend/types, which
+// also lists what each means), ended for one that is over, beside an end
+// reason.
 const (
 	StatusIdle       = "idle"
 	StatusProcessing = "processing"
 	StatusWaiting    = "waiting"
 	StatusError      = "error"
-	StatusExited     = "exited"
+	StatusEnded      = "ended"
 	StatusUnknown    = "unknown"
 )
 
-// Native is what a backend CLI's own session list (claude agents --json)
+// Native is what a backend CLI's own record of its sessions (Claude Code's session registry)
 // says about one session.
 type Native struct {
 	Queried bool   // the CLI answered
 	Listed  bool   // it lists the session
 	Status  string // its status there; StatusUnknown for a state with no mapping
+	// PaneErr says why the agent's pane couldn't be read, when the session
+	// isn't listed and the pane was asked what it runs instead.
+	PaneErr error
+	// Err says why the CLI couldn't be asked (Queried false).
+	Err error
 }
 
 // How ReconcileNative decides.
@@ -53,7 +60,7 @@ func ReconcileNative(n Native, report string, denied func() bool) int {
 		return ReportDenied
 	case n.Listed:
 		return NativeWins
-	case n.Queried && report != "" && report != StatusExited:
+	case n.Queried && report != "" && report != StatusEnded:
 		return NativeGone
 	}
 	return ReportStands
@@ -61,7 +68,7 @@ func ReconcileNative(n Native, report string, denied func() bool) int {
 
 // RecentWindow is how recently a session with no other sign of life must
 // have written its transcript to count as possibly running (unknown)
-// rather than exited.
+// rather than ended (gone).
 const RecentWindow = 10 * time.Minute
 
 // Agent is one run of a gomuxai workgroup agent, live or departed, as the
@@ -75,10 +82,11 @@ type Agent struct {
 	Live      bool // it has a record (not cleaned up)
 	CreatedAt time.Time
 	EndedAt   time.Time
-	// Status, Event and StatusAt are its last report.
-	Status   string
-	Event    string
-	StatusAt time.Time
+	// Status, EndReason, Event and StatusAt are its last report.
+	Status    string
+	EndReason string
+	Event     string
+	StatusAt  time.Time
 	// SessionID and Transcript are its current session (live), or its last
 	// transcript (departed).
 	SessionID  string
@@ -91,10 +99,19 @@ type Agent struct {
 // Live is what the harnesses say is running on this host now.
 type Live struct {
 	// Claude maps the id of every Claude Code session running on this host
-	// to its status, from `claude agents --json`; nil if that couldn't be
+	// to its status, from Claude Code's session registry; nil if that couldn't be
 	// asked.
 	Claude map[string]string
-	Now    time.Time
+	// Reports maps a session id to its last report from the global hook
+	// (agent hook), which hears every Claude Code session on the host.
+	Reports map[string]Report
+	Now     time.Time
+}
+
+// Report is a session's last report from the global hook.
+type Report struct {
+	Status, EndReason string
+	At                time.Time
 }
 
 // Resolve joins sessions to the workgroup agents whose transcripts they
@@ -109,17 +126,19 @@ type Live struct {
 //
 // Status:
 //   - a live agent's current session: its last report, reconciled with
-//     `claude agents --json` for Claude by ReconcileNative (the rule agent
-//     status uses), and exited when agy no longer holds it open;
-//   - any other session of a workgroup agent: exited;
-//   - Claude, no workgroup: `claude agents --json`'s status, or exited if
-//     it doesn't list the session (unknown if it couldn't be asked);
+//     the session registry for Claude by ReconcileNative (the rule agent
+//     status uses), and ended (gone) when agy no longer holds it open;
+//   - any other session of a workgroup agent: ended (replaced), or (closed)
+//     for the last one of a departed agent;
+//   - Claude, no workgroup: the session registry's status, or ended (gone)
+//     if no running process holds the session (unknown if it couldn't be
+//     read);
 //   - agy, no workgroup: unknown while agy holds the conversation's presence
-//     lock (running; idle or busy can't be told), exited when not;
+//     lock (running; idle or busy can't be told), ended (gone) when not;
 //   - Kimi (and agy without presence files): unknown if the transcript
-//     changed within RecentWindow, else exited;
-//   - a subagent: exited if it recorded finishing, agy says it isn't open,
-//     or its parent session is exited; else unknown.
+//     changed within RecentWindow, else ended (gone);
+//   - a subagent: ended (finished) if it recorded finishing, (gone) if agy
+//     says it isn't open, (parent) if its parent session ended; else unknown.
 func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 	if live.Now.IsZero() {
 		live.Now = time.Now()
@@ -150,6 +169,22 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 		}
 		return time.Time{}, false
 	})
+	// A live agent whose current session no hook has named a transcript for
+	// (one its pane runs, adopted from the CLI's registry) owns the session
+	// the scan found under that id.
+	for i := range agents {
+		a := &agents[i]
+		if !a.Live || a.Transcript != "" || a.SessionID == "" {
+			continue
+		}
+		for j := range sessions {
+			if s := &sessions[j]; s.SessionID == a.SessionID && s.Harness == a.Backend && s.ParentSession == nil {
+				a.Transcript = s.Path
+				owner[canonical(s.Path)] = a
+				break
+			}
+		}
+	}
 	for i := range agents {
 		a := &agents[i]
 		if !a.Live {
@@ -165,6 +200,9 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 			s.SessionID = firstNonEmpty(a.SessionID, transcript.SessionIDFromPath(a.Transcript))
 		} else {
 			s.Workgroup, s.Status, s.StatusAt = workgroupOf(a), reported(a), a.StatusAt
+			if s.Status == StatusEnded {
+				s.EndReason = firstNonEmpty(a.EndReason, string(types.EndGone))
+			}
 		}
 		sessions = append(sessions, s)
 	}
@@ -301,14 +339,25 @@ func reported(a *Agent) string {
 // ownedStatus sets the status of a session a workgroup agent owns.
 func ownedStatus(s *Session, a *Agent, live Live) {
 	current := canonical(a.Transcript) == canonical(s.Path)
-	if !a.Live || !current {
-		s.Status, s.StatusAt = StatusExited, s.Mtime
-		if !a.Live && current && !a.EndedAt.IsZero() {
+	switch {
+	case !a.Live && current:
+		ended(s, types.EndClosed, s.Mtime)
+		if !a.EndedAt.IsZero() {
 			s.StatusAt = a.EndedAt
 		}
+		// What its last report said, if it ended before cleanup did.
+		if a.Status == StatusEnded && a.EndReason != "" {
+			s.EndReason = a.EndReason
+		}
+		return
+	case !current:
+		ended(s, types.EndReplaced, s.Mtime)
 		return
 	}
 	s.Status, s.StatusAt = reported(a), a.StatusAt
+	if s.Status == StatusEnded {
+		s.EndReason = firstNonEmpty(a.EndReason, string(types.EndGone))
+	}
 	switch {
 	case s.Harness == HarnessClaude:
 		st, listed := live.Claude[s.SessionID]
@@ -317,14 +366,19 @@ func ownedStatus(s *Session, a *Agent, live Live) {
 		switch ReconcileNative(n, a.Status, denied) {
 		case NativeWins:
 			if st != s.Status {
-				s.Status, s.StatusAt = st, s.Mtime
+				s.Status, s.StatusAt, s.EndReason = st, s.Mtime, ""
 			}
 		case NativeGone:
-			s.Status, s.StatusAt = StatusExited, s.Mtime
+			ended(s, types.EndGone, s.Mtime)
 		}
-	case s.live == liveNo && s.Status != StatusExited:
-		s.Status, s.StatusAt = StatusExited, s.Mtime
+	case s.live == liveNo && s.Status != StatusEnded:
+		ended(s, types.EndGone, s.Mtime)
 	}
+}
+
+// ended sets s ended, for reason, at at.
+func ended(s *Session, reason types.EndReason, at time.Time) {
+	s.Status, s.EndReason, s.StatusAt = StatusEnded, string(reason), at
 }
 
 // localStatus sets the status of a session no workgroup owns, from what the
@@ -335,16 +389,19 @@ func localStatus(s *Session, live Live) {
 	case s.Harness == HarnessClaude && live.Claude == nil:
 		s.Status = StatusUnknown
 	case s.Harness == HarnessClaude:
-		s.Status = StatusExited
 		if st, ok := live.Claude[s.SessionID]; ok {
 			s.Status = st
+		} else if r, ok := live.Reports[s.SessionID]; ok && r.Status == StatusEnded && r.EndReason != "" {
+			ended(s, types.EndReason(r.EndReason), r.At) // the hook heard how it ended
+		} else {
+			ended(s, types.EndGone, s.Mtime)
 		}
 	case s.live == liveYes:
 		s.Status = StatusUnknown
 	case s.live == liveNo:
-		s.Status = StatusExited
+		ended(s, types.EndGone, s.Mtime)
 	default:
-		s.Status = recent(s, live)
+		recent(s, live)
 	}
 }
 
@@ -352,25 +409,32 @@ func localStatus(s *Session, live Live) {
 // its parent's.
 func subagentStatus(s *Session, parent *Session, live Live) {
 	s.StatusAt = s.Mtime
+	r, reported := live.Reports[s.SessionID]
 	switch {
-	case s.state == subFinished, s.live == liveNo:
-		s.Status = StatusExited
-	case parent != nil && parent.Status == StatusExited:
-		s.Status = StatusExited
+	case s.state == subFinished, reported && r.Status == StatusEnded && r.EndReason == string(types.EndFinished):
+		ended(s, types.EndFinished, s.Mtime)
+	case s.live == liveNo:
+		ended(s, types.EndGone, s.Mtime)
+	case parent != nil && parent.Status == StatusEnded:
+		ended(s, types.EndParent, s.Mtime)
+	case reported && r.Status == StatusProcessing:
+		// The hook saw it start (SubagentStart, its tool calls) and not stop.
+		s.Status, s.StatusAt = StatusProcessing, r.At
 	case s.live == liveYes, parent != nil:
 		s.Status = StatusUnknown
 	default:
-		s.Status = recent(s, live)
+		recent(s, live)
 	}
 }
 
-// recent is unknown for a transcript written within RecentWindow, else
-// exited.
-func recent(s *Session, live Live) string {
+// recent sets unknown for a transcript written within RecentWindow, else
+// ended (gone): nothing says it runs, nor how it ended.
+func recent(s *Session, live Live) {
 	if live.Now.Sub(s.Mtime) < RecentWindow {
-		return StatusUnknown
+		s.Status = StatusUnknown
+		return
 	}
-	return StatusExited
+	ended(s, types.EndGone, s.Mtime)
 }
 
 func firstNonEmpty(values ...string) string {

@@ -21,8 +21,8 @@ PostInvocation).
 
 For other agents, the watcher ("agent watch") delivers queued messages when
 the agent's status is idle, or error (a failed turn, back at its prompt). It
-holds them while the agent is processing or waiting, and fails them if the
-agent has exited. Without a running watcher, queued messages are never
+holds them while the agent is processing or waiting, and fails them once
+the agent's session has ended. Without a running watcher, queued messages are never
 delivered: queue says so when it finds none.
 
 The agent must be on this host: name@<this host> works, while an agent on
@@ -91,8 +91,8 @@ func runQueue(cmd *cobra.Command, args []string) error {
 	}
 	if info, err := agentService.StatusInfo(ctx, name); err == nil {
 		line += fmt.Sprintf(" (it is %s)", info.Status)
-		if info.Status == service.AgentStatusExited {
-			line += "; it has exited, so the watcher will fail the message"
+		if info.Status == service.AgentStatusEnded {
+			line += "; its session has ended, so the watcher will fail the message"
 		}
 	}
 	fmt.Println(line + ".")

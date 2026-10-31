@@ -9,6 +9,8 @@ import (
 // backend missing one method silently loses the whole capability. Pin them.
 var (
 	_ backend.HookProvider         = (*namedagents.ClaudeBackend)(nil)
+	_ backend.GlobalHooker         = (*namedagents.ClaudeBackend)(nil)
+	_ backend.PaneSessionProvider  = (*namedagents.ClaudeBackend)(nil)
 	_ backend.NativeStatusProvider = (*namedagents.ClaudeBackend)(nil)
 	_ backend.PermissionResponder  = (*namedagents.ClaudeBackend)(nil)
 	_ backend.InstructionsProvider = (*namedagents.ClaudeBackend)(nil)
@@ -19,6 +21,7 @@ var (
 	_ backend.SubmitChecker        = (*namedagents.ClaudeBackend)(nil)
 
 	_ backend.HookProvider         = (*namedagents.AgyBackend)(nil)
+	_ backend.SpawnHooker          = (*namedagents.AgyBackend)(nil)
 	_ backend.PermissionResponder  = (*namedagents.AgyBackend)(nil)
 	_ backend.PromptFlagProvider   = (*namedagents.AgyBackend)(nil)
 	_ backend.InstructionsProvider = (*namedagents.AgyBackend)(nil)

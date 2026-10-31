@@ -45,8 +45,8 @@ The Go types are in `internal/transcript/events.go`; the Session is
     error. A session that runs is listed with its transcript's path before the file exists
     (Claude Code writes it at the first prompt): `--follow` waits for the file, as `tail -F`
     does, then streams it from its start, session line first; without `--follow` that is an
-    error that says so. A missing transcript of a session that has exited is an error, and
-    a wait ends with one when its session exits first.
+    error that says so. A missing transcript of a session that has ended is an error, and
+    a wait ends with one when its session ends first.
   - `--requests` adds the model-request channel; it is off by default. Request events
     number their own `seq` from 0, so a conversation event has the same `seq` with or
     without it.
@@ -84,7 +84,8 @@ updates an earlier one, the add comes first.
   "agent_name": "…",           // the name the harness recorded for the session (Claude's agent-name)
   "model": "…", "version": "…", "git_branch": "…",
   "workgroup": { "name": "…", "parent": "…", "store": "…", "host": "…" },  // null if no workgroup owns it
-  "status": "idle|processing|waiting|error|exited|unknown", "status_at": "…",
+  "status": "idle|processing|waiting|error|ended|unknown", "status_at": "…",
+  "end_reason": "quit|gone|replaced|finished|parent|closed",  // only with "ended": how it ended
   "parent_session": { "session_id": "…", "tool_id": "…" },  // set on a subagent's session
   "continued_in": "…" }
 ```
@@ -95,6 +96,12 @@ updates an earlier one, the add comes first.
 - `tool_id` is the call that started the subagent, where the harness records it (Claude's
   meta.json `toolUseId`); absent for agy and Kimi.
 - `workgroup.parent` is absent when a person spawned the agent.
+- `status` and `end_reason` are the words `agent statuses` prints with their meanings
+  (`internal/backend/types/status.go`); `docs/ARCHITECTURE.md` ("Sessions") says where each
+  session's comes from. `ended` always carries an `end_reason`: `quit` (the CLI ended it and
+  said so), `gone` (its process isn't running and nothing recorded it ending), `replaced`
+  (its agent went on in a newer session), `finished` (a subagent that finished its task),
+  `parent` (a subagent whose parent session ended), `closed` (its agent was cleaned up).
 - A live workgroup agent whose CLI hasn't written a transcript yet (or keeps none) is listed
   with an empty `path` and `harness` set to its backend.
 

@@ -198,3 +198,58 @@ func TestSpawnArgs(t *testing.T) {
 		}
 	}
 }
+
+// A store from before end reasons: opening it renames "exited" to "ended"
+// once, with "gone" as the reason (nothing recorded how those ended), and
+// leaves later rows alone.
+func TestMigrateExitedToEnded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gomuxai.db")
+	s, err := NewSQLiteStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		// As the binary before end reasons left it.
+		`ALTER TABLE agent_events DROP COLUMN end_reason`,
+		`ALTER TABLE runs DROP COLUMN end_reason`,
+		`INSERT INTO agents (name, session_name, backend, created_at) VALUES ('w', 'agent-w', 'claude', '2026-10-24T14:00:00Z')`,
+		`INSERT INTO state VALUES ('w', '_status', 'exited', '2026-10-24T14:01:00Z')`,
+		`INSERT INTO runs (name, parent, backend, session, cwd, created_at, ended_at, status) VALUES ('old', '', 'claude', 's', '/', 'x', 'y', 'exited')`,
+		`INSERT INTO agent_events (at, kind, agent, run, status) VALUES ('2026-10-24T14:01:00Z', 'status', 'w', 0, 'exited')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	db.Close()
+
+	s, err = NewSQLiteStorage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	st, _ := s.GetState(ctx, "w", "_status")
+	why, _ := s.GetState(ctx, "w", "_end_reason")
+	if st == nil || st.Value != "ended" || why == nil || why.Value != "gone" {
+		t.Errorf("state: %+v %+v", st, why)
+	}
+	var runStatus, runReason, evStatus, evReason string
+	s.db.QueryRow(`SELECT status, end_reason FROM runs WHERE name = 'old'`).Scan(&runStatus, &runReason)
+	s.db.QueryRow(`SELECT status, end_reason FROM agent_events WHERE agent = 'w'`).Scan(&evStatus, &evReason)
+	if runStatus != "ended" || runReason != "gone" || evStatus != "ended" || evReason != "gone" {
+		t.Errorf("run %s/%s, event %s/%s", runStatus, runReason, evStatus, evReason)
+	}
+	// Once: a later "ended" row with its own reason is not touched again.
+	s.Close()
+	s2, _ := NewSQLiteStorage(path)
+	defer s2.Close()
+	if why, _ := s2.GetState(ctx, "w", "_end_reason"); why == nil || why.Value != "gone" {
+		t.Errorf("reopen: %+v", why)
+	}
+}

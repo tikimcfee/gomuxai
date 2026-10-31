@@ -31,7 +31,10 @@ type Session struct {
 	GitBranch string     `json:"git_branch,omitempty"`
 	Workgroup *Workgroup `json:"workgroup"`
 	Status    string     `json:"status"`
-	StatusAt  time.Time  `json:"status_at,omitzero"`
+	// EndReason says how the session ended, with a status of ended (see
+	// types.EndReasons, or agent statuses).
+	EndReason string    `json:"end_reason,omitempty"`
+	StatusAt  time.Time `json:"status_at,omitzero"`
 	// ParentSession is set on a subagent's session: the session that
 	// started it, and the tool call that did, where the harness records it.
 	ParentSession *ParentSession `json:"parent_session,omitempty"`

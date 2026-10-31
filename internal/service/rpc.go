@@ -28,9 +28,9 @@ func (h rpcHandler) List(ctx context.Context) (*natsbus.ListResponse, error) {
 	}
 	resp := &natsbus.ListResponse{Agents: make([]natsbus.AgentInfo, 0, len(agents))}
 	for _, a := range agents {
-		status := AgentStatusUnknown
+		status, reason := AgentStatusUnknown, backend.EndReason("")
 		if info, err := h.s.StatusInfo(ctx, a.Name); err == nil {
-			status = info.Status
+			status, reason = info.Status, info.EndReason
 		}
 		resp.Agents = append(resp.Agents, natsbus.AgentInfo{
 			Name:      a.Name,
@@ -39,6 +39,7 @@ func (h rpcHandler) List(ctx context.Context) (*natsbus.ListResponse, error) {
 			SpawnedBy: a.SpawnedBy,
 			CreatedAt: a.CreatedAt,
 			Status:    string(status),
+			EndReason: string(reason),
 		})
 	}
 	return resp, nil
@@ -51,6 +52,7 @@ func (h rpcHandler) Status(ctx context.Context, req natsbus.StatusRequest) (*nat
 	}
 	return &natsbus.StatusResponse{
 		Status:    string(info.Status),
+		EndReason: string(info.EndReason),
 		Source:    info.Source,
 		Event:     info.Event,
 		Detail:    info.Detail,

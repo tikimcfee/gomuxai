@@ -245,7 +245,7 @@ It continues session 3f34adff.
 
 func TestCheckResumable(t *testing.T) {
 	dir := t.TempDir()
-	ok := discovery.Session{SessionID: "s1", Harness: "claude", Cwd: dir, Status: discovery.StatusExited}
+	ok := discovery.Session{SessionID: "s1", Harness: "claude", Cwd: dir, Status: discovery.StatusEnded}
 	with := func(f func(*discovery.Session)) discovery.Session { s := ok; f(&s); return s }
 	tests := []struct {
 		name    string
@@ -257,7 +257,7 @@ func TestCheckResumable(t *testing.T) {
 		{"an exited agy session", with(func(s *discovery.Session) { s.Harness = "agy" }), "agy", ""},
 		{"the wrong backend", ok, "agy", "spawn it with --backend claude"},
 		{"a harness that can't resume", with(func(s *discovery.Session) { s.Harness = "kimi" }), "kimi", "continues claude and agy sessions"},
-		{"still running", with(func(s *discovery.Session) { s.Status = "idle" }), "claude", "is idle, not exited"},
+		{"still running", with(func(s *discovery.Session) { s.Status = "idle" }), "claude", "is idle, not ended"},
 		{"run by a workgroup agent", with(func(s *discovery.Session) {
 			s.Status = "processing"
 			s.Workgroup = &discovery.Workgroup{Name: "lead"}

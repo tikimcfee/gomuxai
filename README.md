@@ -8,9 +8,10 @@ from your own terminal with the same commands the agents use.
 
 What it adds over a pile of tmux windows:
 - **Status from the CLIs themselves.** For Claude Code and agy, status
-  (idle, processing, waiting on a permission prompt, exited) comes from the
-  CLI's own hooks and session list, not from scraping the screen. A
+  (idle, processing, waiting on a permission prompt, ended) comes from the
+  CLI's own hooks and session records, not from scraping the screen. A
   coordinator can wait for a helper's turn to end, then read its reply.
+  `agent statuses` says what each status means.
 - **Permission prompts you can answer remotely**, after seeing the full tool
   call: `agent status -v`, then `agent approve --expect <tool>`.
 - **A friction box.** Agents (and people) file what got in their way with
@@ -38,6 +39,24 @@ folder to reset.
 
 Release binaries: `make build-linux` and `make build-darwin` cross-compile
 into `bin/`. There is no Windows build; use the Linux one under WSL.
+
+To run Claude agents, register the binary's hook with Claude Code once:
+
+```bash
+agent hooks install            # adds "<this binary> hook" to ~/.claude/settings.json
+agent hooks status             # per event: installed, missing, or another binary's
+```
+
+Claude Code then runs `agent hook` for every session on the machine. It
+works out from the running processes whether the session is an agent's:
+an agent's gets its status reported, held messages handed over, and its
+safe `agent` commands approved; any other session is only recorded, so
+`agent sessions` can say how it ended, and never sees output from the hook.
+`install` leaves your other hooks and settings alone, backs the file up to
+`.gomuxai/backups/` first, and does nothing when it's already current;
+`agent hooks remove` takes the entries out. `agent spawn --backend claude`
+refuses until the hook is installed. Sessions already running pick the
+change up when restarted.
 
 ### macOS
 
@@ -263,7 +282,9 @@ bus prints a note about it in its `gomux-bus` session
 |---|---|
 | `agent` | Who you are, this host, your agents and their status (and held messages), the bus, messages held for you |
 | `agent list` | Every agent here with STATUS and PARENT; `--host H` for another machine |
-| `agent status NAME -v` | Status, where it came from, last event, and a pending prompt's full tool call |
+| `agent status NAME -v` | Status and what it means, where it came from, last event, and a pending prompt's full tool call |
+| `agent statuses` | Every status and end reason (`ended (quit)`, `ended (gone)`, ...) with what it means |
+| `agent hooks status` | Whether Claude Code runs this binary's hook on every event, and the hook's last errors |
 | `agent capture NAME` | The agent's screen now, plus scrollback, as plain text; `--raw` keeps colors and styling |
 | `agent logs NAME` | What it did, from its CLI's own transcript: prompts, thinking, tool calls, replies. Works after cleanup. `--terminal` for the raw terminal log |
 | `agent history` | Every `agent` command run on this host, by whom, and its exit code; `--failed` for failures |
@@ -296,8 +317,10 @@ add` found a similar entry.
 | Queued messages never arrive (aider, agy, custom backends) | No `agent watch` is running (`queue` says so) | Run `agent watch` in a spare terminal, or `agent send` instead |
 | A held message hasn't arrived | The agent's turn (agy: its current step) is still running, or ended with no hook (Esc, Ctrl+C, deny) | `agent status NAME -v` shows `held:`; a deliverer types it 10s after the turn ends; `agent deliver NAME` types it now if the agent is at its prompt |
 | Agent stays `waiting` | A permission prompt, or a question for the user | `agent status NAME -v`, then `approve`/`deny`; for a question (e.g. AskUserQuestion), `agent capture NAME` and answer with `agent keys` |
-| `send` refused | The agent has exited, or is at a dialog (the Enter would answer it) and the message can't be held (`--now`, or not a Claude or agy agent) | Answer the dialog first; for an exited agent, `agent logs NAME`, then `agent cleanup NAME` |
-| Status `exited` or the tmux session is gone | The CLI quit or crashed | `agent logs NAME` shows how it ended; `agent cleanup NAME` removes the record |
+| `send` refused | The agent's session has ended, or it is at a dialog (the Enter would answer it) and the message can't be held (`--now`, or not a Claude or agy agent) | Answer the dialog first; for an ended agent, `agent logs NAME`, then `agent cleanup NAME` |
+| Status `ended (...)` or the tmux session is gone | No CLI runs the agent's session any more: `quit` (it ended and said so), `gone` (it crashed or was killed), ... (`agent statuses` lists them all) | `agent logs NAME` shows how it ended; `agent cleanup NAME` removes the record |
+| `spawn --backend claude` says Claude Code's settings don't run this binary's hook | The global hook isn't installed, or runs another copy of `agent` (one hook serves one binary: its store hears the sessions) | `agent hooks install`; for another copy, spawn with the copy the hook runs, or `agent hooks install --force` (that copy's agents then stop reporting) |
+| A Claude agent's status never changes, or held messages never arrive | Its CLI started before `agent hooks install`, or the hook is failing | `agent hooks status` shows the last errors; restart the agent's CLI to load the hook |
 | A tmux session `agent-NAME` with no agent record | Leftover session | `agent session kill agent-NAME` |
 | Status `unknown` | aider and custom backends have no hooks; the screen matched no pattern | `agent capture NAME`; adjust the backend's patterns |
 | A long message arrives in Claude as pasted content | Claude treats long typed input as a paste, i.e. data | Keep instructions short, or write them to a file and send its path (a message held for a busy agent arrives whole) |

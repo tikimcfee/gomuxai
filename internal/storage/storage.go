@@ -43,6 +43,10 @@ type Storage interface {
 	DeleteState(ctx context.Context, agentName string) error
 	DeleteStateKey(ctx context.Context, agentName, key string) error
 
+	// Session reports: every session's last hook report (the global hook).
+	RecordSessionReport(ctx context.Context, r *SessionReport) error
+	SessionReports(ctx context.Context) (map[string]*SessionReport, error)
+
 	// Command log
 	LogCommand(ctx context.Context, rec *CommandRecord) error
 	ListCommands(ctx context.Context, f CommandFilter) ([]*CommandRecord, error) // newest first

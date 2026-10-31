@@ -41,6 +41,11 @@ directory spawn runs from, so it gets that project's permission settings
 (for Claude, its .claude/ settings on top of the user's); --skip-permissions
 bypasses them.
 
+A Claude agent reports its status, takes held messages, and has its safe
+agent commands approved through the hook Claude Code runs for every session,
+so spawn refuses one until "agent hooks install" has registered this
+binary's hook.
+
 Spawn returns once the CLI has had its startup time, and says the status it
 found the agent in: "idle" means it is ready for a message.
 
@@ -49,8 +54,8 @@ agent, instead of starting a new one: a session you ran in a terminal joins
 the workgroup, and agent send reaches it from then on. It takes what agent
 transcript takes (a session id, the start of one, a transcript's path, or a
 workgroup agent's name for its last session) and the --backend of the
-session's harness. The session must have exited: quit the CLI running it
-first, since two CLIs on one session would both write its transcript. A
+session's harness. The session must have ended (agent sessions shows its
+status): quit the CLI running it first, since two CLIs on one session would both write its transcript. A
 subagent's session can't be resumed on its own. The agent starts in the
 directory the session ran in, whatever directory spawn runs from.
 
@@ -78,7 +83,7 @@ func init() {
 	spawnCmd.Flags().StringVar(&spawnTask, "task", "",
 		"Reference a task from the repository by name")
 	spawnCmd.Flags().StringVar(&spawnResume, "resume", "",
-		"Continue this exited Claude or agy session as the agent (an id, the start of one, or a transcript's path)")
+		"Continue this ended Claude or agy session as the agent (an id, the start of one, or a transcript's path)")
 	spawnCmd.Flags().BoolVar(&spawnAttach, "attach", false,
 		"Open the agent's tmux session in this terminal once it starts")
 }
@@ -169,12 +174,12 @@ func checkResumable(s discovery.Session, backendName string) error {
 		return fmt.Errorf("session %s is a %s session: spawn it with --backend %s", s.SessionID, s.Harness, s.Harness)
 	case s.ParentSession != nil:
 		return fmt.Errorf("session %s is a subagent's: resume the session that started it, %s", s.SessionID, s.ParentSession.SessionID)
-	case s.Status != discovery.StatusExited:
+	case s.Status != discovery.StatusEnded:
 		owner := ""
 		if s.Workgroup != nil {
 			owner = fmt.Sprintf(" (agent %s runs it)", s.Workgroup.Name)
 		}
-		return fmt.Errorf("session %s is %s, not exited%s: quit the CLI running it first, since two CLIs on one session would both write its transcript", s.SessionID, s.Status, owner)
+		return fmt.Errorf("session %s is %s, not ended%s: quit the CLI running it first, since two CLIs on one session would both write its transcript", s.SessionID, s.Status, owner)
 	case s.Cwd == "":
 		return fmt.Errorf("session %s recorded no working directory to resume it in", s.SessionID)
 	}
@@ -194,8 +199,8 @@ func spawnReadiness(name string, status service.AgentStatus) string {
 		return "It is processing (still starting, or working on its task)."
 	case service.AgentStatusWaiting:
 		return fmt.Sprintf("It is already waiting on a prompt: agent status %s -v shows it.", name)
-	case service.AgentStatusExited:
-		return fmt.Sprintf("It has already exited: agent logs %s shows why.", name)
+	case service.AgentStatusEnded:
+		return fmt.Sprintf("Its session has already ended: agent logs %s shows why.", name)
 	}
 	return fmt.Sprintf("Its status is %s so far: agent wait %s --for idle --timeout 1m waits until it's ready.", status, name)
 }

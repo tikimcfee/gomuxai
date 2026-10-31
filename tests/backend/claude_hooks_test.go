@@ -8,6 +8,7 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
+	"github.com/tikimcfee/gomuxai/internal/claudereg"
 )
 
 // Payloads trimmed from real Claude Code v2.1.310 hook invocations
@@ -106,7 +107,7 @@ func TestClaudeParseHookEvent(t *testing.T) {
 			name:       "session end",
 			payload:    `{"hook_event_name":"SessionEnd","session_id":"s1","reason":"prompt_input_exit"}`,
 			wantOK:     true,
-			wantStatus: backend.StatusExited,
+			wantStatus: backend.StatusEnded,
 			wantDetail: "prompt_input_exit",
 		},
 		{
@@ -257,56 +258,14 @@ func TestClaudeParseHookEvent_KeepsPermissionInputWhole(t *testing.T) {
 	}
 }
 
-// The launch command is typed into a shell, so its --settings JSON must
-// survive shell quoting, including awkward characters in the binary path.
-func TestClaudeLaunchCommandWithHooks(t *testing.T) {
-	provider := namedagents.NewClaudeBackend()
-	reportCmd := `'/opt/my tools/it'\''s/agent' report --hook --as 'helper'`
-
-	cmd := provider.LaunchCommandWithHooks(reportCmd, "11111111-2222-3333-4444-555555555555")
-	if !strings.HasPrefix(cmd, "claude --session-id ") {
-		t.Fatalf("unexpected launch command: %s", cmd)
+// A new Claude agent's session id is pinned; its hooks come from Claude
+// Code's user settings, so the launch command carries none.
+func TestClaudeLaunchCommandWithSession(t *testing.T) {
+	cmd := namedagents.NewClaudeBackend().LaunchCommandWithSession("11111111-2222-3333-4444-555555555555")
+	if cmd != "claude --session-id '11111111-2222-3333-4444-555555555555'" {
+		t.Fatalf("launch command: %s", cmd)
 	}
-
-	// Let a real shell split the arguments.
-	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.TrimPrefix(cmd, "claude ")).Output()
-	if err != nil {
-		t.Fatalf("shell parsing launch command: %v", err)
-	}
-	args := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	if len(args) != 4 || args[0] != "--session-id" || args[2] != "--settings" {
-		t.Fatalf("unexpected args: %q", args)
-	}
-	if args[1] != "11111111-2222-3333-4444-555555555555" {
-		t.Errorf("session id = %q", args[1])
-	}
-
-	var settings struct {
-		Hooks map[string][]struct {
-			Hooks []struct {
-				Type    string `json:"type"`
-				Command string `json:"command"`
-			} `json:"hooks"`
-		} `json:"hooks"`
-	}
-	if err := json.Unmarshal([]byte(args[3]), &settings); err != nil {
-		t.Fatalf("settings JSON: %v\n%s", err, args[3])
-	}
-	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "Stop", "SessionEnd"} {
-		matchers := settings.Hooks[event]
-		if len(matchers) != 1 || len(matchers[0].Hooks) != 1 {
-			t.Errorf("%s: expected one hook, got %+v", event, matchers)
-			continue
-		}
-		if got := matchers[0].Hooks[0].Command; got != reportCmd {
-			t.Errorf("%s: command = %q, want %q", event, got, reportCmd)
-		}
-	}
-}
-
-func TestClaudeLaunchCommandWithHooks_KeepsSkipPermissions(t *testing.T) {
-	provider := namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{SkipPermissions: true})
-	cmd := provider.LaunchCommandWithHooks("agent report --hook", "sid")
+	cmd = namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{SkipPermissions: true}).LaunchCommandWithSession("sid")
 	if !strings.HasPrefix(cmd, "claude --dangerously-skip-permissions --session-id ") {
 		t.Errorf("unexpected launch command: %s", cmd)
 	}
@@ -314,47 +273,33 @@ func TestClaudeLaunchCommandWithHooks_KeepsSkipPermissions(t *testing.T) {
 
 // A resumed agent continues its session: --resume names it, and the spawn's
 // own id isn't passed (Claude refuses --session-id with --resume).
-func TestClaudeLaunchCommandWithHooks_Resume(t *testing.T) {
+func TestClaudeLaunchCommandWithSession_Resume(t *testing.T) {
 	provider := namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{Resume: "3f34adff-9ebe-405a-aac0-8f69e8fd85f5"})
-	cmd := provider.LaunchCommandWithHooks("agent report --hook", "spawn-id")
-	if !strings.HasPrefix(cmd, "claude --resume '3f34adff-9ebe-405a-aac0-8f69e8fd85f5' --settings ") {
-		t.Errorf("unexpected launch command: %s", cmd)
-	}
-	if strings.Contains(cmd, "--session-id") || strings.Contains(cmd, "spawn-id") {
+	cmd := provider.LaunchCommandWithSession("spawn-id")
+	if cmd != "claude --resume '3f34adff-9ebe-405a-aac0-8f69e8fd85f5'" {
 		t.Errorf("a resumed session takes no --session-id: %s", cmd)
 	}
 }
 
-func TestParseClaudeAgentsJSON(t *testing.T) {
-	// Shape from `claude agents --json`: interactive sessions use "status",
-	// background sessions use "state".
-	data := []byte(`[
-		{"pid":1,"kind":"interactive","sessionId":"idle-1","status":"idle"},
-		{"pid":2,"kind":"interactive","sessionId":"busy-1","status":"busy"},
-		{"pid":3,"kind":"interactive","sessionId":"wait-1","status":"waiting"},
-		{"id":"x","kind":"background","sessionId":"bg-1","state":"blocked"},
-		{"pid":4,"kind":"interactive","sessionId":"new-1","status":"something-new"}
-	]`)
-
-	tests := []struct {
-		sessionID  string
-		wantStatus backend.Status
-		wantFound  bool
+func TestRegistryStatus(t *testing.T) {
+	for _, tt := range []struct {
+		entry  claudereg.Entry
+		want   backend.Status
+		detail string
 	}{
-		{"idle-1", backend.StatusIdle, true},
-		{"busy-1", backend.StatusProcessing, true},
-		{"wait-1", backend.StatusWaiting, true},
-		{"bg-1", backend.StatusWaiting, true},
-		{"new-1", backend.StatusUnknown, true},
-		{"missing", backend.StatusUnknown, false},
-	}
-	for _, tt := range tests {
-		st, found, err := namedagents.ParseClaudeAgentsJSON(data, tt.sessionID)
-		if err != nil {
-			t.Fatalf("%s: %v", tt.sessionID, err)
-		}
-		if st != tt.wantStatus || found != tt.wantFound {
-			t.Errorf("%s: got (%v, %v), want (%v, %v)", tt.sessionID, st, found, tt.wantStatus, tt.wantFound)
+		{claudereg.Entry{Status: "busy"}, backend.StatusProcessing, "a turn is running"},
+		{claudereg.Entry{Status: "idle"}, backend.StatusIdle, "at its prompt"},
+		// The turn is over, but a shell it started runs on, and its end
+		// starts the next turn: not done.
+		{claudereg.Entry{Status: "shell"}, backend.StatusProcessing, "turn over; a background shell it started is still running, and its end starts the next turn"},
+		{claudereg.Entry{Status: "waiting", WaitingFor: "permission"}, backend.StatusWaiting, "waiting for permission"},
+		{claudereg.Entry{Status: "waiting"}, backend.StatusWaiting, "waiting for a person"},
+		{claudereg.Entry{}, backend.StatusUnknown, "the CLI has not recorded a status yet"},
+		{claudereg.Entry{Status: "compacting", Unknown: `status "compacting" is not one gomuxai knows`}, backend.StatusUnknown, `status "compacting" is not one gomuxai knows`},
+	} {
+		st, detail := namedagents.RegistryStatus(tt.entry)
+		if st != tt.want || detail != tt.detail {
+			t.Errorf("%q: got (%v, %q), want (%v, %q)", tt.entry.Status, st, detail, tt.want, tt.detail)
 		}
 	}
 }

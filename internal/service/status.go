@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
+	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/discovery"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
@@ -23,6 +24,9 @@ const (
 	StateKeyDetail    = "_detail"
 	StateKeyResult    = "_result"
 	StateKeySessionID = "_session_id"
+	// StateKeyEndReason says how the session ended, while the status is
+	// ended (backend.EndReason); "" otherwise.
+	StateKeyEndReason = "_end_reason"
 	StateKeyTool      = "_tool"       // tool the last event concerned, e.g. the one awaiting permission
 	StateKeyToolInput = "_tool_input" // that tool call's full input (JSON), when it may need permission
 	// StateKeyTranscript is the path of the CLI's own transcript of the
@@ -32,6 +36,12 @@ const (
 	// carry it, so hooks from a previous agent with the same name (e.g. the
 	// SessionEnd fired while cleanup kills it) can't write into a respawn.
 	StateKeySpawnID = "_spawn_id"
+	// StateKeyHookedSession is the session the global hook (agent hook) last
+	// reported for the agent: while it is the agent's _session_id, the CLI
+	// running it carries gomuxai's hooks, so a Stop can hand over held
+	// messages. A CLI started before agent hooks install, or by hand without
+	// them, never sets it.
+	StateKeyHookedSession = "_hooked_session"
 	// StateKeySentAt is when a message was last typed into the agent (send,
 	// a queued delivery, or spawn's first message), and StateKeyTurnAt when
 	// its last turn started (a report that is processing and clears the
@@ -51,6 +61,7 @@ const (
 // StatusReport is a status update pushed by an agent or its backend's hooks.
 type StatusReport struct {
 	Status    AgentStatus
+	EndReason backend.EndReason // with a status of ended: how the session ended
 	Event     string
 	Detail    string
 	Tool      string
@@ -60,6 +71,9 @@ type StatusReport struct {
 	// Transcript is the path of the CLI's transcript file; only stored
 	// when non-empty.
 	Transcript string
+	// ClearTranscript empties the stored transcript path: the session
+	// changed to one whose transcript no hook has named yet.
+	ClearTranscript bool
 	// ClearResult empties the stored result (a new turn started), so a
 	// reader never takes the previous turn's reply for this one's.
 	ClearResult bool
@@ -98,6 +112,7 @@ type pendingPrompt struct {
 // StatusInfo describes an agent's status and where it came from.
 type StatusInfo struct {
 	Status    AgentStatus
+	EndReason backend.EndReason // with a status of ended: how the session ended
 	Source    string
 	Event     string
 	Detail    string
@@ -119,6 +134,10 @@ type StatusInfo struct {
 	// turn (see Send), or queued for agent watch.
 	Held int
 
+	// NativeErr says why the backend CLI's own status couldn't be read,
+	// when that is why another source answered.
+	NativeErr string
+
 	pending []pendingPrompt // unanswered permission prompts, oldest first
 	prompt  *pendingPrompt  // while waiting: the one on screen, which Tool and Detail describe
 }
@@ -127,10 +146,32 @@ type StatusInfo struct {
 func ParseAgentStatus(s string) (AgentStatus, error) {
 	switch st := AgentStatus(s); st {
 	case AgentStatusIdle, AgentStatusProcessing, AgentStatusWaiting,
-		AgentStatusError, AgentStatusExited, AgentStatusUnknown:
+		AgentStatusError, AgentStatusEnded, AgentStatusUnknown:
 		return st, nil
 	}
-	return "", fmt.Errorf("invalid status %q (want idle, processing, waiting, error, exited, or unknown)", s)
+	return "", fmt.Errorf("invalid status %q (want idle, processing, waiting, error, ended, or unknown; agent statuses says what each means)", s)
+}
+
+// ParseEndReason validates an end reason for status: one of
+// backend.EndReasons with ended (quit when empty), none with any other.
+func ParseEndReason(status AgentStatus, reason string) (backend.EndReason, error) {
+	if status != AgentStatusEnded {
+		if reason != "" {
+			return "", fmt.Errorf("an end reason goes only with the status ended, not %s", status)
+		}
+		return "", nil
+	}
+	if reason == "" {
+		return backend.EndQuit, nil
+	}
+	if types.MeaningOf(types.EndReasons, reason) == "" {
+		names := make([]string, len(types.EndReasons))
+		for i, m := range types.EndReasons {
+			names[i] = m.Name
+		}
+		return "", fmt.Errorf("invalid end reason %q (want %s; agent statuses says what each means)", reason, strings.Join(names, ", "))
+	}
+	return backend.EndReason(reason), nil
 }
 
 func fromBackendStatus(st backend.Status) AgentStatus {
@@ -159,9 +200,11 @@ func (s *AgentService) Report(ctx context.Context, name string, r StatusReport) 
 func (s *AgentService) reportUpdate(ctx context.Context, name string, r StatusReport, now time.Time) (storage.StateUpdate, error) {
 	values := map[string]string{
 		StateKeyStatus: string(r.Status),
-		StateKeyEvent:  r.Event,
-		StateKeyDetail: r.Detail,
-		StateKeyTool:   r.Tool,
+		// Always written, so a reason never outlives the end it describes.
+		StateKeyEndReason: string(r.EndReason),
+		StateKeyEvent:     r.Event,
+		StateKeyDetail:    r.Detail,
+		StateKeyTool:      r.Tool,
 		// Always written, so an input never outlives the call it describes.
 		StateKeyToolInput: r.ToolInput,
 	}
@@ -171,7 +214,7 @@ func (s *AgentService) reportUpdate(ctx context.Context, name string, r StatusRe
 	if r.SessionID != "" {
 		values[StateKeySessionID] = r.SessionID
 	}
-	if r.Transcript != "" {
+	if r.Transcript != "" || r.ClearTranscript {
 		values[StateKeyTranscript] = r.Transcript
 	}
 	if r.ClearResult && r.Status == AgentStatusProcessing {
@@ -187,7 +230,7 @@ func (s *AgentService) reportUpdate(ctx context.Context, name string, r StatusRe
 	}
 	ev := &storage.AgentEvent{At: now, Kind: storage.AgentStatus, Agent: name,
 		Status: string(r.Status), Event: r.Event, Detail: r.Detail, Tool: r.Tool,
-		SessionID: r.SessionID, Transcript: r.Transcript}
+		SessionID: r.SessionID, Transcript: r.Transcript, EndReason: string(r.EndReason)}
 	if r.Status == AgentStatusWaiting {
 		ev.ToolInput = r.ToolInput // only prompts: every tool call's input would bloat the log
 	}
@@ -307,6 +350,7 @@ func (s *AgentService) reportHook(ctx context.Context, name, spawnID, event stri
 	approval := s.hookApproval(provider, hr)
 	r := StatusReport{
 		Status:    fromBackendStatus(hr.Status),
+		EndReason: hr.EndReason,
 		Event:     hr.Event,
 		Detail:    hr.Detail,
 		Tool:      hr.Tool,
@@ -393,18 +437,40 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 
 // resolveStatus returns the resolved status and the last report as recorded
 // (nil if none).
-func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusInfo, *StatusInfo, error) {
+func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, reported *StatusInfo, err error) {
+	var nativeErr error
+	defer func() {
+		// The backend CLI couldn't be asked: say so beside what stood in.
+		if info != nil && nativeErr != nil && info.Source != StatusSourceNative {
+			info.NativeErr = nativeErr.Error()
+		}
+	}()
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	reported, err := s.reportedStatus(ctx, name)
+	reported, err = s.reportedStatus(ctx, name)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	native := s.nativeStatus(ctx, agent)
+	nativeErr = native.Err
+	if native.Queried && !native.Listed {
+		// The session on record isn't running. Ask what the pane runs now: a
+		// person may have quit the CLI and started another in the same pane,
+		// which no hook of the old one can tell us.
+		if info, err := s.adoptPaneSession(ctx, agent); info != nil {
+			after, rerr := s.reportedStatus(ctx, agent.Name)
+			if rerr != nil {
+				return nil, nil, rerr
+			}
+			return info, after, nil
+		} else if err != nil {
+			native.PaneErr = err
+		}
+	}
 	reportStatus := ""
 	if reported != nil {
 		reportStatus = string(reported.Status)
@@ -431,11 +497,16 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (*StatusI
 		// (crash, kill -9, OOM). Echoing the stale report would let the
 		// watcher type queued messages into the bare shell left behind.
 		if decision == discovery.NativeGone {
+			detail := "session not running (exited without a SessionEnd hook)"
+			if native.PaneErr != nil {
+				detail += "; its pane: " + native.PaneErr.Error()
+			}
 			return &StatusInfo{
-				Status:    AgentStatusExited,
+				Status:    AgentStatusEnded,
+				EndReason: backend.EndGone,
 				Source:    StatusSourceNative,
 				Event:     reported.Event,
-				Detail:    "session not running (exited without a SessionEnd hook)",
+				Detail:    detail,
 				UpdatedAt: reported.UpdatedAt,
 			}, reported, nil
 		}
@@ -538,12 +609,75 @@ func (s *AgentService) reportedStatus(ctx context.Context, name string) (*Status
 		return nil, nil
 	}
 	info.SentAt, info.TurnAt = sentAt, turnAt
+	info.EndReason = backend.EndReason(values[StateKeyEndReason])
 	info.Event = values[StateKeyEvent]
 	info.Detail = values[StateKeyDetail]
 	info.Tool = values[StateKeyTool]
 	info.ToolInput = values[StateKeyToolInput]
 	info.pending = promptsIn(entries)
 	return info, nil
+}
+
+// EventAdopted is the event of the report that records an agent's pane
+// running a session other than the one on record.
+const EventAdopted = "adopted"
+
+// adoptPaneSession records the session the agent's pane runs, when it isn't
+// the one on record: the CLI's own registry, proven by pid and start time,
+// placed in the pane by the process tree (backend.PaneSessionProvider). It
+// returns nil when the pane runs no CLI of the agent's backend, or the same
+// session; err says why the pane couldn't be read.
+func (s *AgentService) adoptPaneSession(ctx context.Context, agent *storage.Agent) (*StatusInfo, error) {
+	provider, err := s.provider(agent)
+	if err != nil {
+		return nil, nil
+	}
+	pp, ok := provider.(backend.PaneSessionProvider)
+	if !ok {
+		return nil, nil
+	}
+	panePID, err := s.panePID(agent.SessionName)
+	if err != nil || panePID == 0 {
+		return nil, err // no pane: the session is gone, which status reports on its own
+	}
+	ps, found, err := pp.PaneSession(ctx, panePID)
+	if err != nil || !found {
+		return nil, err
+	}
+	recorded := s.stateValue(ctx, agent.Name, StateKeySessionID)
+	if ps.ID == recorded {
+		return nil, nil
+	}
+	before := recorded
+	if before == "" {
+		before = "(none recorded)"
+	}
+	r := StatusReport{
+		Status: fromBackendStatus(ps.Status),
+		Event:  EventAdopted,
+		Detail: fmt.Sprintf("its pane runs session %s now (pid %d, %s); session %s before it ended", ps.ID, ps.PID, ps.Detail, before),
+		// A different conversation: its reply and transcript are not the old one's.
+		SessionID: ps.ID, ClearResult: true, ClearTranscript: true,
+	}
+	if err := s.Report(ctx, agent.Name, r); err != nil {
+		return nil, fmt.Errorf("recording the session its pane runs: %w", err)
+	}
+	return &StatusInfo{Status: r.Status, Source: StatusSourceNative, Event: r.Event, Detail: r.Detail, UpdatedAt: time.Now()}, nil
+}
+
+// panePID returns the pid of the process the tmux session's pane runs, or
+// 0 if there is no such session.
+func (s *AgentService) panePID(session string) (int, error) {
+	panes, err := s.tmux.PanePIDs()
+	if err != nil {
+		return 0, err
+	}
+	for pid, name := range panes {
+		if name == session {
+			return pid, nil
+		}
+	}
+	return 0, nil
 }
 
 // nativeStatus asks the backend CLI what its own session list says about
@@ -563,8 +697,13 @@ func (s *AgentService) nativeStatus(ctx context.Context, agent *storage.Agent) d
 		return discovery.Native{}
 	}
 	st, known, err := np.NativeStatus(ctx, sessionID)
+	if err != nil && known {
+		// Running, in a state the backend can't name: the report stands, and
+		// status -v says why.
+		return discovery.Native{Queried: true, Listed: true, Status: discovery.StatusUnknown, Err: err}
+	}
 	if err != nil {
-		return discovery.Native{}
+		return discovery.Native{Err: err}
 	}
 	return discovery.Native{Queried: true, Listed: known, Status: string(fromBackendStatus(st))}
 }

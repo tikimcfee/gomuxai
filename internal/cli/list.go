@@ -17,7 +17,8 @@ tmux session, backend, and creation time. --host lists another host's agents
 through the bus.
 
 STATUS is the same live status "agent status" shows (idle, processing,
-waiting, error, exited, unknown); "agent status <name> -v" says more. A host
+waiting, error, ended, unknown); "agent status <name> -v" says more, and
+"agent statuses" what each means. A host
 running an older agent sends none, shown as "-".
 
 PARENT is the agent that spawned it with "agent spawn", or "-" when a person
@@ -45,6 +46,7 @@ type agentJSON struct {
 	Name      string    `json:"name"`
 	Host      string    `json:"host"`
 	Status    string    `json:"status,omitempty"`
+	EndReason string    `json:"end_reason,omitempty"`
 	Parent    string    `json:"parent,omitempty"`
 	Session   string    `json:"session"`
 	Backend   string    `json:"backend"`
@@ -64,7 +66,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 		out := make([]agentJSON, 0, len(agents))
 		for _, a := range teamOrder(agents) {
-			out = append(out, agentJSON{Name: a.Name, Host: host, Status: a.Status, Parent: a.SpawnedBy, Session: a.Session, Backend: a.Backend, CreatedAt: a.CreatedAt})
+			out = append(out, agentJSON{Name: a.Name, Host: host, Status: a.Status, EndReason: a.EndReason, Parent: a.SpawnedBy, Session: a.Session, Backend: a.Backend, CreatedAt: a.CreatedAt})
 		}
 		return printJSON(out)
 	}
@@ -78,8 +80,8 @@ func runList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%-20s %-11s %-20s %-25s %-10s %s\n", "NAME", "STATUS", "PARENT", "SESSION", "BACKEND", "CREATED")
-	fmt.Println("---------------------------------------------------------------------------------------------")
+	fmt.Printf("%-20s %-17s %-20s %-25s %-10s %s\n", "NAME", "STATUS", "PARENT", "SESSION", "BACKEND", "CREATED")
+	fmt.Println("---------------------------------------------------------------------------------------------------")
 	waiting := 0
 	for _, agent := range teamOrder(agents) {
 		parent := agent.SpawnedBy
@@ -90,10 +92,13 @@ func runList(cmd *cobra.Command, args []string) error {
 		if status == "" {
 			status = "-" // a host that doesn't send status
 		}
+		if agent.EndReason != "" {
+			status += " (" + agent.EndReason + ")"
+		}
 		if status == string(service.AgentStatusWaiting) {
 			waiting++
 		}
-		fmt.Printf("%-20s %-11s %-20s %-25s %-10s %s\n",
+		fmt.Printf("%-20s %-17s %-20s %-25s %-10s %s\n",
 			agent.Name,
 			status,
 			parent,

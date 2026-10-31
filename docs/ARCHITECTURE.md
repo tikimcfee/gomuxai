@@ -12,8 +12,11 @@ so it stays current where this file can drift.
 or a custom one) running in its own tmux session. The binary starts those
 sessions, types into them, and records everything about them in one SQLite
 database per data dir. Claude and agy agents report their own status through
-lifecycle hooks that run `agent report --hook`; nothing has to scrape their
-screens. An optional bus (embedded NATS, one per host) lets `name@host`
+lifecycle hooks: Claude Code runs `agent hook` for every session on the
+machine (registered once by `agent hooks install`), and each agy agent's
+hooks run `agent report --hook`; nothing has to scrape their screens. Claude
+Code's own session registry says which Claude sessions are running and
+where. An optional bus (embedded NATS, one per host) lets `name@host`
 commands, status events, and `agent wait` reach other machines.
 
 Most `agent` commands are short-lived: open the database, do one thing,
@@ -26,10 +29,12 @@ installed one:
 
 ```
 .gomuxai/
-├── gomuxai.db               # agents, runs, agent_events, messages, tasks, state, command_log, friction
+├── gomuxai.db               # agents, runs, agent_events, messages, tasks, state, session_reports, command_log, friction
 ├── logs/
 │   ├── <name>.log           # tmux pipe-pane output (survives cleanup)
-│   └── <name>.transcripts   # "<backend>\t<path>" per CLI transcript (survives cleanup)
+│   ├── <name>.transcripts   # "<backend>\t<path>" per CLI transcript (survives cleanup)
+│   └── hook-errors.log      # what `agent hook` failed at, one line each
+├── backups/                 # Claude Code's settings.json, copied before `agent hooks` edits it
 ├── agents/<name>/           # per-agent bundle, removed by cleanup
 │   ├── instructions.md      # the briefing
 │   ├── launch.sh            # the backend's full launch command
@@ -50,7 +55,8 @@ installed one:
 | `internal/storage` | The `Storage` interface and its SQLite implementation: schema, migrations, queries. |
 | `internal/backend` | Backend interfaces (`Backend`, `Provider`, and the optional capability interfaces), the registry, and custom JSON backends (`generic.go`). |
 | `internal/backend/namedagents` | The built-in backends: `claude`, `agy`, `aider`, and the hook plumbing they share (`hooks.go`). |
-| `internal/backend/types` | `Status`, `HookReport`, `PermissionResponse`, shared by backends and service. |
+| `internal/backend/types` | `Status`, `EndReason`, `HookReport`, `PermissionResponse`, shared by backends and service; `Statuses` and `EndReasons` hold each word's meaning, which `agent statuses` prints. |
+| `internal/claudereg` | Reads Claude Code's session registry (`~/.claude/sessions/<pid>.json`), proves each entry against the running processes, and finds the session a tmux pane runs. |
 | `internal/allowcmd` | Decides whether a shell command line is one plain run of a given binary with a safe subcommand (parsed with `mvdan.cc/sh`), for the PreToolUse approval. |
 | `internal/tmux` | `TmuxOps` over the `tmux` command: sessions, send keys, capture, pipe-pane. Errors carry tmux's own message. |
 | `internal/natsbus` | The bus: contract (subjects, ops, wire types), identity and trust, the daemon's server config, RPC server and client, status events and `Wait`. `natstest` starts throwaway NATS servers for tests. |
@@ -61,7 +67,7 @@ installed one:
 | `internal/config` | `Config`, its defaults (data dir next to the binary, host name, startup delay), and paths derived from it. |
 | `internal/macos` | Local Network support for the bus on macOS: Info.plist detection and disclaimed spawn. |
 | `internal/buildinfo` | The build id (`c7253f9-dirty`, a version, or `devel`) from the Go toolchain's embedded VCS info. |
-| `internal/util` | Shell quoting, ANSI stripping, terminal sanitizing, terminal-log cleanup (`TerminalLines`), "did you mean" suggestions. |
+| `internal/util` | Shell quoting and word splitting, ANSI stripping, terminal sanitizing, terminal-log cleanup (`TerminalLines`), "did you mean" suggestions, the process tree (`ReadProcTree`, `ProcAncestors`, `ProcArgs`), atomic file writes. |
 
 ## Why tmux
 
@@ -128,7 +134,8 @@ are in `exploration/tmux-tui-connector-ideation.md`.
    it to `agents/<name>/launch.sh`, and types only `sh <path>` into the
    session. Typed input sits in the terminal's canonical-mode buffer until
    the shell's line editor is up, and macOS caps that at 1024 bytes
-   (`MAX_CANON`); Claude's inline hook settings alone are longer.
+   (`MAX_CANON`), which a launch command with its flags and pre-allowed
+   command rules can pass.
 6. Waits `StartupDelay` (2s), confirms the workspace trust prompt if
    `--trust-workspace`, and types the first message unless it went on the
    command line. The first message is the `--task` content, or the backend's
@@ -143,12 +150,15 @@ applies each one it finds:
 
 | Interface | claude | agy | aider |
 |---|---|---|---|
-| `HookProvider`: status hooks | `--session-id <id> --settings '<hooks json>'` | `--add-dir <agent dir>` with `.agents/hooks.json`, plus the exit wrapper | — |
+| `HookProvider`: maps hook payloads to status | yes | yes | — |
+| `GlobalHooker`: hooks from the CLI's user settings, for every session | `--session-id <id>`; spawn fails unless `agent hooks install` has registered this binary's hook | — | — |
+| `SpawnHooker`: hooks wired into each spawn's launch command | — | `--add-dir <agent dir>` with `.agents/hooks.json`, plus the exit wrapper | — |
 | `InstructionsProvider`: the briefing | `--append-system-prompt-file instructions.md` | `AGENTS.md` in the `--add-dir` directory | — |
 | `CommandAllower`: pre-allowed commands | `--allowedTools 'Bash(agent status:*)' ...` | — | — |
 | `PromptFlagProvider`: first message on the command line | — | `-i '<task>'` | — |
 | `TrustPrompter`: answers the trust prompt | moves to "Yes, I trust this folder" first (the default is "No, exit") | Enter | — |
-| `NativeStatusProvider` | `claude agents --json` | — | — |
+| `NativeStatusProvider` | Claude Code's session registry | — | — |
+| `PaneSessionProvider`: the session a pane runs | the registry, placed by the process tree | — | — |
 | `PermissionResponder` | yes | yes | — |
 | `TranscriptProvider` | `transcript.Claude` | `transcript.Agy` | — |
 | `HookDeliverer`: held messages from a hook's output | `Stop` → `additionalContext` | `PostInvocation` → `injectSteps` + `force_continue` | — |
@@ -160,16 +170,28 @@ applies each one it finds:
 
 Notes on each:
 
-- **Hooks** are wired only when `Config.AgentBinary` is set (it defaults to
-  the running executable). Each hook runs
-  `<binary> report --hook --as <name> --spawn-id <uuid>`. The uuid is made
-  per spawn and stored as both `_spawn_id` and `_session_id`; Claude gets it
-  as `--session-id`. Nothing is written into the agent's project. Claude
-  registers 11 events (`claudeHookEvents`); agy registers `PreInvocation`,
-  `PreToolUse`, `PostToolUse`, `PostInvocation` (delivery only), and
-  `Stop`, each with `--event <Event>`
-  because agy's payload omits the event name and runs hooks with the bundle
-  dir as cwd. Each hook has a 10s timeout.
+- **Hooks** are used only when `Config.AgentBinary` is set (it defaults to
+  the running executable). Nothing is written into the agent's project.
+  - **Claude** (`GlobalHooker`): the hooks are Claude Code's user settings'
+    entry for every session, which `agent hooks install` writes (see [The
+    global hook](#the-global-hook-agent-hook)). Spawn checks that every
+    event in `ClaudeHookEvents` runs this binary's `hook`, and fails with
+    what is missing and `agent hooks install` otherwise: an agent without
+    them couldn't report, take held messages, or have its `agent` commands
+    approved. It pins a new uuid as `--session-id` (a `--resume` keeps the
+    resumed session's id) and stores it as `_session_id`. There is no
+    spawn id: the hook finds its agent from the process tree, and a CLI
+    that cleanup killed has no pane above it, so its last hooks reach no
+    agent (a respawn of the same name included).
+  - **agy** (`SpawnHooker`): each hook runs
+    `<binary> report --hook --as <name> --spawn-id <uuid> --event <Event>`.
+    The uuid is made per spawn and stored as both `_spawn_id` and
+    `_session_id`. agy registers `PreInvocation`, `PreToolUse`,
+    `PostToolUse`, `PostInvocation` (delivery only), and `Stop`; `--event`
+    because agy's payload omits the event name, and an absolute binary path
+    because agy runs hooks with the bundle dir as cwd.
+
+  Each hook has a 10s timeout.
 - **agy's launch command** is prefixed with
   `env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY`: with those set (a tmux
   server started over SSH passes them on) agy skips the OS keyring and comes
@@ -235,7 +257,7 @@ idle agent and waits 1.5s, so the CLI exits cleanly and its hooks record it.
 Then it stops pipe-pane, kills the session, deletes the agent's messages
 and agent dir, and deletes the record; state rows go with it through the
 foreign key's `ON DELETE CASCADE`. The same transaction closes the agent's
-run (with its last `_status` and `_transcript`) and records a `removed`
+run (with its last `_status`, `_end_reason` and `_transcript`) and records a `removed`
 agent event, so the run stays readable (`export --all`). The terminal log
 and the transcripts list stay.
 
@@ -249,7 +271,7 @@ session on <host>] ` when the environment shows an AI CLI (`AI_AGENT`'s tool
 name, the part before its first `_`, or `CLAUDECODE=1`; `unrecordedSender`).
 Those name no agent to reply to, and their slash commands stay unmarked, or
 they would no longer be ones (`markSender`). Before
-typing, `checkCanSend` refuses an `exited` agent (the text would run in the
+typing, `checkCanSend` refuses an `ended` agent (the text would run in the
 shell left behind), a `waiting` agent, and any agent with a permission or
 trust dialog on screen (the Enter would answer it). `--force` skips the
 checks, and only works for a person at a terminal: it is refused when
@@ -263,20 +285,26 @@ Typing into a busy Claude agent lands in its input box, mixed with
 whatever a person is drafting there, and nothing says when it was read
 (agy queues typed text for the turn's end, but typing into its
 `ask_question` dialog answers it). So
-for an agent that *holds messages* (its backend is a `HookDeliverer` and
-spawn wired its hooks: `_spawn_id` is set), `Send` without `--now` does
-this (`service/held.go`):
+for an agent that *holds messages*, `Send` without `--now` does this
+(`service/held.go`). An agent holds messages when its backend is a
+`HookDeliverer` and a hook is known to reach its CLI (`holdsMessages`):
+spawn wired its hooks (`_spawn_id` is set: agy), or the global hook has
+reported the agent's current session (`_hooked_session` equals
+`_session_id`: Claude). A Claude CLI started without the hook installed,
+say by hand in the agent's pane, never sets `_hooked_session`, so messages
+to it are typed, not held for a `Stop` that would never hand them over.
 
 | Status `Send` finds | What it does |
 |---|---|
 | `idle`, `error`, `unknown` | `typeHeld`: claims any messages still held, and types them and this one as one prompt, oldest first (after the dialog check) |
 | `processing`, `waiting` | `hold`: stores a `pending` row in `messages`, records `_sent_at`, re-checks (below), and starts a deliverer |
-| `exited` | refuses |
+| `ended` | refuses |
 
 Slash commands are never held: a hook can only hand over text. Who
 delivers a held message:
 
-1. **The delivering hook.** `report --hook` calls `HandleHook`, and for an event
+1. **The delivering hook.** The hook (`agent hook` for Claude, `report
+   --hook` for agy) calls `HandleHook`, and for an event
    the backend `CanDeliver` (Claude: `Stop`, with or without background
    tasks; agy: `PostInvocation`, below), `reportDelivering` claims every pending row and writes the
    status report in one transaction. With messages claimed, the report is
@@ -330,7 +358,8 @@ delivers a held message:
    (`idle`/`error`, or the background-work `Stop`) with an empty input
    line for 10s, it calls `typeHeld`. The grace gives a person who pressed
    Esc time to type first, and restarts whenever the input line has text.
-   It exits when nothing is held, or the agent has exited or is gone. A
+   It exits when nothing is held, or the agent's session has ended, or the
+   agent is gone. A
    `StopFailure` (rate limit) is delivered the same way. agy fires no hook
    on Esc or Ctrl+C either, and has no native status: its status turns
    `idle` from the screen (`TurnEndReader`, see Status resolution), and the
@@ -355,7 +384,7 @@ waiting for an empty input line (it has text in it)`.
 Every deliverer claims rows before delivering (`ClaimPendingMessages`, or
 `ClaimMessage` per row for the watcher), so each message is delivered once;
 `typeHeld` puts its rows back to `pending` if typing fails. Messages
-held for an agent that exits stay `pending` (`status -v` says they won't
+held for an agent whose session ends stay `pending` (`status -v` says they won't
 be delivered) until `cleanup` deletes them. `StatusInfo.Held` counts the
 pending rows, shown by `status -v`, `--json`, the orientation, and the
 `status` RPC.
@@ -417,11 +446,43 @@ each agent that has pending messages and, when the agent is `idle` or
 `error` (a failed turn leaves the CLI at its prompt, and no hook fires again
 until the next prompt), claims the oldest and types it (`Send` with `Now`).
 `processing` and `waiting` hold the message;
-`exited` fails it, as do 5 `unknown` checks in a row or 3 failed sends
+`ended` fails it, as do 5 `unknown` checks in a row or 3 failed sends
 (backoff 1s, doubling). Each watcher holds a shared `flock` on
 `.gomuxai/watch.lock`, which is how `queue` tells whether one is running.
 
 ## Status
+
+### Statuses and end reasons
+
+An agent and a session have the same statuses. The words and what each
+means live in one place, `types.Statuses` and `types.EndReasons`
+(`internal/backend/types/status.go`); `agent statuses` prints them, and
+`agent status -v` prints the one that applies on a `means:` line.
+
+| Status | Means |
+|---|---|
+| `idle` | at its prompt, its turn over: a message can be typed in (a background shell it started may still run) |
+| `processing` | a turn is running (or a turn ended leaving background work, whose completion starts the next turn) |
+| `waiting` | stopped on something only a person can answer: a permission prompt or a question |
+| `error` | its last turn failed (an API error, a rate limit); it is at its prompt |
+| `ended` | no CLI runs the session any more; the end reason says how it ended |
+| `unknown` | nothing reliable says yet (a CLI still starting, or a harness with no status of its own) |
+
+`ended` always comes with an end reason (`_end_reason`; `end_reason` in
+JSON). A line shows both: `ended (quit)`.
+
+| End reason | Means |
+|---|---|
+| `quit` | the CLI ended the session and said so (Claude's `SessionEnd` hook; the detail has Claude's reason), or the shell it ran in saw it exit (agy; the detail has the exit code) |
+| `gone` | its process isn't running and nothing recorded it ending: a crash, `kill -9`, OOM, or a session from before reports were kept |
+| `replaced` | the agent went on in a newer session: a `/clear`, a resume, a respawn, or a CLI started anew in its pane |
+| `finished` | a subagent that recorded finishing its task |
+| `parent` | a subagent whose parent session ended |
+| `closed` | its agent was cleaned up, which closed its pane |
+
+`agent report ended` takes `--end-reason` (`quit` when not given), and
+refuses one with any other status (`ParseEndReason`). A report writes
+`_end_reason` every time, so a reason never outlives its end.
 
 ### Resolution: native, report, scrape
 
@@ -429,10 +490,16 @@ until the next prompt), claims the oldest and types it (`Send` with `Now`).
 from three sources, most authoritative first:
 
 1. **native**: the CLI's own view of the session (`NativeStatusProvider`).
-   Claude only: `claude agents --json`, matched on `_session_id`, mapping
-   `idle`, `busy` → `processing`, and `waiting`/`blocked` → `waiting`. The
-   output is cached for 500ms per process (so `list` runs the CLI once, not
-   once per agent), with a 3s timeout; a failure is cached too.
+   Claude only: [Claude Code's session
+   registry](#claude-codes-session-registry), matched on `_session_id`. A
+   session is listed when a running process (proven, or one whose start
+   time can't be checked) holds it, and its status maps `busy` →
+   `processing`, `idle` → `idle`, `shell` → `processing` (detail `turn
+   over; a background shell it started is still running, and its end starts
+   the next turn`: not done, as a `Stop` with background tasks isn't, and as
+   `claude agents` reports it), `waiting` → `waiting`
+   (detail `waiting for <waitingFor>`), and no status yet → `unknown`. The
+   registry is files, read afresh on every check: nothing is cached.
 2. **report**: the last status written by a hook or `agent report`.
 3. **scrape**: the backend's idle and processing regexes over the last 50
    lines of the screen, for backends with neither. A custom backend needs
@@ -445,12 +512,24 @@ The rules between native and report are one function,
   permission prompt fires no hook, so the report would stay `waiting`
   forever. The report's event, detail, and tool are shown only while the
   report agrees with native.
-- If the CLI answers but doesn't list the session, and the last report says
-  the agent is alive, the status is `exited` ("session not running"): the CLI
-  died without its `SessionEnd` hook (crash, `kill -9`, OOM). Otherwise the
-  watcher would type queued messages into the shell.
-- A session listed in a state the backend doesn't map counts as alive with
-  no native answer; the report decides.
+- If the CLI answers but doesn't list the session, status first asks what
+  the agent's pane runs ([pane adoption](#pane-adoption), below). If the
+  pane runs no other session, and the last report says the agent is alive,
+  the status is `ended (gone)` ("session not running"): the CLI died
+  without its `SessionEnd` hook (crash, `kill -9`, OOM). Otherwise the
+  watcher would type queued messages into the shell. When the pane couldn't
+  be read, the detail says why.
+- A registry entry with a kind or status gomuxai doesn't know is never
+  guessed at: that session's native status is `unknown`, detail naming the
+  value and the Claude Code version, so its report stands; the others are
+  read as usual. A file that can't be read as an entry at all (not JSON, no
+  pid or session id; a half-written file for a moment) could be any
+  session's, so while there is one (`Snapshot.Problems`, `Snapshot.Err`)
+  the readers don't conclude a session isn't running: native status, the
+  pane's session and `agent sessions`' live view answer with the error.
+  The report then stands, and `status -v` prints the reason on a `native:
+  unread:` line (`--json`: `native_error`); `agent sessions` shows it as a
+  hint.
 - **After a deny**, Claude's session list still says `waiting` for a moment
   (under a second observed), and a deny fires no hook. Within 5s of a
   recorded `denied` report that left no pending prompt and no dialog on
@@ -495,6 +574,73 @@ The rules between native and report are one function,
 and the times of the last send and turn start (`SentAt`, `TurnAt`), which it
 uses to spot a whole turn before the wait.
 
+### Claude Code's session registry
+
+Claude Code keeps one file per running CLI process,
+`<config dir>/sessions/<pid>.json` (`$CLAUDE_CONFIG_DIR`, else
+`~/.claude`): it writes it at start, rewrites it as the status moves, and
+removes it at exit. It is Claude's own record of which session each process
+holds, and what `claude agents` is built on. `internal/claudereg` reads it.
+The format isn't a published contract, so the reader takes only the fields
+it names (`pid`, `sessionId`, `cwd`, `version`, `kind`, `entrypoint`,
+`status`, `waitingFor`, `name`, timestamps, `procStart` or `procStartFt`,
+`pidDomain`, `tmux`), and refuses an entry with no pid or session id, or a
+pid other than its file name's. A `kind` (`interactive`, `bg`, `daemon`,
+`daemon-worker`) or `status` (`busy`, `idle`, `shell`, `waiting`) outside
+that vocabulary is kept with `Entry.Unknown` saying so: a Claude Code that
+writes a new value needs gomuxai taught what it means, and until then that
+session's status is `unknown`, never guessed (its process is still proven
+and placed). A missing kind is `interactive` and a missing status not yet
+known, as Claude reads them. Claude Code 2.1.316 ships a switch, off, that
+writes the start time as `procStartFt` instead of `procStart`; the reader
+takes either, and a `procStartFt` unlike this OS's start time makes the
+entry unproven, not stale.
+
+An entry is trusted only when proven (`Proof`), the check Claude Code makes
+itself:
+
+| Verdict | When |
+|---|---|
+| live | its pid is running, and that process started when the entry's `procStart` says |
+| stale | its pid isn't running, or now belongs to a process that started at another time (the CLI crashed or was killed without removing its file) |
+| foreign | its `pidDomain` isn't this host's (another container sharing the directory) |
+| unproven | its pid is running, but the start time can't be compared (no `procStart`, or none readable on this OS) |
+
+The start time is the one Claude records: on Linux the 22nd field of
+`/proc/<pid>/stat` (clock ticks since boot, fields counted from the last
+`)`), on macOS `ps -o lstart=` in the C locale and UTC. The pid domain is
+`linux:<machine id>:<pid namespace link>`; on macOS Claude writes the
+literal `linux`, which gomuxai doesn't compare. A zombie (Linux state `Z`:
+exited, not yet reaped) counts as not running. `Snapshot.Sessions` maps each session to the live or unproven
+entry that holds it (when two do, a CLI stopped with Ctrl-Z and the session
+resumed in another, the proven one, then the one updated last).
+
+An entry's `tmux` field is **not** used to place a session: Claude copies it
+from its environment, so a `claude -p` run from inside an agent's pane
+names that pane too. Where a session runs comes from the process tree
+instead (`ps -A -o pid=,ppid=`): `Snapshot.UnderPane` takes the live
+entries whose process descends from the pane's process (`#{pane_pid}`, from
+`tmux list-panes -a`), and returns the shallowest. A `claude -p` that a tool
+started inside the session is deeper, so it is never taken for the pane's
+own. Two at the same depth (two CLIs side by side under one shell) are an
+error naming both, unless one was updated last.
+
+### Pane adoption
+
+A person can quit an agent's Claude and start another in the same pane, or
+`claude --resume` a different session there; the old CLI's last hook (if
+any) says nothing about the new one, and a CLI started by hand may carry no
+hooks at all. So when native status doesn't list `_session_id`,
+`adoptPaneSession` asks the backend (`PaneSessionProvider`) what the
+agent's pane runs. If it runs a session other than the one on record, that
+session is recorded as the agent's: a report with event `adopted`, detail
+`its pane runs session <id> now (pid <pid>, <status in words>); session
+<old> before it ended`, the new `_session_id`, and `_result` and
+`_transcript` cleared (another conversation's reply and file aren't this
+one's). `agent sessions` then joins the agent to the session the scan found
+under that id. A pane that runs nothing of the backend's, or the same
+session, changes nothing, and status goes on as above.
+
 ### Reports and the reserved state keys
 
 `AgentService.Report` writes these keys for the agent in one transaction
@@ -502,14 +648,16 @@ uses to spot a whole turn before the wait.
 
 | Key | Holds |
 |---|---|
-| `_status` | `idle`, `processing`, `waiting`, `error`, `exited` (or `unknown`) |
-| `_event` | the hook event, `report` for `agent report`, `approved`/`denied`, `delivered` (a Stop handed over held messages) |
+| `_status` | `idle`, `processing`, `waiting`, `error`, `ended` (or `unknown`) |
+| `_end_reason` | with `ended`: how the session ended (`quit`, `gone`, ...); empty otherwise, since every report writes it |
+| `_event` | the hook event, `report` for `agent report`, `approved`/`denied`, `delivered` (a Stop handed over held messages), `adopted` (its pane runs another session) |
 | `_detail` | one line of context, e.g. `Bash: go test ./...` or `permission: ...` |
 | `_tool` | the tool the event concerns |
 | `_tool_input` | the full JSON input of a call that may need permission (≤64 KiB); always written, so it never outlives its call |
 | `_result` | Claude's last reply (`Stop`'s `last_assistant_message`); written only when set or cleared |
-| `_session_id` | the CLI's session id; spawn sets it, hooks update it (`/clear`, `/resume`, agy's conversation id) |
-| `_spawn_id` | the spawn's uuid, set once by spawn |
+| `_session_id` | the CLI's session id; spawn sets it, hooks update it (`/clear`, `/resume`, agy's conversation id), and pane adoption sets the session the pane runs |
+| `_spawn_id` | agy only: the spawn's uuid, set once by spawn (a Claude agent spawned with per-spawn hooks, before the global hook, has one too) |
+| `_hooked_session` | Claude: the session the global hook last reported for the agent's main session; while it equals `_session_id`, the agent holds messages |
 | `_turn_at` | when the last turn started: written with a report that is `processing` and clears `_result` (Claude `UserPromptSubmit`, agy's first `PreInvocation`) |
 | `_sent_at` | when a message was last typed in; written by `send` (and queued deliveries and spawn's first message), not by `Report` |
 | `_unsubmitted` | what Claude's input box showed when Enter failed to submit a typed message; deleted by the next typing whose message doesn't stay in the box |
@@ -537,16 +685,18 @@ Timestamps are stored with nanoseconds: a whole turn can fit in one second,
 and `wait --next` tells reports apart by time. Every recorded report also
 publishes a status event (see [Status events](#status-events-and-wait)).
 
-`--spawn-id` guards against stale writers: a report or hook whose spawn id
-isn't the agent's current `_spawn_id` is dropped. Without it, the
-`SessionEnd` of the Claude that `cleanup` just killed could land on a
-respawn of the same name.
+`--spawn-id` guards agy's hooks against stale writers: a report or hook
+whose spawn id isn't the agent's current `_spawn_id` is dropped, so the exit
+wrapper of an agy that `cleanup` just killed can't mark a respawn of the
+same name `ended`. Claude's global hook needs none: it places itself by the
+process tree, and a killed CLI has no pane above it.
 
-Hook mode (`report --hook`) reads the payload on stdin, writes stdout only
-to hand over held messages (Claude's `Stop`, agy's `PostInvocation`; see
-Held messages), and exits 0 even when the report fails (errors go to stderr), so a reporting
-problem can't disturb the agent. It still exits 1 if the binary can't start,
-e.g. the database can't be opened.
+Hook mode (`report --hook`, and `agent hook`) reads the payload on stdin,
+writes stdout only to hand over held messages (Claude's `Stop`, agy's
+`PostInvocation`; see Held messages) or to approve a safe `agent` command
+(Claude's `PreToolUse`), and exits 0 even when the report fails (errors go
+to stderr), so a reporting problem can't disturb the agent. `report --hook`
+still exits 1 if the binary can't start, e.g. the database can't be opened.
 
 ### Hook mapping
 
@@ -567,7 +717,8 @@ What the code maps them to:
 | `Notification` | idle | only `idle_prompt`; `permission_prompt` arrives ~6s late and is ignored. `idle_prompt` also fires ~60s into background work, so `ReportHook` drops it while the last report is a `Stop` that left the agent `processing` |
 | `Stop` | idle | sets `_result`; stays processing while background tasks (shells, subagents) are running, since their completion starts a new turn. With messages held, processing, event `delivered`, and the hook prints them (see [Held messages](#held-messages)) |
 | `StopFailure` | error | e.g. API error, rate limit |
-| `SessionEnd` | exited | ignored for `reason: clear` (a `SessionStart` follows) |
+| `SessionEnd` | ended (quit) | detail: Claude's reason (`prompt_input_exit`, `logout`, ...); ends every pending prompt. Ignored for `reason: clear` (a `SessionStart` follows); the session's own report is then `ended (replaced)`, detail `/clear` |
+| `SubagentStart`, `SubagentStop` | — | not an agent report; the global hook records the subagent's session report (`processing`, then `ended (finished)`) |
 
 **agy** (`AgyBackend.ParseHookEvent`, `namedagents/agy.go`):
 
@@ -580,10 +731,89 @@ What the code maps them to:
 | `Stop` | idle, processing, or error | error for an error or `ERROR`/`MAX_*` termination; processing when `fullyIdle` is false |
 
 agy has no `SessionEnd` hook and no session list, so its launch command ends
-with `; <binary> report exited --as <name> --spawn-id <uuid>`: the shell
-records `exited` however agy ends (`/exit`, crash, `kill -9`), and the spawn
-id keeps a stale wrapper from marking a respawn `exited`. Arguments added
-later (`--add-dir`, `-i`) are inserted before that suffix.
+with `; <binary> report ended --end-reason quit --as <name> --spawn-id
+<uuid> "agy exited with code $?"`: the shell records `ended (quit)`, with
+agy's exit code as the detail, however agy ends (`/exit`, crash, `kill
+-9`), and the spawn id keeps a stale wrapper from marking a respawn
+`ended`. Arguments added later (`--add-dir`, `-i`) are inserted before that
+suffix.
+
+### The global hook (`agent hook`)
+
+`agent hooks install` (`internal/cli/hooks.go`,
+`namedagents/claude_settings.go`) registers this binary in Claude Code's
+user settings (`$CLAUDE_CONFIG_DIR/settings.json`, else
+`~/.claude/settings.json`): for each of the 13 events in `ClaudeHookEvents`
+(`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
+`PostToolUse`, `PostToolUseFailure`, `PreCompact`, `Notification`,
+`SubagentStart`, `SubagentStop`, `Stop`, `StopFailure`, `SessionEnd`), a
+group `{"matcher": "", "hooks": [{"type": "command", "command": "<binary>
+hook", "timeout": 10}]}`. An entry is gomuxai's when its command is two
+words, an executable named `agent` (or as this binary is named) and `hook`.
+One hook serves one agent binary: the store beside the binary it runs
+records the sessions it places, so a Claude agent another binary spawned
+isn't heard. An entry naming a binary that is gone is re-pointed at this
+one; one naming a binary that still exists is re-pointed only with
+`--force` (that binary's agents would stop reporting), and spawn refuses a
+Claude agent while the hook runs another binary, naming it. Every other
+hook and setting stays as it was; numbers keep the digits written. Before
+writing, the file is copied to `<data dir>/backups/settings.json.<UTC
+time>`; the write is atomic (`util.WriteFileAtomic`: a temp file renamed
+over it) and keeps a symlinked settings file a symlink, writing its target.
+A file that isn't a JSON object, or whose `hooks` aren't shaped as Claude
+Code reads them (an object of event arrays of groups with a `hooks` array of
+objects), is refused and left alone, naming the first bad place. Nothing is
+written when every entry is current. `remove` takes gomuxai's entries out,
+dropping events left empty; `status` prints each event's state
+(`installed`, `another agent binary's`, `missing`) and the last 5 lines of
+`logs/hook-errors.log`. Claude Code reads hooks when a session starts, so
+running sessions pick a change up when restarted (or through `/hooks`).
+
+Claude Code then runs `<binary> hook` for every event of every session on
+the machine: a workgroup agent's, a person's, a `claude -p`. `agent hook`
+reads the payload and places itself (`FindHookSession`, `placeHook`):
+
+1. **The CLI above it**: walking up its own ancestors (`/proc/<pid>/stat`
+   on Linux, one `ps` listing elsewhere), the nearest process that is the
+   CLI: its registry entry (`claudereg.ReadPID`) is live, or unproven but
+   holding the payload's session id, or it is the pid Claude Code sets in
+   `$CLAUDE_PID` for its hooks. Being an ancestor of the running hook is
+   proof the process runs; the last two cover a CLI whose start time can't
+   be compared, and the first event of a session, which can come before
+   Claude writes its registry file (seen at `SessionStart`).
+2. **The agent above that CLI**: walking on up, the first process that is
+   a tmux pane's (`list-panes -a -F '#{pane_pid} #{session_name}'`), if its
+   session is an agent's. Another CLI on the way first (any running
+   process with a registry entry, proven or not) means this CLI was started
+   from inside that one's session (a `claude -p` a tool ran), so no agent
+   owns it. A CLI whose pane is gone (cleanup killed the session) reaches
+   no pane, so no agent.
+
+Then `HandleClaudeHook`:
+
+- A CLI whose command line carries gomuxai's per-spawn hooks (`--settings`
+  whose hooks run `report --hook`; a Claude agent spawned before the global
+  hook) is skipped (`SpawnHooked`): its own hook reports it.
+- **Every session's report** goes to `session_reports`, keyed by session
+  id: the status the event maps to, as in the table above, with its end
+  reason, event, detail, transcript and time (a stored newer one wins, since
+  hook processes can finish out of order). A subagent's events (they carry
+  `agent_id`) are recorded under `agent-<agent id>`, as `agent sessions`
+  names it: `processing`, and `ended (finished)` at `SubagentStop`. A
+  `SessionEnd` with reason `clear` is `ended (replaced)`. This is how
+  `agent sessions` knows how a session no agent owns ended.
+- **An agent's session** also gets the agent's report, through `HandleHook`
+  as `report --hook` would (no spawn id). For a main-session event it first
+  sets `_hooked_session` to the payload's session id, so the very `Stop`
+  that follows can hand over held messages. Only here does the hook print
+  anything (held messages, the `PreToolUse` approval): a session no agent
+  owns never sees output from it.
+
+It exits 0 whatever goes wrong once it runs (like `report --hook`, it
+exits 1 only if the binary can't start, e.g. the database can't be opened).
+When placing fails, the session's report is still recorded, and the error
+says why no agent got one. Errors go to stderr and,
+one line each with a UTC time, to `logs/hook-errors.log`.
 
 ### Answering permission prompts
 
@@ -693,11 +923,11 @@ truncate and regrow between polls) ends the stream with an error.
 
 A listed session's path may name no file yet: `discovery.Resolve` lists a
 live agent's current transcript before its harness writes it (Claude Code
-creates it at the first prompt). If that session hasn't exited, the target
+creates it at the first prompt). If that session hasn't ended, the target
 is unwritten and `--follow` waits (`awaitTranscript`): it `stat`s the path
 every 250ms and resolves the session again every 30s, and once the file is
 there resolves it once more and streams it as any other. A session that has
-exited with no file is an error, at once or when a wait sees it; so is a
+ended with no file is an error, at once or when a wait sees it; so is a
 path no session lists. Without `--follow` an unwritten transcript is an
 error that says it isn't written yet.
 
@@ -719,8 +949,9 @@ agent of this store owns, a report check every 2s reads that agent's
 record and state from the store alone (`ownAgent`: what export reads, no
 tmux, no other store) and resolves the probed session against it with no
 harness list, counting only when the agent has reported since the status
-was last set. A full check, `discovery.Resolve` over every store's agents
-and `claude agents --json` as `agent sessions` does it, runs every 30s,
+was last set. A full check, `discovery.Resolve` over every store's agents,
+Claude Code's session registry and the global hook's session reports, as
+`agent sessions` does it, runs every 30s,
 the wait doubling up to 5 minutes while the transcript doesn't grow. A
 `session` line is written when anything but `size`, `mtime` and
 `status_at` changed; its `size` is how far the stream has read.
@@ -748,19 +979,25 @@ read from the database's tables, which aren't an interface.
   carries the report; `tool_input` only for a `waiting` report, since every
   tool call's input would bloat the table. The newest 20000 are kept
   (pruned every 100th insert, like the command log).
-- **Runs.** Spawn opens one, cleanup closes it with the last status and
-  transcript, so `--all` lists departed agents without the command log.
+- **Runs.** Spawn opens one, cleanup closes it with the last status, end
+  reason and transcript, so `--all` lists departed agents without the
+  command log.
   A store from before runs has its departed agents rebuilt from the command
   log's spawns (newest per name, `run` 0) and `logs/<name>.transcripts`.
 - **The snapshot** reads agents, runs, the reserved status keys, and the
   newest event id in one read transaction, so the snapshot holds every
   event up to its cursor and none after.
-- **Status** is the last report, not `StatusInfo`: export runs no backend
-  CLI (`claude agents --json`), so any number of followers cost a query
-  every 250ms each. Known differences from `agent status`: an interrupted
-  permission prompt stays `waiting`, a crashed CLI keeps its last status
-  (`attached` stays true: the shell is still there), and with several
-  queued prompts `detail` describes the newest, not the one on screen.
+- **Status** is the last report, not `StatusInfo`: export reads no session
+  registry, process tree or screen, so any number of followers cost a
+  query every 250ms each. Known differences from `agent status`: an
+  interrupted permission prompt stays `waiting`, a crashed CLI keeps its
+  last status (`attached` stays true: the shell is still there) where
+  `status` says `ended (gone)`, a CLI started anew in the pane shows only
+  once a status check has adopted it, and with several queued prompts
+  `detail` describes the newest, not the one on screen. A status event
+  whose session id differs from the agent's last, with no transcript,
+  empties the agent's `transcript` fields: the old file isn't the new
+  session's.
 - **Sessions and transcripts** are checked every second: `tmux
   list-sessions -F '#{session_name}'` and a stat of each live agent's
   transcript. A change is a `changed` line with `reason` `session` or
@@ -801,7 +1038,10 @@ runs of one name apart. Every agent object has the same fields:
 `kind` is `tmux` for every agent so far (room for CLI sessions that agent
 didn't start). Absent fields are empty: `parent` for a person's agent,
 `ended_at` while live, `store` and `attached` for another host's agents.
-A departed agent (`live: false`, `ended_at` set) keeps its last report.
+`end_reason` is set beside `"status":"ended"`. A departed agent (`live:
+false`, `ended_at` set) keeps its last report's event and detail, and its
+status is `ended (closed)`, unless that report had already ended it with a
+reason, which it keeps.
 Runs don't record the session id, so a departed agent's `session_id` is
 the one its transcript's path names (`transcript.SessionIDFromPath`).
 
@@ -835,7 +1075,8 @@ transcript growth.
 `agent sessions` (`internal/cli/sessions.go`, `internal/discovery`) lists
 every agent session on the host: workgroup agents' and the ones a person
 ran, in one shape, the Session of [`docs/EVENTS.md`](EVENTS.md). It only
-reads, and runs one backend CLI, `claude agents --json`.
+reads, and runs no backend CLI: for Claude it reads Claude Code's session
+registry and the global hook's `session_reports`.
 
 **Where.** One table (`discovery.Dirs`, ported from glyph3d-rs
 `crates/glyph-session-dirs`):
@@ -887,20 +1128,26 @@ run created before the file's last write. A subagent's session belongs to
 its parent session's agent, at any depth. Every transcript an agent names
 is read first, wherever it lives, so the history rule knows its last write.
 Paths and stores are compared with symlinks resolved, so a symlinked
-`~/.claude` lists a session once. A live agent with no transcript yet is
-listed with an empty `path` and its backend as `harness`.
+`~/.claude` lists a session once. A live agent whose current session no
+hook has named a transcript for (one adopted from its pane) owns the
+session the scan found under its `_session_id`. A live agent with no
+transcript yet is listed with an empty `path` and its backend as `harness`.
 
-**Status** (`discovery.Resolve`):
-- a live agent's current session: its last report, reconciled with
-  `claude agents --json` by `discovery.ReconcileNative`, the one rule
-  `agent status` uses too: the list's status when it lists the session in
-  a mapped state (but not a `waiting` within 5s of a deny), `exited` when
-  it doesn't list a session the report says is alive, else the report.
-  `agent status` then reads the screen as well; `sessions` doesn't. agy:
-  `exited` once agy no longer holds the conversation open;
-- an agent's other sessions, and a departed run's: `exited`;
-- Claude, no workgroup: `claude agents --json`, `exited` if unlisted,
-  `unknown` if the CLI can't be run;
+**Status** (`discovery.Resolve`); every `ended` carries its end reason:
+- a live agent's current session: its last report, reconciled with the
+  session registry by `discovery.ReconcileNative`, the one rule `agent
+  status` uses too: the registry's status when a running process holds the
+  session (but not a `waiting` within 5s of a deny), `ended (gone)` when
+  none does and the report says it is alive, else the report (an `ended`
+  report with no reason reads as `gone`). `agent status` then reads the
+  screen and adopts the pane's session as well; `sessions` doesn't. agy:
+  `ended (gone)` once agy no longer holds the conversation open;
+- an agent's other sessions: `ended (replaced)`; a departed run's last
+  session: `ended (closed)`, or the reason its last report gave if it had
+  already ended;
+- Claude, no workgroup: the registry's status; else, if the global hook
+  heard the session end, `ended` with that reason (`quit`, `replaced`);
+  else `ended (gone)`; `unknown` if the registry can't be read;
 - agy, no workgroup: agy holds an exclusive `flock` on
   `presence/<conversation id>.lock` while a conversation is open. On Linux
   that is read from `/proc/locks`, taking no lock: a lock on the file's
@@ -908,13 +1155,17 @@ listed with an empty `path` and its backend as `harness`.
   `/proc/locks` names is the superblock's, which differs from `stat`'s on
   btrfs). Elsewhere a non-blocking shared `flock`, released at once, which
   for that moment would make agy's own non-blocking lock fail. `unknown` while held
-  (idle and busy look the same), else `exited`. A subagent conversation
+  (idle and busy look the same), else `ended (gone)`. A subagent conversation
   without its own lock is open while its record says `ALIVE` and its parent
   is open;
 - Kimi, which records nothing about running: `unknown` if its transcript
-  changed in the last 10 minutes, else `exited`;
-- a subagent: `exited` if it recorded finishing (Claude's meta.json
-  `finished`, agy's state) or its parent is `exited`, else `unknown`.
+  changed in the last 10 minutes, else `ended (gone)`;
+- a subagent, in this order: `ended (finished)` if it recorded finishing
+  (Claude's meta.json `finished`, agy's state) or the global hook saw its
+  `SubagentStop`; `ended (gone)` if agy says it isn't open; `ended
+  (parent)` if its parent session ended; `processing` if the global hook
+  saw it start and not stop; else `unknown` (or, with no parent found and
+  no sign of life, the 10-minute rule above).
 
 `status_at` is the report's time where the report stands, else the
 transcript's last write (a departed run's: when it ended).
@@ -1029,8 +1280,8 @@ no bus.
 
 ### Status events and wait
 
-`Report` publishes a `StatusEvent` (host, agent, status, event, detail,
-tool, time) for every report it records, through the service's optional
+`Report` publishes a `StatusEvent` (host, agent, status, `end_reason`,
+event, detail, tool, time) for every report it records, through the service's optional
 `EventPublisher`. Publishing is best-effort: the stored report is the source
 of truth, so a missing or failing bus never fails a report. The CLI's
 publisher (`cli/events.go`) connects on the first report only, so commands
@@ -1059,8 +1310,8 @@ wait). The send marker only counts a turn that started after the send, so a
 turn already running when the message was typed (Claude queues it) doesn't
 end the wait when it finishes. `WaitOptions.After` replaces the send marker
 with "a `--for` report newer than this", which `--follow` uses to report each
-arrival once. Unless `exited` is in `--for`, the wait fails as soon as the
-agent is `exited`. A timeout exits 2.
+arrival once. Unless `ended` is in `--for`, the wait fails as soon as the
+agent is `ended`. A timeout exits 2.
 
 `agent wait` with several names (`internal/cli/wait.go`) runs one
 `natsbus.WaitObservation` per agent, in goroutines that share the bus
@@ -1068,7 +1319,7 @@ connection, and prints each arrival as it comes. Local names are looked up
 first, so a typo fails at once instead of waiting out the timeout. With no
 names, `--any`/`--follow` list this host's agents (minus `AGENT_NAME`), and
 `--follow` lists them again every 10s to pick up new ones; there, an agent
-that has exited or been cleaned up is dropped silently. A single named agent
+whose session has ended or that has been cleaned up is dropped silently. A single named agent
 without `--follow` keeps the original output (`name: status`) and errors.
 
 ### Security model, in short
@@ -1148,8 +1399,9 @@ One SQLite database, `.gomuxai/gomuxai.db`, through `modernc.org/sqlite`
 | Table | Columns | Notes |
 |---|---|---|
 | `agents` | `name` PK, `session_name`, `backend`, `task_file`, `log_file`, `created_at`, `spawned_by`, `cwd` | one row per live agent |
-| `runs` | `id`, `name`, `parent`, `backend`, `session`, `cwd`, `created_at`, `ended_at`, `status`, `transcript` | one per spawn; cleanup sets `ended_at` and the last status and transcript; indexed on `(name, id)` |
-| `agent_events` | `id`, `at`, `kind`, `agent`, `run`, `status`, `event`, `detail`, `tool`, `tool_input`, `session_id`, `transcript` | `spawned`/`status`/`removed`, for `export --follow`; the newest 20000 are kept |
+| `runs` | `id`, `name`, `parent`, `backend`, `session`, `cwd`, `created_at`, `ended_at`, `status`, `transcript`, `end_reason` | one per spawn; cleanup sets `ended_at` and the last status, transcript and end reason; indexed on `(name, id)` |
+| `agent_events` | `id`, `at`, `kind`, `agent`, `run`, `status`, `event`, `detail`, `tool`, `tool_input`, `session_id`, `transcript`, `end_reason` | `spawned`/`status`/`removed`, for `export --follow`; the newest 20000 are kept |
+| `session_reports` | `session_id` PK, `harness`, `status`, `end_reason`, `event`, `detail`, `transcript`, `at` | the global hook's last report for every Claude session it heard (a subagent's under `agent-<id>`), for `agent sessions`; a write older than the stored one is dropped; never pruned |
 | `messages` | `id`, `sender_id`, `receiver_id`, `content`, `status`, `created_at` | held and queued messages: `pending`/`delivered`/`failed`; indexed on `(receiver_id, status)`; claimed with `UPDATE ... WHERE status = 'pending'` |
 | `tasks` | `name` PK, `content`, `source_file`, `created_at` | independent of agents |
 | `state` | `agent_name`, `key`, `value`, `updated_at`; PK `(agent_name, key)` | FK to `agents` with `ON DELETE CASCADE`: state needs an agent record |
@@ -1164,14 +1416,19 @@ There is no logs table: logs are files (see
 
 `migrate` runs `CREATE TABLE IF NOT EXISTS` for every table on each open,
 then `addColumn` for columns that older databases lack (so far
-`agents.spawned_by` and `agents.cwd`). `addColumn` checks `pragma_table_info` first and
+`agents.spawned_by`, `agents.cwd`, `runs.end_reason` and
+`agent_events.end_reason`). `addColumn` checks `pragma_table_info` first,
 tolerates another process adding the column between the check and the
-`ALTER TABLE`. A new column goes in both the `CREATE TABLE` (new databases)
-and an `addColumn` call (old ones).
+`ALTER TABLE`, and says whether this call added it. A new column goes in
+both the `CREATE TABLE` (new databases) and an `addColumn` call (old ones).
+The open that adds `agent_events.end_reason` also rewrites the status
+`exited`, which stores from before end reasons used, to `ended` in
+`state`, `runs` and `agent_events`, once.
 
 ### Concurrency
 
-Many short-lived processes write at once: every hook of every agent is its
+Many short-lived processes write at once: every hook of every Claude session
+on the machine is its own `agent hook`, and every hook of an agy agent its
 own `agent report --hook`. The DSN sets `busy_timeout(5000)`,
 `foreign_keys(1)`, and `synchronous(NORMAL)` on every pooled connection (a
 one-off `PRAGMA` would reach only one), and `journal_mode = WAL` is set once,
@@ -1190,8 +1447,8 @@ up writers in WAL mode.
 `Execute` records every run in `command_log` when it ends: args (each capped
 at 300 bytes), duration, exit code, error, `AGENT_NAME`, cwd, and build id.
 Help is recorded too (`recordCommand` opens the store itself when setup
-didn't); `report --hook` (every tool call of every agent) and `bus run` (a
-daemon) are not. `export --follow` is recorded once, when it ends (Ctrl-C
+didn't); `report --hook` and `agent hook` (every hook event of every
+session) and `bus run` (a daemon) are not. `export --follow` is recorded once, when it ends (Ctrl-C
 or SIGTERM; a SIGPIPE or SIGKILL leaves no row). Recording is best effort, bounded at 500ms. The log keeps
 the newest 20000 rows: every 100th insert deletes older ones, so most
 inserts don't pay for pruning.
@@ -1332,7 +1589,21 @@ make lint          # golangci-lint
   come only from `list`. An old binary writing into a store that has
   `agent_events` (a downgrade) records no events, and followers miss its
   changes.
-- `runs` are never pruned (one row per spawn).
+- `runs` are never pruned (one row per spawn), nor are `session_reports`
+  (one row per Claude session and subagent the global hook heard).
+- Claude Code's session registry and hook payloads are its internal files,
+  not a contract. A registry entry with a kind or status gomuxai doesn't
+  know reads as `unknown` for that session until this package learns it;
+  a file that can't be read at all stops the readers from calling any
+  session gone, and status falls back to the reports, saying why. Pane
+  adoption needs a proven entry, so it waits while Claude records no
+  comparable start time.
+- A Claude agent needs `agent hooks install` (spawn refuses without it). A
+  Claude CLI that started before the install, or with the hooks removed,
+  reports nothing and holds no messages until it is restarted; native
+  status and pane adoption still see it.
+- Pane adoption happens in a status check (`status`, `list`, `wait`, a
+  `send`); `export` and `sessions` show the new session only after one.
 - The open friction entries: `agent friction list`.
 
 ## History

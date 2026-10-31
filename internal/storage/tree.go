@@ -27,7 +27,8 @@ const treeSchema = `
 		created_at TEXT NOT NULL,
 		ended_at TEXT NOT NULL DEFAULT '',
 		status TEXT NOT NULL DEFAULT '',
-		transcript TEXT NOT NULL DEFAULT ''
+		transcript TEXT NOT NULL DEFAULT '',
+		end_reason TEXT NOT NULL DEFAULT ''
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_runs_name ON runs(name, id);
@@ -44,7 +45,8 @@ const treeSchema = `
 		tool TEXT NOT NULL DEFAULT '',
 		tool_input TEXT NOT NULL DEFAULT '',
 		session_id TEXT NOT NULL DEFAULT '',
-		transcript TEXT NOT NULL DEFAULT ''
+		transcript TEXT NOT NULL DEFAULT '',
+		end_reason TEXT NOT NULL DEFAULT ''
 	);
 `
 
@@ -72,9 +74,10 @@ type Run struct {
 	Cwd       string
 	CreatedAt time.Time
 	EndedAt   time.Time // zero while the agent is live
-	// Status and Transcript are the agent's last reported status and
-	// transcript path, copied when the run ends.
+	// Status, EndReason and Transcript are the agent's last reported
+	// status, end reason and transcript path, copied when the run ends.
 	Status     string
+	EndReason  string
 	Transcript string
 }
 
@@ -95,6 +98,8 @@ type AgentEvent struct {
 	SessionID string // only when the report set it
 	// Transcript is the CLI's transcript path, when the report named one.
 	Transcript string
+	// EndReason says how the session ended, with a status of ended.
+	EndReason string
 }
 
 // Tree is a store's agents, read in one transaction.
@@ -113,16 +118,16 @@ type Tree struct {
 
 // treeStateKeys are the state keys a tree reads: the reserved status keys
 // (see service.StateKey*).
-var treeStateKeys = []string{"_status", "_event", "_detail", "_tool", "_tool_input", "_session_id", "_transcript"}
+var treeStateKeys = []string{"_status", "_event", "_detail", "_tool", "_tool_input", "_session_id", "_transcript", "_end_reason"}
 
 // schema says which parts of the current schema a store has. A store
 // opened read-only may predate them.
 type schema struct {
-	spawnedBy, cwd, runs, events bool
+	spawnedBy, cwd, runs, events, endReason bool
 }
 
 // currentSchema is a migrated store's.
-var currentSchema = &schema{spawnedBy: true, cwd: true, runs: true, events: true}
+var currentSchema = &schema{spawnedBy: true, cwd: true, runs: true, events: true, endReason: true}
 
 // OpenReadOnly opens another binary's store without writing to it: no
 // migrations, and SQLite's read-only mode. Only the tree readers work on it.
@@ -168,6 +173,7 @@ func readSchema(db *sql.DB) (*schema, error) {
 		{&sc.cwd, column, []any{"agents", "cwd"}},
 		{&sc.runs, table, []any{"runs"}},
 		{&sc.events, table, []any{"agent_events"}},
+		{&sc.endReason, column, []any{"agent_events", "end_reason"}},
 	} {
 		if *c.ok, err = has(c.query, c.args...); err != nil {
 			return nil, err
@@ -212,16 +218,16 @@ func deleteAgentTx(ctx context.Context, tx *sql.Tx, name string) error {
 	const last = `COALESCE((SELECT value FROM state WHERE agent_name = ? AND key = ?), '')`
 	now := timeNanos(time.Now())
 	var run int64
-	var status, transcript string
-	err := tx.QueryRowContext(ctx, `UPDATE runs SET ended_at = ?, status = `+last+`, transcript = `+last+`
+	var status, transcript, endReason string
+	err := tx.QueryRowContext(ctx, `UPDATE runs SET ended_at = ?, status = `+last+`, transcript = `+last+`, end_reason = `+last+`
 		WHERE id = (SELECT MAX(id) FROM runs WHERE name = ? AND ended_at = '') AND EXISTS (SELECT 1 FROM agents WHERE name = ?)
-		RETURNING id, status, transcript`,
-		now, name, "_status", name, "_transcript", name, name).Scan(&run, &status, &transcript)
+		RETURNING id, status, transcript, end_reason`,
+		now, name, "_status", name, "_transcript", name, "_end_reason", name, name).Scan(&run, &status, &transcript, &endReason)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = tx.QueryRowContext(ctx, `INSERT INTO runs (name, parent, backend, session, cwd, created_at, ended_at, status, transcript)
-			SELECT name, COALESCE(spawned_by, ''), backend, session_name, COALESCE(cwd, ''), created_at, ?, `+last+`, `+last+`
-			FROM agents WHERE name = ? RETURNING id, status, transcript`,
-			now, name, "_status", name, "_transcript", name).Scan(&run, &status, &transcript)
+		err = tx.QueryRowContext(ctx, `INSERT INTO runs (name, parent, backend, session, cwd, created_at, ended_at, status, transcript, end_reason)
+			SELECT name, COALESCE(spawned_by, ''), backend, session_name, COALESCE(cwd, ''), created_at, ?, `+last+`, `+last+`, `+last+`
+			FROM agents WHERE name = ? RETURNING id, status, transcript, end_reason`,
+			now, name, "_status", name, "_transcript", name, "_end_reason", name, name).Scan(&run, &status, &transcript, &endReason)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // no such agent
@@ -229,7 +235,7 @@ func deleteAgentTx(ctx context.Context, tx *sql.Tx, name string) error {
 	if err != nil {
 		return fmt.Errorf("closing run: %w", err)
 	}
-	if err := insertAgentEvent(ctx, tx, &AgentEvent{At: parseTime(now), Kind: AgentRemoved, Agent: name, Run: run, Status: status, Transcript: transcript}); err != nil {
+	if err := insertAgentEvent(ctx, tx, &AgentEvent{At: parseTime(now), Kind: AgentRemoved, Agent: name, Run: run, Status: status, Transcript: transcript, EndReason: endReason}); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE name = ?`, name); err != nil {
@@ -246,11 +252,11 @@ func insertAgentEvent(ctx context.Context, tx *sql.Tx, ev *AgentEvent) error {
 	}
 	var id int64
 	err := tx.QueryRowContext(ctx, `
-		INSERT INTO agent_events (at, kind, agent, run, status, event, detail, tool, tool_input, session_id, transcript)
-		VALUES (?, ?, ?, COALESCE(?, (SELECT MAX(id) FROM runs WHERE name = ? AND ended_at = ''), 0), ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO agent_events (at, kind, agent, run, status, event, detail, tool, tool_input, session_id, transcript, end_reason)
+		VALUES (?, ?, ?, COALESCE(?, (SELECT MAX(id) FROM runs WHERE name = ? AND ended_at = ''), 0), ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id`,
 		timeNanos(ev.At), ev.Kind, ev.Agent, run, ev.Agent, ev.Status, ev.Event, ev.Detail, ev.Tool, ev.ToolInput,
-		ev.SessionID, ev.Transcript).Scan(&id)
+		ev.SessionID, ev.Transcript, ev.EndReason).Scan(&id)
 	if err != nil {
 		return fmt.Errorf("recording agent event: %w", err)
 	}
@@ -269,25 +275,38 @@ func timeNanos(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-const runColumns = `id, name, parent, backend, session, cwd, created_at, ended_at, status, transcript`
+// runColumns and eventColumns are the columns scanRun and scanAgentEvent
+// read; a store from before end reasons were kept reads them as ”.
+func (s *SQLiteStorage) runColumns() string {
+	return `id, name, parent, backend, session, cwd, created_at, ended_at, status, transcript, ` + s.endReasonColumn()
+}
+
+func (s *SQLiteStorage) eventColumns() string {
+	return `id, at, kind, agent, run, status, event, detail, tool, tool_input, session_id, transcript, ` + s.endReasonColumn()
+}
+
+func (s *SQLiteStorage) endReasonColumn() string {
+	if s.schemaOf().endReason {
+		return "end_reason"
+	}
+	return "'' AS end_reason"
+}
 
 func scanRun(row scanner) (*Run, error) {
 	var r Run
 	var created, ended string
-	if err := row.Scan(&r.ID, &r.Name, &r.Parent, &r.Backend, &r.Session, &r.Cwd, &created, &ended, &r.Status, &r.Transcript); err != nil {
+	if err := row.Scan(&r.ID, &r.Name, &r.Parent, &r.Backend, &r.Session, &r.Cwd, &created, &ended, &r.Status, &r.Transcript, &r.EndReason); err != nil {
 		return nil, err
 	}
 	r.CreatedAt, r.EndedAt = parseTime(created), parseTime(ended)
 	return &r, nil
 }
 
-const agentEventColumns = `id, at, kind, agent, run, status, event, detail, tool, tool_input, session_id, transcript`
-
 func scanAgentEvent(row scanner) (*AgentEvent, error) {
 	var ev AgentEvent
 	var at string
 	if err := row.Scan(&ev.ID, &at, &ev.Kind, &ev.Agent, &ev.Run, &ev.Status, &ev.Event, &ev.Detail,
-		&ev.Tool, &ev.ToolInput, &ev.SessionID, &ev.Transcript); err != nil {
+		&ev.Tool, &ev.ToolInput, &ev.SessionID, &ev.Transcript, &ev.EndReason); err != nil {
 		return nil, err
 	}
 	ev.At = parseTime(at)
@@ -299,7 +318,7 @@ func (s *SQLiteStorage) GetRun(ctx context.Context, id int64) (*Run, error) {
 	if !s.schemaOf().runs {
 		return nil, nil
 	}
-	run, err := queryOne(ctx, s.db, scanRun, `SELECT `+runColumns+` FROM runs WHERE id = ?`, id)
+	run, err := queryOne(ctx, s.db, scanRun, `SELECT `+s.runColumns()+` FROM runs WHERE id = ?`, id)
 	if err != nil {
 		return nil, fmt.Errorf("querying run: %w", err)
 	}
@@ -318,7 +337,7 @@ func (s *SQLiteStorage) AgentEventsAfter(ctx context.Context, after int64, limit
 		return nil, 0, fmt.Errorf("querying agent events: %w", err)
 	}
 	events, err := queryAll(ctx, s.db, scanAgentEvent,
-		`SELECT `+agentEventColumns+` FROM agent_events WHERE id > ? ORDER BY id LIMIT ?`, after, limit)
+		`SELECT `+s.eventColumns()+` FROM agent_events WHERE id > ? ORDER BY id LIMIT ?`, after, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("querying agent events: %w", err)
 	}
@@ -375,7 +394,7 @@ func (s *SQLiteStorage) ReadTree(ctx context.Context, ended bool) (*Tree, error)
 
 	hasRun := map[string]bool{}
 	if sc.runs {
-		runs, err := queryAllTx(ctx, tx, scanRun, `SELECT `+runColumns+` FROM runs ORDER BY id`)
+		runs, err := queryAllTx(ctx, tx, scanRun, `SELECT `+s.runColumns()+` FROM runs ORDER BY id`)
 		if err != nil {
 			return nil, fmt.Errorf("reading runs: %w", err)
 		}

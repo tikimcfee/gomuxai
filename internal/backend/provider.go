@@ -17,10 +17,21 @@ const (
 	StatusProcessing = types.StatusProcessing
 	StatusError      = types.StatusError
 	StatusWaiting    = types.StatusWaiting
-	StatusExited     = types.StatusExited
+	StatusEnded      = types.StatusEnded
+)
+
+const (
+	EndQuit     = types.EndQuit
+	EndGone     = types.EndGone
+	EndReplaced = types.EndReplaced
+	EndFinished = types.EndFinished
+	EndParent   = types.EndParent
+	EndClosed   = types.EndClosed
 )
 
 type HookReport = types.HookReport
+type EndReason = types.EndReason
+type PaneSession = types.PaneSession
 type PermissionResponse = types.PermissionResponse
 type PromptChange = types.PromptChange
 
@@ -39,18 +50,35 @@ const (
 )
 
 // HookProvider is implemented by backends whose CLI reports its own status
-// through lifecycle hooks. Hooks run reportCmd with the event payload on stdin.
+// through lifecycle hooks, with the event payload on stdin. How the hooks are
+// registered is SpawnHooker's or GlobalHooker's.
 type HookProvider interface {
-	// LaunchCommandWithHooks returns the launch command with hooks wired to
-	// reportCmd and the backend session pinned to sessionID.
-	LaunchCommandWithHooks(reportCmd, sessionID string) string
-
 	// ParseHookEvent maps a hook payload to a status report.
 	// event is the hook event name when passed on the command line (for
 	// backends whose stdin payload omits it); backends that embed the event
 	// name in payload may prefer the payload field.
 	// ok is false for events that carry no status change.
 	ParseHookEvent(event string, payload []byte) (report HookReport, ok bool, err error)
+}
+
+// SpawnHooker is implemented by hook backends whose hooks are wired into
+// each spawn's launch command (agy): reportCmd runs on every event.
+type SpawnHooker interface {
+	// LaunchCommandWithHooks returns the launch command with hooks wired to
+	// reportCmd and the backend session pinned to sessionID.
+	LaunchCommandWithHooks(reportCmd, sessionID string) string
+}
+
+// GlobalHooker is implemented by hook backends whose hooks are registered
+// once for every session of the CLI (Claude: agent hooks install), and find
+// their session's agent from the running processes (agent hook).
+type GlobalHooker interface {
+	// HooksInstalled returns nil when the CLI's settings run binary's hook
+	// on every event, else an error saying what is missing and how to fix it.
+	HooksInstalled(binary string) error
+	// LaunchCommandWithSession returns the launch command with the backend
+	// session pinned to sessionID (a resumed one keeps its own).
+	LaunchCommandWithSession(sessionID string) string
 }
 
 // HookDeliverer is implemented by hook backends whose CLI takes messages
@@ -154,9 +182,20 @@ type PromptFlagProvider interface {
 // NativeStatusProvider is implemented by backends whose CLI can report the
 // status of a running session directly (no terminal scraping).
 type NativeStatusProvider interface {
-	// NativeStatus returns the session's status. found is false when the CLI
+	// NativeStatus returns the session's status. With found true, an error
+	// says why the status is unknown (a value the backend doesn't know). found is false when the CLI
 	// doesn't know the session (not started yet, exited, or unsupported).
 	NativeStatus(ctx context.Context, sessionID string) (status Status, found bool, err error)
+}
+
+// PaneSessionProvider is implemented by backends that can say which of their
+// sessions runs under a process: the CLI in an agent's pane, including one a
+// person started there by hand, which carries no hooks and so never reports.
+type PaneSessionProvider interface {
+	// PaneSession returns the session whose CLI runs under panePID (the
+	// pane's own process) in the process tree, the one nearest it. found is
+	// false when no CLI of this backend runs there.
+	PaneSession(ctx context.Context, panePID int) (session PaneSession, found bool, err error)
 }
 
 // PermissionResponder is implemented by backends that can answer a pending

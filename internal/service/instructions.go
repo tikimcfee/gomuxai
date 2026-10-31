@@ -59,7 +59,7 @@ prompt when each is one plain command: not through a shell variable
     agent capture NAME --lines 50      # its screen, e.g. to see why it's stuck
     agent logs NAME                    # what it did: prompts, tool calls, replies
     agent wait NAME --for idle,waiting --next --timeout 10m   # its next turn ends, or it needs a person
-    agent state get NAME _result       # its latest reply (claude agents on this host)
+    agent state get NAME _result       # its latest reply (Claude agents on this host)
 
 Messages from other agents start with "[from NAME@HOST]". The sender can't see
 your terminal: to answer, send your reply back with `+"`agent send NAME@HOST \"...\"`"+`.
@@ -72,8 +72,9 @@ person, or an AI session a person started), so there is no agent to send to:
 answer it in your reply, as you would a prompt typed into your terminal.
 
 %s
-Your status (idle, working, waiting on a permission prompt) is reported
-automatically. Use `+"`agent`"+` rather than tmux to reach other agents.
+Your status (idle, processing, waiting on a permission prompt, ended) is
+reported automatically; `+"`agent status NAME -v`"+` says what an agent's status
+means. Use `+"`agent`"+` rather than tmux to reach other agents.
 `, name, s.cfg.Host, by, bin, heldBriefing(backendName))
 	fmt.Fprintf(&b, `
 ## Helpers
@@ -130,7 +131,8 @@ func (s *AgentService) writeInstructions(name, spawnedBy, backendName string) (s
 // returns the short command that runs it. Typing the full command into the
 // new session's shell can lose its end: until the shell's line editor is up,
 // the terminal holds typed input in canonical mode, which macOS caps at 1024
-// bytes (MAX_CANON), and Claude's hook settings alone run past that.
+// bytes (MAX_CANON), which a launch command with its flags and pre-allowed
+// command rules can pass.
 func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error) {
 	dir := s.cfg.AgentDir(name)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -158,7 +160,7 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 // agents: the user approves each one. So are friction accept and resolve,
 // which are for the people working on the tool.
 var agentSafeCommands = []string{
-	"send", "deliver", "list", "status", "wait", "events", "capture", "logs", "sessions", "transcript", "state get", "history",
+	"send", "deliver", "list", "status", "statuses", "wait", "events", "capture", "logs", "sessions", "transcript", "state get", "history",
 	"friction add", "friction +1", "friction list", "friction show",
 }
 

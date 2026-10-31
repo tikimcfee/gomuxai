@@ -23,7 +23,7 @@ until interrupted.
 Every --interval it checks each agent that has a queued message, and delivers
 the oldest one when the agent is idle, or back at its prompt after a failed
 turn (error). It holds messages while an agent is processing or waiting, and
-fails them if the agent has exited. Deliveries and failures are logged on
+fails them once the agent's session has ended. Deliveries and failures are logged on
 stderr.
 
 Several watchers can run at once (each delivery is checked against the

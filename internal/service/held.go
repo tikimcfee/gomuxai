@@ -83,7 +83,15 @@ func (s *AgentService) holdsMessages(ctx context.Context, agent *storage.Agent) 
 	if _, ok := p.(backend.HookDeliverer); !ok {
 		return false
 	}
-	return s.stateValue(ctx, agent.Name, StateKeySpawnID) != ""
+	// Hooks wired at spawn (agy; Claude agents spawned before the global
+	// hook) report from the start.
+	if s.stateValue(ctx, agent.Name, StateKeySpawnID) != "" {
+		return true
+	}
+	// The global hook reaches the CLI only if it started with the hook
+	// installed: seen, when the hook has reported the current session.
+	hooked := s.stateValue(ctx, agent.Name, StateKeyHookedSession)
+	return hooked != "" && hooked == s.stateValue(ctx, agent.Name, StateKeySessionID)
 }
 
 // HoldsMessages reports whether a message to name that finds it busy is
@@ -137,7 +145,7 @@ func (s *AgentService) sendHeld(ctx context.Context, agent *storage.Agent, messa
 		res.Status, res.Detail = info.Status, info.Detail
 	}
 	switch res.Status {
-	case AgentStatusExited:
+	case AgentStatusEnded:
 		return res, exitedErr(agent)
 	case AgentStatusProcessing, AgentStatusWaiting:
 		// Waiting too: a held message never goes near the dialog, and once
@@ -417,8 +425,8 @@ func (s *AgentService) DeliverHeld(ctx context.Context, name string, opts Delive
 		}
 		reported, _ := s.reportedStatus(ctx, name)
 		switch {
-		case info.Status == AgentStatusExited:
-			return typed, fmt.Errorf("agent %s has exited with %s held for it, which won't be delivered: agent logs %s shows how it ended",
+		case info.Status == AgentStatusEnded:
+			return typed, fmt.Errorf("agent %s's session has ended with %s held for it, which won't be delivered: agent logs %s shows how it ended",
 				name, plural(len(held), "message"), name)
 		case info.Status == AgentStatusIdle || info.Status == AgentStatusError ||
 			info.Status == AgentStatusProcessing && turnOver(reported):

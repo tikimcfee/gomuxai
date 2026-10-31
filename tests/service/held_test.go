@@ -271,7 +271,7 @@ func TestDeliverHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake.nativeFound, fake.nativeGone = false, true // the CLI died
-	if _, err := env.service.DeliverHeld(ctx, "worker", service.DeliverOptions{Wait: true, Interval: 50 * time.Millisecond}); err == nil || !strings.Contains(err.Error(), "exited") {
+	if _, err := env.service.DeliverHeld(ctx, "worker", service.DeliverOptions{Wait: true, Interval: 50 * time.Millisecond}); err == nil || !strings.Contains(err.Error(), "has ended") {
 		t.Errorf("exited agent: err %v", err)
 	}
 }

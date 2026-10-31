@@ -2,8 +2,10 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -25,43 +27,9 @@ func spawnIDOf(t *testing.T, reportCmd string) string {
 	return m[1]
 }
 
-// Repro (real claude): `agent cleanup X && agent spawn X`. Killing the old
-// claude fires its SessionEnd hook ~100ms later, after the new agent record
-// exists; observed in a DB trace writing _status=exited and the OLD
-// _session_id into the new agent. If it lands after the new SessionStart, the
-// new agent stays "exited" with a session id native lookup can't find.
-func TestReportHook_IgnoresHooksFromPreviousSpawn(t *testing.T) {
-	env := setupTestEnv(t)
-	defer env.cleanup()
-	env.cfg.AgentBinary = "/bin/agent"
-	ctx := context.Background()
-
-	old := spawnFake(t, env, "worker")
-	oldSpawn, oldSession := spawnIDOf(t, old.reportCmd), old.sessionID
-	if err := env.service.Cleanup(ctx, "worker"); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
-
-	fresh := spawnFake(t, env, "worker")
-	newSpawn := spawnIDOf(t, fresh.reportCmd)
-	start := `{"hook_event_name":"SessionStart","source":"startup","session_id":"` + fresh.sessionID + `"}`
-	if err := env.service.ReportHook(ctx, "worker", newSpawn, "", []byte(start)); err != nil {
-		t.Fatalf("new SessionStart: %v", err)
-	}
-
-	// The dying first claude's SessionEnd arrives late.
-	end := `{"hook_event_name":"SessionEnd","reason":"other","session_id":"` + oldSession + `"}`
-	_ = env.service.ReportHook(ctx, "worker", oldSpawn, "", []byte(end))
-
-	if st, _ := env.store.GetState(ctx, "worker", service.StateKeyStatus); st == nil || st.Value != string(service.AgentStatusIdle) {
-		t.Errorf("_status = %+v, want idle (stale SessionEnd from the previous spawn was applied)", st)
-	}
-	if sid, _ := env.store.GetState(ctx, "worker", service.StateKeySessionID); sid == nil || sid.Value != fresh.sessionID {
-		t.Errorf("_session_id = %+v, want %q", sid, fresh.sessionID)
-	}
-}
-
-// Within one spawn the session id may change (/clear, /resume): still accepted.
+// The session id may change (/clear, /resume): the hook's is recorded. (A
+// stale hook from a previous spawn's CLI can't reach the agent: placeHook
+// finds no pane above a CLI cleanup killed.)
 func TestReportHook_AcceptsSessionChangeWithinSpawn(t *testing.T) {
 	env := setupTestEnv(t)
 	defer env.cleanup()
@@ -70,7 +38,8 @@ func TestReportHook_AcceptsSessionChangeWithinSpawn(t *testing.T) {
 	fake := spawnFake(t, env, "worker")
 
 	payload := `{"hook_event_name":"SessionStart","source":"clear","session_id":"after-clear"}`
-	if err := env.service.ReportHook(ctx, "worker", spawnIDOf(t, fake.reportCmd), "", []byte(payload)); err != nil {
+	_ = fake
+	if err := env.service.ReportHook(ctx, "worker", "", "", []byte(payload)); err != nil {
 		t.Fatalf("ReportHook: %v", err)
 	}
 	if sid, _ := env.store.GetState(ctx, "worker", service.StateKeySessionID); sid == nil || sid.Value != "after-clear" {
@@ -79,7 +48,7 @@ func TestReportHook_AcceptsSessionChangeWithinSpawn(t *testing.T) {
 }
 
 // Repro (real claude): spawn, wait for idle, `kill -9 <claude pid>`. The pane
-// drops to bash, `claude agents --json` no longer lists the session, and
+// drops to bash, Claude's session registry no longer lists the session, and
 // `agent status` said "idle (source: report)". `agent watch` then typed a
 // queued message into bash, which ran it as a shell command.
 func TestStatusInfo_CrashedSessionIsNotIdle(t *testing.T) {
@@ -99,8 +68,81 @@ func TestStatusInfo_CrashedSessionIsNotIdle(t *testing.T) {
 	if info.Status == service.AgentStatusIdle {
 		t.Fatalf("crashed agent reported idle (source %s); the watcher would deliver into the shell", info.Source)
 	}
-	if info.Status != service.AgentStatusExited {
+	if info.Status != service.AgentStatusEnded {
 		t.Errorf("status = %s, want exited", info.Status)
+	}
+}
+
+// Repro (real claude): the CLI quits (/exit, SessionEnd), and a person types
+// `claude` at the shell left in the pane. The new CLI was launched by hand,
+// so no hook reports it; the registry and the process tree say it runs there.
+func TestStatusInfo_AdoptsTheSessionThePaneRuns(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/bin/agent"
+	ctx := context.Background()
+	fake := spawnFake(t, env, "worker")
+	old := fake.sessionID
+
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusIdle, Event: "Stop", Result: "old reply", Transcript: "/t/old.jsonl"})
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusEnded, Event: "SessionEnd", Detail: "prompt_input_exit"})
+	fake.nativeGone = true
+	fake.paneSession = &backend.PaneSession{ID: "by-hand", PID: 4242, Status: backend.StatusIdle, Detail: "at its prompt"}
+
+	info, err := env.service.StatusInfo(ctx, "worker")
+	if err != nil {
+		t.Fatalf("StatusInfo: %v", err)
+	}
+	if info.Status != service.AgentStatusIdle || info.Event != service.EventAdopted || info.Source != service.StatusSourceNative {
+		t.Fatalf("got %s/%s/%s (%s), want idle/adopted/native", info.Status, info.Event, info.Source, info.Detail)
+	}
+	for _, want := range []string{"by-hand", "pid 4242", old} {
+		if !strings.Contains(info.Detail, want) {
+			t.Errorf("detail %q doesn't name %q", info.Detail, want)
+		}
+	}
+	for key, want := range map[string]string{
+		service.StateKeySessionID:  "by-hand",
+		service.StateKeyTranscript: "", // the new session's transcript is no hook's yet
+		service.StateKeyResult:     "", // nor is the old reply its reply
+	} {
+		if e, _ := env.store.GetState(ctx, "worker", key); e == nil || e.Value != want {
+			t.Errorf("%s = %+v, want %q", key, e, want)
+		}
+	}
+
+	// A CLI started by hand carries no hooks until the global hook reports
+	// it, so nothing could hand it held messages: they are typed.
+	if env.service.HoldsMessages(ctx, "worker") {
+		t.Error("holds messages for a session no hook has reached")
+	}
+
+	// Recorded once: now the session on record is the one running.
+	fake.nativeGone, fake.nativeFound, fake.native, fake.sessionID = false, true, backend.StatusProcessing, "by-hand"
+	info, _ = env.service.StatusInfo(ctx, "worker")
+	if info.Status != service.AgentStatusProcessing || info.Source != service.StatusSourceNative {
+		t.Errorf("after adopting: %s/%s, want processing/native", info.Status, info.Source)
+	}
+}
+
+// A pane that can't be read says so, beside the exit it can't overrule.
+func TestStatusInfo_PaneErrorIsShown(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/bin/agent"
+	ctx := context.Background()
+	fake := spawnFake(t, env, "worker")
+
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusIdle, Event: "Stop"})
+	fake.nativeGone = true
+	fake.paneErr = errors.New("two Claude Code processes run at the same depth")
+
+	info, err := env.service.StatusInfo(ctx, "worker")
+	if err != nil {
+		t.Fatalf("StatusInfo: %v", err)
+	}
+	if info.Status != service.AgentStatusEnded || !strings.Contains(info.Detail, "its pane: two Claude Code processes") {
+		t.Errorf("got %s (%s)", info.Status, info.Detail)
 	}
 }
 
@@ -306,5 +348,26 @@ func TestRespondPermission_RefusesWhenPromptLeftScreen(t *testing.T) {
 	}
 	if _, err := env.service.RespondPermission(ctx, "worker", backend.PermissionDeny, service.PermissionOptions{Force: true}); err != nil {
 		t.Errorf("--force should skip the screen check: %v", err)
+	}
+}
+
+// Claude writes a status word gomuxai doesn't know: that agent's report
+// stands, and status -v can say why.
+func TestStatusInfo_UnknownRegistryValue(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/bin/agent"
+	ctx := context.Background()
+	fake := spawnFake(t, env, "worker")
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusIdle, Event: "Stop"})
+	fake.nativeFound, fake.native = true, backend.StatusUnknown
+	fake.nativeErr = errors.New(`status "compacting" is not one gomuxai knows, written by Claude Code 2.2.0`)
+
+	info, err := env.service.StatusInfo(ctx, "worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Status != service.AgentStatusIdle || info.Source != service.StatusSourceReport || !strings.Contains(info.NativeErr, `"compacting"`) {
+		t.Errorf("got %s/%s, native %q", info.Status, info.Source, info.NativeErr)
 	}
 }

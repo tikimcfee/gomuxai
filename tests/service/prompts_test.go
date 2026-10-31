@@ -129,7 +129,7 @@ func TestStatus_SubagentPromptOutlivesMainTurn(t *testing.T) {
 	}
 }
 
-// Repro (real claude): deny, then send at once. claude agents --json still
+// Repro (real claude): deny, then send at once. Claude's session registry still
 // said waiting for about half a second, so send refused ("waiting on a
 // prompt"). A deny that left nothing pending or on screen is believed over
 // a native waiting, briefly; a dialog on screen still stops the send.

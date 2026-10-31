@@ -27,12 +27,13 @@ func (s *AgentService) publishStatus(name string, r StatusReport, at time.Time) 
 		return
 	}
 	_ = s.events.PublishStatus(natsbus.StatusEvent{
-		Host:   s.cfg.Host,
-		Agent:  name,
-		Status: string(r.Status),
-		Event:  r.Event,
-		Detail: r.Detail,
-		Tool:   r.Tool,
-		At:     at,
+		Host:      s.cfg.Host,
+		Agent:     name,
+		Status:    string(r.Status),
+		EndReason: string(r.EndReason),
+		Event:     r.Event,
+		Detail:    r.Detail,
+		Tool:      r.Tool,
+		At:        at,
 	})
 }

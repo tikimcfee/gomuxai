@@ -10,7 +10,7 @@ const (
 	StatusProcessing
 	StatusError
 	StatusWaiting // blocked on a human, e.g. a permission prompt
-	StatusExited
+	StatusEnded   // no CLI runs the session any more (EndReason says how it ended)
 )
 
 // String returns a human-readable representation of the status.
@@ -24,11 +24,69 @@ func (s Status) String() string {
 		return "error"
 	case StatusWaiting:
 		return "waiting"
-	case StatusExited:
-		return "exited"
+	case StatusEnded:
+		return "ended"
 	default:
 		return "unknown"
 	}
+}
+
+// Statuses lists every status with what it means, in the order a person
+// reads them. Help text and docs are built from it.
+var Statuses = []Meaning{
+	{"idle", "at its prompt, its turn over, nothing it started still running: a message can be typed in"},
+	{"processing", "a turn is running (or a turn ended leaving background work, whose completion starts the next turn)"},
+	{"waiting", "stopped on something only a person can answer: a permission prompt or a question"},
+	{"error", "its last turn failed (an API error, a rate limit); it is at its prompt"},
+	{"ended", "no CLI runs the session any more; the end reason says how it ended"},
+	{"unknown", "nothing reliable says yet (a CLI still starting, or a harness with no status of its own)"},
+}
+
+// EndReason says how a session ended, beside a status of ended.
+type EndReason string
+
+const (
+	// EndQuit: the CLI ended the session and said so (Claude's SessionEnd
+	// hook), or the shell it ran in saw it exit (agy's exit wrapper, with
+	// the exit code in the detail).
+	EndQuit EndReason = "quit"
+	// EndGone: its process isn't running and nothing recorded it ending: a
+	// crash, kill -9, OOM, or a session from before reports were kept.
+	EndGone EndReason = "gone"
+	// EndReplaced: the agent went on in a newer session (a /clear, a resume,
+	// a respawn, or a CLI started anew in its pane).
+	EndReplaced EndReason = "replaced"
+	// EndFinished: a subagent that recorded finishing its task.
+	EndFinished EndReason = "finished"
+	// EndParent: a subagent whose parent session ended.
+	EndParent EndReason = "parent"
+	// EndClosed: its agent was cleaned up, which closed its pane.
+	EndClosed EndReason = "closed"
+)
+
+// EndReasons lists every end reason with what it means.
+var EndReasons = []Meaning{
+	{string(EndQuit), "the CLI ended the session and said so (Claude's SessionEnd hook; the detail has Claude's reason), or the shell it ran in saw it exit (agy; the detail has the exit code)"},
+	{string(EndGone), "its process isn't running and nothing recorded it ending: a crash, kill -9, OOM, or a session from before reports were kept"},
+	{string(EndReplaced), "the agent went on in a newer session: a /clear, a resume, a respawn, or a CLI started anew in its pane"},
+	{string(EndFinished), "a subagent that recorded finishing its task"},
+	{string(EndParent), "a subagent whose parent session ended"},
+	{string(EndClosed), "its agent was cleaned up, which closed its pane"},
+}
+
+// Meaning is a status or end reason and what it means.
+type Meaning struct {
+	Name, Means string
+}
+
+// MeaningOf returns what name means in list, or "".
+func MeaningOf(list []Meaning, name string) string {
+	for _, m := range list {
+		if m.Name == name {
+			return m.Means
+		}
+	}
+	return ""
 }
 
 // HookReport is a status update derived from a backend lifecycle hook payload.
@@ -45,6 +103,8 @@ type HookReport struct {
 	// Transcript is the path of the session's transcript file (the CLI's
 	// own JSONL record of the conversation), when the event carries one.
 	Transcript string
+	// EndReason says how the session ended, with a status of ended.
+	EndReason EndReason
 	// ClearResult marks the start of a new turn or conversation, after which
 	// the previous turn's Result no longer answers anything.
 	ClearResult bool
@@ -90,3 +150,11 @@ const (
 	PermissionApproveAlways
 	PermissionDeny
 )
+
+// PaneSession is a backend session found running in an agent's pane.
+type PaneSession struct {
+	ID     string
+	PID    int    // the CLI process holding it
+	Status Status // what the CLI's own record says
+	Detail string // that status in words
+}

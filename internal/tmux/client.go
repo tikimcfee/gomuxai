@@ -58,6 +58,10 @@ type TmuxOps interface {
 
 	// Clear clears the terminal screen and scrollback.
 	Clear(session string) error
+
+	// PanePIDs maps the pid of the process each pane runs (its shell, for
+	// an agent's session) to the session it is in, for every session.
+	PanePIDs() (map[int]string, error)
 }
 
 // Client implements TmuxOps by running the tmux command. Its errors carry
@@ -326,6 +330,28 @@ func (c *Client) SessionNames() ([]string, error) {
 		return nil, fmt.Errorf("listing sessions: %w", err)
 	}
 	return strings.Fields(out), nil
+}
+
+// PanePIDs maps every pane's process to its session, in one tmux call. No
+// server running is no panes.
+func (c *Client) PanePIDs() (map[int]string, error) {
+	out, err := run("list-panes", "-a", "-F", "#{pane_pid} #{session_name}")
+	if err != nil {
+		if strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "error connecting") {
+			return map[int]string{}, nil
+		}
+		return nil, fmt.Errorf("listing panes: %w", err)
+	}
+	panes := map[int]string{}
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		pidText, session, ok := strings.Cut(line, " ")
+		pid, err := strconv.Atoi(pidText)
+		if !ok || err != nil || pid <= 0 {
+			continue
+		}
+		panes[pid] = session
+	}
+	return panes, nil
 }
 
 // SessionEnv returns a variable from a session's environment, or "" if it

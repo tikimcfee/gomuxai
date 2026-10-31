@@ -1,6 +1,10 @@
 package util
 
-import "strings"
+import (
+	"strings"
+
+	"mvdan.cc/sh/v3/shell"
+)
 
 // ShellQuote quotes s as a single word for POSIX shells (and fish).
 func ShellQuote(s string) string {
@@ -26,4 +30,15 @@ func needsQuote(r rune) bool {
 		return false
 	}
 	return !strings.ContainsRune("@%+=:,./_-", r)
+}
+
+// SplitShellWords splits a command line into words as a POSIX shell would
+// (quotes and escapes honored, nothing expanded), or nil if it doesn't
+// parse.
+func SplitShellWords(line string) []string {
+	words, err := shell.Fields(line, func(string) string { return "" })
+	if err != nil {
+		return nil
+	}
+	return words
 }

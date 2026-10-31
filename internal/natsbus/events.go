@@ -129,7 +129,7 @@ type WaitOptions struct {
 	// For lists the statuses that end the wait successfully.
 	For []string
 	// Fail lists statuses that end the wait with an error because For can't
-	// follow them, e.g. "exited" when waiting for "idle".
+	// follow them, e.g. "ended" when waiting for "idle".
 	Fail []string
 	// Next ignores For until the agent has been seen in another status, so
 	// the wait ends at the next arrival, not at a status it's already in.

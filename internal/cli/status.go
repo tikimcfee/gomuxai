@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/backend"
+	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/service"
 )
@@ -22,10 +24,12 @@ var statusCmd = &cobra.Command{
 	Short: "Show whether an agent is idle, processing, waiting, ...",
 	Long: `Status reports whether an agent is idle, processing, waiting (blocked on a
 human, e.g. a permission prompt), error (its last turn failed; it takes input
-again), exited, or unknown.
+again), ended (no CLI runs its session any more, with an end reason: quit,
+gone, replaced, ...), or unknown. "agent statuses" says what each means.
 
--v adds where the status came from, the last event, its detail (for a
-permission prompt, the full tool call: what approve would allow), the tool,
+-v adds what the status means, where it came from, the last event, its
+detail (for a permission prompt, the full tool call: what approve would
+allow), the tool,
 and how many messages are held for the agent while it's busy (see
 "agent send"). --json has the same fields.
 
@@ -36,10 +40,15 @@ without that check (its input box couldn't be read) and no turn has started
 since: "agent capture <name>" shows whether it sits there.
 
 Sources, most authoritative first:
-  native  the backend CLI's own session status (claude agents --json)
+  native  the backend CLI's own session status (Claude Code's session registry)
   report  the last status reported by backend hooks or "agent report"
   scrape  terminal output: for backends without hooks, and for an agy turn
           that Esc or Ctrl+C ended, which fires no hook ("interrupted")
+
+When a Claude agent's session on record isn't running, status asks what its
+pane runs: a CLI a person started anew there becomes the agent's session
+(event "adopted"). If it runs none, a session last reported running is
+ended (gone).
 
 agy shows its permission and ask_question dialogs with no hook of their own,
 so a dialog on screen after the tool's PreToolUse makes it waiting, with
@@ -93,14 +102,16 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			host = ref.Host
 		}
 		out := statusJSONOut{
-			Agent:  ref.Name,
-			Host:   host,
-			Status: string(info.Status),
-			Source: info.Source,
-			Event:  info.Event,
-			Detail: info.Detail,
-			Tool:   info.Tool,
-			Held:   info.Held,
+			Agent:     ref.Name,
+			Host:      host,
+			Status:    string(info.Status),
+			EndReason: string(info.EndReason),
+			NativeErr: info.NativeErr,
+			Source:    info.Source,
+			Event:     info.Event,
+			Detail:    info.Detail,
+			Tool:      info.Tool,
+			Held:      info.Held,
 		}
 		if json.Valid([]byte(info.ToolInput)) {
 			out.ToolInput = json.RawMessage(info.ToolInput)
@@ -117,9 +128,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		return printJSON(out)
 	}
 
-	fmt.Printf("%s: %s\n", name, info.Status)
+	fmt.Printf("%s: %s\n", name, statusWords(info))
 	if statusVerbose {
+		fmt.Printf("  means:  %s\n", wrapIndented(statusMeaning(info), statusWrapWidth, statusIndent))
 		fmt.Printf("  source: %s\n", info.Source)
+		if info.NativeErr != "" {
+			fmt.Printf("  native: unread: %s\n", wrapIndented(info.NativeErr, statusWrapWidth, statusIndent))
+		}
 		if info.Event != "" {
 			fmt.Printf("  event:  %s (%s ago)\n", info.Event, time.Since(info.UpdatedAt).Round(time.Second))
 		}
@@ -153,14 +168,33 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			uncheckedAt.Format("15:04:05"), unchecked, name)
 	}
 	switch {
-	case info.Status == service.AgentStatusExited:
-		hint("agent logs %s shows how it ended; agent cleanup %s removes it", ref.Name, ref.Name)
+	case info.Status == service.AgentStatusEnded:
+		hint("agent logs %s shows how it ended; agent cleanup %s removes it; agent statuses says what each status means", ref.Name, ref.Name)
 	case info.Status == service.AgentStatusUnknown && info.Source == service.StatusSourceScrape:
 		hint("its backend doesn't report status and its screen matched no known prompt: agent capture %s shows the screen", name)
 	case info.Status == service.AgentStatusWaiting && !statusVerbose:
 		hint("agent status %s -v shows what it's waiting on", name)
 	}
 	return nil
+}
+
+// statusWords is a status as a line shows it: "ended (quit)" for an end.
+func statusWords(info *service.StatusInfo) string {
+	if info.Status == service.AgentStatusEnded && info.EndReason != "" {
+		return fmt.Sprintf("%s (%s)", info.Status, info.EndReason)
+	}
+	return string(info.Status)
+}
+
+// statusMeaning says what a status (and its end reason) means.
+func statusMeaning(info *service.StatusInfo) string {
+	means := types.MeaningOf(types.Statuses, string(info.Status))
+	if info.Status == service.AgentStatusEnded && info.EndReason != "" {
+		if r := types.MeaningOf(types.EndReasons, string(info.EndReason)); r != "" {
+			means = string(info.EndReason) + ": " + r
+		}
+	}
+	return means
 }
 
 // heldLine is status -v's line about the messages waiting for an agent.
@@ -182,8 +216,8 @@ func heldLine(name string, remote bool, info *service.StatusInfo) string {
 	default:
 		line = "  queued: " + n + ", delivered by agent watch when it's idle"
 	}
-	if info.Status == service.AgentStatusExited {
-		line += "; it has exited, so they won't be"
+	if info.Status == service.AgentStatusEnded {
+		line += "; its session has ended, so they won't be"
 	}
 	return line
 }
@@ -193,10 +227,14 @@ type statusJSONOut struct {
 	Agent  string `json:"agent"`
 	Host   string `json:"host"`
 	Status string `json:"status"`
-	Source string `json:"source"`
-	Event  string `json:"event,omitempty"`
-	Detail string `json:"detail,omitempty"`
-	Tool   string `json:"tool,omitempty"`
+	// EndReason says how the session ended, with a status of ended.
+	EndReason string `json:"end_reason,omitempty"`
+	Source    string `json:"source"`
+	// NativeErr says why the backend CLI's own status couldn't be read.
+	NativeErr string `json:"native_error,omitempty"`
+	Event     string `json:"event,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	Tool      string `json:"tool,omitempty"`
 	// ToolInput is the full input of the last tool call that may need
 	// permission: at a prompt, what approving it allows.
 	ToolInput json.RawMessage `json:"tool_input,omitempty"`
@@ -279,6 +317,7 @@ func remoteStatus(ref natsbus.AgentRef) (*service.StatusInfo, error) {
 	}
 	return &service.StatusInfo{
 		Status:    service.AgentStatus(resp.Status),
+		EndReason: backend.EndReason(resp.EndReason),
 		Source:    resp.Source,
 		Event:     resp.Event,
 		Detail:    resp.Detail,

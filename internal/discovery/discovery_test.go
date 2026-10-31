@@ -488,11 +488,11 @@ func TestResolve_Local(t *testing.T) {
 
 	got := statuses(Resolve(Scan(dirs), nil, Live{Claude: map[string]string{"s-main": "processing"}, Now: now}))
 	want := map[string]string{
-		"s-main": "processing", "s-ai": "exited", "s-top": "exited",
-		"agent-x1": "exited",  // finished
+		"s-main": "processing", "s-ai": "ended", "s-top": "ended",
+		"agent-x1": "ended",   // finished
 		"agent-x2": "unknown", // not finished, parent running
-		"conv-a":   "unknown", "conv-sub": "unknown", "conv-old": "exited",
-		"fresh": "unknown", "stale": "exited",
+		"conv-a":   "unknown", "conv-sub": "unknown", "conv-old": "ended",
+		"fresh": "unknown", "stale": "ended",
 	}
 	for id, w := range want {
 		if got[id] != w {
@@ -505,7 +505,7 @@ func TestResolve_Local(t *testing.T) {
 		t.Errorf("without claude agents: %v, want Claude sessions unknown", got)
 	}
 	got = statuses(Resolve(Scan(dirs), nil, Live{Claude: map[string]string{}, Now: now}))
-	if got["agent-x2"] != "exited" {
+	if got["agent-x2"] != "ended" {
 		t.Errorf("subagent of an exited session: %q, want exited", got["agent-x2"])
 	}
 }
@@ -549,13 +549,13 @@ func TestResolve_Workgroup(t *testing.T) {
 	if s := got["agent-x2"]; s.Workgroup == nil || s.Workgroup.Name != "lead" || s.Status != "unknown" {
 		t.Errorf("agent-x2 = %+v, want lead's, as its parent session is", s)
 	}
-	if s := got["s-top"]; s.Workgroup == nil || s.Workgroup.Name != "lead" || s.Status != "exited" || !s.StatusAt.Equal(ended) {
+	if s := got["s-top"]; s.Workgroup == nil || s.Workgroup.Name != "lead" || s.Status != "ended" || !s.StatusAt.Equal(ended) {
 		t.Errorf("s-top = %+v, want the departed run's last session, exited when it ended", s)
 	}
-	if s := got["s-ai"]; s.Workgroup == nil || s.Status != "exited" {
+	if s := got["s-ai"]; s.Workgroup == nil || s.Status != "ended" {
 		t.Errorf("s-ai = %+v, want lead's (history, written before the second run), exited", s)
 	}
-	if s := got["s-out"]; s.Workgroup == nil || s.Workgroup.Name != "lead-t" || s.Workgroup.Parent != "lead" || s.Project != "x" || s.Status != "exited" {
+	if s := got["s-out"]; s.Workgroup == nil || s.Workgroup.Name != "lead-t" || s.Workgroup.Parent != "lead" || s.Project != "x" || s.Status != "ended" {
 		t.Errorf("s-out = %+v, want lead-t's transcript outside the dirs, exited (claude agents doesn't list it)", s)
 	}
 	if s := got["s-new"]; s.Workgroup == nil || s.Workgroup.Name != "fresh" || s.Path != "" || s.Harness != "claude" || s.Status != "unknown" {
@@ -596,7 +596,7 @@ func TestReconcileNative(t *testing.T) {
 		{Native{Queried: true, Listed: true, Status: "waiting"}, "idle", never, NativeWins},
 		{Native{Queried: true, Listed: true, Status: "unknown"}, "idle", never, ReportStands},
 		{Native{Queried: true}, "idle", never, NativeGone},
-		{Native{Queried: true}, "exited", never, ReportStands},
+		{Native{Queried: true}, "ended", never, ReportStands},
 		{Native{Queried: true}, "", never, ReportStands},
 		{Native{}, "idle", never, ReportStands},
 	}
@@ -646,7 +646,7 @@ func TestResolve_HistoryOutsideDirs(t *testing.T) {
 		{Name: "lead", Parent: "second", Store: "/s", Host: "box", Backend: "claude", Live: true, CreatedAt: now.Add(-time.Hour), History: []string{old}},
 	}
 	got := byID(Resolve(nil, agents, Live{Now: now}))
-	if s := got["s-old"]; s.Workgroup == nil || s.Workgroup.Parent != "first" || s.Status != "exited" {
+	if s := got["s-old"]; s.Workgroup == nil || s.Workgroup.Parent != "first" || s.Status != "ended" {
 		t.Errorf("s-old = %+v %+v, want the first run's, exited", s, s.Workgroup)
 	}
 }
@@ -696,8 +696,46 @@ func TestResolve_NestedSubagents(t *testing.T) {
 	agents := []Agent{{Name: "lead", Store: "/s", Host: "box", Backend: "agy", Live: true, CreatedAt: now, Status: "idle", Transcript: "/b/a"}}
 	got := byID(Resolve(sessions, agents, Live{Now: now}))
 	for _, id := range []string{"a", "b", "c"} {
-		if s := got[id]; s.Workgroup == nil || s.Workgroup.Name != "lead" || s.Status != "exited" {
+		if s := got[id]; s.Workgroup == nil || s.Workgroup.Name != "lead" || s.Status != "ended" {
 			t.Errorf("%s = %+v %+v, want lead's, exited with its closed parent", id, s, s.Workgroup)
 		}
+	}
+}
+
+// An agent that adopted the session its pane runs has its id and no
+// transcript yet (no hook named one): the scanned session with that id is
+// its, not a local session.
+func TestResolve_AdoptedSessionJoinsByID(t *testing.T) {
+	home := t.TempDir()
+	projects := claudeFixture(t, home)
+	now := time.Now()
+	agent := Agent{Name: "lead", Store: "/s", Host: "box", Backend: "claude", Live: true, CreatedAt: now.Add(-time.Hour),
+		Status: "idle", Event: "adopted", StatusAt: now, SessionID: "s-main"}
+	got := byID(Resolve(Scan([]Dir{{HarnessClaude, projects, OriginDefault}}), []Agent{agent}, Live{Claude: map[string]string{"s-main": "processing"}, Now: now}))
+	s := got["s-main"]
+	if s.Workgroup == nil || s.Workgroup.Name != "lead" {
+		t.Fatalf("s-main workgroup = %+v, want lead", s.Workgroup)
+	}
+	if s.Status != "processing" {
+		t.Errorf("status %q, want the registry's processing", s.Status)
+	}
+}
+
+// The global hook hears every session: a local session it heard end says
+// how (quit), and one that just stopped existing is gone; a subagent it saw
+// start and not stop is processing, one it saw stop is finished.
+func TestResolve_HookReports(t *testing.T) {
+	home := t.TempDir()
+	projects := claudeFixture(t, home)
+	now := time.Now()
+	live := Live{Claude: map[string]string{}, Now: now, Reports: map[string]Report{
+		"s-main": {Status: StatusEnded, EndReason: "quit", At: now},
+	}}
+	got := byID(Resolve(Scan([]Dir{{HarnessClaude, projects, OriginDefault}}), nil, live))
+	if s := got["s-main"]; s.Status != StatusEnded || s.EndReason != "quit" {
+		t.Errorf("s-main = %s (%s), want ended (quit)", s.Status, s.EndReason)
+	}
+	if s := got["s-top"]; s.Status != StatusEnded || s.EndReason != "gone" {
+		t.Errorf("s-top = %s (%s), want ended (gone)", s.Status, s.EndReason)
 	}
 }

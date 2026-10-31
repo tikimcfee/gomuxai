@@ -52,11 +52,19 @@ failed and what to try. Most read commands take `--json`.
 - A spawned agent has `AGENT_NAME` set, and its first message tells it its
   name, its host, who started it, and how to use `agent` (a briefing, saved
   as `.gomuxai/agents/<name>/instructions.md`).
-- Status (`idle`, `processing`, `waiting`, `error`, `exited`, `unknown`)
-  comes from the CLI itself for `claude` and `agy` (hooks wired at spawn), and
-  from screen scraping for other backends. `waiting` means blocked on a
-  person, e.g. a permission prompt. `error` means the last turn failed (a
-  rate limit, say) and the agent takes input again. What agy's hooks don't
+- Status (`idle`, `processing`, `waiting`, `error`, `ended`, `unknown`;
+  `agent statuses` says what each means) comes from the CLI itself for
+  `claude` and `agy`, and from screen scraping for other backends. Claude
+  reports through one hook every Claude Code session runs (`agent hooks
+  install` registers it in Claude Code's user settings; spawn refuses a
+  Claude agent until it is there), which finds its agent from the running
+  processes, and Claude Code's session registry (`~/.claude/sessions/`, each
+  entry proven by pid and start time) says which session an agent's pane
+  runs, including one a person started there by hand. agy's hooks are wired
+  at spawn. `waiting` means blocked on a person, e.g. a permission prompt.
+  `error` means the last turn failed (a rate limit, say) and the agent takes
+  input again. `ended` comes with an end reason (`quit`, `gone`, `replaced`,
+  `finished`, `parent`, `closed`), shown as `ended (quit)`. What agy's hooks don't
   report is read off its screen: a permission or `ask_question` dialog
   (`waiting`), and a turn that Esc or Ctrl+C ended, which fires no hook
   (`idle`, detail `interrupted; at its prompt`, source `scrape`).
@@ -141,7 +149,7 @@ deliver helper` types them now if the agent is at its prompt.
 its next tool boundary, agy queues it for its turn's end), to interrupt;
 that is what `send` always does for other backends. Typing refuses an agent
 at a dialog (the Enter would answer it; use `approve`/`deny`, or `agent key`
-for a question), and `send` refuses an agent that has exited. Slash commands
+for a question), and `send` refuses an agent whose session has ended. Slash commands
 are always typed, never held.
 
 Typing into Claude waits for its input box to show the message before
@@ -361,7 +369,8 @@ whether `agent spawn` started the session or a person ran the CLI: same
 fields for both, with `workgroup` naming the owning agent (name, parent,
 store, host) or null. Subagent sessions are listed too, with
 `parent_session`. Status for a session no workgroup owns comes from the
-harness: `claude agents --json` for Claude, agy's presence lock (running
+harness: Claude Code's session registry and what the global hook heard
+(`ended (quit)` once it heard the session end) for Claude, agy's presence lock (running
 shows `unknown`), and for Kimi the transcript's age; `agent help sessions`
 has the rules, and `docs/ARCHITECTURE.md` ("Sessions") where each field
 comes from. This host only. `claude_projects_dir`, `agy_brain_dir` and
@@ -448,7 +457,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `waiting` | `status -v` shows the prompt; approve, deny, or ask the person. |
 | `unknown` (non-hook backends) | `capture` to look; coordinate on state or messages instead. |
 | `error` | The last turn failed (e.g. rate limit); it takes input again. `capture` or `logs` shows why. |
-| `exited` | `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
+| `ended (...)` | The reason says how (`agent statuses`); `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
 | `wait` timed out | `status -v` and `capture`: still working, stuck, or missed the turn? |
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
 | A key fails: "a read-only client is attached" | Detach the client it names (`tmux detach-client -t /dev/pts/N`); watch with `agent capture` instead of `tmux attach -r`. |

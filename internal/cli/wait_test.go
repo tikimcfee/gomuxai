@@ -109,17 +109,17 @@ func TestWaitSeveral_UnknownNameFailsAtOnce(t *testing.T) {
 // An agent that exits is reported, the others are still waited on, and the
 // wait exits 1.
 func TestWaitSeveral_OneExits(t *testing.T) {
-	setupWait(t, service.AgentStatusExited)
+	setupWait(t, service.AgentStatusEnded)
 	waitFor = "idle,waiting"
 
 	out, err := stdout(t, func() error { return runWait(waitCmd, []string{"builder", "worker"}) })
 	if out != "worker: waiting (permission: Bash: ls)\n" {
 		t.Errorf("stdout = %q", out)
 	}
-	if want := "1 of 2 agents reached idle or waiting; not builder (exited)"; err == nil || err.Error() != want || ExitCode(err) != 1 {
+	if want := "1 of 2 agents reached idle or waiting; not builder (ended)"; err == nil || err.Error() != want || ExitCode(err) != 1 {
 		t.Fatalf("err = %v; want %q, exit 1", err, want)
 	}
-	if !strings.Contains(hints.String(), "agent wait: agent builder: status is exited") {
+	if !strings.Contains(hints.String(), "agent wait: agent builder: status is ended") {
 		t.Errorf("stderr = %q; want the exit reported", hints.String())
 	}
 }

@@ -163,10 +163,10 @@ func (w *Watcher) processAgent(ctx context.Context, agent *storage.Agent) {
 		// also sticky: no hook fires again until the next prompt arrives, so
 		// holding messages for it would hold them forever.
 		w.deliverMessage(ctx, agent.Name, msg, msgLogger)
-	case service.AgentStatusExited:
+	case service.AgentStatusEnded:
 		// The CLI is gone; typing into the shell left behind would run the
 		// message as a command. Nothing restarts it, so fail now.
-		msgLogger.Warn("agent exited, marking message as failed")
+		msgLogger.Warn("agent's session ended, marking message as failed")
 		w.failMessage(ctx, msg, msgLogger)
 	case service.AgentStatusUnknown:
 		w.handleUnknownStatus(ctx, msg, msgLogger)

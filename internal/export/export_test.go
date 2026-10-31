@@ -247,8 +247,9 @@ func TestFollow(t *testing.T) {
 
 	f.cleanup("lead-t1")
 	lines = poll(t, tr)
-	if got := summary(lines); !slices.Equal(got, []string{"removed:lead-t1:idle"}) {
-		t.Fatalf("after cleanup: %v, want removed:lead-t1:idle", got)
+	// Cleanup closed its pane: a departed agent is ended (closed).
+	if got := summary(lines); !slices.Equal(got, []string{"removed:lead-t1:ended"}) {
+		t.Fatalf("after cleanup: %v, want removed:lead-t1:ended", got)
 	}
 	rm := lines[0].(AgentLine).Agent
 	if rm.Live || rm.EndedAt.IsZero() || rm.Attached == nil || *rm.Attached {

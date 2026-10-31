@@ -20,7 +20,8 @@ status it found the agent in.
 
 An agent at its prompt gets the message typed into its terminal. A Claude or
 agy agent that is busy (processing, or waiting on a prompt or question)
-holds it instead, and a hook hands over every message held for it, oldest
+holds it instead (a Claude agent once "agent hook" has reported its current
+session: a CLI started without the hook gets messages typed in), and a hook hands over every message held for it, oldest
 first:
   claude  when its turn ends, from its Stop hook: Claude goes on with them as
           its next step (its screen shows them as "Stop hook feedback").
@@ -39,8 +40,8 @@ its next tool boundary, agy queues it for its turn's end), as send always
 does for other backends. Typing is refused while the agent is at a dialog (a
 permission, question, or workspace trust prompt), where the Enter would
 answer the dialog instead; answer permission prompts with approve/deny, and
-questions with agent key. Send is also refused once the agent has exited, since the
-message would run in the shell left behind. --force types the message in
+questions with agent key. Send is also refused once the agent's session has
+ended, since the message would run in the shell left behind. --force types the message in
 without these checks, for a local agent, and only works for a person at a
 terminal. An agent on another host is addressed as name@host (needs a
 running bus); its host holds or types the message the same way.
@@ -85,7 +86,7 @@ var sendForce, sendNow bool
 
 func init() {
 	sendCmd.Flags().BoolVar(&sendNow, "now", false, "Type it in now even if the agent is busy, instead of holding it until its turn ends")
-	sendCmd.Flags().BoolVar(&sendForce, "force", false, "Send even if the agent is at a dialog or has exited (local agents, people only)")
+	sendCmd.Flags().BoolVar(&sendForce, "force", false, "Send even if the agent is at a dialog or its session has ended (local agents, people only)")
 }
 
 func runSend(cmd *cobra.Command, args []string) error {

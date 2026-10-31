@@ -89,35 +89,55 @@ func (s *SQLiteStorage) migrate() error {
 		PRIMARY KEY (agent_name, key),
 		FOREIGN KEY (agent_name) REFERENCES agents(name) ON DELETE CASCADE
 	);
-	` + commandLogSchema + frictionSchema + treeSchema
+	` + commandLogSchema + frictionSchema + treeSchema + sessionReportsSchema
 
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
-	if err := s.addColumn("agents", "spawned_by", "TEXT"); err != nil {
+	for _, c := range [][3]string{
+		{"agents", "spawned_by", "TEXT"},
+		{"agents", "cwd", "TEXT"},
+		{"runs", "end_reason", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if _, err := s.addColumn(c[0], c[1], c[2]); err != nil {
+			return err
+		}
+	}
+	added, err := s.addColumn("agent_events", "end_reason", "TEXT NOT NULL DEFAULT ''")
+	if err != nil || !added {
 		return err
 	}
-	return s.addColumn("agents", "cwd", "TEXT")
+	// The status for a session no CLI runs any more is "ended" (beside an
+	// end reason); stores written before end reasons called it "exited".
+	// Nothing recorded how those ended, which is what "gone" means.
+	_, err = s.db.Exec(`
+		INSERT OR REPLACE INTO state (agent_name, key, value, updated_at)
+			SELECT agent_name, '_end_reason', 'gone', updated_at FROM state WHERE key = '_status' AND value = 'exited';
+		UPDATE state SET value = 'ended' WHERE key = '_status' AND value = 'exited';
+		UPDATE runs SET status = 'ended', end_reason = 'gone' WHERE status = 'exited';
+		UPDATE agent_events SET status = 'ended', end_reason = 'gone' WHERE status = 'exited';`)
+	return err
 }
 
-// addColumn adds a column that databases created before it lack.
-func (s *SQLiteStorage) addColumn(table, column, def string) error {
+// addColumn adds a column that databases created before it lack. added
+// is true when this call added it.
+func (s *SQLiteStorage) addColumn(table, column, def string) (added bool, err error) {
 	has := func() (bool, error) {
 		var n int
 		err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
 		return n > 0, err
 	}
 	if ok, err := has(); err != nil || ok {
-		return err
+		return false, err
 	}
-	_, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, def))
-	if err != nil {
+	if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, def)); err != nil {
 		// Another process may have added it first.
 		if ok, _ := has(); ok {
-			return nil
+			return false, nil
 		}
+		return false, err
 	}
-	return err
+	return true, nil
 }
 
 // scanner is a *sql.Row or *sql.Rows.

@@ -29,6 +29,7 @@ func (nopTmux) CaptureStyled(string, int) (string, error)     { return "", nil }
 func (nopTmux) PipePane(string, string) error                 { return nil }
 func (nopTmux) StopPipePane(string) error                     { return nil }
 func (nopTmux) Clear(string) error                            { return nil }
+func (nopTmux) PanePIDs() (map[int]string, error)             { return nil, nil }
 
 // The unknown threshold counts unknowns in a row: busy checks between them
 // start the count over, so an agent that is mostly busy keeps its message.

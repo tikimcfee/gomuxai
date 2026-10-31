@@ -61,8 +61,8 @@ func recorded(cmd *cobra.Command) bool {
 	switch {
 	case cmd == nil, cmd == busRunCmd:
 		return false
-	case cmd == reportCmd && reportHook:
-		return false
+	case cmd == reportCmd && reportHook, cmd == hookCmd:
+		return false // every hook event of every session would crowd out the commands people ran
 	}
 	return true
 }

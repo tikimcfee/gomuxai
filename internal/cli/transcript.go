@@ -68,7 +68,7 @@ lines the stream read, so after the initial read a session line may
 correct what the opening one had from the transcript's head and tail; a
 known value never becomes empty. Status: for an agent of this store, its
 last report, read every 2s; otherwise, and to reconcile with the
-harness (claude agents --json), a full check like agent sessions' every
+harness (Claude Code's session registry), a full check like agent sessions' every
 30s, backing off to 5 minutes while the transcript doesn't grow.
 
 Claude Code writes a turn's closing reply only after its Stop hook has run,
@@ -224,8 +224,8 @@ func resolveTranscript(ctx context.Context, arg string) (*transcriptTarget, erro
 	if missing {
 		// A session is listed with its transcript's path before the file
 		// is there: its harness names it first. Only an exited one's is lost.
-		if t.session.Status == discovery.StatusExited {
-			return nil, fmt.Errorf("no transcript at %s: there is no such file, and its session %s has exited", path, t.session.SessionID)
+		if t.session.Status == discovery.StatusEnded {
+			return nil, fmt.Errorf("no transcript at %s: there is no such file, and its session %s has ended", path, t.session.SessionID)
 		}
 		t.unwritten = true
 	}
@@ -469,7 +469,12 @@ func resolveSessions(ctx context.Context, sessions []discovery.Session) ([]disco
 // liveNow is what the harnesses say is running on this host now. The error
 // says why Claude's sessions are missing from it.
 func liveNow(ctx context.Context) (discovery.Live, error) {
-	live := discovery.Live{Now: time.Now()}
+	live := discovery.Live{Now: time.Now(), Reports: map[string]discovery.Report{}}
+	if reports, err := agentService.SessionReports(ctx); err == nil {
+		for id, r := range reports {
+			live.Reports[id] = discovery.Report{Status: r.Status, EndReason: r.EndReason, At: r.At}
+		}
+	}
 	statuses, err := claudeSessions(ctx)
 	if err != nil {
 		return live, err
@@ -788,7 +793,7 @@ func (s *transcriptStream) provisional(ctx context.Context) error {
 //
 // Status comes from checks that run beside the poll, one at a time, so a
 // slow one never holds it up. A full check resolves the session as agent
-// sessions does (every store, and claude agents --json for Claude): every
+// sessions does (every store, and the session registry for Claude): every
 // transcriptStatusInterval, the wait doubling up to transcriptStatusMax
 // while the transcript doesn't grow. For a session an agent of this store
 // owns, a report check reads that agent's record and last report from the

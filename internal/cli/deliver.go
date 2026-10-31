@@ -25,7 +25,7 @@ when it holds a message. That checks every 2s and types the held messages
 once the agent has sat at its prompt, with nothing typed in its input line,
 for 10s (time for a person who pressed Esc to type first; it never types
 into their half-written input). It exits once nothing is held, or when the
-agent has exited or is gone. One runs per agent at a time; it logs to
+agent's session has ended or the agent is gone. One runs per agent at a time; it logs to
 .gomuxai/agents/<name>/deliver.log.
 
 Without --wait, deliver checks once: it types the held messages now if the

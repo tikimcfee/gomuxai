@@ -3,61 +3,62 @@ package namedagents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
+	"github.com/tikimcfee/gomuxai/internal/claudereg"
 	"github.com/tikimcfee/gomuxai/internal/transcript"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
-// claudeHookEvents are the Claude Code hook events wired to `agent report`.
 // Payload shapes and firing order are documented in
 // exploration/claude-hooks-findings.md.
-var claudeHookEvents = []string{
-	"SessionStart",
-	"UserPromptSubmit",
-	"PreToolUse",
-	"PermissionRequest",
-	"PostToolUse",
-	"PostToolUseFailure",
-	"PreCompact",
-	"Notification",
-	"Stop",
-	"StopFailure",
-	"SessionEnd",
-}
 
-// LaunchCommandWithHooks injects status hooks via --settings, so nothing is
-// written into the agent's project directory. A new session takes sessionID
-// as its id; a resumed one keeps its own (Claude refuses --session-id with
-// --resume unless it forks).
-func (b *ClaudeBackend) LaunchCommandWithHooks(reportCmd, sessionID string) string {
+// LaunchCommandWithSession pins a new session's id; a resumed one keeps its
+// own (Claude refuses --session-id with --resume unless it forks). The hooks
+// come from Claude Code's user settings (agent hooks install), so nothing is
+// added for them.
+func (b *ClaudeBackend) LaunchCommandWithSession(sessionID string) string {
 	cmd := b.LaunchCommand()
 	if b.config.Resume == "" {
 		cmd += " --session-id " + util.ShellQuote(sessionID)
 	}
-	return cmd + " --settings " + util.ShellQuote(claudeHookSettings(reportCmd))
+	return cmd
+}
+
+// HooksInstalled checks Claude Code's user settings for binary's hook on
+// every event.
+func (b *ClaudeBackend) HooksInstalled(binary string) error {
+	path, err := ClaudeSettingsPath()
+	if err != nil {
+		return err
+	}
+	r, err := ClaudeHooksStatus(path, binary)
+	if err != nil {
+		return err
+	}
+	var missing []string
+	for _, e := range ClaudeHookEvents {
+		if r.Events[e] != HookCurrent {
+			missing = append(missing, e)
+		}
+	}
+	if live := liveOthers(r.Others); len(missing) > 0 && len(live) > 0 {
+		return fmt.Errorf("Claude Code's hook (%s) runs %s, not this binary, so this binary's store would never hear from a Claude agent it spawned: spawn with that binary, or point the hook here with agent hooks install --force (which stops that binary's agents reporting)", path, strings.Join(live, ", "))
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("Claude Code's settings (%s) don't run this binary's hook on %s, so a Claude agent couldn't report its status, take held messages, or run pre-approved agent commands: agent hooks install registers it", path, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // WithInstructions appends the briefing to Claude's system prompt. Unlike a
 // CLAUDE.md, nothing is written into the agent's project.
 func (b *ClaudeBackend) WithInstructions(launchCmd, path string) string {
 	return launchCmd + " --append-system-prompt-file " + util.ShellQuote(path)
-}
-
-// claudeHookSettings returns the --settings JSON registering reportCmd on every hook event.
-func claudeHookSettings(reportCmd string) string {
-	hooks := make(map[string][]hookMatcher, len(claudeHookEvents))
-	for _, event := range claudeHookEvents {
-		hooks[event] = []hookMatcher{{Hooks: []hookCommand{newHookCommand(reportCmd)}}}
-	}
-	data, _ := json.Marshal(map[string]any{"hooks": hooks})
-	return string(data)
 }
 
 // claudeHookPayload holds the hook payload fields we use. Every payload
@@ -191,7 +192,7 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 		if p.Reason == "clear" {
 			return types.HookReport{}, false, nil
 		}
-		r.Status = types.StatusExited
+		r.Status, r.EndReason = types.StatusEnded, types.EndQuit
 		r.Detail = p.Reason
 		r.Prompt = types.PromptsAllEnded
 	default:
@@ -247,96 +248,95 @@ func (b *ClaudeBackend) TranscriptReader() transcript.Reader {
 	return transcript.Claude{}
 }
 
-// NativeStatus reads the session's status from `claude agents --json`.
+// NativeStatus reads the session's status from Claude Code's session
+// registry (internal/claudereg): found is false when no running process
+// holds the session.
 func (b *ClaudeBackend) NativeStatus(ctx context.Context, sessionID string) (types.Status, bool, error) {
-	out, err := claudeAgents.get(ctx)
+	snap, err := claudereg.ReadSystem()
 	if err != nil {
 		return types.StatusUnknown, false, err
 	}
-	return ParseClaudeAgentsJSON(out, sessionID)
-}
-
-// claudeAgentsTTL is how long one `claude agents --json` answer serves
-// other agents' status checks in the same process, so listing several
-// agents' status runs the CLI once rather than once per agent. Well under
-// the 2s and 5s re-check intervals of wait and the watcher.
-const claudeAgentsTTL = 500 * time.Millisecond
-
-// claudeAgents caches `claude agents --json` for claudeAgentsTTL.
-var claudeAgents claudeAgentsCache
-
-type claudeAgentsCache struct {
-	mu  sync.Mutex
-	at  time.Time
-	out []byte
-	err error // a failure is cached too: a hung CLI shouldn't cost 3s per agent
-}
-
-func (c *claudeAgentsCache) get(ctx context.Context) ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.at.IsZero() && time.Since(c.at) < claudeAgentsTTL {
-		return c.out, c.err
+	e, ok := snap.Sessions()[sessionID]
+	if !ok {
+		// Not listed means not running only if every file could be read.
+		return types.StatusUnknown, false, snap.Err()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "claude", "agents", "--json").Output()
-	if err != nil {
-		err = fmt.Errorf("claude agents --json: %w", err)
+	st, detail := RegistryStatus(e.Entry)
+	if e.Unknown != "" {
+		// Listed, running, in a state gomuxai can't name: say which.
+		return st, true, errors.New(detail)
 	}
-	c.out, c.err, c.at = out, err, time.Now()
-	return out, err
+	return st, true, nil
 }
 
 // ClaudeSessions returns the status of every Claude Code session running on
-// this host, by session id, from `claude agents --json`.
+// this host, by session id, from the session registry.
 func ClaudeSessions(ctx context.Context) (map[string]types.Status, error) {
-	out, err := claudeAgents.get(ctx)
+	snap, err := claudereg.ReadSystem()
+	if err == nil {
+		err = snap.Err() // an unread file could be any session: none can be called gone
+	}
 	if err != nil {
 		return nil, err
 	}
-	return parseClaudeAgents(out)
-}
-
-// ParseClaudeAgentsJSON finds sessionID in `claude agents --json` output.
-func ParseClaudeAgentsJSON(data []byte, sessionID string) (types.Status, bool, error) {
-	sessions, err := parseClaudeAgents(data)
-	if err != nil {
-		return types.StatusUnknown, false, err
-	}
-	status, found := sessions[sessionID]
-	if !found {
-		return types.StatusUnknown, false, nil
-	}
-	return status, true, nil
-}
-
-// parseClaudeAgents reads `claude agents --json` output into each session's
-// status. Interactive sessions report "status", background sessions report
-// "state".
-func parseClaudeAgents(data []byte) (map[string]types.Status, error) {
-	var sessions []struct {
-		SessionID string `json:"sessionId"`
-		Status    string `json:"status"`
-		State     string `json:"state"`
-	}
-	if err := json.Unmarshal(data, &sessions); err != nil {
-		return nil, fmt.Errorf("decoding claude agents output: %w", err)
-	}
-	out := make(map[string]types.Status, len(sessions))
-	for _, s := range sessions {
-		switch firstNonEmpty(s.Status, s.State) {
-		case "idle":
-			out[s.SessionID] = types.StatusIdle
-		case "busy":
-			out[s.SessionID] = types.StatusProcessing
-		case "waiting", "blocked":
-			out[s.SessionID] = types.StatusWaiting
-		default:
-			out[s.SessionID] = types.StatusUnknown
-		}
+	out := map[string]types.Status{}
+	for id, e := range snap.Sessions() {
+		out[id], _ = RegistryStatus(e.Entry)
 	}
 	return out, nil
+}
+
+// RegistryStatus maps a registry entry's status to an agent status, with a
+// line saying what it means.
+func RegistryStatus(e claudereg.Entry) (types.Status, string) {
+	if e.Unknown != "" {
+		return types.StatusUnknown, e.Unknown
+	}
+	switch e.Status {
+	case claudereg.StatusBusy:
+		return types.StatusProcessing, "a turn is running"
+	case claudereg.StatusIdle:
+		return types.StatusIdle, "at its prompt"
+	case claudereg.StatusShell:
+		// The turn is over, but a shell it started still runs in the
+		// background, and its end starts the next turn (a task
+		// notification): not done, as a Stop with background tasks isn't.
+		// Claude Code's own `claude agents` calls it busy too.
+		return types.StatusProcessing, "turn over; a background shell it started is still running, and its end starts the next turn"
+	case claudereg.StatusWaiting:
+		if e.WaitingFor != "" {
+			return types.StatusWaiting, "waiting for " + e.WaitingFor
+		}
+		return types.StatusWaiting, "waiting for a person"
+	}
+	// No status recorded yet (a CLI still starting).
+	return types.StatusUnknown, "the CLI has not recorded a status yet"
+}
+
+// PaneSession finds the Claude session a pane runs: of the running
+// processes the registry proves (pid and start time), the one nearest the
+// pane's process in the process tree. A pane whose CLI was replaced (an
+// exit, then `claude` typed at the shell) answers with the one running now;
+// a `claude -p` started from inside the session is deeper, so it is never
+// taken for it.
+func (b *ClaudeBackend) PaneSession(ctx context.Context, panePID int) (types.PaneSession, bool, error) {
+	snap, err := claudereg.ReadSystem()
+	if err != nil {
+		return types.PaneSession{}, false, err
+	}
+	tree, err := util.ReadProcTree(ctx)
+	if err != nil {
+		return types.PaneSession{}, false, err
+	}
+	e, ok, err := snap.UnderPane(tree, panePID)
+	if err == nil && !ok {
+		err = snap.Err() // nothing found means nothing runs only if every file could be read
+	}
+	if err != nil || !ok {
+		return types.PaneSession{}, false, err
+	}
+	st, detail := RegistryStatus(e.Entry)
+	return types.PaneSession{ID: e.SessionID, PID: e.PID, Status: st, Detail: detail}, true, nil
 }
 
 // claudeDialogTools raise a PermissionRequest whose dialog is a question to

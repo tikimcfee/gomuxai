@@ -97,7 +97,7 @@ func (b *AgyBackend) WithInstructions(launchCmd, path string) string {
 // AppendPromptFlag delivers the initial task via agy's -i (--prompt-interactive)
 // flag so the session starts interactively and runs the initial prompt once
 // workspace trust is confirmed. If LaunchCommandWithHooks attached an exit
-// report command ("; <agent> report exited ..."), -i is placed before it.
+// report command ("; <agent> report ended ..."), -i is placed before it.
 func (b *AgyBackend) AppendPromptFlag(launchCmd, prompt string) string {
 	if prompt == "" {
 		return launchCmd
@@ -143,9 +143,10 @@ func (b *AgyBackend) ProcessingPattern() string {
 // Because agy runs hooks with cwd set to the bundle dir and omits the event
 // name from stdin JSON, each hook command uses the absolute reportCmd and
 // passes --event <Event>. Since agy has no SessionEnd hook or native session
-// list, the command is followed by "; <agent> report exited ..." so the parent
-// shell records exit (including crashes and SIGKILL) with --spawn-id guarding
-// against stale respawns.
+// list, the command is followed by "; <agent> report ended ..." so the parent
+// shell records the end however agy exits (including crashes and SIGKILL),
+// with agy's exit code as the detail, and --spawn-id guarding against stale
+// respawns.
 func (b *AgyBackend) LaunchCommandWithHooks(reportCmd, sessionID string) string {
 	bundleDir := b.bundleDir(sessionID)
 	if err := writeAgyHooksBundle(bundleDir, reportCmd); err != nil {
@@ -156,7 +157,8 @@ func (b *AgyBackend) LaunchCommandWithHooks(reportCmd, sessionID string) string 
 }
 
 func agyExitReportCmd(reportCmd string) string {
-	return strings.Replace(reportCmd, " report --hook", " report exited", 1)
+	// $? is agy's exit status: the shell runs this right after it.
+	return strings.Replace(reportCmd, " report --hook", " report ended --end-reason quit", 1) + ` "agy exited with code $?"`
 }
 
 func (b *AgyBackend) bundleDir(sessionID string) string {

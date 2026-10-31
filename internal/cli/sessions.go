@@ -31,8 +31,8 @@ started it.
 
   WHEN              HARNESS  PROJECT  STATUS  WORKGROUP  TITLE
   2026-10-25 13:35  claude   gomuxai  idle    lead-api   Fix the auth tests
-  2026-10-25 13:30  claude   gomuxai  exited  -          Plan the export
-  └ 10-25 13:31     claude   gomuxai  exited  -          Explore internal/export
+  2026-10-25 13:30  claude   gomuxai  ended (quit)      -          Plan the export
+  └ 10-25 13:31     claude   gomuxai  ended (finished)  -          Explore internal/export
 
 WHEN is the transcript's last write, in local time. PROJECT is the last
 part of the working directory the session recorded. TITLE is the newest
@@ -40,23 +40,27 @@ title the harness recorded: for Claude, a custom title (/rename) over the
 AI-written one; agy's annotation title; Kimi's state.json title; a Claude
 subagent's description when it has none.
 
-STATUS (idle, processing, waiting, error, exited, unknown):
+STATUS (idle, processing, waiting, error, ended, unknown; an ended session
+shows its end reason, as in "ended (gone)"; "agent statuses" says what each
+means):
   - a workgroup agent's current session: its last report, reconciled with
-    "claude agents --json" for Claude by the rule agent status uses: that
-    list's status when it lists the session in a known state (except a
-    "waiting" within 5s of a deny), exited when it doesn't list a session
-    the report says is alive. agy: exited once agy no longer holds the
+    Claude Code's session registry for Claude by the rule agent status uses:
+    the registry's status when a running process holds the session (except
+    a "waiting" within 5s of a deny), ended (gone) when none does but the
+    report says it is alive. agy: ended (gone) once agy no longer holds the
     conversation open. agent status also reads the screen; sessions doesn't;
-  - an agent's earlier sessions (before /clear, a respawn, or cleanup):
-    exited;
-  - Claude, no workgroup: what "claude agents --json" says, or exited if it
-    doesn't list the session (unknown if it can't be run);
+  - an agent's earlier sessions (before /clear, a resume, a respawn, or a
+    CLI started anew in its pane): ended (replaced); its last one, once
+    cleanup removed it: ended (closed);
+  - Claude, no workgroup: the registry's status, or ended (gone) if no
+    running process holds the session (unknown if the registry can't be
+    read);
   - agy, no workgroup: unknown while agy holds the conversation open (its
-    presence lock; idle or busy can't be told), else exited;
+    presence lock; idle or busy can't be told), else ended (gone);
   - Kimi, which records nothing about running: unknown if its transcript
-    changed in the last 10 minutes, else exited;
-  - a subagent: exited if it recorded finishing, or its parent session is
-    exited; else unknown.
+    changed in the last 10 minutes, else ended (gone);
+  - a subagent: ended (finished) if it recorded finishing, ended (parent)
+    if its parent session ended; else unknown.
 Subagents are listed under their parent, oldest last write first.
 
 Where it looks (each harness's own default dirs that exist):
@@ -191,7 +195,7 @@ func workgroupAgents(ctx context.Context) ([]discovery.Agent, error) {
 			}
 		}
 		agents = append(agents, discovery.Agent{Name: a.Name, Parent: a.Parent, Store: a.Store, Host: a.Host,
-			Backend: a.Backend, Live: a.Live, CreatedAt: a.CreatedAt, EndedAt: a.EndedAt, Status: a.Status,
+			Backend: a.Backend, Live: a.Live, CreatedAt: a.CreatedAt, EndedAt: a.EndedAt, Status: a.Status, EndReason: a.EndReason,
 			Event: a.Event, StatusAt: a.StatusAt, SessionID: a.SessionID, Transcript: a.Transcript, History: history[key]})
 	}
 	return agents, nil
@@ -238,7 +242,11 @@ func printSessions(out io.Writer, sessions []discovery.Session, looked string) {
 		default:
 			title = "(" + s.SessionID + ")"
 		}
-		fmt.Fprintf(tw, format, when, s.Harness, orDash(s.Project), s.Status, group, title)
+		status := s.Status
+		if s.EndReason != "" {
+			status += " (" + s.EndReason + ")"
+		}
+		fmt.Fprintf(tw, format, when, s.Harness, orDash(s.Project), status, group, title)
 	}
 	printed := map[string]bool{}
 	var kidsOf func(s discovery.Session, depth int)

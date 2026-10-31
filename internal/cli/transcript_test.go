@@ -36,7 +36,7 @@ func corpusTranscript(t *testing.T, name string) (string, []byte) {
 // workgroup owns.
 func fileTarget(path string, size int64) *transcriptTarget {
 	return &transcriptTarget{path: path, reader: transcript.Claude{},
-		session: discovery.Session{SessionID: "s", Harness: discovery.HarnessClaude, Path: path, Size: size, Status: discovery.StatusExited}}
+		session: discovery.Session{SessionID: "s", Harness: discovery.HarnessClaude, Path: path, Size: size, Status: discovery.StatusEnded}}
 }
 
 // wholeStream is the event lines a whole read of data makes, as the
@@ -739,14 +739,14 @@ func TestTranscript_FollowUnwritten(t *testing.T) {
 	setRunning(false)
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "has exited") {
+		if err == nil || !strings.Contains(err.Error(), "has ended") {
 			t.Errorf("exited while waiting: %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the wait didn't end when its session exited")
 	}
 	// and an exited session's missing transcript is an error at once
-	if _, err := resolveTranscript(ctx, fresh); err == nil || !strings.Contains(err.Error(), "has exited") {
+	if _, err := resolveTranscript(ctx, fresh); err == nil || !strings.Contains(err.Error(), "has ended") {
 		t.Errorf("exited, no file: %v", err)
 	}
 }

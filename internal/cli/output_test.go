@@ -150,11 +150,11 @@ func TestQueueTagsUnrecordedSenders(t *testing.T) {
 
 func TestSendRefusesExitedAgent(t *testing.T) {
 	setupCLI(t)
-	if err := agentService.Report(context.Background(), "worker", service.StatusReport{Status: service.AgentStatusExited}); err != nil {
+	if err := agentService.Report(context.Background(), "worker", service.StatusReport{Status: service.AgentStatusEnded}); err != nil {
 		t.Fatal(err)
 	}
 	err := runSend(sendCmd, []string{"worker", "hi"})
-	if err == nil || !strings.Contains(err.Error(), "agent worker has exited, so the message would be typed into the shell left behind") {
+	if err == nil || !strings.Contains(err.Error(), "agent worker's session has ended, so the message would be typed into the shell left behind") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -201,7 +201,7 @@ func TestStateErrorsAndClear(t *testing.T) {
 	}
 
 	out, err = stdout(t, func() error { return runStateClear(stateClearCmd, []string{"worker"}) })
-	if err != nil || out != "Cleared 1 key for agent worker (kept 5 \"_\" keys that status reports write).\n" {
+	if err != nil || out != "Cleared 1 key for agent worker (kept 6 \"_\" keys that status reports write).\n" {
 		t.Errorf("state clear = %q, %v", out, err)
 	}
 	if st, _ := agentService.StatusInfo(context.Background(), "worker"); st == nil || st.Status != service.AgentStatusWaiting {

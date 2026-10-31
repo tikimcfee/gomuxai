@@ -240,7 +240,7 @@ func TestAgyLaunchCommandWithHooks(t *testing.T) {
 	if !strings.HasPrefix(cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --add-dir ") {
 		t.Fatalf("unexpected launch command: %s", cmd)
 	}
-	wantExit := `; '/opt/my tools/it'\''s/agent' report exited --as 'helper' --spawn-id '11111111-2222-3333-4444-555555555555'`
+	wantExit := `; '/opt/my tools/it'\''s/agent' report ended --end-reason quit --as 'helper' --spawn-id '11111111-2222-3333-4444-555555555555' "agy exited with code $?"`
 	if !strings.HasSuffix(cmd, wantExit) {
 		t.Fatalf("launch command missing exit wrapper:\ngot:  %s\nwant suffix: %s", cmd, wantExit)
 	}
@@ -344,7 +344,7 @@ func TestAgyLaunchCommandWithHooks_Resume(t *testing.T) {
 	if !strings.HasPrefix(cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --conversation '83d95154-d7a6-496b-a811-2496b2c39a84' --add-dir ") {
 		t.Errorf("unexpected launch command: %s", cmd)
 	}
-	if !strings.Contains(cmd, "; agent report exited") {
+	if !strings.Contains(cmd, "; agent report ended --end-reason quit") {
 		t.Errorf("the exit report is gone: %s", cmd)
 	}
 }
@@ -442,7 +442,7 @@ func TestAgyWithInstructions(t *testing.T) {
 	provider := namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{AgentDir: dir})
 	withHooks := provider.LaunchCommandWithHooks("agent report --hook", "sid")
 	cmd := provider.WithInstructions(withHooks, path)
-	if strings.Count(cmd, "--add-dir") != 1 || !strings.HasSuffix(cmd, "; agent report exited") {
+	if strings.Count(cmd, "--add-dir") != 1 || !strings.HasSuffix(cmd, `; agent report ended --end-reason quit "agy exited with code $?"`) {
 		t.Errorf("with hooks: %s", cmd)
 	}
 	if data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md")); err != nil || string(data) != "# briefing\n" {

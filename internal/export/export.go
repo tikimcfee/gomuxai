@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/transcript"
@@ -44,8 +45,11 @@ type Agent struct {
 	Live      bool      `json:"live"`              // it has a record (not cleaned up)
 	// Attached reports whether its tmux session exists; absent for other
 	// hosts, where it can't be checked.
-	Attached   *bool     `json:"attached,omitempty"`
-	Status     string    `json:"status,omitempty"`
+	Attached *bool  `json:"attached,omitempty"`
+	Status   string `json:"status,omitempty"`
+	// EndReason says how its session ended, with a status of ended (see
+	// agent statuses).
+	EndReason  string    `json:"end_reason,omitempty"`
 	Event      string    `json:"event,omitempty"`
 	Detail     string    `json:"detail,omitempty"`
 	Tool       string    `json:"tool,omitempty"`
@@ -433,8 +437,13 @@ func (t *Tree) apply(ctx context.Context, s *store, ev *storage.AgentEvent) (any
 			r.Live, r.EndedAt = true, time.Time{} // as it was then
 			a = &r
 		}
-		a.Status, a.Event, a.Detail, a.Tool, a.ToolInput, a.StatusAt = ev.Status, ev.Event, ev.Detail, ev.Tool, ev.ToolInput, ev.At
+		a.Status, a.EndReason, a.Event, a.Detail, a.Tool, a.ToolInput, a.StatusAt = ev.Status, ev.EndReason, ev.Event, ev.Detail, ev.Tool, ev.ToolInput, ev.At
 		if ev.SessionID != "" {
+			if ev.SessionID != a.SessionID && ev.Transcript == "" {
+				// Another session, whose transcript no hook has named yet:
+				// the old one's isn't its.
+				a.Transcript, a.Dialect, a.TranscriptSize, a.TranscriptMtime = "", "", 0, time.Time{}
+			}
 			a.SessionID = ev.SessionID
 		}
 		if ev.Transcript != "" {
@@ -510,6 +519,7 @@ func (t *Tree) read(ctx context.Context, s *store) error {
 		if e := keys["_status"]; e != nil {
 			a.Status, a.StatusAt = e.Value, e.UpdatedAt.UTC()
 		}
+		a.EndReason = value("_end_reason")
 		a.Event, a.Detail, a.Tool, a.ToolInput = value("_event"), value("_detail"), value("_tool"), value("_tool_input")
 		if a.Status != "waiting" {
 			a.ToolInput = "" // as in events: only a pending prompt's
@@ -530,10 +540,15 @@ func (t *Tree) read(ctx context.Context, s *store) error {
 func (t *Tree) fromRun(s *store, run *storage.Run) Agent {
 	a := Agent{Name: run.Name, Host: t.d.Host, Kind: KindTmux, Run: run.ID, Parent: run.Parent, Backend: run.Backend,
 		Session: run.Session, Store: s.dir, Cwd: run.Cwd, CreatedAt: run.CreatedAt.UTC(), EndedAt: run.EndedAt.UTC(),
-		Status: run.Status, Transcript: run.Transcript}
+		Status: run.Status, EndReason: run.EndReason, Transcript: run.Transcript}
 	if !run.EndedAt.IsZero() {
 		attached := false
 		a.Attached = &attached
+		// Cleanup closed its pane, whatever its last report said, unless
+		// that report already said how its session ended.
+		if a.Status != types.StatusEnded.String() || a.EndReason == "" {
+			a.Status, a.EndReason = types.StatusEnded.String(), string(types.EndClosed)
+		}
 	}
 	if a.Transcript == "" && run.ID == 0 {
 		// Spawned before runs: the transcripts list beside its log has

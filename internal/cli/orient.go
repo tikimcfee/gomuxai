@@ -28,8 +28,7 @@ func runOrient(cmd *cobra.Command, args []string) error {
 
 // orient writes the orientation for me (an agent's name, or "" for a
 // person): who you are, the agents that matter to you, the bus, your queued
-// messages, and where to go next. Statuses are resolved as by agent status;
-// claude agents share one backend call.
+// messages, and where to go next. Statuses are resolved as by agent status.
 func orient(w io.Writer, me string) error {
 	ctx := getContext()
 	agents, err := agentService.List(ctx)

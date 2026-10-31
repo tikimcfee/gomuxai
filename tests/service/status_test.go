@@ -13,6 +13,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
 	"github.com/tikimcfee/gomuxai/internal/service"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
 // fakeHookBackend is the claude backend with the parts that would launch or
@@ -20,14 +21,17 @@ import (
 type fakeHookBackend struct {
 	*namedagents.ClaudeBackend
 
-	reportCmd   string
-	sessionID   string
-	nativeFound bool // the CLI lists the session, with status native
-	nativeGone  bool // the CLI answers but doesn't list the session (it died)
+	sessionID   string // the session spawn pinned
+	hooksErr    error  // what HooksInstalled says; nil = installed
+	nativeFound bool   // the CLI lists the session, with status native
+	nativeGone  bool   // the CLI answers but doesn't list the session (it died)
 	native      backend.Status
-	promptGone  bool      // no permission dialog on screen (the test shell shows none)
-	input       string    // what a person has typed in the input line
-	inputUntil  time.Time // if set, when they clear it
+	nativeErr   error                // with nativeFound: why the status is unknown
+	promptGone  bool                 // no permission dialog on screen (the test shell shows none)
+	paneSession *backend.PaneSession // what the pane runs, per the registry; nil = no CLI there
+	paneErr     error                // why the pane couldn't be read
+	input       string               // what a person has typed in the input line
+	inputUntil  time.Time            // if set, when they clear it
 }
 
 // InputText stands in for reading Claude's input line, which the test
@@ -52,10 +56,13 @@ func (f *fakeHookBackend) Name() string { return "fakehooks" }
 // LaunchCommand is typed into the test shell; keep it harmless.
 func (f *fakeHookBackend) LaunchCommand() string { return "true" }
 
-func (f *fakeHookBackend) LaunchCommandWithHooks(reportCmd, sessionID string) string {
-	f.reportCmd, f.sessionID = reportCmd, sessionID
+func (f *fakeHookBackend) LaunchCommandWithSession(sessionID string) string {
+	f.sessionID = sessionID
 	return "true"
 }
+
+// HooksInstalled stands in for reading Claude Code's settings.
+func (f *fakeHookBackend) HooksInstalled(string) error { return f.hooksErr }
 
 func (f *fakeHookBackend) NativeStatus(ctx context.Context, sessionID string) (backend.Status, bool, error) {
 	if !f.nativeFound && !f.nativeGone {
@@ -64,7 +71,21 @@ func (f *fakeHookBackend) NativeStatus(ctx context.Context, sessionID string) (b
 	if f.nativeGone || sessionID != f.sessionID {
 		return backend.StatusUnknown, false, nil
 	}
-	return f.native, true, nil
+	return f.native, true, f.nativeErr
+}
+
+// PaneSession stands in for reading the registry and the process tree.
+func (f *fakeHookBackend) PaneSession(ctx context.Context, panePID int) (backend.PaneSession, bool, error) {
+	if panePID <= 0 {
+		return backend.PaneSession{}, false, errors.New("fake: no pane pid")
+	}
+	if f.paneErr != nil {
+		return backend.PaneSession{}, false, f.paneErr
+	}
+	if f.paneSession == nil {
+		return backend.PaneSession{}, false, nil
+	}
+	return *f.paneSession, true, nil
 }
 
 // spawnFake registers a fake hook backend and spawns an agent on it.
@@ -84,6 +105,13 @@ func spawnFakeWith(t *testing.T, env *testEnv, name string, opts service.SpawnOp
 	if _, err := env.service.Spawn(context.Background(), opts); err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
+	// As the global hook does at the CLI's SessionStart: it reaches this
+	// session, so a Stop can deliver.
+	if fake.sessionID != "" {
+		if err := env.store.SetState(context.Background(), &storage.StateEntry{AgentName: name, Key: service.StateKeyHookedSession, Value: fake.sessionID, UpdatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return fake
 }
 
@@ -96,15 +124,31 @@ func TestSpawn_WiresHooksToAgentBinary(t *testing.T) {
 	fake := spawnFake(t, env, "hooked")
 
 	if fake.sessionID == "" {
-		t.Fatal("expected a session id to be assigned")
-	}
-	wantCmd := `'/opt/gomux ai/agent' report --hook --as 'hooked' --spawn-id '` + fake.sessionID + `'`
-	if fake.reportCmd != wantCmd {
-		t.Errorf("report command = %q, want %q", fake.reportCmd, wantCmd)
+		t.Fatal("expected a session id to be pinned")
 	}
 	entry, err := env.store.GetState(ctx, "hooked", service.StateKeySessionID)
 	if err != nil || entry == nil || entry.Value != fake.sessionID {
 		t.Errorf("stored session id = %+v (err %v), want %q", entry, err, fake.sessionID)
+	}
+	// Its hooks are every session's, found by pane: no spawn id.
+	if e, _ := env.store.GetState(ctx, "hooked", service.StateKeySpawnID); e != nil {
+		t.Errorf("a Claude agent got a spawn id: %+v", e)
+	}
+}
+
+// Without the global hook a Claude agent couldn't report: spawn says so and
+// how to fix it, rather than start an agent nothing can follow.
+func TestSpawn_RefusesWithoutGlobalHook(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/opt/agent"
+
+	fake := &fakeHookBackend{ClaudeBackend: namedagents.NewClaudeBackend(), hooksErr: errors.New("no hook on Stop: agent hooks install registers it")}
+	env.backends.Register(fake)
+	env.backends.RegisterFactory("fakehooks", func(backend.ProviderConfig) backend.Provider { return fake })
+	_, err := env.service.Spawn(context.Background(), service.SpawnOptions{Name: "unhooked", Backend: "fakehooks"})
+	if err == nil || !strings.Contains(err.Error(), "agent hooks install") {
+		t.Fatalf("spawn err = %v", err)
 	}
 }
 
@@ -115,8 +159,8 @@ func TestSpawn_NoHooksWithoutAgentBinary(t *testing.T) {
 
 	fake := spawnFake(t, env, "plain")
 
-	if fake.reportCmd != "" {
-		t.Errorf("hooks should not be wired without AgentBinary, got %q", fake.reportCmd)
+	if fake.sessionID != "" {
+		t.Errorf("no session should be pinned without AgentBinary, got %q", fake.sessionID)
 	}
 	if entry, _ := env.store.GetState(ctx, "plain", service.StateKeySessionID); entry != nil {
 		t.Errorf("unexpected session id: %+v", entry)
@@ -292,13 +336,13 @@ func TestStatusInfo_FallsBackToReportWhenNativeMissing(t *testing.T) {
 	ctx := context.Background()
 	spawnFake(t, env, "worker") // nativeFound stays false
 
-	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusExited, Event: "SessionEnd"})
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusEnded, Event: "SessionEnd"})
 
 	info, err := env.service.StatusInfo(ctx, "worker")
 	if err != nil {
 		t.Fatalf("StatusInfo: %v", err)
 	}
-	if info.Status != service.AgentStatusExited || info.Source != service.StatusSourceReport {
+	if info.Status != service.AgentStatusEnded || info.Source != service.StatusSourceReport {
 		t.Errorf("got %s from %s, want exited from report", info.Status, info.Source)
 	}
 }
