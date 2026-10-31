@@ -204,6 +204,49 @@ func TestScanClaude(t *testing.T) {
 	}
 }
 
+// A workflow's agents are one folder down, in subagents/workflows/<run>/:
+// each is a subagent of the session, and where one agent id has two
+// transcripts the shallower is listed. Probe knows the layout too.
+func TestScanClaude_Workflows(t *testing.T) {
+	projects := filepath.Join(t.TempDir(), "projects")
+	session := filepath.Join(projects, "-proj", "s1")
+	write(t, session+".jsonl", lines(`{"type":"user","sessionId":"s1","cwd":"/home/user/src/app","message":{"role":"user","content":"run the workflow"}}`))
+	agent := func(rel, id, text string) string {
+		path := filepath.Join(session, "subagents", rel, "agent-"+id+".jsonl")
+		write(t, path, lines(`{"type":"user","sessionId":"s1","agentId":"`+id+`","isSidechain":true,"cwd":"/home/user/src/app","message":{"role":"user","content":"`+text+`"}}`))
+		return path
+	}
+	w1 := agent(filepath.Join("workflows", "wf_1"), "w1", "gate")
+	write(t, strings.TrimSuffix(w1, ".jsonl")+".meta.json", `{"agentType":"workflow-subagent","description":"gate:apple","workflowPhase":"Gate"}`)
+	agent(filepath.Join("workflows", "wf_2"), "w2", "render")
+	top := agent("", "dup", "top")
+	agent(filepath.Join("workflows", "wf_1"), "dup", "run")
+	write(t, filepath.Join(session, "subagents", "workflows", "wf_1", "agent-empty.jsonl"), "")
+	write(t, filepath.Join(session, "subagents", "workflows", "wf_1", "notes.txt"), "not a transcript")
+
+	sessions := Scan([]Dir{{HarnessClaude, projects, OriginDefault}})
+	got := byID(sessions)
+	if len(sessions) != 4 || len(got) != 4 {
+		t.Fatalf("sessions = %v, want s1 and its agents w1, w2 and dup, once each", got)
+	}
+	for _, id := range []string{"agent-w1", "agent-w2", "agent-dup"} {
+		if s := got[id]; s.ParentSession == nil || s.ParentSession.SessionID != "s1" {
+			t.Errorf("%s = %+v, want a subagent of s1", id, s)
+		}
+	}
+	if s := got["agent-w1"]; s.Title != "gate:apple" || s.Cwd != "/home/user/src/app" {
+		t.Errorf("agent-w1 title %q, cwd %q; want its meta.json description and its cwd", s.Title, s.Cwd)
+	}
+	if s := got["agent-dup"]; s.Path != top {
+		t.Errorf("agent-dup path %s, want the shallower %s", s.Path, top)
+	}
+
+	s, ok := Probe(w1)
+	if !ok || s.SessionID != "agent-w1" || s.ParentSession == nil || s.ParentSession.SessionID != "s1" || s.Title != "gate:apple" {
+		t.Errorf("Probe(%s) = %+v, %v; want agent-w1, a subagent of s1", w1, s, ok)
+	}
+}
+
 // countingReader counts the bytes read through it.
 type countingReader struct {
 	r io.ReaderAt

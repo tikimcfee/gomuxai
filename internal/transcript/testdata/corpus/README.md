@@ -43,7 +43,7 @@ Compare parsed JSON values, not bytes:
 | `claude/basic-turn` | A typed prompt, a redacted thinking block (signature only) and one with text, a reply, a noise tool (ToolSearch), a Bash call and its result, the final reply, turn timing. `ai-title` then `custom-title` then `ai-title`: the custom title wins. | `user` with `promptId`, `promptSource: typed`, `origin.kind`, `turnOrigin`, `turnPosition{promptIndex,turnIndex}`; `assistant` one block per record sharing `message.id`, `thinking{thinking,signature}`, `tool_use{id,name,input,caller}`; `user` `tool_result` with `toolUseResult{stdout,stderr,interrupted,isImage,noOutputExpected}` and `sourceToolAssistantUUID`; `system` `turn_duration`; `file-history-snapshot`, `last-prompt`, `ai-title`, `custom-title`, `mode`, `permission-mode`. |
 | `claude/mid-turn-queued` | A message sent mid-turn and taken at a tool boundary: a `queued` prompt in the current turn. A second message queued as the turn ends, which opens its own turn: a `queued` prompt with its own turn id. An Edit with a `structuredPatch`. | `queue-operation` `enqueue`/`remove`/`dequeue` with `content`; `attachment` `queued_command{prompt,commandMode: prompt,origin{kind: human},humanTurn}` with `rendered`; `user` with `promptSource: queued`. |
 | `claude/held-delivery` | gomuxai's held delivery: Stop's `additionalContext` after a final reply is a `delivered` prompt in the same turn, and the reply to it is a second final reply. Two `stop_hook_summary` records. | `attachment` `hook_success` and `hook_additional_context{content[],hookEvent: Stop,toolUseID}`; `system` `stop_hook_summary{hookCount,hookInfos,hookErrors,hookAdditionalContext,preventedContinuation,stopReason,hasOutput,toolUseID}`. |
-| `claude/notification-and-commands` | A background Bash (`background`), then its task notification, which opens a turn (`task-notification`) and completes the call (`ok`). A local slash command (`/context`) with its output record. A slash command that expands into a model turn (`/review internal/server`). | `toolUseResult.backgroundTaskId`; `user` with `origin{kind: task-notification,producer}`, `promptSource: system`, `turnOrigin: task_notification`, `<task-notification>` tags `task-id`, `tool-use-id`, `output-file`, `status`, `summary`; `<local-command-caveat>` (`isMeta`); `<command-name>`/`<command-message>`/`<command-args>` in both tag orders; `system` `local_command{commandRun}`; the skill body as an `isMeta` `turnCompanion` user record; `attachment` `command_permissions`. |
+| `claude/notification-and-commands` | A background Bash (`background`), then its task notification, which opens a turn (`task-notification`) and completes the call (`ok`). A local slash command (`/context`) with its output record. A slash command that expands into a model turn (`/review internal/server`). A shell escape (`! git status --short`): a `command` prompt `!` that opens the next turn, and its output. | `toolUseResult.backgroundTaskId`; `user` with `origin{kind: task-notification,producer}`, `promptSource: system`, `turnOrigin: task_notification`, `<task-notification>` tags `task-id`, `tool-use-id`, `output-file`, `status`, `summary`; `<local-command-caveat>` (`isMeta`); `<command-name>`/`<command-message>`/`<command-args>` in both tag orders; `system` `local_command{commandRun}`; the skill body as an `isMeta` `turnCompanion` user record; `attachment` `command_permissions`; `<bash-input>` with no `promptSource` or `turnPosition`, then `<bash-stdout>`/`<bash-stderr>` with `turnOrigin: human` and the escape's `turnPosition`. |
 | `claude/requests` | `api-request-shape`, `api-request-blob` and `api-request` lines produce nothing in the plain stream. With `--requests` each `api-request` is a `request` event that carries the blobs its `tail` names. | `api-request{id,base,params,tail,keep,shapeHash,querySource,cacheControl,requestDigest}`, `api-request-blob{hash,message}`, `api-request-shape{shapeHash,shape{system,tools}}`. |
 | `claude/subagent` (+ `subagent/subagents/agent-a3f9c2e17b4d5e608`) | An Agent call that launches a background subagent: `background`, with `sub_sessions`. The subagent's own transcript as its own session, with `parent_session` and `agent` on every event. The task notification that ends it fills the call's result and `meta`. | `toolUseResult{isAsync,status: async_launched,agentId,outputFile,...}`; `<task-notification>` with `result`, `note` and `usage{subagent_tokens,tool_uses,duration_ms}`; subagent records with `isSidechain: true`, `agentId`, the parent's `sessionId` and `promptId`; `agent-<id>.meta.json{agentType,toolUseId,...}`; WebFetch `toolUseResult{bytes,code,codeText,result,durationMs,url}`. |
 | `claude/tool-results` | MultiEdit with `edits[]`. Three calls in one message whose results land after all three calls (pending, then updates). A partial Read (`meta.range`). A tool error. An interrupted call that never gets a result. | MultiEdit's input and `toolUseResult{filePath,edits,originalFileContents,structuredPatch,userModified}` (from the versions that had MultiEdit; 2.1.310 has none); Read `toolUseResult{type,file{filePath,content,numLines,startLine,totalLines}}`; an error `tool_result` with `is_error: true` and a string `toolUseResult` (`Error: ...`); the `[Request interrupted by user for tool use]` text record, with no `tool_result` for the call. |
@@ -90,8 +90,10 @@ should check the rest.
   `turnPosition.promptIndex`. Records without a `promptId` (assistant, attachment and
   system records) take the current turn. A record whose `promptId` has no `promptIndex`
   (a local slash command, a task notification from older versions) takes the last
-  `promptIndex` seen in the same file; a subagent's records, the parent's (below). A
-  file that records no `promptIndex` at all (Claude Code 2.1.25x-26x write `promptId`
+  `promptIndex` seen in the same file, except a shell escape (`<bash-input>`), which takes
+  the next: Claude Code counts it as a human prompt, and the escape's output record
+  carries that index; a subagent's records, the parent's (below). A
+  file that records no `promptIndex` at all (Claude Code 2.1.221-2.1.278 write `promptId`
   but no `turnPosition`) numbers its turns by counting human prompts (typed, slash
   commands, queued), as derived turns are numbered; a task notification or a peer
   message shares the index of the human prompt before it.
@@ -115,7 +117,7 @@ should check the rest.
 **Prompts**
 
 - `queued_command` attachments (`commandMode: prompt`) are mid-turn messages: origin
-  `queued`, or `peer` when their `origin.kind` is `peer` or `channel`. A `user` record with
+  `queued`, or `peer` when their `origin.kind` is `peer`, `channel` or `coordinator`. A `user` record with
   `promptSource: queued` is `queued` too. `queue-operation` lines are never events: they
   repeat what the prompt record holds.
 - `hook_additional_context` from Stop is `delivered` when its text starts with gomuxai's
@@ -123,7 +125,9 @@ should check the rest.
   were working, oldest first:`); other hook context is origin `system`. The text is the
   attachment's `content` joined with `\n`, head line included.
 - Slash commands: `command` is `/name`, and `text` is `/name args` (just `/name` with no
-  args). The command markup wins over the record's `origin.kind: human`. The
+  args). The command markup wins over the record's `origin.kind: human` (2.1.296 wrote
+  one), but is read only on a record with no `promptSource`: what a person typed is
+  theirs, whatever it says. The
   `<local-command-caveat>` record and a skill's expanded body (`isMeta`, `turnCompanion`)
   are not events. A `user` record with `isMeta` and no `origin` is not an event, unless
   its `promptSource` is `system`: then it is a message the harness sends the agent (a
@@ -142,11 +146,13 @@ should check the rest.
 
 - `final` is set on the last text block of an assistant message whose `stop_reason` is
   `end_turn` or `stop_sequence`. A turn that a held delivery continues has two final
-  replies, one per Stop. Older versions wrote no stop reason (`null`): the last text of
-  a message with no tool calls becomes final, by an update, once its turn ends with
-  nothing more from the model (a `turn_duration` or `stop_hook_summary` record, or the
-  next turn's prompt). More from the model, or an interrupt, means it wasn't
-  (`claude/derived-turns`: "Starting on the README.").
+  replies, one per Stop. A main transcript's message with no stop reason (`null`) was
+  cut short, and is never final (`claude/derived-turns`: "Starting on the README.", which
+  an interrupt follows). Subagents' transcripts of 2.1.251-2.1.306 wrote no stop reason
+  on most messages: there the last text of a message with no tool calls becomes final, by
+  an update, once its turn ends with nothing more from the model (a `turn_duration` or
+  `stop_hook_summary` record, or a record of the parent's next turn). More from the
+  model, or an interrupt, means it wasn't.
 - agy: a PLANNER_RESPONSE with content and no tool calls is final.
 - Kimi: `final` is never set. Its wire records no stop reason we have seen; `step.end`
   of a step without tool calls is a candidate, to be confirmed on real Kimi sessions.
@@ -242,15 +248,24 @@ tests (`TestClaudeUserRecords`, `TestClaudeMidTurn`, `TestClaudeTaskNotification
 - A record with no `uuid` has ids `L<line index>#<block index>`, as Kimi's do.
 - A `user` record's `origin.kind` `coordinator` is `peer`, like `peer` and `channel`;
   any other kind (`auto-continuation`) is `system`. A record with no `origin` is `human`
-  (older versions), or `peer` in a subagent's transcript. A `promptSource: sdk` record is
-  a `human` prompt. A prompt with no text and no image is not an event.
-- A `<pasted_content>` or `<bash-input>` prompt is the person's, kept with its markup.
-  Older versions wrote a local command's output, and a shell escape's, as `user` records
-  (`<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`, `<bash-stderr>`):
-  each is `{subtype: local_command, text}`, like the newer `local_command` system record.
-- A `queued_command` attachment with `commandMode: task-notification` (or a
-  `task-notification` origin, or `<task-notification>` text) is a task notification
-  taken mid-turn: origin `task-notification`, in the current turn, completing its call.
+  (versions before origins), or `peer` in a subagent's transcript. A `promptSource: sdk`
+  record is a `human` prompt. A prompt with no text and no image is not an event.
+- A task notification is told by its `origin.kind: task-notification`, never by its
+  text: on the survey host every record with `<task-notification>` text has that origin
+  (2.1.251-2.1.316), and one (2.1.258) has the origin and no such text.
+- A `<pasted_content>` prompt is the person's, kept with its markup. A shell escape
+  (`<bash-input>pwd</bash-input>`, 2.1.263-2.1.310) is `{origin: command, command: "!",
+  text: "! pwd"}`. Claude Code 2.1.251-2.1.310 wrote some local commands' output (`/resume`),
+  and every shell escape's, as `user` records (`<local-command-stdout>`,
+  `<local-command-stderr>`, `<bash-stdout>`, `<bash-stderr>`): each is `{subtype:
+  local_command, text}`, like the `local_command` system record the same versions wrote
+  for other commands (`/rename`).
+- An interrupt is a record whose whole text is `[Request interrupted by user]` or
+  `[Request interrupted by user for tool use]`; one with more text after it is a prompt.
+- A `queued_command` attachment with `commandMode: task-notification` is a task
+  notification taken mid-turn: origin `task-notification`, in the current turn,
+  completing its call. Every one on the survey host has that `commandMode`
+  (2.1.251-2.1.316), and only 2.1.295 on add a `task-notification` origin.
 - A record that holds tool results and an interrupt text block adds the interrupt, then
   updates the calls its results answer, then interrupts the calls still pending.
 - `isSidechain` records with no `agentId` (subagents of versions before subagents had
@@ -262,8 +277,9 @@ tests (`TestClaudeUserRecords`, `TestClaudeMidTurn`, `TestClaudeTaskNotification
   gets its update.
 - An assistant `{type: fallback, from, to}` block (the harness switching models) is
   `{subtype: model_fallback, data: {from, to}}`.
-- A typed `/name args` with no command markup and no `origin` (older versions wrote
-  `/compact` so) is a `command` prompt; a path such as `/etc/hosts` is not a command.
+- A typed `/name args` with no command markup, no `origin` and no `promptSource`
+  (Claude Code 2.1.257-2.1.310 wrote `/compact` so) is a `command` prompt; a path such as
+  `/etc/hosts` is not a command.
 - A request's `blobs` are the blob lines' messages whole, as written, fields the reader
   doesn't know included.
 

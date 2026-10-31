@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
 // Claude reads Claude Code session transcripts
-// (~/.claude/projects/<project>/<session id>.jsonl, and a subagent's
-// <session id>/subagents/agent-<agent id>.jsonl). Each record is one
+// (~/.claude/projects/<project>/<session id>.jsonl, a subagent's
+// <session id>/subagents/agent-<agent id>.jsonl, and a workflow agent's
+// <session id>/subagents/workflows/<run>/agent-<agent id>.jsonl). Each record is one
 // line: user (a prompt, tool results, or a harness note), assistant (one
 // content block per record, records of one message sharing its id),
 // attachment, system, and bookkeeping (titles, modes, queue operations,
@@ -167,9 +168,9 @@ type claudeLines struct {
 	// blobs holds the messages api-request-blob lines define, by hash
 	// (with Options.Requests).
 	blobs map[string]json.RawMessage
-	// closing is a reply that ends its message without a stop reason
-	// (older versions): final if its turn ends with nothing more from the
-	// model.
+	// closing is a subagent's reply that ends its message without a stop
+	// reason (2.1.251-2.1.306): final if its turn ends with nothing more
+	// from the model.
 	closing *Event
 }
 
@@ -295,14 +296,16 @@ func (c *claudeLines) counted(r *claudeRecord) bool {
 	return r.PromptID == "" || !c.numbered && c.opts.Turns == nil && (r.TurnPosition == nil || r.TurnPosition.PromptIndex == nil)
 }
 
-// claudeInterrupted is how the record Claude Code writes when a person
-// interrupts a turn starts: "[Request interrupted by user]", or "... for
-// tool use]" when calls were running.
-const claudeInterrupted = "[Request interrupted by user"
+// claudeInterrupts are the records Claude Code writes when a person
+// interrupts a turn: "... for tool use]" when calls were running. No field
+// says so: interruptedMessageId is on 45 of the 65 on the survey host, and
+// missing from records of 2.1.263-2.1.310, 2.1.310 writing both shapes.
+var claudeInterrupts = []string{"[Request interrupted by user]", "[Request interrupted by user for tool use]"}
 
-// claudeEchoTags start the user records older versions wrote for a local
-// command's output and a person's shell escape (! cmd) output; newer ones
-// write a local_command system record.
+// claudeEchoTags start the user records Claude Code 2.1.251-2.1.310 wrote
+// for some local commands' output (/resume) and a shell escape's (! cmd),
+// beside the local_command system records the same versions wrote for
+// others (/rename).
 var claudeEchoTags = []string{"<local-command-stdout>", "<local-command-stderr>", "<bash-stdout>", "<bash-stderr>"}
 
 // user reads a user record: tool results, a prompt, or a harness note.
@@ -330,6 +333,15 @@ func (l *claudeLine) user() {
 
 // userContent reads a user record's text and images: a prompt, or a
 // harness note. It reports whether the record is an interrupt.
+//
+// The record's fields decide what it is: isCompactSummary, isMeta, and
+// where a prompt came from, promptSource and origin (claudeOrigins). Only
+// records with no promptSource are read by their text, because nothing
+// else tells them apart: Claude Code writes none on an interrupt, a slash
+// command's markup, a local command's or shell escape's echo, a shell
+// escape (<bash-input>), or a /compact typed as text (2.1.257-2.1.310). On
+// the survey host (2.1.221-2.1.316) no record with a promptSource held any
+// of these.
 func (l *claudeLine) userContent(content claudeContent) bool {
 	r := l.r
 	id := r.blockID(l.n, content.block)
@@ -346,37 +358,41 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 	case r.IsCompactSummary:
 		system("compact_summary")
 		return false
-	case strings.HasPrefix(text, claudeInterrupted):
-		system("interrupt")
-		l.c.closing = nil // the turn didn't end with that reply
-		return true
 	case r.IsMeta && r.Origin == nil && r.PromptSource != "system":
 		// A caveat, a reminder, a skill's expanded body: the harness
 		// talking to the model, not a message into the agent. One the
 		// harness sends as a prompt (promptSource system: a /loop wakeup,
 		// an idle notice, Stop hook feedback) is one.
 		return false
-	case strings.HasPrefix(text, "<local-command-caveat>"):
-		return false
 	}
-	for _, tag := range claudeEchoTags {
-		if strings.HasPrefix(text, tag) {
-			system("local_command")
-			return false
+	marked := r.PromptSource == ""
+	if marked {
+		if slices.Contains(claudeInterrupts, text) {
+			system("interrupt")
+			l.c.closing = nil // the turn didn't end with that reply
+			return true
+		}
+		for _, tag := range claudeEchoTags {
+			if strings.HasPrefix(text, tag) {
+				system("local_command")
+				return false
+			}
 		}
 	}
 
 	p := &PromptEvent{Text: content.text, Images: content.images, Origin: claudeOrigins(r)}
-	if name, args, ok := slashCommand(text); ok {
-		p.Origin, p.Command, p.Text = OriginCommand, name, name
-		if args != "" {
-			p.Text += " " + args
+	if marked {
+		if name, args, ok := slashCommand(text); ok {
+			p.Origin, p.Command, p.Text = OriginCommand, name, name
+			if args != "" {
+				p.Text += " " + args
+			}
+		} else if cmd, ok := shellEscape(text); ok {
+			p.Origin, p.Command, p.Text = OriginCommand, "!", "! "+cmd
+			l.escaped()
+		} else if m := claudePlainCommand.FindStringSubmatch(text); m != nil && r.Origin == nil && r.AgentID == "" {
+			p.Origin, p.Command = OriginCommand, m[1]
 		}
-	} else if IsTaskNotification(text) {
-		p.Origin = OriginTaskNotification
-	} else if m := claudePlainCommand.FindStringSubmatch(text); m != nil && p.Origin == OriginHuman && r.Origin == nil {
-		// Older versions wrote some commands (/compact) as typed.
-		p.Origin, p.Command = OriginCommand, m[1]
 	}
 	l.number(id, p.Origin)
 	e := l.event(id, KindPrompt)
@@ -386,6 +402,20 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 		l.notification(text)
 	}
 	return false
+}
+
+// escaped numbers the turn a shell escape opens, in a file that numbers
+// its turns. Its record gives no promptIndex, but Claude Code counts it as
+// a human prompt: the next record of its turn (the escape's output) has
+// the index after the last one (every such pair on the survey host,
+// 2.1.296-2.1.310).
+func (l *claudeLine) escaped() {
+	c, r := l.c, l.r
+	if !c.numbered || c.opts.Turns != nil || r.PromptID == "" || r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil {
+		return
+	}
+	c.index++
+	c.setTurn(r.PromptID, c.index, false)
 }
 
 // number counts a prompt the transcript doesn't number: a human prompt
@@ -417,12 +447,17 @@ func (l *claudeLine) number(id, origin string) {
 }
 
 // claudeOrigins says where a user record's prompt came from, by the
-// origin and prompt source the record carries.
+// origin and prompt source the record carries. On the survey host a
+// promptSource is typed (with origin human), queued, system (with an
+// origin, or none for the harness's own) or sdk (a claude -p or SDK
+// caller's prompt, with no origin).
 func claudeOrigins(r *claudeRecord) string {
-	if r.PromptSource == "queued" {
+	switch {
+	case r.PromptSource == "queued":
 		return OriginQueued
-	}
-	if r.PromptSource == "system" && r.Origin == nil {
+	case r.PromptSource == "sdk":
+		return OriginHuman
+	case r.PromptSource == "system" && r.Origin == nil:
 		return OriginSystem
 	}
 	kind := ""
@@ -448,8 +483,9 @@ func claudeOrigins(r *claudeRecord) string {
 }
 
 // claudePlainCommand matches a slash command typed as text, with no
-// markup: "/compact keep the plan". A path ("/etc/hosts is gone") has a
-// second slash, and isn't one.
+// markup: "/compact keep the plan", as Claude Code 2.1.257-2.1.310 wrote
+// /compact (every such record on the survey host). A path ("/etc/hosts is
+// gone") has a second slash, and isn't one.
 var claudePlainCommand = regexp.MustCompile(`^(/[a-z][a-z0-9_:-]*)(?:\s|$)`)
 
 // slashCommand reads a slash command's markup, in either tag order:
@@ -468,6 +504,15 @@ func slashCommand(text string) (name, args string, ok bool) {
 	}
 	args, _ = tagText(text, "command-args")
 	return name, args, true
+}
+
+// shellEscape reads a shell escape a person typed (! pwd), as Claude Code
+// 2.1.263-2.1.310 recorded it: <bash-input>pwd</bash-input>.
+func shellEscape(text string) (cmd string, ok bool) {
+	if !strings.HasPrefix(text, "<bash-input>") {
+		return "", false
+	}
+	return tagText(text, "bash-input")
 }
 
 // tagText returns the trimmed text between <name> and </name> in s.
@@ -581,14 +626,6 @@ type TaskNotification struct {
 	Usage string
 }
 
-// IsTaskNotification reports whether text, a message's trimmed text, is
-// task notifications: one or more <task-notification> blocks, alone or
-// after a "[SYSTEM NOTIFICATION ...]" preamble.
-func IsTaskNotification(text string) bool {
-	return strings.HasPrefix(text, "<task-notification>") ||
-		strings.HasPrefix(text, "[SYSTEM NOTIFICATION") && strings.Contains(text, "<task-notification>")
-}
-
 // TaskNotifications returns every <task-notification> block in text, in
 // order. Claude Code puts several in one message when several tasks
 // finish while the agent works.
@@ -680,13 +717,16 @@ func (l *claudeLine) assistant() {
 				continue
 			}
 			// A message that ends the turn ends with end_turn or a stop
-			// sequence; older versions wrote no stop reason, so their last
-			// reply is final once the turn ends with nothing more.
+			// sequence. A main transcript's message without a stop
+			// reason was cut short (interrupted) and is never final.
+			// Subagents' transcripts of 2.1.251-2.1.306 wrote no stop
+			// reason on most messages: their last reply is final once the
+			// turn ends with nothing more.
 			e := l.event(r.blockID(l.n, i), KindSay)
 			stop := r.Message.StopReason
 			e.Say = &SayEvent{Text: b.Text, Final: i == lastText && (stop == "end_turn" || stop == "stop_sequence")}
 			l.add(e)
-			if i == lastText && stop == "" && !calls {
+			if i == lastText && stop == "" && !calls && r.AgentID != "" {
 				l.c.closing = &e
 			}
 		case "fallback":
@@ -750,8 +790,11 @@ func (l *claudeLine) attachment() {
 		if a.Origin != nil {
 			kind = a.Origin.Kind
 		}
+		// Every task notification taken mid-turn has commandMode
+		// task-notification (2.1.251-2.1.316; its origin only from
+		// 2.1.295); every other has prompt or none.
 		switch {
-		case a.CommandMode == "task-notification" || kind == "task-notification" || IsTaskNotification(strings.TrimSpace(p.Text)):
+		case a.CommandMode == "task-notification":
 			p.Origin = OriginTaskNotification
 		case kind == "peer" || kind == "channel" || kind == "coordinator":
 			p.Origin = OriginPeer
@@ -861,20 +904,19 @@ func objectFields(line []byte, keep func(key string) bool) json.RawMessage {
 }
 
 // ClaudeSubagentTurns returns, for the Claude subagent transcript at path
-// (<session id>/subagents/agent-<agent id>.jsonl), the lookup of its
-// parent's turn indexes by prompt id that Options.Turns takes. A
-// subagent's records name the parent's current turn by its prompt id only;
-// its index is what the parent's transcript (<session id>.jsonl beside
-// that folder) gives it, by the same rules. The lookup reads the parent as
-// far as it has been written; a prompt id it doesn't know yet makes it
-// read what the parent has added since. It returns nil for any other
-// path.
+// (ClaudeSubagentSession), the lookup of its parent's turn indexes by
+// prompt id that Options.Turns takes. A subagent's records name the
+// parent's current turn by its prompt id only; its index is what the
+// parent's transcript (<session id>.jsonl beside the session folder) gives
+// it, by the same rules. The lookup reads the parent as far as it has been
+// written; a prompt id it doesn't know yet makes it read what the parent
+// has added since. It returns nil for any other path.
 func ClaudeSubagentTurns(path string) func(promptID string) (int, bool) {
-	dir := filepath.Dir(path)
-	if filepath.Base(dir) != "subagents" || !strings.HasPrefix(filepath.Base(path), "agent-") {
+	session := ClaudeSubagentSession(path)
+	if session == "" {
 		return nil
 	}
-	t := &parentTurns{path: filepath.Dir(dir) + ".jsonl", p: Claude{}.NewParser(Options{}), turns: map[string]int{}}
+	t := &parentTurns{path: session + ".jsonl", p: Claude{}.NewParser(Options{}), turns: map[string]int{}}
 	return t.lookup
 }
 

@@ -12,8 +12,9 @@ import (
 
 // Claude Code keeps a session at <projects>/<project folder>/<session
 // id>.jsonl, and each subagent the session started at <session
-// id>/subagents/agent-<agent id>.jsonl beside a meta.json naming the tool
-// call that started it. The project folder's name is a slug of the cwd and
+// id>/subagents/agent-<agent id>.jsonl (a workflow's agents one folder
+// down, in workflows/<run>/) beside a meta.json naming the tool call that
+// started it. The project folder's name is a slug of the cwd and
 // is never read: the records carry the cwd itself.
 
 // scanClaude lists the sessions under a projects dir: <dir>/*.jsonl,
@@ -51,29 +52,45 @@ func scanClaude(dir string) []Session {
 }
 
 // scanClaudeSubagents lists the subagent sessions in a session's
-// subagents dir.
+// subagents dir: the agents it started, at the top, and each workflow
+// run's agents, in workflows/<run>/. Where two transcripts share an agent
+// id (a message to a workflow's agent can start a copy of it outside the
+// run), the shallower one is listed.
 func scanClaudeSubagents(dir string) []Session {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
 	var out []Session
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".jsonl") {
-			continue
+	listed := map[string]bool{}
+	add := func(folder string) {
+		entries, err := os.ReadDir(folder)
+		if err != nil {
+			return
 		}
-		if info, err := e.Info(); err == nil && info.Size() > 0 {
-			out = append(out, probeClaudeSubagent(filepath.Join(dir, name), info))
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".jsonl") || listed[name] {
+				continue
+			}
+			if info, err := e.Info(); err == nil && info.Size() > 0 {
+				listed[name] = true
+				out = append(out, probeClaudeSubagent(filepath.Join(folder, name), info))
+			}
+		}
+	}
+	add(dir)
+	workflows := filepath.Join(dir, "workflows")
+	if runs, err := os.ReadDir(workflows); err == nil {
+		for _, run := range runs {
+			if run.IsDir() {
+				add(filepath.Join(workflows, run.Name()))
+			}
 		}
 	}
 	return out
 }
 
-// isClaudeSubagent reports whether path is a subagent's transcript,
-// <session id>/subagents/agent-<id>.jsonl.
+// isClaudeSubagent reports whether path is a subagent's transcript
+// (transcript.ClaudeSubagentSession).
 func isClaudeSubagent(path string) bool {
-	return filepath.Base(filepath.Dir(path)) == "subagents" && strings.HasPrefix(filepath.Base(path), "agent-")
+	return transcript.ClaudeSubagentSession(path) != ""
 }
 
 // probeClaudeSubagent reads a subagent's transcript and its meta.json: the
@@ -81,7 +98,7 @@ func isClaudeSubagent(path string) bool {
 // the title (transcript.HarvestClaudeSubagent).
 func probeClaudeSubagent(path string, info os.FileInfo) Session {
 	m := readClaudeFile(path, info, true)
-	m.ParentSession = &transcript.ParentSession{SessionID: filepath.Base(filepath.Dir(filepath.Dir(path)))}
+	m.ParentSession = &transcript.ParentSession{SessionID: filepath.Base(transcript.ClaudeSubagentSession(path))}
 	meta, ok := transcript.ReadClaudeSubagentMeta(path)
 	if ok {
 		m.HarvestClaudeSubagent(meta)

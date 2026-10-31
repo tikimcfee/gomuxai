@@ -92,7 +92,9 @@ updates an earlier one, the add comes first.
 
 - `session_id` is the harness's id: Claude's session uuid, agy's conversation id, Kimi's
   uuid (without `session_`). A subagent's is its own: Claude's `agent-<agent id>` (its
-  transcript's name), agy's conversation id, Kimi's `<uuid>:<agent>`.
+  transcript's name, in the session's `subagents/` folder or, for a workflow's agent, in
+  `subagents/workflows/<run>/`; where both hold one agent id, the top one is the
+  session), agy's conversation id, Kimi's `<uuid>:<agent>`.
 - `tool_id` is the call that started the subagent, where the harness records it (Claude's
   meta.json `toolUseId`); absent for agy and Kimi.
 - `workgroup.parent` is absent when a person spawned the agent.
@@ -130,12 +132,15 @@ updates an earlier one, the add comes first.
     scheduled wakeup, an idle notice, a hook's feedback).
   - One message can hold several task notifications; each completes its own call.
   - A mid-turn message carries the current turn's id.
-  - A slash command has `command: "/name"` and `text: "/name args"`. `images` is
-    `[{media_type, data}]`, with the base64 data whole.
+  - A slash command has `command: "/name"` and `text: "/name args"`. A shell escape a
+    person typed (Claude Code's `! cmd`) has `command: "!"` and `text: "! cmd"`. `images`
+    is `[{media_type, data}]`, with the base64 data whole.
 - `think` `{text?, redacted?}`: a redacted block (signature only) is still an event.
 - `say` `{text, final?, provisional?}`: text the agent wrote.
-  - `final` marks a turn's closing reply. A reply the harness gave no stop reason (older
-    Claude Code) is marked final by an update once its turn ends with nothing more from the
+  - `final` marks a turn's closing reply: the last text of a message whose stop reason ends
+    the turn. A reply with no stop reason in a Claude main transcript was cut short and is
+    never final. A Claude subagent's reply that Claude Code 2.1.251-2.1.306 gave no stop
+    reason is marked final by an update once its turn ends with nothing more from the
     model.
   - A provisional final reply comes from the Stop hook before the transcript holds it. When
     the transcript's own copy lands, it is sent as an update of the same `id`. That id is
@@ -188,8 +193,10 @@ updates an earlier one, the add comes first.
   it records them. Otherwise they are derived and marked `derived`; never a silent mix.
   - `promptIndex` counts human prompts, so a turn a task notification or a peer opens has
     its own id but the index of the human prompt before it. A record with a `promptId` and
-    no `promptIndex` takes the last index seen in its file. A file that records no
-    `promptIndex` at all (Claude Code 2.1.25x-26x) numbers its turns by counting human
+    no `promptIndex` takes the last index seen in its file, except a shell escape, which
+    Claude Code counts as a human prompt: it takes the next (its output's record gives
+    that index). A file that records no
+    `promptIndex` at all (Claude Code 2.1.221-2.1.278) numbers its turns by counting human
     prompts, as a derived turn does.
   - A subagent's records hold the parent's current `promptId`: its events carry that turn,
     with the index the parent's transcript gives it, or the last index known.
@@ -197,6 +204,30 @@ updates an earlier one, the add comes first.
     gone, records before any prompt); a known turn's index is 1 or more.
   - A derived turn's id is the id of the prompt event that opened it, and its index counts
     such prompts from 1.
+- A Claude record's own fields say what it is, wherever it has them: `isCompactSummary`,
+  `isMeta`, `isApiErrorMessage`, `message.stop_reason`, the `system` record's `subtype`, the
+  attachment's `type` and a queued message's `commandMode` (`task-notification` on every
+  task notification taken mid-turn), and where a prompt came from, `promptSource` and
+  `origin.kind`.
+  - Its text decides only for the user records Claude Code writes with no `promptSource`,
+    where nothing else tells them apart: the interrupt, exactly `[Request interrupted by
+    user]` or `[Request interrupted by user for tool use]` (2.1.251-2.1.316; the
+    `interruptedMessageId` some carry is missing on others of the same versions); a slash
+    command's `<command-name>`/`<command-message>` markup (2.1.251-2.1.312); a local
+    command's or shell escape's echo, `<local-command-stdout>`, `<local-command-stderr>`,
+    `<bash-stdout>` or `<bash-stderr>` (2.1.251-2.1.310, which wrote `local_command`
+    system records for other commands), a `system` `local_command` event; a shell escape,
+    `<bash-input>` (2.1.263-2.1.310); and a `/compact` typed with no markup and no `origin`
+    (2.1.257-2.1.310). A record with a `promptSource` is never read by its text: a person
+    who types `[Request interrupted by user]` sent a prompt.
+  - Messages from other sessions, subagents and channels (`<agent-message>`,
+    `<cross-session-message>`, `<channel>`), the `[Cross-session idle notice]` and task
+    notifications all carry an `origin` or `promptSource` that says what they are, and are
+    read by it, never by their markup.
+  - gomuxai's held delivery (`delivered`) is a Stop hook's context that starts with the
+    head line gomuxai writes, `A message arrived while you were working:` or `N messages
+    arrived while you were working, oldest first:`. The hook's context records nothing else
+    about who wrote it.
 - `api-request*` lines are never conversation events, only `request` events, and only when asked.
 - A subagent's transcript is its own session, linked both ways: `parent_session` on it, and
   `sub_sessions` on the call that started it.

@@ -215,6 +215,27 @@ type ClaudeSubagentMeta struct {
 	Finished *bool `json:"finished"`
 }
 
+// ClaudeSubagentSession returns the session folder (<session id>, beside
+// the session's <session id>.jsonl) that holds the Claude subagent
+// transcript at path: <session id>/subagents/agent-<id>.jsonl for an agent
+// the session started, or <session id>/subagents/workflows/<run>/agent-<id>.jsonl
+// for one of a workflow's agents. It returns "" for any other path.
+func ClaudeSubagentSession(path string) string {
+	base := filepath.Base(path)
+	if !strings.HasPrefix(base, "agent-") || !strings.HasSuffix(base, ".jsonl") {
+		return ""
+	}
+	dir := filepath.Dir(path)
+	if filepath.Base(dir) != "subagents" {
+		workflows := filepath.Dir(dir)
+		if filepath.Base(workflows) != "workflows" || filepath.Base(filepath.Dir(workflows)) != "subagents" {
+			return ""
+		}
+		dir = filepath.Dir(workflows)
+	}
+	return filepath.Dir(dir)
+}
+
 // ReadClaudeSubagentMeta reads the meta.json beside the Claude subagent
 // transcript at path. ok is false if there is none, or it isn't JSON.
 func ReadClaudeSubagentMeta(path string) (meta ClaudeSubagentMeta, ok bool) {

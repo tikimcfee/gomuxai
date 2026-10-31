@@ -15,7 +15,7 @@ import (
 // "<promptId>#final", marked provisional. When the transcript's own copy
 // lands, Merge sends it as an update of that id, so a reader replaces the
 // provisional reply instead of showing it twice; later updates of the copy
-// (a reply with no stop reason marked final when its turn ends) keep that
+// (a subagent's reply with no stop reason marked final when its turn ends) keep that
 // id. The copy is the turn's next final reply, or its next reply with the
 // same text, which is how a reply that isn't final when it lands (no stop
 // reason yet, a max_tokens stop) is told. A turn a held delivery continues
