@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/discovery"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/transcript"
@@ -644,6 +645,120 @@ func TestTranscript_Resolve(t *testing.T) {
 	} {
 		if _, err := resolveTranscript(ctx, arg); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", arg, err, want)
+		}
+	}
+}
+
+// A running session is listed with its transcript's path before the file
+// is there (Claude Code writes it at the first prompt). --follow waits for
+// it, as tail -F does, and streams it once written; a read without
+// --follow says it isn't written yet. A session that has exited with no
+// transcript is an error at once, or as soon as a wait sees it exit.
+func TestTranscript_FollowUnwritten(t *testing.T) {
+	home := setupSessions(t)
+	fresh := filepath.Join(home, ".claude", "projects", "-home-user-shop", "sess-n.jsonl")
+	hookTranscript(t, fresh) // the worker moves on to a session not written yet
+	var mu sync.Mutex
+	running := true
+	claudeSessions = func(context.Context) (map[string]types.Status, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		live := map[string]types.Status{"sess-l": types.StatusIdle}
+		if running {
+			live["sess-n"] = types.StatusIdle
+		}
+		return live, nil
+	}
+	setRunning := func(v bool) { mu.Lock(); running = v; mu.Unlock() }
+	oldPoll, oldStatus, oldFollow := transcriptPollInterval, transcriptStatusInterval, transcriptFollow
+	transcriptPollInterval, transcriptStatusInterval = 5*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() {
+		transcriptPollInterval, transcriptStatusInterval, transcriptFollow = oldPoll, oldStatus, oldFollow
+	})
+	ctx := context.Background()
+
+	for _, arg := range []string{fresh, "sess-n", "worker"} {
+		target, err := resolveTranscript(ctx, arg)
+		if err != nil || !target.unwritten || target.session.SessionID != "sess-n" || target.session.Status != "idle" || target.reader == nil {
+			t.Fatalf("%s: %+v %v, want sess-n's unwritten transcript, idle", arg, target, err)
+		}
+	}
+	transcriptFollow = false
+	if err := runTranscript(transcriptCmd, []string{fresh}); err == nil || !strings.Contains(err.Error(), "no transcript yet") {
+		t.Errorf("without --follow: %v", err)
+	}
+
+	// follow: run the command on a pipe; it waits, then streams the file once written
+	transcriptFollow = true
+	follow := func() (*syncBuffer, *os.File, chan error) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, done := &syncBuffer{}, make(chan error, 1)
+		go func() { bufioCopy(out, r) }()
+		// the command writes to os.Stdout as it is when it writes: the pipe,
+		// until the command ends
+		old := os.Stdout
+		os.Stdout = w
+		t.Cleanup(func() { os.Stdout = old })
+		go func() { done <- runTranscript(transcriptCmd, []string{fresh}); w.Close() }()
+		return out, r, done
+	}
+	out, r, done := follow()
+	select {
+	case err := <-done:
+		t.Fatalf("--follow ended before the transcript was written: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if lines := out.lines(); len(lines) != 0 {
+		t.Errorf("wrote before the transcript was there: %q", lines)
+	}
+	writeTestFile(t, fresh, `{"type":"user","sessionId":"sess-n","cwd":"/home/user/shop","message":{"role":"user","content":"first"}}`+"\n")
+	events := waitEvents(t, out, 1)
+	if !strings.Contains(events[0], `"first"`) {
+		t.Errorf("the first event: %s", events[0])
+	}
+	if s := sessionLines(t, out.lines()); len(s) == 0 || s[0].SessionID != "sess-n" {
+		t.Errorf("the stream opens with the session line: %+v", s)
+	}
+	r.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("a reader gone: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream didn't end when its reader went")
+	}
+
+	// the session exits while the follow waits: the wait ends with an error
+	os.Remove(fresh)
+	out, r, done = follow()
+	defer r.Close()
+	setRunning(false)
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "has exited") {
+			t.Errorf("exited while waiting: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the wait didn't end when its session exited")
+	}
+	// and an exited session's missing transcript is an error at once
+	if _, err := resolveTranscript(ctx, fresh); err == nil || !strings.Contains(err.Error(), "has exited") {
+		t.Errorf("exited, no file: %v", err)
+	}
+}
+
+// bufioCopy copies r to w until r ends.
+func bufioCopy(w *syncBuffer, r *os.File) {
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := r.Read(buf)
+		w.Write(buf[:n])
+		if err != nil {
+			return
 		}
 	}
 }

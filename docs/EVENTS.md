@@ -42,7 +42,11 @@ The Go types are in `internal/transcript/events.go`; the Session is
     reading a line that isn't whole yet, until interrupted or the reader closes the pipe
     (both exit 0; a closed pipe is noticed within a poll, with nothing to write). A
     transcript removed, replaced by another file, or rewritten in place ends it with an
-    error.
+    error. A session that runs is listed with its transcript's path before the file exists
+    (Claude Code writes it at the first prompt): `--follow` waits for the file, as `tail -F`
+    does, then streams it from its start, session line first; without `--follow` that is an
+    error that says so. A missing transcript of a session that has exited is an error, and
+    a wait ends with one when its session exits first.
   - `--requests` adds the model-request channel; it is off by default. Request events
     number their own `seq` from 0, so a conversation event has the same `seq` with or
     without it.

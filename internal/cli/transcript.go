@@ -58,6 +58,9 @@ reader closes the pipe (both exit 0; a closed pipe is noticed within
 250ms, and never reads a line that isn't whole yet. A transcript that is
 removed, replaced by another file, or rewritten in place ends it with an
 error. It goes on after the session ends: a resumed session writes on.
+A running session's transcript that isn't written yet (Claude Code writes
+it at the first prompt) is waited for, as tail -F does, and streamed once
+it is there; the wait ends with an error if the session exits first.
 
 A new session line comes whenever anything but the size and times
 changed. The title, model, version, branch and agent name come from the
@@ -147,6 +150,16 @@ func runTranscript(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if target.unwritten {
+		if !opts.follow {
+			return fmt.Errorf("session %s has no transcript yet: %s isn't written (Claude Code writes it at the first prompt); --follow waits for it",
+				target.session.SessionID, target.path)
+		}
+		notice("Waiting for %s (session %s, %s) to be written. Ctrl-C stops.", target.path, target.session.SessionID, target.session.Status)
+		if target, err = awaitTranscript(ctx, args[0], target, opts.readerGone); target == nil || err != nil {
+			return err
+		}
+	}
 	if opts.follow {
 		notice("Following %s (session %s). Ctrl-C stops.", target.path, target.session.SessionID)
 	}
@@ -167,6 +180,10 @@ type transcriptTarget struct {
 	// above holds the transcripts of the sessions above a subagent's,
 	// nearest first: its status follows theirs.
 	above []string
+	// unwritten: there is no file at path yet, and its session hasn't
+	// exited (a Claude session before its first prompt). --follow waits
+	// for it (awaitTranscript).
+	unwritten bool
 }
 
 // resolveTranscript finds the transcript arg names: a workgroup agent's
@@ -194,11 +211,23 @@ func resolveTranscript(ctx context.Context, arg string) (*transcriptTarget, erro
 		path = s.Path
 	}
 	t := &transcriptTarget{path: path}
+	_, statErr := os.Stat(path)
+	missing := errors.Is(statErr, fs.ErrNotExist)
 	if i := sessionAt(sessions, path); i >= 0 {
 		t.session = sessions[i]
 		t.above = sessionsAbove(sessions, t.session)
+	} else if missing {
+		return nil, noTranscriptFile(path)
 	} else if t.session, err = unlistedSession(path); err != nil {
 		return nil, err
+	}
+	if missing {
+		// A session is listed with its transcript's path before the file
+		// is there: its harness names it first. Only an exited one's is lost.
+		if t.session.Status == discovery.StatusExited {
+			return nil, fmt.Errorf("no transcript at %s: there is no such file, and its session %s has exited", path, t.session.SessionID)
+		}
+		t.unwritten = true
 	}
 	if t.reader = harnessReader(t.session.Harness); t.reader == nil {
 		head, err := readHead(path)
@@ -221,7 +250,7 @@ func transcriptPath(ctx context.Context, arg string) (string, error) {
 		info, err := os.Stat(arg)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			return "", fmt.Errorf("no transcript at %s: there is no such file (agent sessions lists the sessions, and agent sessions --json their paths)", arg)
+			return absPath(arg), nil // resolveTranscript tells a session's unwritten transcript from none
 		case err != nil:
 			return "", fmt.Errorf("can't read the transcript at %s: %w", arg, err)
 		case info.IsDir():
@@ -281,6 +310,46 @@ func sessionByID(sessions []discovery.Session, id string) (discovery.Session, er
 		return discovery.Session{}, fmt.Errorf("session %s has no transcript yet (agent %s's CLI hasn't named one; agent logs %s --terminal prints its terminal log)", s.SessionID, s.Workgroup.Name, s.Workgroup.Name)
 	}
 	return s, nil
+}
+
+// noTranscriptFile is the error for a path no file is at, and no session
+// lists.
+func noTranscriptFile(path string) error {
+	return fmt.Errorf("no transcript at %s: there is no such file (agent sessions lists the sessions, and agent sessions --json their paths)", path)
+}
+
+// awaitTranscript waits for a running session's transcript to be written,
+// as tail -F does: it looks for the file every transcriptPollInterval, and
+// resolves arg again every transcriptStatusInterval and once the file is
+// there, returning the target then. It ends with resolveTranscript's error
+// once the session has exited with no transcript, and with nil, nil when
+// ctx is done or the reader has gone.
+func awaitTranscript(ctx context.Context, arg string, target *transcriptTarget, readerGone func() bool) (*transcriptTarget, error) {
+	poll := time.NewTicker(transcriptPollInterval)
+	defer poll.Stop()
+	due := time.Now().Add(transcriptStatusInterval)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		case <-poll.C:
+		}
+		if readerGone != nil && readerGone() {
+			return nil, nil
+		}
+		_, err := os.Stat(target.path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("can't read the transcript %s: %w", target.path, err)
+		}
+		if err != nil && time.Now().Before(due) {
+			continue
+		}
+		next, err := resolveTranscript(ctx, arg)
+		if err != nil || !next.unwritten {
+			return next, err
+		}
+		target, due = next, time.Now().Add(transcriptStatusInterval)
+	}
 }
 
 // sessionAt returns the index of the session whose transcript is path, or

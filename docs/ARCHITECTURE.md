@@ -691,6 +691,16 @@ whole for the next poll. A path that's gone, names another file
 (`os.SameFile`), shrank, or no longer holds the last 64 bytes read (a
 truncate and regrow between polls) ends the stream with an error.
 
+A listed session's path may name no file yet: `discovery.Resolve` lists a
+live agent's current transcript before its harness writes it (Claude Code
+creates it at the first prompt). If that session hasn't exited, the target
+is unwritten and `--follow` waits (`awaitTranscript`): it `stat`s the path
+every 250ms and resolves the session again every 30s, and once the file is
+there resolves it once more and streams it as any other. A session that has
+exited with no file is an error, at once or when a wait sees it; so is a
+path no session lists. Without `--follow` an unwritten transcript is an
+error that says it isn't written yet.
+
 Each poll also asks whether the reader has gone: `poll(2)` on stdout with
 no events reports `POLLERR` (a Linux pipe whose reader closed) or `POLLHUP`
 (a socket) without a write (`transcript_poll.go`, Linux and darwin; on
