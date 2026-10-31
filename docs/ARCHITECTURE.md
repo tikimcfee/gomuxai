@@ -1104,7 +1104,7 @@ transcripts"); discovery only decides how much to read:
 | `agent_name` | newest `agent-name` record | - | - |
 | `model` | newest assistant `message.model` (not `<synthetic>`) | - (in its steps, which a listing doesn't read) | newest `llm.request` `model` |
 | `version`, `git_branch` | the newest record with a `version`: both, even an empty branch | - | - |
-| `parent_session` | the `<uuid>/subagents/` dir; `tool_id` = meta.json `toolUseId` | `brain/<parent>/.system_generated/subagents/<id>.json` | the session dir of `agents/<agent>/` |
+| `parent_session` | the `<uuid>/subagents/` dir (a workflow's agents in `subagents/workflows/<run>/`); `tool_id` = meta.json `toolUseId` | `brain/<parent>/.system_generated/subagents/<id>.json` | the session dir of `agents/<agent>/` |
 | `continued_in` | newest `continued-in` record | - | - |
 
 Claude records with `isSidechain` and no `agentId` (an old main
