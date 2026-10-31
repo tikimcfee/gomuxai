@@ -447,12 +447,17 @@ func (l *claudeLine) number(id, origin string) {
 }
 
 // claudeOrigins says where a user record's prompt came from, by the
-// origin and prompt source the record carries.
+// origin and prompt source the record carries. On the survey host a
+// promptSource is typed (with origin human), queued, system (with an
+// origin, or none for the harness's own) or sdk (a claude -p or SDK
+// caller's prompt, with no origin).
 func claudeOrigins(r *claudeRecord) string {
-	if r.PromptSource == "queued" {
+	switch {
+	case r.PromptSource == "queued":
 		return OriginQueued
-	}
-	if r.PromptSource == "system" && r.Origin == nil {
+	case r.PromptSource == "sdk":
+		return OriginHuman
+	case r.PromptSource == "system" && r.Origin == nil:
 		return OriginSystem
 	}
 	kind := ""

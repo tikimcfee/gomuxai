@@ -93,7 +93,7 @@ should check the rest.
   `promptIndex` seen in the same file, except a shell escape (`<bash-input>`), which takes
   the next: Claude Code counts it as a human prompt, and the escape's output record
   carries that index; a subagent's records, the parent's (below). A
-  file that records no `promptIndex` at all (Claude Code 2.1.25x-26x write `promptId`
+  file that records no `promptIndex` at all (Claude Code 2.1.221-2.1.278 write `promptId`
   but no `turnPosition`) numbers its turns by counting human prompts (typed, slash
   commands, queued), as derived turns are numbered; a task notification or a peer
   message shares the index of the human prompt before it.

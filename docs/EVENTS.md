@@ -189,7 +189,7 @@ updates an earlier one, the add comes first.
     no `promptIndex` takes the last index seen in its file, except a shell escape, which
     Claude Code counts as a human prompt: it takes the next (its output's record gives
     that index). A file that records no
-    `promptIndex` at all (Claude Code 2.1.25x-26x) numbers its turns by counting human
+    `promptIndex` at all (Claude Code 2.1.221-2.1.278) numbers its turns by counting human
     prompts, as a derived turn does.
   - A subagent's records hold the parent's current `promptId`: its events carry that turn,
     with the index the parent's transcript gives it, or the last index known.
