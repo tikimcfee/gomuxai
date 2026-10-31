@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -34,11 +33,8 @@ func TestTeamOrder(t *testing.T) {
 func TestListShowsParents(t *testing.T) {
 	setupCLI(t)
 	forbidBus(t)
-	ctx := context.Background()
 	created := time.Date(2026, 10, 1, 9, 31, 0, 0, time.UTC)
-	if err := store.CreateAgent(ctx, &storage.Agent{Name: "worker-test", SessionName: "rpc-cli-worker-test", Backend: "claude", SpawnedBy: "worker", CreatedAt: created}); err != nil {
-		t.Fatal(err)
-	}
+	createLiveAgent(t, &storage.Agent{Name: "worker-test", SessionName: "rpc-cli-worker-test", Backend: "claude", SpawnedBy: "worker", CreatedAt: created})
 
 	out, err := stdout(t, func() error { return runList(listCmd, nil) })
 	if err != nil {

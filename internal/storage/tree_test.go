@@ -253,3 +253,48 @@ func TestMigrateExitedToEnded(t *testing.T) {
 		t.Errorf("reopen: %+v", why)
 	}
 }
+
+// A resume closes the agent's run with its last status and opens a new one
+// under the same name, keeping its state.
+func TestTree_ReplaceAgent(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	created := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
+	if err := s.CreateAgent(ctx, &Agent{Name: "lead", SessionName: "agent-lead", Backend: "agy", SpawnedBy: "boss", Cwd: "/w", CreatedAt: created}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	if err := s.SetStates(ctx, []*StateEntry{
+		{AgentName: "lead", Key: "_status", Value: "ended", UpdatedAt: at},
+		{AgentName: "lead", Key: "_end_reason", Value: "gone", UpdatedAt: at},
+		{AgentName: "lead", Key: "notes", Value: "keep me", UpdatedAt: at},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed := created.Add(time.Hour)
+	if err := s.ReplaceAgent(ctx, &Agent{Name: "lead", SessionName: "agent-lead", Backend: "agy", SpawnedBy: "boss", Cwd: "/w", CreatedAt: resumed}); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := s.ReadTree(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Agents) != 1 || !tree.Agents[0].CreatedAt.Equal(resumed) || tree.Agents[0].SpawnedBy != "boss" {
+		t.Fatalf("live agents = %+v, want lead, resumed at %v, still boss's", tree.Agents, resumed)
+	}
+	if r := tree.Runs["lead"]; r == nil || !r.EndedAt.IsZero() || !r.CreatedAt.Equal(resumed) {
+		t.Errorf("lead's live run = %+v, want an open one from the resume", r)
+	}
+	if len(tree.Ended) != 1 || tree.Ended[0].Status != "ended" || tree.Ended[0].EndReason != "gone" || !tree.Ended[0].CreatedAt.Equal(created) {
+		t.Errorf("ended runs = %+v, want the first run, ended (gone)", tree.Ended)
+	}
+	want := []string{"spawned:lead:", "removed:lead:ended", "spawned:lead:"}
+	if got := eventKinds(t, s, 0); !slices.Equal(got, want) {
+		t.Errorf("events = %v, want %v", got, want)
+	}
+	if e, err := s.GetState(ctx, "lead", "notes"); err != nil || e == nil || e.Value != "keep me" {
+		t.Errorf("notes after replace = %+v, %v; want kept", e, err)
+	}
+}

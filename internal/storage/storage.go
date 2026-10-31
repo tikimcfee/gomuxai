@@ -11,6 +11,9 @@ type Storage interface {
 	GetAgent(ctx context.Context, name string) (*Agent, error)
 	ListAgents(ctx context.Context) ([]*Agent, error)
 	DeleteAgent(ctx context.Context, name string) error
+	// ReplaceAgent closes the named agent's run and opens a new one under
+	// agent, keeping its state and messages (a resume).
+	ReplaceAgent(ctx context.Context, agent *Agent) error
 
 	// Message operations
 	CreateMessage(ctx context.Context, msg *Message) error

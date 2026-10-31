@@ -455,6 +455,26 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 		return nil, nil, err
 	}
 
+	// No tmux session, no CLI: whatever the last report said, nothing runs
+	// now. A reboot or a killed tmux server ends every agent at once and
+	// fires no hook, and backends with no native session list (agy) would
+	// otherwise keep their last report (idle) forever.
+	if exists, err := s.tmux.SessionExists(agent.SessionName); err == nil && !exists {
+		if reported != nil && reported.Status == AgentStatusEnded {
+			return reported, reported, nil
+		}
+		info := &StatusInfo{
+			Status:    AgentStatusEnded,
+			EndReason: backend.EndGone,
+			Source:    StatusSourceNative,
+			Detail:    fmt.Sprintf("its tmux session %s is gone (a reboot, or the tmux server was killed); agent resume %s continues its session", agent.SessionName, agent.Name),
+		}
+		if reported != nil {
+			info.Event, info.UpdatedAt = reported.Event, reported.UpdatedAt
+		}
+		return info, reported, nil
+	}
+
 	native := s.nativeStatus(ctx, agent)
 	nativeErr = native.Err
 	if native.Queried && !native.Listed {

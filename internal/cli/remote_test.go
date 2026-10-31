@@ -65,12 +65,24 @@ func setupCLI(t *testing.T) {
 
 	ctx := context.Background()
 	created := time.Date(2026, 10, 1, 9, 30, 0, 0, time.UTC)
-	if err := store.CreateAgent(ctx, &storage.Agent{Name: "worker", SessionName: "rpc-cli-worker", Backend: "claude", CreatedAt: created}); err != nil {
-		t.Fatal(err)
-	}
+	createLiveAgent(t, &storage.Agent{Name: "worker", SessionName: "rpc-cli-worker", Backend: "claude", CreatedAt: created})
 	if err := agentService.Report(ctx, "worker", service.StatusReport{
 		Status: service.AgentStatusWaiting, Detail: "permission: Bash: ls", Tool: "Bash",
 	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// createLiveAgent records agent with a tmux session of its own (a bare
+// shell), killed when the test ends: status calls an agent with no session
+// ended (gone), whatever it last reported.
+func createLiveAgent(t *testing.T, agent *storage.Agent) {
+	t.Helper()
+	if err := tmuxClient.CreateSession(agent.SessionName, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tmuxClient.KillSession(agent.SessionName) })
+	if err := store.CreateAgent(context.Background(), agent); err != nil {
 		t.Fatal(err)
 	}
 }

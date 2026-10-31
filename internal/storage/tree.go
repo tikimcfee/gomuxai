@@ -198,6 +198,30 @@ func createAgentTx(ctx context.Context, tx *sql.Tx, agent *Agent) error {
 		created, agent.SpawnedBy, agent.Cwd); err != nil {
 		return fmt.Errorf("inserting agent: %w", err)
 	}
+	return openRunTx(ctx, tx, agent)
+}
+
+// replaceAgentTx closes the run of the agent named agent.Name, rewrites its
+// record from agent, and opens a new run: a resume. The record is updated,
+// not deleted, since deleting it would cascade to the agent's state.
+func replaceAgentTx(ctx context.Context, tx *sql.Tx, agent *Agent) error {
+	found, err := closeRunTx(ctx, tx, agent.Name)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("no agent %s to replace", agent.Name)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE agents SET session_name = ?, backend = ?, task_file = ?, log_file = ?, created_at = ?, spawned_by = ?, cwd = ? WHERE name = ?`,
+		agent.SessionName, agent.Backend, agent.TaskFile, agent.LogFile, agent.CreatedAt.Format(time.RFC3339),
+		agent.SpawnedBy, agent.Cwd, agent.Name); err != nil {
+		return fmt.Errorf("updating agent: %w", err)
+	}
+	return openRunTx(ctx, tx, agent)
+}
+
+// openRunTx opens a run for agent and appends its spawned event.
+func openRunTx(ctx context.Context, tx *sql.Tx, agent *Agent) error {
 	res, err := tx.ExecContext(ctx, `INSERT INTO runs (name, parent, backend, session, cwd, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		agent.Name, agent.SpawnedBy, agent.Backend, agent.SessionName, agent.Cwd, timeNanos(agent.CreatedAt))
 	if err != nil {
@@ -207,19 +231,32 @@ func createAgentTx(ctx context.Context, tx *sql.Tx, agent *Agent) error {
 	return insertAgentEvent(ctx, tx, &AgentEvent{At: agent.CreatedAt, Kind: AgentSpawned, Agent: agent.Name, Run: run})
 }
 
-// deleteAgentTx deletes an agent's record, closes its run with its last
-// status and transcript, and appends its removed event. An agent spawned
-// before runs were recorded gets a closed run from its record.
+// deleteAgentTx deletes an agent's record, closes its run (closeRunTx),
+// and appends its removed event.
+func deleteAgentTx(ctx context.Context, tx *sql.Tx, name string) error {
+	if found, err := closeRunTx(ctx, tx, name); err != nil || !found {
+		return err // !found: no such agent
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE name = ?`, name); err != nil {
+		return fmt.Errorf("deleting agent: %w", err)
+	}
+	return nil
+}
+
+// closeRunTx closes an agent's run with its last status and transcript,
+// and appends its removed event; found is false if there is no such agent.
+// An agent spawned before runs were recorded gets a closed run from its
+// record.
 //
 // Every statement that reads also writes: a transaction that starts with a
 // plain read can't take the write lock later while another process writes
 // (SQLITE_BUSY, which busy_timeout doesn't wait out).
-func deleteAgentTx(ctx context.Context, tx *sql.Tx, name string) error {
+func closeRunTx(ctx context.Context, tx *sql.Tx, name string) (found bool, err error) {
 	const last = `COALESCE((SELECT value FROM state WHERE agent_name = ? AND key = ?), '')`
 	now := timeNanos(time.Now())
 	var run int64
 	var status, transcript, endReason string
-	err := tx.QueryRowContext(ctx, `UPDATE runs SET ended_at = ?, status = `+last+`, transcript = `+last+`, end_reason = `+last+`
+	err = tx.QueryRowContext(ctx, `UPDATE runs SET ended_at = ?, status = `+last+`, transcript = `+last+`, end_reason = `+last+`
 		WHERE id = (SELECT MAX(id) FROM runs WHERE name = ? AND ended_at = '') AND EXISTS (SELECT 1 FROM agents WHERE name = ?)
 		RETURNING id, status, transcript, end_reason`,
 		now, name, "_status", name, "_transcript", name, "_end_reason", name, name).Scan(&run, &status, &transcript, &endReason)
@@ -230,18 +267,12 @@ func deleteAgentTx(ctx context.Context, tx *sql.Tx, name string) error {
 			now, name, "_status", name, "_transcript", name, "_end_reason", name, name).Scan(&run, &status, &transcript, &endReason)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil // no such agent
+		return false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("closing run: %w", err)
+		return false, fmt.Errorf("closing run: %w", err)
 	}
-	if err := insertAgentEvent(ctx, tx, &AgentEvent{At: parseTime(now), Kind: AgentRemoved, Agent: name, Run: run, Status: status, Transcript: transcript, EndReason: endReason}); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE name = ?`, name); err != nil {
-		return fmt.Errorf("deleting agent: %w", err)
-	}
-	return nil
+	return true, insertAgentEvent(ctx, tx, &AgentEvent{At: parseTime(now), Kind: AgentRemoved, Agent: name, Run: run, Status: status, Transcript: transcript, EndReason: endReason})
 }
 
 // insertAgentEvent appends ev. A run of 0 means the agent's open run.

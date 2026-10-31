@@ -26,10 +26,7 @@ func setupWait(t *testing.T, builder service.AgentStatus) {
 
 func addAgent(t *testing.T, name string, status service.AgentStatus, detail string) {
 	t.Helper()
-	ctx := context.Background()
-	if err := store.CreateAgent(ctx, &storage.Agent{Name: name, SessionName: "rpc-cli-" + name, Backend: "claude", CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
+	createLiveAgent(t, &storage.Agent{Name: name, SessionName: "rpc-cli-" + name, Backend: "claude", CreatedAt: time.Now()})
 	report(t, name, status, detail)
 }
 

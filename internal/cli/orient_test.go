@@ -4,10 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/service"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
 // noBus makes the bus look not running, as on a host without one.
@@ -18,7 +20,8 @@ func noBus(t *testing.T) {
 func TestOrient(t *testing.T) {
 	setupCLI(t)
 	noBus(t)
-	addTeam(t, map[string]string{"lead": "", "lead-a": "lead"})
+	createLiveAgent(t, &storage.Agent{Name: "lead", SessionName: "rpc-cli-lead", Backend: "claude", CreatedAt: time.Now()})
+	createLiveAgent(t, &storage.Agent{Name: "lead-a", SessionName: "rpc-cli-lead-a", Backend: "claude", SpawnedBy: "lead", CreatedAt: time.Now()})
 	ctx := context.Background()
 	if err := agentService.Report(ctx, "lead-a", service.StatusReport{Status: service.AgentStatusProcessing}); err != nil {
 		t.Fatal(err)
@@ -32,7 +35,7 @@ func TestOrient(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := `You are a person at a terminal, on host local.
-Agents here (3): lead unknown, lead-a processing, worker waiting
+Agents here (3): lead unknown (1 held), lead-a processing, worker waiting
 Bus: not set up (only needed to reach other hosts: agent bus --help)
 `
 	if !strings.HasPrefix(person.String(), want) {

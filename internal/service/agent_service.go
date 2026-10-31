@@ -91,6 +91,9 @@ type SpawnOptions struct {
 	// Resume is the session the agent continues (Claude's session id, agy's
 	// conversation id) instead of starting a new one; claude and agy only.
 	Resume string
+	// replacing is the ended agent's record a resume (AgentService.Resume)
+	// takes over, nil for a new agent.
+	replacing *storage.Agent
 }
 
 // agentNamePattern keeps names safe as tmux session names and as path
@@ -133,7 +136,11 @@ func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.A
 
 // spawnWithProvider spawns an agent on a built-in backend.
 func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions, provider backend.Provider) (*storage.Agent, error) {
-	sessionName, err := s.newSession(ctx, opts.Name)
+	newSession := s.newSession
+	if opts.replacing != nil {
+		newSession = func(_ context.Context, name string) (string, error) { return s.createSession(name) }
+	}
+	sessionName, err := newSession(ctx, opts.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -146,9 +153,18 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	}
 	abort := func(err error) (*storage.Agent, error) {
 		s.tmux.KillSession(sessionName)
-		s.storage.DeleteAgent(ctx, opts.Name)
-		_ = os.RemoveAll(s.cfg.AgentDir(opts.Name))
+		if opts.replacing == nil {
+			s.storage.DeleteAgent(ctx, opts.Name)
+			_ = os.RemoveAll(s.cfg.AgentDir(opts.Name))
+		} // a failed resume leaves the agent ended, to resume or clean up
 		return nil, err
+	}
+
+	if opts.replacing != nil {
+		// Its old run is closed; what described it would mislead the new one.
+		if err := s.clearRunState(ctx, opts.Name); err != nil {
+			return abort(err)
+		}
 	}
 
 	initMsg := initMessage(opts, provider.InitMessage)
@@ -228,14 +244,23 @@ func (s *AgentService) newSession(ctx context.Context, name string) (string, err
 		return "", fmt.Errorf("checking existing agent: %w", err)
 	}
 	if existing != nil {
-		return "", fmt.Errorf("agent %s already exists (session %s, created %s): pick another name, or agent cleanup %s first",
-			name, existing.SessionName, existing.CreatedAt.Format("2006-01-02 15:04"), name)
+		hint := ""
+		if info, _, err := s.resolveStatus(ctx, name); err == nil && info.Status == AgentStatusEnded {
+			hint = fmt.Sprintf(" It has ended: agent resume %s continues its session.", name)
+		}
+		return "", fmt.Errorf("agent %s already exists (session %s, created %s): pick another name, or agent cleanup %s first.%s",
+			name, existing.SessionName, existing.CreatedAt.Format("2006-01-02 15:04"), name, hint)
 	}
 	if exists, _ := s.tmux.SessionExists(s.cfg.SessionName(name)); exists {
 		return "", fmt.Errorf("tmux session %s already exists, but no agent %s does (a leftover session?): pick another name, or agent session kill %s first",
 			s.cfg.SessionName(name), name, s.cfg.SessionName(name))
 	}
+	return s.createSession(name)
+}
 
+// createSession creates an agent's tmux session and pipes its output to the
+// agent's log.
+func (s *AgentService) createSession(name string) (string, error) {
 	env := map[string]string{
 		"AGENT_NAME": name,
 		// Hooks publish status events under this host; without it they'd
@@ -267,7 +292,12 @@ func (s *AgentService) storeAgent(ctx context.Context, opts SpawnOptions, sessio
 		SpawnedBy:   opts.SpawnedBy,
 		CreatedAt:   time.Now(),
 	}
-	if err := s.storage.CreateAgent(ctx, agent); err != nil {
+	store := s.storage.CreateAgent
+	if opts.replacing != nil {
+		agent.TaskFile = opts.replacing.TaskFile
+		store = s.storage.ReplaceAgent
+	}
+	if err := store(ctx, agent); err != nil {
 		s.tmux.KillSession(sessionName)
 		return nil, fmt.Errorf("storing agent: %w", err)
 	}

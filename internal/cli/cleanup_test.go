@@ -134,7 +134,7 @@ func TestCleanup_PersonGetsANoteOnRemainingHelpers(t *testing.T) {
 		t.Fatalf("cleanup: %v\n%s", err, out)
 	}
 	want := `cleaned up "worker-b": removed its record, state, queued messages, and files; its log stays (agent logs worker-b)
-cleaned up "worker": removed its record, state, queued messages, and files; its log stays (agent logs worker)
+cleaned up "worker": killed session rpc-cli-worker; removed its record, state, queued messages, and files; its log stays (agent logs worker)
   note: its helpers worker-a remain (agent cleanup worker-a)
 `
 	if out != want {

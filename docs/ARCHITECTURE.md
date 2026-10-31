@@ -121,7 +121,8 @@ are in `exploration/tmux-tui-connector-ideation.md`.
 
 1. Validates the name (`^[A-Za-z0-9][A-Za-z0-9_-]*$`): it becomes a tmux
    session name, a path component, and a bus subject token.
-2. Refuses if the agent record or the tmux session already exists.
+2. Refuses if the agent record or the tmux session already exists (and
+   says `agent resume <name>` when that agent has ended).
 3. Creates the session with `AGENT_NAME`, `AGENT_HOST`, and `PATH` prefixed
    with the binary's directory, and starts `pipe-pane` into
    `logs/<name>.log`.
@@ -260,6 +261,33 @@ foreign key's `ON DELETE CASCADE`. The same transaction closes the agent's
 run (with its last `_status`, `_end_reason` and `_transcript`) and records a `removed`
 agent event, so the run stays readable (`export --all`). The terminal log
 and the transcripts list stay.
+
+
+### Resuming an ended agent
+
+`agent resume <name>` (`AgentService.Resume`, `internal/service/resume.go`)
+starts an ended claude or agy agent again on its last session, under its
+own record. The CLI finds that session as `agent transcript <name>` does,
+checks it can be continued (`checkResumable`, as `spawn --resume`), and
+enters the directory it ran in. The service then:
+
+1. Refuses unless the agent's resolved status is `ended`, and kills a
+   leftover tmux session (a CLI that quit leaves its pane's shell).
+2. Writes `_status` `ended` and its end reason, so its run closes with how
+   it really ended (a reboot fires no hook).
+3. Spawns with `Resume` set and the old record to replace: a new tmux
+   session, then `storage.ReplaceAgent`, which in one transaction closes
+   the old run (a `removed` event), rewrites the record in place, and opens
+   a new run (a `spawned` event). The record is updated, not deleted:
+   deleting it would cascade to the agent's state.
+4. Deletes the reserved keys that described the ended run, keeping
+   `_result` and `_transcript`; the agent's own keys stay. The launch then
+   writes a new `_spawn_id` and `_session_id`.
+5. Starts a deliverer if messages were held for it: they never went out
+   while it was ended.
+
+Its name, backend and parent stay, so its helpers stay its helpers. A
+failed resume leaves the agent ended (its record and files are kept).
 
 ## Messages
 
@@ -504,6 +532,12 @@ from three sources, most authoritative first:
 3. **scrape**: the backend's idle and processing regexes over the last 50
    lines of the screen, for backends with neither. A custom backend needs
    its `--backend-config` loaded for this.
+
+Before any of these, an agent whose tmux session doesn't exist is `ended
+(gone)` whatever its last report said (an `ended` report stands, with its
+reason): no session, no CLI. A reboot or a killed tmux server ends every
+agent at once and fires no hook, and a backend with no native session list
+(agy) would otherwise show its last report, `idle`, forever.
 
 The rules between native and report are one function,
 `discovery.ReconcileNative`, which `agent sessions` applies too:

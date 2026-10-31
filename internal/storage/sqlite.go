@@ -264,6 +264,13 @@ func (s *SQLiteStorage) DeleteAgent(ctx context.Context, name string) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error { return deleteAgentTx(ctx, tx, name) })
 }
 
+// ReplaceAgent closes the run of the agent named agent.Name and opens a new
+// one under agent, in one transaction: a resume. The agent's state and
+// messages are untouched, so they carry over.
+func (s *SQLiteStorage) ReplaceAgent(ctx context.Context, agent *Agent) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error { return replaceAgentTx(ctx, tx, agent) })
+}
+
 const messageColumns = `id, sender_id, receiver_id, content, status, created_at`
 
 func scanMessage(row scanner) (*Message, error) {

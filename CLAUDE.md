@@ -270,6 +270,19 @@ from state first. It prints one line per name and exits 1 if any wasn't
 cleaned up. Inside an agent, you can clean up only your own helpers and
 theirs, never yourself. It never removes an agent you didn't name.
 
+### After a reboot: resume
+
+```bash
+agent resume helper          # an ended agent, on its last session
+```
+
+A reboot (or a killed tmux server) ends every agent: `ended (gone)`.
+`resume` starts one again on its last session, in the directory it ran
+in, keeping its name, backend, parent (its helpers stay its helpers), its
+own state keys and `_result`, and delivers messages held for it. Claude
+and agy agents only. Inside an agent, only your own helpers. To continue
+a session no agent owns, `agent spawn <name> --resume <session>`.
+
 ## Coordination Patterns
 
 ### Fan out, then collect
@@ -457,7 +470,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `waiting` | `status -v` shows the prompt; approve, deny, or ask the person. |
 | `unknown` (non-hook backends) | `capture` to look; coordinate on state or messages instead. |
 | `error` | The last turn failed (e.g. rate limit); it takes input again. `capture` or `logs` shows why. |
-| `ended (...)` | The reason says how (`agent statuses`); `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
+| `ended (...)` | The reason says how (`agent statuses`); `agent resume <name>` continues its session (claude, agy); `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
 | `wait` timed out | `status -v` and `capture`: still working, stuck, or missed the turn? |
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
 | A key fails: "a read-only client is attached" | Detach the client it names (`tmux detach-client -t /dev/pts/N`); watch with `agent capture` instead of `tmux attach -r`. |
@@ -465,7 +478,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's (or agy's step's) end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there); `agent deliver <name>` types it now if the agent is at its prompt. |
 | `send` says the message is still in the input box; `status` shows `unsent:` | Enter didn't submit it: `agent key agent-<name> Enter` does. Don't send it again. |
 | Leftover tmux session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
-| Spawn says the agent already exists | Pick another name, or clean up the old one. |
+| Spawn says the agent already exists | Pick another name, or clean up the old one; if it has ended, `agent resume <name>` continues it. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |
 
 Commands that change things print what they did, so read their output
