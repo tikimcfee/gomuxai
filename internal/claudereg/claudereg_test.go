@@ -8,10 +8,11 @@ import (
 	"time"
 )
 
-// A registry file as Claude Code 2.1.316 wrote it on Linux (ids shortened).
-const entryJSON = `{"pid":886208,"sessionId":"d298e0d9-329f","cwd":"/home/u/dev/p","startedAt":1793455699056,
+// A registry file in the shape Claude Code 2.1.316 writes on Linux (values
+// made up).
+const entryJSON = `{"pid":886208,"sessionId":"11111111-2222","cwd":"/home/u/dev/p","startedAt":1793455699056,
 "procStart":"61266397","version":"2.1.316","peerProtocol":1,"peerFeatures":["notify_idle"],"kind":"interactive",
-"entrypoint":"cli","pidDomain":"linux:b24d:pid:[4026531836]","tmux":"agent-x:@9241.%9241",
+"entrypoint":"cli","pidDomain":"linux:0000:pid:[4026531836]","tmux":"agent-x:@9241.%9241",
 "messagingSocketPath":"/run/user/1000/cc-socks/886208.sock","name":"p-97","nameSource":"derived",
 "status":"busy","updatedAt":1793464592054,"statusUpdatedAt":1793464592054}`
 
@@ -20,7 +21,7 @@ func TestParseEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.PID != 886208 || e.SessionID != "d298e0d9-329f" || e.Kind != KindInteractive || e.Status != StatusBusy ||
+	if e.PID != 886208 || e.SessionID != "11111111-2222" || e.Kind != KindInteractive || e.Status != StatusBusy ||
 		e.ProcStart != "61266397" || e.Entrypoint != "cli" || e.TmuxHint != "agent-x:@9241.%9241" ||
 		!e.UpdatedAt.Equal(time.UnixMilli(1793464592054)) {
 		t.Fatalf("parsed %+v", e)
