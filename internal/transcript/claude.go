@@ -389,6 +389,7 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 			}
 		} else if cmd, ok := shellEscape(text); ok {
 			p.Origin, p.Command, p.Text = OriginCommand, "!", "! "+cmd
+			l.escaped()
 		} else if m := claudePlainCommand.FindStringSubmatch(text); m != nil && r.Origin == nil && r.AgentID == "" {
 			p.Origin, p.Command = OriginCommand, m[1]
 		}
@@ -401,6 +402,20 @@ func (l *claudeLine) userContent(content claudeContent) bool {
 		l.notification(text)
 	}
 	return false
+}
+
+// escaped numbers the turn a shell escape opens, in a file that numbers
+// its turns. Its record gives no promptIndex, but Claude Code counts it as
+// a human prompt: the next record of its turn (the escape's output) has
+// the index after the last one (every such pair on the survey host,
+// 2.1.296-2.1.310).
+func (l *claudeLine) escaped() {
+	c, r := l.c, l.r
+	if !c.numbered || c.opts.Turns != nil || r.PromptID == "" || r.TurnPosition != nil && r.TurnPosition.PromptIndex != nil {
+		return
+	}
+	c.index++
+	c.setTurn(r.PromptID, c.index, false)
 }
 
 // number counts a prompt the transcript doesn't number: a human prompt

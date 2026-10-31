@@ -186,7 +186,9 @@ updates an earlier one, the add comes first.
   it records them. Otherwise they are derived and marked `derived`; never a silent mix.
   - `promptIndex` counts human prompts, so a turn a task notification or a peer opens has
     its own id but the index of the human prompt before it. A record with a `promptId` and
-    no `promptIndex` takes the last index seen in its file. A file that records no
+    no `promptIndex` takes the last index seen in its file, except a shell escape, which
+    Claude Code counts as a human prompt: it takes the next (its output's record gives
+    that index). A file that records no
     `promptIndex` at all (Claude Code 2.1.25x-26x) numbers its turns by counting human
     prompts, as a derived turn does.
   - A subagent's records hold the parent's current `promptId`: its events carry that turn,
