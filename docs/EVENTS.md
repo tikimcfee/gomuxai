@@ -91,7 +91,9 @@ updates an earlier one, the add comes first.
 
 - `session_id` is the harness's id: Claude's session uuid, agy's conversation id, Kimi's
   uuid (without `session_`). A subagent's is its own: Claude's `agent-<agent id>` (its
-  transcript's name), agy's conversation id, Kimi's `<uuid>:<agent>`.
+  transcript's name, in the session's `subagents/` folder or, for a workflow's agent, in
+  `subagents/workflows/<run>/`; where both hold one agent id, the top one is the
+  session), agy's conversation id, Kimi's `<uuid>:<agent>`.
 - `tool_id` is the call that started the subagent, where the harness records it (Claude's
   meta.json `toolUseId`); absent for agy and Kimi.
 - `workgroup.parent` is absent when a person spawned the agent.

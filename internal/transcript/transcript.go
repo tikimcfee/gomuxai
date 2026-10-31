@@ -225,7 +225,8 @@ func (s *Session) file(path string, size int64) {
 
 // SessionIDFromPath names a session after its transcript's path:
 //   - Claude Code: <session id>.jsonl, and a subagent's
-//     <session id>/subagents/agent-<id>.jsonl is agent-<id>;
+//     <session id>/subagents/agent-<id>.jsonl (a workflow agent's
+//     .../subagents/workflows/<run>/agent-<id>.jsonl) is agent-<id>;
 //   - agy: brain/<conversation id>/.system_generated/logs/transcript*.jsonl,
 //     or brain/<conversation id>/transcript*.jsonl;
 //   - Kimi Code: session_<uuid>/agents/main/wire.jsonl is <uuid>, and a

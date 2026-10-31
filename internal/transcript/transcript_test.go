@@ -1132,6 +1132,30 @@ func TestClaudeSubagentTurns_Grow(t *testing.T) {
 	if want := []string{"p1 1", "p2 2", "p9 2"}; !slices.Equal(got, want) {
 		t.Errorf("turns %q, want %q", got, want)
 	}
+
+	// A workflow's agent, one folder down, reads the same parent.
+	wf := filepath.Join(dir, "s1", "subagents", "workflows", "wf_1", "agent-w.jsonl")
+	if i, ok := ClaudeSubagentTurns(wf)("p2"); !ok || i != 2 {
+		t.Errorf("workflow agent's lookup of p2 = %d, %v; want 2 from s1.jsonl", i, ok)
+	}
+}
+
+// A subagent transcript's session folder: the top of its subagents/, or a
+// workflow run below it; any other path is no subagent's.
+func TestClaudeSubagentSession(t *testing.T) {
+	for path, want := range map[string]string{
+		"/p/proj/s1/subagents/agent-a1.jsonl":                  "/p/proj/s1",
+		"/p/proj/s1/subagents/workflows/wf_1/agent-w1.jsonl":   "/p/proj/s1",
+		"/p/proj/s1.jsonl":                                     "",
+		"/p/proj/s1/subagents/agent-a1.meta.json":              "",
+		"/p/proj/s1/subagents/other/agent-a1.jsonl":            "",
+		"/p/proj/s1/subagents/workflows/agent-a1.jsonl":        "",
+		"/p/proj/s1/subagents/workflows/wf_1/deep/agent.jsonl": "",
+	} {
+		if got := ClaudeSubagentSession(path); got != want {
+			t.Errorf("ClaudeSubagentSession(%s) = %q, want %q", path, got, want)
+		}
+	}
 }
 
 // Claude Code versions that wrote promptId but no turnPosition: a turn's

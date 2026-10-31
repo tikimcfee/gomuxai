@@ -5,15 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 )
 
 // Claude reads Claude Code session transcripts
-// (~/.claude/projects/<project>/<session id>.jsonl, and a subagent's
-// <session id>/subagents/agent-<agent id>.jsonl). Each record is one
+// (~/.claude/projects/<project>/<session id>.jsonl, a subagent's
+// <session id>/subagents/agent-<agent id>.jsonl, and a workflow agent's
+// <session id>/subagents/workflows/<run>/agent-<agent id>.jsonl). Each record is one
 // line: user (a prompt, tool results, or a harness note), assistant (one
 // content block per record, records of one message sharing its id),
 // attachment, system, and bookkeeping (titles, modes, queue operations,
@@ -884,20 +884,19 @@ func objectFields(line []byte, keep func(key string) bool) json.RawMessage {
 }
 
 // ClaudeSubagentTurns returns, for the Claude subagent transcript at path
-// (<session id>/subagents/agent-<agent id>.jsonl), the lookup of its
-// parent's turn indexes by prompt id that Options.Turns takes. A
-// subagent's records name the parent's current turn by its prompt id only;
-// its index is what the parent's transcript (<session id>.jsonl beside
-// that folder) gives it, by the same rules. The lookup reads the parent as
-// far as it has been written; a prompt id it doesn't know yet makes it
-// read what the parent has added since. It returns nil for any other
-// path.
+// (ClaudeSubagentSession), the lookup of its parent's turn indexes by
+// prompt id that Options.Turns takes. A subagent's records name the
+// parent's current turn by its prompt id only; its index is what the
+// parent's transcript (<session id>.jsonl beside the session folder) gives
+// it, by the same rules. The lookup reads the parent as far as it has been
+// written; a prompt id it doesn't know yet makes it read what the parent
+// has added since. It returns nil for any other path.
 func ClaudeSubagentTurns(path string) func(promptID string) (int, bool) {
-	dir := filepath.Dir(path)
-	if filepath.Base(dir) != "subagents" || !strings.HasPrefix(filepath.Base(path), "agent-") {
+	session := ClaudeSubagentSession(path)
+	if session == "" {
 		return nil
 	}
-	t := &parentTurns{path: filepath.Dir(dir) + ".jsonl", p: Claude{}.NewParser(Options{}), turns: map[string]int{}}
+	t := &parentTurns{path: session + ".jsonl", p: Claude{}.NewParser(Options{}), turns: map[string]int{}}
 	return t.lookup
 }
 
