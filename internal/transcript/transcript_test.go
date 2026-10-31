@@ -76,13 +76,10 @@ func TestClaudeParse(t *testing.T) {
 		`1 add tool Read(go.mod) pending ""`,
 		`1 update tool Bash(go test ./...) ok "ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s"`,
 		`1 update tool Read(go.mod) ok "1\tmodule example.com/proj"`,
-		`1 add say "All tests pass."`,
-		// The caveat is meta: not a prompt. The next prompt ends the turn,
-		// so its last reply, which recorded no stop reason, is final. A
-		// task notification opens a turn of its own, with the index of the
-		// human prompt before it.
+		`1 add say final "All tests pass."`,
+		// The caveat is meta: not a prompt. A task notification opens a
+		// turn of its own, with the index of the human prompt before it.
 		`2 add prompt(command) "/review high"`,
-		`1 update say final "All tests pass."`,
 		`2 add tool Bash(make lint) pending ""`,
 		`2 update tool Bash(make lint) error "Exit code 2\nlint: 1 issue"`,
 		`2 add prompt(task-notification) "<task-notification>background task finished</task-notification>"`,
@@ -152,7 +149,16 @@ func TestClaudeUserRecords(t *testing.T) {
 		{``, `"<command-name>/model</command-name>\n<command-args></command-args>"`, `1 add prompt(command) "/model"`},
 		{``, `"<command-name>review</command-name>\n<command-args>high</command-args>"`, `1 add prompt(command) "/review high"`},
 		{`"origin":{"kind":"human"},`, `"<pasted_content id=\"a1\">log</pasted_content>"`, `1 add prompt(human) "<pasted_content id=\"a1\">log</pasted_content>"`},
-		{``, `"<bash-input>ls</bash-input>"`, `1 add prompt(human) "<bash-input>ls</bash-input>"`},
+		{``, `"<bash-input>ls -la</bash-input>"`, `1 add prompt(command) "! ls -la"`},
+		{``, `"<bash-stdout>a.go</bash-stdout><bash-stderr></bash-stderr>"`, `- add system local_command "<bash-stdout>a.go</bash-stdout><bash-stderr></bash-stderr>"`},
+		// The text rules read only records with no promptSource: one a
+		// person typed is theirs, whatever it says.
+		{`"promptSource":"typed","origin":{"kind":"human"},`, `"[Request interrupted by user]"`, `1 add prompt(human) "[Request interrupted by user]"`},
+		{`"promptSource":"typed","origin":{"kind":"human"},`, `"<bash-input>ls</bash-input>"`, `1 add prompt(human) "<bash-input>ls</bash-input>"`},
+		{`"promptSource":"typed","origin":{"kind":"human"},`, `"<task-notification>quoted</task-notification>"`, `1 add prompt(human) "<task-notification>quoted</task-notification>"`},
+		{`"promptSource":"sdk",`, `"/compact now"`, `1 add prompt(human) "/compact now"`},
+		// An interrupt is one of the two lines, whole.
+		{``, `"[Request interrupted by user] and more"`, `1 add prompt(human) "[Request interrupted by user] and more"`},
 		{`"isMeta":true,"origin":{"kind":"peer"},`, `"<agent-message from=\"x\">hi</agent-message>"`, `- add prompt(peer) "<agent-message from=\"x\">hi</agent-message>"`},
 		{`"isMeta":true,"origin":{"kind":"channel"},`, `"<channel source=\"chat\">hi</channel>"`, `- add prompt(peer) "<channel source=\"chat\">hi</channel>"`},
 		{`"isMeta":true,"origin":{"kind":"coordinator"},`, `"next step"`, `- add prompt(peer) "next step"`},
@@ -244,58 +250,72 @@ func TestClaudeTaskNotifications(t *testing.T) {
 	}
 }
 
-// Older versions' replies carry no stop reason: the last one of a turn
-// becomes final once the turn ends (its timing record, or the next
-// prompt), not when the model goes on or the turn is interrupted. A stop
-// sequence ends a turn too. A model fallback is a system event.
+// A subagent's replies of 2.1.251-2.1.306 carry no stop reason: the last
+// one of a turn becomes final once the turn ends (its timing record, or a
+// record naming the parent's next turn), not when the model goes on or
+// the turn is interrupted. In a main transcript a reply with no stop
+// reason was cut short, and is never final. A stop sequence ends a turn.
+// A model fallback is a system event.
 func TestClaudeClosingReplies(t *testing.T) {
-	say := func(uuid, text, stop string) string {
-		return fmt.Sprintf(`{"type":"assistant","uuid":"%s","message":{"role":"assistant","content":[{"type":"text","text":"%s"}],"stop_reason":%s}}`, uuid, text, stop)
+	say := func(uuid, agent, text, stop string) string {
+		return fmt.Sprintf(`{"type":"assistant","uuid":"%s","agentId":"%s","message":{"role":"assistant","content":[{"type":"text","text":"%s"}],"stop_reason":%s}}`, uuid, agent, text, stop)
 	}
-	prompt := func(uuid, text string) string {
-		return fmt.Sprintf(`{"type":"user","uuid":"%s","message":{"role":"user","content":"%s"}}`, uuid, text)
+	prompt := func(uuid, agent, turn, text string) string {
+		return fmt.Sprintf(`{"type":"user","uuid":"%s","agentId":"%s","promptId":"%s","message":{"role":"user","content":"%s"}}`, uuid, agent, turn, text)
 	}
-	lines := []string{
-		prompt("u1", "one"),
-		say("a1", "thinking aloud", "null"),
-		say("a2", "done with one", "null"),
-		`{"type":"system","subtype":"turn_duration","uuid":"s1","durationMs":5}`,
-		prompt("u2", "two"),
-		say("a3", "done with two", "null"),
-		prompt("u3", "/compact keep the plan"),
-		say("a4", "partial", "null"),
-		prompt("u4", "[Request interrupted by user]"),
-		prompt("u5", "/etc/hosts is empty"),
-		`{"type":"assistant","uuid":"a5","message":{"role":"assistant","content":[{"type":"fallback","from":"model-a","to":"model-b"},{"type":"text","text":"checked"}],"stop_reason":"stop_sequence"}}`,
+	sub := []string{
+		prompt("u1", "s1", "p1", "one"),
+		say("a1", "s1", "thinking aloud", "null"),
+		say("a2", "s1", "done with one", "null"),
+		`{"type":"system","subtype":"turn_duration","uuid":"t1","agentId":"s1","durationMs":5}`,
+		prompt("u2", "s1", "p2", "two"),
+		say("a3", "s1", "done with two", "null"),
+		prompt("u3", "s1", "p3", "three"),
+		say("a4", "s1", "partial", "null"),
+		prompt("u4", "s1", "p3", "[Request interrupted by user]"),
+		`{"type":"assistant","uuid":"a5","agentId":"s1","message":{"role":"assistant","content":[{"type":"fallback","from":"model-a","to":"model-b"},{"type":"text","text":"checked"}],"stop_reason":"stop_sequence"}}`,
 	}
-	_, events := parse(Claude{}, []byte(strings.Join(lines, "\n")+"\n"))
+	_, events := parse(Claude{}, []byte(strings.Join(sub, "\n")+"\n"))
 	want := []string{
-		`1 add prompt(human) "one"`,
-		`1 add say "thinking aloud"`,
-		`1 add say "done with one"`,
-		`1 add system turn_duration ""`,
-		`1 update say final "done with one"`,
-		`2 add prompt(human) "two"`,
-		`2 add say "done with two"`,
-		`3 add prompt(command) "/compact keep the plan"`,
-		`2 update say final "done with two"`,
-		`3 add say "partial"`,
-		`3 add system interrupt "[Request interrupted by user]"`,
-		`4 add prompt(human) "/etc/hosts is empty"`,
-		`4 add system model_fallback ""`,
-		`4 add say final "checked"`,
+		`0 add prompt(peer) "one"`,
+		`0 add say "thinking aloud"`,
+		`0 add say "done with one"`,
+		`0 add system turn_duration ""`,
+		`0 update say final "done with one"`,
+		`0 add prompt(peer) "two"`,
+		`0 add say "done with two"`,
+		`0 add prompt(peer) "three"`,
+		`0 update say final "done with two"`,
+		`0 add say "partial"`,
+		`0 add system interrupt "[Request interrupted by user]"`,
+		`0 add system model_fallback ""`,
+		`0 add say final "checked"`,
 	}
 	if got := summaries(events); !slices.Equal(got, want) {
-		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		t.Errorf("subagent events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if e := events[7]; e.Prompt.Command != "/compact" {
-		t.Errorf("command %q, want /compact", e.Prompt.Command)
+	if e := events[8]; e.Line != 6 || e.ID != "a3#0" || e.Turn.ID != "p2" {
+		t.Errorf("closing update at line %d, id %s, turn %v; want the next turn's record's line 6, a3#0, turn p2", e.Line, e.ID, e.Turn)
 	}
-	if e := events[8]; e.Line != 6 || e.ID != "a3#0" {
-		t.Errorf("closing update at line %d, id %s; want the next prompt's line 6, a3#0", e.Line, e.ID)
-	}
-	if e := events[12]; string(e.System.Data) != `{"from":"model-a","to":"model-b"}` {
+	if e := events[11]; string(e.System.Data) != `{"from":"model-a","to":"model-b"}` {
 		t.Errorf("fallback data %s", e.System.Data)
+	}
+
+	main := []string{
+		prompt("u1", "", "p1", "one"),
+		say("a1", "", "cut short", "null"),
+		`{"type":"system","subtype":"turn_duration","uuid":"t1","durationMs":5}`,
+		prompt("u2", "", "p2", "two"),
+	}
+	_, events = parse(Claude{}, []byte(strings.Join(main, "\n")+"\n"))
+	want = []string{
+		`1 add prompt(human) "one"`,
+		`1 add say "cut short"`,
+		`1 add system turn_duration ""`,
+		`2 add prompt(human) "two"`,
+	}
+	if got := summaries(events); !slices.Equal(got, want) {
+		t.Errorf("main transcript events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -965,7 +985,7 @@ func TestReadFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Events) != 14 || f.Partial || f.Session.Path != path || f.Session.Size != int64(len(readFixture(t, "claude.jsonl"))) ||
+	if len(f.Events) != 13 || f.Partial || f.Session.Path != path || f.Session.Size != int64(len(readFixture(t, "claude.jsonl"))) ||
 		f.Session.SessionID != "00000000-0000-0000-0000-00000000c1a0" {
 		t.Errorf("got %d events, partial %v, session %+v", len(f.Events), f.Partial, f.Session)
 	}
