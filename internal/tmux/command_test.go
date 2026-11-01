@@ -21,7 +21,7 @@ printf '%s\n' "$*" >> "` + log + `"
 case "$1" in
 list-panes) echo %7 ;;
 send-keys) echo "client is read-only" >&2; exit 1 ;;
-list-clients) printf '0\t/dev/pts/3\tmain\n1\t/dev/pts/9\tagent-x\n' ;;
+list-clients) printf '0 /dev/pts/3 main\n1 /dev/pts/9 agent x\n' ;;
 display-message) echo 1 ;;
 paste-buffer)
 	if [ -n "$FAKE_OLD_TMUX" ] && [ "$4" = -S ]; then echo "command paste-buffer: unknown flag -S" >&2; exit 1; fi ;;
@@ -120,7 +120,7 @@ func TestSendSpecialKey_ReadOnlyErrorNamesClient(t *testing.T) {
 	fakeTmux(t)
 	c := &Client{}
 	err := c.SendSpecialKey("agent-x", "F5")
-	want := `sending key "F5": tmux refuses send-keys to every session while a read-only client is attached (/dev/pts/9 on agent-x), and "F5" isn't a key agent can paste past it: detach that client (tmux detach-client -t /dev/pts/9), or watch agents with agent capture instead of tmux attach -r`
+	want := `sending key "F5": tmux refuses send-keys to every session while a read-only client is attached (/dev/pts/9 on agent x), and "F5" isn't a key agent can paste past it: detach that client (tmux detach-client -t /dev/pts/9), or watch agents with agent capture instead of tmux attach -r`
 	if err == nil || err.Error() != want {
 		t.Errorf("err = %v\nwant %s", err, want)
 	}

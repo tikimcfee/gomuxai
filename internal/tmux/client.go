@@ -134,7 +134,9 @@ func (c *Client) SessionExists(name string) (bool, error) {
 // ListSessions returns all tmux sessions. With no tmux server running there
 // are none.
 func (c *Client) ListSessions() ([]Session, error) {
-	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_id}\t#{session_attached}\t#{session_windows}\t#{session_created}")
+	// Fields are space-separated with the name last, the only one that can
+	// hold a space: tmux 3.8 prints a tab in -F output as "_".
+	out, err := run("list-sessions", "-F", "#{session_id} #{session_attached} #{session_windows} #{session_created} #{session_name}")
 	if err != nil {
 		if noServer(err) {
 			return nil, nil
@@ -144,18 +146,18 @@ func (c *Client) ListSessions() ([]Session, error) {
 
 	var result []Session
 	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Split(line, "\t")
+		fields := strings.SplitN(line, " ", 5)
 		if len(fields) != 5 {
 			continue
 		}
-		attached, _ := strconv.Atoi(fields[2])
-		windows, _ := strconv.Atoi(fields[3])
+		attached, _ := strconv.Atoi(fields[1])
+		windows, _ := strconv.Atoi(fields[2])
 		result = append(result, Session{
-			Name:      fields[0],
-			SessionID: fields[1],
+			Name:      fields[4],
+			SessionID: fields[0],
 			Attached:  attached > 0,
 			Windows:   windows,
-			Created:   fields[4],
+			Created:   fields[3],
 		})
 	}
 

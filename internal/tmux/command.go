@@ -86,13 +86,14 @@ type readOnlyClient struct {
 
 // readOnlyClients lists the read-only clients attached to the server.
 func readOnlyClients() ([]readOnlyClient, error) {
-	out, err := run("list-clients", "-F", "#{client_readonly}\t#{client_name}\t#{session_name}")
+	// Space-separated with the session name last (see ListSessions).
+	out, err := run("list-clients", "-F", "#{client_readonly} #{client_name} #{session_name}")
 	if err != nil {
 		return nil, err
 	}
 	var clients []readOnlyClient
 	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Split(line, "\t")
+		fields := strings.SplitN(line, " ", 3)
 		if len(fields) == 3 && fields[0] == "1" {
 			clients = append(clients, readOnlyClient{Name: fields[1], Session: fields[2]})
 		}
