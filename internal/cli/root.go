@@ -85,7 +85,7 @@ var commandGroups = []struct {
 	group *cobra.Group
 	cmds  []*cobra.Command
 }{
-	{&cobra.Group{ID: "agents", Title: "Agents:"}, []*cobra.Command{spawnCmd, resumeCmd, attachCmd, listCmd, cleanupCmd, exportCmd, sessionsCmd}},
+	{&cobra.Group{ID: "agents", Title: "Agents:"}, []*cobra.Command{spawnCmd, adoptCmd, resumeCmd, attachCmd, listCmd, cleanupCmd, exportCmd, sessionsCmd}},
 	{&cobra.Group{ID: "messages", Title: "Messages:"}, []*cobra.Command{sendCmd, queueCmd, deliverCmd, watchCmd}},
 	{&cobra.Group{ID: "status", Title: "Status and waiting:"}, []*cobra.Command{statusCmd, statusesCmd, waitCmd, approveCmd, denyCmd, captureCmd, logsCmd, transcriptCmd, eventsCmd, reportCmd, hooksCmd, hookCmd}},
 	{&cobra.Group{ID: "state", Title: "State and tasks:"}, []*cobra.Command{stateCmd, taskCmd}},
@@ -105,7 +105,7 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&backendName, "backend", "", "Backend for spawn: claude, aider, or agy (spawn requires it or --backend-config; no default)")
+	rootCmd.PersistentFlags().StringVar(&backendName, "backend", "", "Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)")
 	rootCmd.PersistentFlags().StringVar(&backendConfig, "backend-config", "", "JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Don't print hints (results and errors still print)")
 
@@ -213,4 +213,80 @@ func withBackendConfigErr(err error) error {
 
 func getContext() context.Context {
 	return context.Background()
+}
+
+var (
+	cachedCallerStore storage.Storage
+	cachedCallerPane  string
+	cachedCallerName  string
+	cachedCallerValid bool
+)
+
+// callerAgent returns the name of the agent running this command: AGENT_NAME
+// if set, or for an adopted tmux session whose process predates AGENT_NAME,
+// the adopted agent registered on $TMUX_PANE's session (when $TMUX_PANE is
+// that session's first pane).
+func callerAgent() string {
+	if name := os.Getenv("AGENT_NAME"); name != "" {
+		return name
+	}
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" || tmuxClient == nil || store == nil {
+		return ""
+	}
+	if cachedCallerValid && cachedCallerStore == store && cachedCallerPane == pane {
+		return cachedCallerName
+	}
+	name := resolveAdoptedCaller(pane)
+	cachedCallerStore, cachedCallerPane, cachedCallerName, cachedCallerValid = store, pane, name, true
+	return name
+}
+
+func resolveAdoptedCaller(pane string) string {
+	c, ok := tmuxClient.(*tmux.Client)
+	if !ok {
+		return ""
+	}
+	agents, err := store.ListAgents(getContext())
+	if err != nil {
+		return ""
+	}
+	hasAdopted := false
+	for _, a := range agents {
+		if a.Adopted {
+			hasAdopted = true
+			break
+		}
+	}
+	if !hasAdopted {
+		return ""
+	}
+	sess, err := c.SessionOfPane(pane)
+	if err != nil || sess == "" {
+		return ""
+	}
+	first, err := c.FirstPane(sess)
+	if err != nil || first.ID != pane {
+		return ""
+	}
+	for _, a := range agents {
+		if a.SessionName == sess && a.Adopted {
+			return a.Name
+		}
+	}
+	return ""
+}
+
+// nonInteractiveCallerAgent returns AGENT_NAME when set, or callerAgent() when
+// stdin is not a terminal (e.g. an AI CLI tool invocation inside an adopted
+// pane). When a person types interactively at a terminal in an adopted pane
+// without AGENT_NAME set, it returns "".
+func nonInteractiveCallerAgent() string {
+	if name := os.Getenv("AGENT_NAME"); name != "" {
+		return name
+	}
+	if !stdinIsTerminal() {
+		return callerAgent()
+	}
+	return ""
 }

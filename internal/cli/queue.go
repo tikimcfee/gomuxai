@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -59,7 +58,7 @@ func runQueue(cmd *cobra.Command, args []string) error {
 	// Determine sender
 	sender := queueFrom
 	if sender == "" {
-		sender = os.Getenv("AGENT_NAME")
+		sender = nonInteractiveCallerAgent()
 	}
 	if sender == "" {
 		sender = "user"

@@ -57,7 +57,8 @@ func (s *SQLiteStorage) migrate() error {
 		log_file TEXT,
 		created_at TEXT NOT NULL,
 		spawned_by TEXT,
-		cwd TEXT
+		cwd TEXT,
+		adopted INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS messages (
@@ -97,6 +98,7 @@ func (s *SQLiteStorage) migrate() error {
 	for _, c := range [][3]string{
 		{"agents", "spawned_by", "TEXT"},
 		{"agents", "cwd", "TEXT"},
+		{"agents", "adopted", "INTEGER NOT NULL DEFAULT 0"},
 		{"runs", "end_reason", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if _, err := s.addColumn(c[0], c[1], c[2]); err != nil {
@@ -199,19 +201,21 @@ func parseTime(s string) time.Time {
 	return t
 }
 
-const agentColumns = `name, session_name, backend, task_file, log_file, created_at, spawned_by, cwd`
+const agentColumns = `name, session_name, backend, task_file, log_file, created_at, spawned_by, cwd, adopted`
 
 func scanAgent(row scanner) (*Agent, error) {
 	var agent Agent
 	var createdAt string
 	var taskFile, logFile, spawnedBy, cwd sql.NullString
-	if err := row.Scan(&agent.Name, &agent.SessionName, &agent.Backend, &taskFile, &logFile, &createdAt, &spawnedBy, &cwd); err != nil {
+	var adopted sql.NullInt64
+	if err := row.Scan(&agent.Name, &agent.SessionName, &agent.Backend, &taskFile, &logFile, &createdAt, &spawnedBy, &cwd, &adopted); err != nil {
 		return nil, err
 	}
 	agent.TaskFile = taskFile.String
 	agent.LogFile = logFile.String
 	agent.SpawnedBy = spawnedBy.String
 	agent.Cwd = cwd.String
+	agent.Adopted = adopted.Int64 != 0
 	agent.CreatedAt = parseTime(createdAt)
 	return &agent, nil
 }
@@ -269,6 +273,21 @@ func (s *SQLiteStorage) DeleteAgent(ctx context.Context, name string) error {
 // messages are untouched, so they carry over.
 func (s *SQLiteStorage) ReplaceAgent(ctx context.Context, agent *Agent) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error { return replaceAgentTx(ctx, tx, agent) })
+}
+
+// UpdateAgentBackend updates an agent's backend and its open run's backend in
+// place without closing the run (e.g. an adopted shell pane where a CLI was
+// later started).
+func (s *SQLiteStorage) UpdateAgentBackend(ctx context.Context, name, backend string) error {
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET backend = ? WHERE name = ?`, backend, name); err != nil {
+			return fmt.Errorf("updating agent backend: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET backend = ? WHERE id = (SELECT MAX(id) FROM runs WHERE name = ? AND ended_at = '')`, backend, name); err != nil {
+			return fmt.Errorf("updating run backend: %w", err)
+		}
+		return nil
+	})
 }
 
 const messageColumns = `id, sender_id, receiver_id, content, status, created_at`

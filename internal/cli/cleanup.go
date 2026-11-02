@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -15,9 +14,11 @@ import (
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup <name> [<name>...]",
 	Short: "Stop agents and delete their records",
-	Long: `Cleanup removes the named agents: it asks each idle one to exit, kills its
-tmux session, and deletes its record, queued messages, state, and files. Its
-log file and list of transcripts stay, for agent logs. It prints one line per name ("cleaned up",
+	Long: `Cleanup removes the named agents: for a spawned agent it asks an idle CLI to
+exit and kills its tmux session; for an adopted session (agent adopt) it stops
+log piping and leaves the pre-existing tmux session running. In both cases it
+deletes the agent's record, queued messages, state, and files while keeping its
+log file and list of transcripts, for agent logs. It prints one line per name ("cleaned up",
 "refused", or "failed"), and exits 1 if any of them wasn't cleaned up.
 
 Inside an agent (AGENT_NAME set), you can clean up only your own helpers
@@ -39,7 +40,7 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	t := newTeams(list)
-	caller := os.Getenv("AGENT_NAME")
+	caller := nonInteractiveCallerAgent()
 
 	var names []string
 	seen := make(map[string]bool)
@@ -93,7 +94,11 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 
 		did := fmt.Sprintf("removed its record, state, queued messages, and files; its log stays (agent logs %s)", name)
 		if killed {
-			did = fmt.Sprintf("killed session %s; %s", agent.SessionName, did)
+			if agent.Adopted {
+				did = fmt.Sprintf("left session %s running; %s", agent.SessionName, did)
+			} else {
+				did = fmt.Sprintf("killed session %s; %s", agent.SessionName, did)
+			}
 		}
 		fmt.Printf("cleaned up %q: %s\n", name, did)
 		if err != nil {

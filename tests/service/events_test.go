@@ -3,7 +3,6 @@ package service_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,9 +19,8 @@ const eventsHost = "evthost"
 func setupEventsEnv(t *testing.T) *testEnv {
 	t.Helper()
 	env := setupTestEnv(t)
-	t.Cleanup(env.cleanup)
 	env.cfg.Host = eventsHost
-	env.cfg.SessionPrefix = fmt.Sprintf("evt-%d-", time.Now().UnixNano())
+	env.cfg.SessionPrefix += "evt-"
 	return env
 }
 

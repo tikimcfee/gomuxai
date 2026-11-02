@@ -331,6 +331,9 @@ func (s *AgentService) reportHook(ctx context.Context, name, spawnID, event stri
 	if err := s.checkSpawn(ctx, name, spawnID, "hook"); err != nil {
 		return nil, err
 	}
+	if agent.Adopted && agent.Backend == "shell" && spawnID == "" {
+		s.upgradeAdoptedBackend(ctx, agent, "claude")
+	}
 	provider, err := s.provider(agent)
 	if err != nil {
 		return nil, fmt.Errorf("getting backend: %w", err)
@@ -477,10 +480,11 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 
 	native := s.nativeStatus(ctx, agent)
 	nativeErr = native.Err
-	if native.Queried && !native.Listed {
-		// The session on record isn't running. Ask what the pane runs now: a
-		// person may have quit the CLI and started another in the same pane,
-		// which no hook of the old one can tell us.
+	if (native.Queried && !native.Listed) || (agent.Adopted && agent.Backend == "shell") {
+		// The session on record isn't running (or an adopted shell pane now
+		// runs a CLI). Ask what the pane runs now: a person may have quit
+		// the CLI and started another in the same pane, which no hook of the
+		// old one can tell us.
 		if info, err := s.adoptPaneSession(ctx, agent); info != nil {
 			after, rerr := s.reportedStatus(ctx, agent.Name)
 			if rerr != nil {
@@ -552,7 +556,44 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 	if err != nil {
 		return nil, nil, err
 	}
+	if status == AgentStatusUnknown && s.stateValue(ctx, agent.Name, StateKeySpawnID) == "" {
+		if info, ok := s.unreportedScreenStatus(agent); ok {
+			return info, nil, nil
+		}
+	}
 	return &StatusInfo{Status: status, Source: StatusSourceScrape}, nil, nil
+}
+
+// unreportedScreenStatus inspects the visible pane for an unhooked TurnEndReader
+// CLI (e.g. an adopted live agy session started without per-spawn hooks), so
+// idle prompts and permission/question dialogs still resolve cleanly.
+func (s *AgentService) unreportedScreenStatus(agent *storage.Agent) (*StatusInfo, bool) {
+	provider, err := s.provider(agent)
+	if err != nil {
+		return nil, false
+	}
+	te, ok := provider.(backend.TurnEndReader)
+	if !ok {
+		return nil, false
+	}
+	screen, err := s.tmux.Capture(agent.SessionName, 0)
+	if err != nil {
+		return nil, false
+	}
+	if pr, ok := provider.(backend.PermissionResponder); ok && pr.PermissionPromptVisible(screen) {
+		return &StatusInfo{Status: AgentStatusWaiting, Source: StatusSourceScrape, Detail: "permission: prompt on screen"}, true
+	}
+	if qp, ok := provider.(backend.QuestionPrompter); ok && qp.QuestionPromptVisible(screen) {
+		return &StatusInfo{Status: AgentStatusWaiting, Source: StatusSourceScrape, Detail: "question: dialog on screen"}, true
+	}
+	if at, how := te.AtPrompt(screen); at {
+		detail := "at its prompt"
+		if how != "" {
+			detail = how + "; at its prompt"
+		}
+		return &StatusInfo{Status: AgentStatusIdle, Source: StatusSourceScrape, Detail: detail}, true
+	}
+	return nil, false
 }
 
 // turnEndLag is how long a report must stand before the screen can say the
@@ -653,6 +694,11 @@ func (s *AgentService) adoptPaneSession(ctx context.Context, agent *storage.Agen
 		return nil, nil
 	}
 	pp, ok := provider.(backend.PaneSessionProvider)
+	if !ok && agent.Adopted && agent.Backend == "shell" {
+		if cp, cErr := s.backends.CreateProvider("claude", backend.ProviderConfig{}); cErr == nil {
+			pp, ok = cp.(backend.PaneSessionProvider)
+		}
+	}
 	if !ok {
 		return nil, nil
 	}
@@ -663,6 +709,9 @@ func (s *AgentService) adoptPaneSession(ctx context.Context, agent *storage.Agen
 	ps, found, err := pp.PaneSession(ctx, panePID)
 	if err != nil || !found {
 		return nil, err
+	}
+	if agent.Adopted && agent.Backend == "shell" {
+		s.upgradeAdoptedBackend(ctx, agent, "claude")
 	}
 	recorded := s.stateValue(ctx, agent.Name, StateKeySessionID)
 	if ps.ID == recorded {
@@ -683,6 +732,21 @@ func (s *AgentService) adoptPaneSession(ctx context.Context, agent *storage.Agen
 		return nil, fmt.Errorf("recording the session its pane runs: %w", err)
 	}
 	return &StatusInfo{Status: r.Status, Source: StatusSourceNative, Event: r.Event, Detail: r.Detail, UpdatedAt: time.Now()}, nil
+}
+
+type agentBackendUpdater interface {
+	UpdateAgentBackend(ctx context.Context, name, backend string) error
+}
+
+// upgradeAdoptedBackend switches an adopted shell agent's backend in place
+// without closing its open run.
+func (s *AgentService) upgradeAdoptedBackend(ctx context.Context, agent *storage.Agent, backendName string) {
+	agent.Backend = backendName
+	if u, ok := s.storage.(agentBackendUpdater); ok {
+		_ = u.UpdateAgentBackend(ctx, agent.Name, backendName)
+		return
+	}
+	_ = s.storage.ReplaceAgent(ctx, agent)
 }
 
 // panePID returns the pid of the process the tmux session's pane runs, or

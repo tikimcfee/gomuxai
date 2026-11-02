@@ -13,6 +13,7 @@ import (
 // invoked, and prints nothing for anything else.
 func TestPreToolUseAllowsSafeAgentCommands(t *testing.T) {
 	env := setupTestEnv(t)
+	defer env.cleanup()
 	root := t.TempDir()
 	bin := filepath.Join(root, "bin", "agent")
 	if err := os.Mkdir(filepath.Dir(bin), 0755); err != nil {

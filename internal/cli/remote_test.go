@@ -46,11 +46,21 @@ func setupCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { testStore.Close() })
 	testTmux, err := tmux.NewClient()
 	if err != nil {
+		testStore.Close()
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if agents, err := testStore.ListAgents(context.Background()); err == nil {
+			for _, a := range agents {
+				if a.SessionName != "" {
+					_ = testTmux.KillSession(a.SessionName)
+				}
+			}
+		}
+		testStore.Close()
+	})
 
 	oldCfg, oldStore, oldTmux, oldBackends, oldService, oldConnect := cfg, store, tmuxClient, backends, agentService, busConnect
 	t.Cleanup(func() {

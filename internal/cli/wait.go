@@ -213,7 +213,7 @@ func otherAgents(ctx context.Context) ([]natsbus.AgentRef, error) {
 	if err != nil {
 		return nil, err
 	}
-	self := os.Getenv("AGENT_NAME")
+	self := nonInteractiveCallerAgent()
 	var refs []natsbus.AgentRef
 	for _, a := range agents {
 		if a.Name != self {

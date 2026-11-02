@@ -48,7 +48,7 @@ func waitForScreen(t *testing.T, client *natsbus.RPCClient, ref natsbus.AgentRef
 func TestRPC_EndToEndThroughService(t *testing.T) {
 	env := setupTestEnv(t)
 	defer env.cleanup()
-	env.cfg.SessionPrefix = "rpc-" + env.cfg.SessionPrefix
+	env.cfg.SessionPrefix += "rpc-"
 	ctx := context.Background()
 	fake := spawnFakeWith(t, env, "worker", service.SpawnOptions{SpawnedBy: "lead"})
 	client := serveService(t, env)
@@ -112,7 +112,7 @@ func TestRPC_EndToEndThroughService(t *testing.T) {
 func TestRPC_ServiceErrors(t *testing.T) {
 	env := setupTestEnv(t)
 	defer env.cleanup()
-	env.cfg.SessionPrefix = "rpc-" + env.cfg.SessionPrefix
+	env.cfg.SessionPrefix += "rpc-"
 	ctx := context.Background()
 	spawnFake(t, env, "worker")
 	client := serveService(t, env)

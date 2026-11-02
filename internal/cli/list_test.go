@@ -40,15 +40,16 @@ func TestListShowsParents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 4 || !strings.Contains(lines[0], "PARENT") {
-		t.Fatalf("list:\n%s", out)
-	}
-	// The newer helper still follows its parent.
-	if fields := strings.Fields(lines[2]); fields[0] != "worker" || fields[1] != "waiting" || fields[2] != "-" {
-		t.Errorf("parent row = %q", lines[2])
-	}
-	if fields := strings.Fields(lines[3]); fields[0] != "worker-test" || fields[1] != "unknown" || fields[2] != "worker" {
-		t.Errorf("helper row = %q", lines[3])
+	want := strings.Join([]string{
+		"worker: waiting (claude)",
+		"  session: rpc-cli-worker",
+		"  created: 2026-10-01 09:30:00",
+		"  └ worker-test: unknown (claude)",
+		"      parent:  worker",
+		"      session: rpc-cli-worker-test",
+		"      created: 2026-10-01 09:31:00",
+	}, "\n") + "\n"
+	if out != want {
+		t.Errorf("list =\n%s\nwant:\n%s", out, want)
 	}
 }

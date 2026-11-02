@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -12,18 +13,18 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List the agents on this host (or another)",
-	Long: `List shows the agents recorded on this host, with their status, parent,
-tmux session, backend, and creation time. --host lists another host's agents
-through the bus.
+	Long: `List shows the agents recorded on this host as a nested list, with each
+agent's status, backend, parent, tmux session, and creation time. --host lists
+another host's agents through the bus.
 
-STATUS is the same live status "agent status" shows (idle, processing,
+Status is the same live status "agent status" shows (idle, processing,
 waiting, error, ended, unknown); "agent status <name> -v" says more, and
-"agent statuses" what each means. A host
-running an older agent sends none, shown as "-".
+"agent statuses" what each means. A host running an older agent sends none,
+shown as "-".
 
-PARENT is the agent that spawned it with "agent spawn", or "-" when a person
-did. Each agent's helpers are listed right after it, so a team reads as one
-block. An agent can clean up only its own helpers and theirs.`,
+Each agent's helpers (spawned with "agent spawn") are nested right under it,
+so a team reads as one tree. An agent can clean up only its own helpers and
+theirs.`,
 	Example: `  agent list
   agent list --host hub
   agent list --json`,
@@ -50,6 +51,7 @@ type agentJSON struct {
 	Parent    string    `json:"parent,omitempty"`
 	Session   string    `json:"session"`
 	Backend   string    `json:"backend"`
+	Adopted   bool      `json:"adopted,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -66,7 +68,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 		out := make([]agentJSON, 0, len(agents))
 		for _, a := range teamOrder(agents) {
-			out = append(out, agentJSON{Name: a.Name, Host: host, Status: a.Status, EndReason: a.EndReason, Parent: a.SpawnedBy, Session: a.Session, Backend: a.Backend, CreatedAt: a.CreatedAt})
+			out = append(out, agentJSON{Name: a.Name, Host: host, Status: a.Status, EndReason: a.EndReason, Parent: a.SpawnedBy, Session: a.Session, Backend: a.Backend, Adopted: a.Adopted, CreatedAt: a.CreatedAt})
 		}
 		return printJSON(out)
 	}
@@ -80,14 +82,9 @@ func runList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%-20s %-17s %-20s %-25s %-10s %s\n", "NAME", "STATUS", "PARENT", "SESSION", "BACKEND", "CREATED")
-	fmt.Println("---------------------------------------------------------------------------------------------------")
 	waiting := 0
-	for _, agent := range teamOrder(agents) {
-		parent := agent.SpawnedBy
-		if parent == "" {
-			parent = "-"
-		}
+	for _, item := range teamTree(agents) {
+		agent := item.agent
 		status := agent.Status
 		if status == "" {
 			status = "-" // a host that doesn't send status
@@ -98,14 +95,24 @@ func runList(cmd *cobra.Command, args []string) error {
 		if status == string(service.AgentStatusWaiting) {
 			waiting++
 		}
-		fmt.Printf("%-20s %-17s %-20s %-25s %-10s %s\n",
-			agent.Name,
-			status,
-			parent,
-			agent.Session,
-			agent.Backend,
-			agent.CreatedAt.Format("2006-01-02 15:04:05"),
-		)
+
+		headIndent := ""
+		metaIndent := "  "
+		if item.depth > 0 {
+			headIndent = strings.Repeat("  ", item.depth) + "└ "
+			metaIndent = strings.Repeat("  ", item.depth+2)
+		}
+
+		backendLabel := agent.Backend
+		if agent.Adopted {
+			backendLabel += ", adopted"
+		}
+		fmt.Printf("%s%s: %s (%s)\n", headIndent, agent.Name, status, backendLabel)
+		if agent.SpawnedBy != "" {
+			fmt.Printf("%sparent:  %s\n", metaIndent, agent.SpawnedBy)
+		}
+		fmt.Printf("%ssession: %s\n", metaIndent, agent.Session)
+		fmt.Printf("%screated: %s\n", metaIndent, agent.CreatedAt.Format("2006-01-02 15:04:05"))
 	}
 	if waiting > 0 {
 		hint("%s waiting on a person (a permission prompt or question): agent status <name> -v shows what it's asking", plural(waiting, "agent"))
@@ -113,9 +120,14 @@ func runList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// teamOrder lists each agent's helpers right after it, transitively, and
-// otherwise keeps the agents' order.
-func teamOrder(agents []natsbus.AgentInfo) []natsbus.AgentInfo {
+type teamNode struct {
+	agent natsbus.AgentInfo
+	depth int
+}
+
+// teamTree orders each agent's helpers right after it, transitively, with
+// their nesting depth under their parent.
+func teamTree(agents []natsbus.AgentInfo) []teamNode {
 	listed := make(map[string]bool, len(agents))
 	for _, a := range agents {
 		listed[a.Name] = true
@@ -127,28 +139,39 @@ func teamOrder(agents []natsbus.AgentInfo) []natsbus.AgentInfo {
 		}
 	}
 
-	out := make([]natsbus.AgentInfo, 0, len(agents))
+	out := make([]teamNode, 0, len(agents))
 	placed := make(map[string]bool, len(agents))
-	var place func(natsbus.AgentInfo)
-	place = func(a natsbus.AgentInfo) {
+	var place func(natsbus.AgentInfo, int)
+	place = func(a natsbus.AgentInfo, depth int) {
 		if placed[a.Name] {
 			return
 		}
 		placed[a.Name] = true
-		out = append(out, a)
+		out = append(out, teamNode{agent: a, depth: depth})
 		for _, h := range helpers[a.Name] {
-			place(h)
+			place(h, depth+1)
 		}
 	}
 	for _, a := range agents {
 		if !listed[a.SpawnedBy] {
-			place(a)
+			place(a, 0)
 		}
 	}
 	// A parent's name can be reused after cleanup, so recorded parents can
 	// form a loop with no agent at its top. Place those agents too.
 	for _, a := range agents {
-		place(a)
+		place(a, 0)
+	}
+	return out
+}
+
+// teamOrder lists each agent's helpers right after it, transitively, and
+// otherwise keeps the agents' order.
+func teamOrder(agents []natsbus.AgentInfo) []natsbus.AgentInfo {
+	nodes := teamTree(agents)
+	out := make([]natsbus.AgentInfo, len(nodes))
+	for i, n := range nodes {
+		out[i] = n.agent
 	}
 	return out
 }

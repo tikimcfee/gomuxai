@@ -73,7 +73,7 @@ func newCommandRecord(host string, args []string, start time.Time, duration time
 		StartedAt:  start,
 		DurationMS: duration.Milliseconds(),
 		Host:       host,
-		Agent:      os.Getenv("AGENT_NAME"),
+		Agent:      nonInteractiveCallerAgent(),
 		Cwd:        cwd,
 		Args:       make([]string, len(args)),
 		ExitCode:   ExitCode(runErr),

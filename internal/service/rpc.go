@@ -37,6 +37,7 @@ func (h rpcHandler) List(ctx context.Context) (*natsbus.ListResponse, error) {
 			Session:   a.SessionName,
 			Backend:   a.Backend,
 			SpawnedBy: a.SpawnedBy,
+			Adopted:   a.Adopted,
 			CreatedAt: a.CreatedAt,
 			Status:    string(status),
 			EndReason: string(reason),

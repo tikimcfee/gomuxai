@@ -139,6 +139,7 @@ type AgentInfo struct {
 	Session   string    `json:"session,omitempty"` // tmux session on the agent's host
 	Backend   string    `json:"backend"`
 	SpawnedBy string    `json:"spawned_by,omitempty"` // parent agent; "" when a person spawned it
+	Adopted   bool      `json:"adopted,omitempty"`    // pre-existing tmux session registered with agent adopt
 	CreatedAt time.Time `json:"created_at"`
 	// Status is the agent's resolved status, as StatusResponse.Status;
 	// empty from hosts that predate it.

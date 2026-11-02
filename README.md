@@ -171,8 +171,12 @@ Other ways in:
 - `agent wait --any --for waiting` blocks until any agent on the host is at
   a prompt and says which one and what it's asking; `agent wait --follow
   --for waiting` prints each new prompt until Ctrl-C, for a spare terminal.
-- Agents run these same commands. An agent's helpers show under PARENT in
-  `agent list`, and it can clean up only its own.
+- `agent adopt <name>` (or `agent adopt <name> --session <session>`) gives
+  an existing tmux session a seat on the bus without restarting what is
+  running in it; `agent cleanup <name>` unregisters it and leaves the tmux
+  session running.
+- Agents run these same commands. An agent's helpers show nested under their
+  parent in `agent list`, and it can clean up only its own.
 
 Every command has details and tested examples in `agent help <command>`.
 
@@ -281,7 +285,7 @@ bus prints a note about it in its `gomux-bus` session
 | Command | Shows |
 |---|---|
 | `agent` | Who you are, this host, your agents and their status (and held messages), the bus, messages held for you |
-| `agent list` | Every agent here with STATUS and PARENT; `--host H` for another machine |
+| `agent list` | Every agent here in a nested tree with status, backend, parent, and session; `--host H` for another machine |
 | `agent status NAME -v` | Status and what it means, where it came from, last event, and a pending prompt's full tool call |
 | `agent statuses` | Every status and end reason (`ended (quit)`, `ended (gone)`, ...) with what it means |
 | `agent hooks status` | Whether Claude Code runs this binary's hook on every event, and the hook's last errors |

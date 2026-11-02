@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
 // writeBackendConfig writes a --backend-config file and points the flag at it.
@@ -69,5 +71,41 @@ func TestSpawnSaysWhyBackendConfigDidntLoad(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `backend "custom" not found`) ||
 		!strings.Contains(err.Error(), "must have a launch_command") {
 		t.Errorf("err = %v, want not found, with why the backend config didn't load", err)
+	}
+}
+
+func TestSpawnRejectsMissingOrDirectoryTaskFile(t *testing.T) {
+	setupCLI(t)
+	cfg.Backend = "agy"
+
+	// Stray word (e.g. `agent spawn foo spawn --backend agy`) must fail before spawning.
+	err := runSpawn(spawnCmd, []string{"new-worker", "spawn"})
+	if err == nil || !strings.Contains(err.Error(), `task file "spawn" not found`) ||
+		!strings.Contains(err.Error(), "omit [task-file]") {
+		t.Errorf("stray arg err = %v, want task file not found with omit hint", err)
+	}
+
+	// Stored task name passed positionally instead of --task should point at --task.
+	if err := store.SetTask(context.Background(), &storage.Task{Name: "audit-auth", Content: "check auth"}); err != nil {
+		t.Fatal(err)
+	}
+	err = runSpawn(spawnCmd, []string{"new-worker", "audit-auth"})
+	if err == nil || !strings.Contains(err.Error(), "--task audit-auth") {
+		t.Errorf("stored task positional err = %v, want --task audit-auth hint", err)
+	}
+
+	// A directory is not a task file.
+	dir := t.TempDir()
+	err = runSpawn(spawnCmd, []string{"new-worker", dir})
+	if err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Errorf("directory arg err = %v, want is a directory", err)
+	}
+
+	// Passing both --task and positional [task-file] must fail instead of dropping args[1].
+	spawnTask = "audit-auth"
+	t.Cleanup(func() { spawnTask = "" })
+	err = runSpawn(spawnCmd, []string{"new-worker", "stray-word"})
+	if err == nil || !strings.Contains(err.Error(), "cannot specify both --task") {
+		t.Errorf("--task + positional arg err = %v, want cannot specify both", err)
 	}
 }

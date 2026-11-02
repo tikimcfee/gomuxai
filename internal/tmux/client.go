@@ -21,6 +21,13 @@ type Session struct {
 	SessionID string
 }
 
+// PaneInfo describes a tmux session's target pane.
+type PaneInfo struct {
+	ID  string // e.g. "%0"
+	PID int    // process running directly in the pane (typically its shell)
+	Cwd string // pane_current_path
+}
+
 // TmuxOps defines the interface for tmux operations.
 type TmuxOps interface {
 	// CreateSession creates a new tmux session with the given name and environment.
@@ -334,8 +341,8 @@ func (c *Client) SessionNames() ([]string, error) {
 	return strings.Fields(out), nil
 }
 
-// PanePIDs maps every pane's process to its session, in one tmux call. No
-// server running is no panes.
+// PanePIDs maps each session's first pane process to its session, in one tmux
+// call. No server running is no panes.
 func (c *Client) PanePIDs() (map[int]string, error) {
 	out, err := run("list-panes", "-a", "-F", "#{pane_pid} #{session_name}")
 	if err != nil {
@@ -345,12 +352,14 @@ func (c *Client) PanePIDs() (map[int]string, error) {
 		return nil, fmt.Errorf("listing panes: %w", err)
 	}
 	panes := map[int]string{}
+	seenSession := map[string]bool{}
 	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		pidText, session, ok := strings.Cut(line, " ")
 		pid, err := strconv.Atoi(pidText)
-		if !ok || err != nil || pid <= 0 {
+		if !ok || err != nil || pid <= 0 || seenSession[session] {
 			continue
 		}
+		seenSession[session] = true
 		panes[pid] = session
 	}
 	return panes, nil
@@ -365,4 +374,48 @@ func (c *Client) SessionEnv(session, name string) string {
 	}
 	_, value, _ := strings.Cut(strings.TrimSpace(out), "=")
 	return value
+}
+
+// SessionOfPane returns the name of the tmux session containing pane (e.g.
+// "$TMUX_PANE" like "%0"), or "" if the pane or server is gone.
+func (c *Client) SessionOfPane(pane string) (string, error) {
+	pane = strings.TrimSpace(pane)
+	if pane == "" {
+		return "", nil
+	}
+	out, err := run("display-message", "-p", "-t", pane, "#{session_name}")
+	if err != nil {
+		if noServer(err) || tmuxSays(err, "can't find pane") || tmuxSays(err, "can't find session") {
+			return "", nil
+		}
+		return "", fmt.Errorf("finding session for pane %q: %w", pane, err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// FirstPane returns the id, shell pid, and current directory of sessionName's
+// first pane (the same pane SendKeys, Capture, and PipePane target).
+func (c *Client) FirstPane(sessionName string) (PaneInfo, error) {
+	// Keep pane_current_path last so paths containing spaces survive SplitN.
+	out, err := run("list-panes", "-s", "-t", exact(sessionName), "-F", "#{pane_id} #{pane_pid} #{pane_current_path}")
+	if err != nil {
+		if exists, _ := c.SessionExists(sessionName); !exists {
+			return PaneInfo{}, fmt.Errorf("session %q not found", sessionName)
+		}
+		return PaneInfo{}, fmt.Errorf("listing panes: %w", err)
+	}
+	firstLine, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	fields := strings.SplitN(firstLine, " ", 3)
+	if len(fields) < 2 || fields[0] == "" {
+		return PaneInfo{}, fmt.Errorf("session %q has no panes", sessionName)
+	}
+	pid, err := strconv.Atoi(fields[1])
+	if err != nil || pid <= 0 {
+		return PaneInfo{}, fmt.Errorf("parsing pane pid for session %q: %w", sessionName, err)
+	}
+	cwd := ""
+	if len(fields) == 3 {
+		cwd = fields[2]
+	}
+	return PaneInfo{ID: fields[0], PID: pid, Cwd: cwd}, nil
 }

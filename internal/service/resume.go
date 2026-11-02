@@ -47,9 +47,20 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 		return nil, fmt.Errorf("agent %s is %s, not ended: only an ended agent can be resumed (agent status %s -v)", agent.Name, info.Status, agent.Name)
 	}
 
-	// A CLI that quit leaves its pane behind, running a bare shell.
+	// A spawned CLI that quit leaves its pane behind, running a bare shell.
+	// An adopted pre-existing user session is preserved and relaunched into;
+	// if that user session is gone, resume creates a new managed session
+	// (agent-<name>) and preserves the adopted agent's recorded Cwd.
+	existingSession := ""
+	sessionCwd := ""
+	if agent.Adopted {
+		sessionCwd = agent.Cwd
+	}
 	if exists, _ := s.tmux.SessionExists(agent.SessionName); exists {
-		if err := s.tmux.KillSession(agent.SessionName); err != nil {
+		if agent.Adopted {
+			existingSession = agent.SessionName
+			_ = s.tmux.StopPipePane(agent.SessionName)
+		} else if err := s.tmux.KillSession(agent.SessionName); err != nil {
 			return nil, fmt.Errorf("closing its old tmux session %s: %w", agent.SessionName, err)
 		}
 	}
@@ -69,6 +80,8 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 		TrustWorkspace:  opts.TrustWorkspace,
 		Resume:          opts.SessionID,
 		replacing:       agent,
+		existingSession: existingSession,
+		sessionCwd:      sessionCwd,
 	})
 	if err != nil {
 		return nil, err

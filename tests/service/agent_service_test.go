@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +28,13 @@ type testEnv struct {
 	service  *service.AgentService
 	cleanup  func()
 }
+
+// testRunPrefix is shared by every test in this `go test` process so a sweep
+// can identify sessions belonging to a single test run.
+var (
+	testRunPrefix = fmt.Sprintf("test-%d-", os.Getpid())
+	testEnvSeq    atomic.Uint64
+)
 
 // setupTestEnv creates a full test environment with real dependencies.
 func setupTestEnv(t *testing.T) *testEnv {
@@ -50,13 +59,15 @@ func setupTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("creating temp dir: %v", err)
 	}
 
+	initialPrefix := fmt.Sprintf("%s%d-", testRunPrefix, testEnvSeq.Add(1))
+
 	// Create config with unique prefix to avoid collision
 	cfg := &config.Config{
 		Backend:           "claude",
 		DatabasePath:      tmpFile.Name(),
 		LogDir:            tmpDir + "/logs",
 		StateDir:          tmpDir + "/state",
-		SessionPrefix:     fmt.Sprintf("test-%d-", time.Now().UnixNano()),
+		SessionPrefix:     initialPrefix,
 		DefaultScrollback: 100,
 		StartupDelay:      0, // No delay in tests for speed
 	}
@@ -90,25 +101,32 @@ func setupTestEnv(t *testing.T) *testEnv {
 	// Create service
 	svc := service.NewAgentService(cfg, store, tmuxClient, backends)
 
-	// Track sessions created for cleanup
-	var createdSessions []string
-
+	var once sync.Once
 	cleanup := func() {
-		// Kill any sessions we created
-		for _, session := range createdSessions {
-			tmuxClient.KillSession(session)
-		}
-		// Also try to clean up any sessions with our prefix
-		sessions, _ := tmuxClient.ListSessions()
-		for _, s := range sessions {
-			if strings.HasPrefix(s.Name, cfg.SessionPrefix) {
-				tmuxClient.KillSession(s.Name)
+		once.Do(func() {
+			// Kill every recorded agent's tmux session directly by name before
+			// removing tmpDir (so no surviving shell reads a deleted launch.sh).
+			if agents, err := store.ListAgents(context.Background()); err == nil {
+				for _, a := range agents {
+					if a.SessionName != "" {
+						_ = tmuxClient.KillSession(a.SessionName)
+					}
+				}
 			}
-		}
-		store.Close()
-		os.Remove(tmpFile.Name())
-		os.RemoveAll(tmpDir)
+			// Also sweep any sessions matching this test's initial or current prefix.
+			sessions, _ := tmuxClient.ListSessions()
+			for _, s := range sessions {
+				if (initialPrefix != "" && strings.HasPrefix(s.Name, initialPrefix)) ||
+					(cfg.SessionPrefix != "" && strings.HasPrefix(s.Name, cfg.SessionPrefix)) {
+					_ = tmuxClient.KillSession(s.Name)
+				}
+			}
+			store.Close()
+			os.Remove(tmpFile.Name())
+			os.RemoveAll(tmpDir)
+		})
 	}
+	t.Cleanup(cleanup)
 
 	return &testEnv{
 		cfg:      cfg,

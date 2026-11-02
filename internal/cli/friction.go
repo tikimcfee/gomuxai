@@ -211,7 +211,7 @@ func init() {
 // it: the agent's name, or "user" for a person; and the agent's recorded
 // parent.
 func frictionCaller(ctx context.Context) (who, parent string) {
-	name := os.Getenv("AGENT_NAME")
+	name := nonInteractiveCallerAgent()
 	if name == "" {
 		return "user", ""
 	}
@@ -238,7 +238,7 @@ func lastFailedCommand(ctx context.Context) *storage.AttachedCommand {
 	}
 	f := storage.CommandFilter{
 		ByAgent: true,
-		Agent:   os.Getenv("AGENT_NAME"),
+		Agent:   nonInteractiveCallerAgent(),
 		Failed:  true,
 		Since:   time.Now().Add(-frictionAttachWindow),
 		Limit:   20,

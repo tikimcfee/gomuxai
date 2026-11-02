@@ -58,7 +58,7 @@ func init() {
 func runReport(cmd *cobra.Command, args []string) error {
 	name := reportAs
 	if name == "" {
-		name = os.Getenv("AGENT_NAME")
+		name = callerAgent()
 	}
 	var err error
 	if name == "" {

@@ -47,8 +47,11 @@ failed and what to try. Most read commands take `--json`.
   `session`, `keys`, `key`, and `clear` take the session name.
 - It's recursive. A spawned agent has the same `agent` binary, so it can
   message others and spawn its own helpers. When an agent spawns one, the
-  new agent is its helper: `agent list` shows it under PARENT, and only its
-  parent (or theirs, up the chain) or a person can clean it up.
+  new agent is its helper: `agent list` nests it under its parent, and only
+  its parent (or theirs, up the chain) or a person can clean it up.
+- An existing tmux session can also be registered on the bus without
+  restarting what's running in it: `agent adopt <name>` (or `--session <session>`).
+  Cleaning up an adopted agent unregisters it and leaves its tmux session running.
 - A spawned agent has `AGENT_NAME` set, and its first message tells it its
   name, its host, who started it, and how to use `agent` (a briefing, saved
   as `.gomuxai/agents/<name>/instructions.md`).

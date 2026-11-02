@@ -12,6 +12,7 @@ type Agent struct {
 	LogFile     string    `json:"log_file,omitempty"`
 	SpawnedBy   string    `json:"spawned_by,omitempty"` // agent that spawned it; "" for a person
 	Cwd         string    `json:"cwd,omitempty"`        // where it was spawned; "" if spawned before this was recorded
+	Adopted     bool      `json:"adopted,omitempty"`    // pre-existing tmux session; cleanup leaves the session running
 	CreatedAt   time.Time `json:"created_at"`
 }
 
