@@ -94,6 +94,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	var taskContent string
 
 	// Priority: --task flag > positional task-file argument
+	if spawnTask != "" && len(args) > 1 {
+		return fmt.Errorf("cannot specify both --task %q and positional [task-file] %q", spawnTask, args[1])
+	}
+	if cfg.Backend == "shell" && (spawnTask != "" || len(args) > 1) {
+		return errors.New("backend \"shell\" does not take an initial --task or [task-file]; use agent send or agent keys after spawning")
+	}
 	if spawnTask != "" {
 		// Fetch task from DB
 		task, err := getTask(spawnTask)
@@ -106,6 +112,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			taskFile = task.SourceFile
 		}
 	} else if len(args) > 1 {
+		if err := checkTaskFile(getContext(), name, args[1]); err != nil {
+			return err
+		}
 		taskFile = args[1]
 	}
 
@@ -133,7 +142,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		TaskContent:     taskContent,
 		SkipPermissions: spawnSkipPermissions,
 		TrustWorkspace:  spawnTrustWorkspace,
-		SpawnedBy:       os.Getenv("AGENT_NAME"),
+		SpawnedBy:       nonInteractiveCallerAgent(),
 		Resume:          resume,
 	}
 
@@ -151,6 +160,28 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	if spawnAttach {
 		return attachSession(agent.SessionName)
+	}
+	return nil
+}
+
+// checkTaskFile ensures a positional [task-file] argument is an existing file,
+// rather than a stray word or stored task name that would otherwise be sent to
+// the agent as "Please read and execute the task in <arg>".
+func checkTaskFile(ctx context.Context, agentName, path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if store != nil {
+				if task, tErr := store.GetTask(ctx, path); tErr == nil && task != nil {
+					return fmt.Errorf("task file %q not found (%q is a stored task: pass --task %s instead)", path, path, path)
+				}
+			}
+			return fmt.Errorf("task file %q not found (omit [task-file] to spawn %s with no initial task)", path, agentName)
+		}
+		return fmt.Errorf("checking task file %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("task file %q is a directory, not a file", path)
 	}
 	return nil
 }

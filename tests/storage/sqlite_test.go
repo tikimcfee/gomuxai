@@ -600,3 +600,46 @@ func TestTasksAreStandalone(t *testing.T) {
 		t.Errorf("expected name 'standalone-task', got %q", retrieved.Name)
 	}
 }
+
+func TestAgentAdoptedRoundTrip(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	agent := &storage.Agent{
+		Name:        "adopted-dev",
+		SessionName: "my-dev-session",
+		Backend:     "claude",
+		Cwd:         "/tmp/project",
+		Adopted:     true,
+		CreatedAt:   time.Now().UTC().Truncate(time.Second),
+	}
+	if err := store.CreateAgent(ctx, agent); err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	got, err := store.GetAgent(ctx, "adopted-dev")
+	if err != nil || got == nil {
+		t.Fatalf("GetAgent = %+v, %v", got, err)
+	}
+	if !got.Adopted || got.SessionName != "my-dev-session" {
+		t.Errorf("GetAgent = %+v, want Adopted=true SessionName=my-dev-session", got)
+	}
+
+	tree, err := store.ReadTree(ctx, true)
+	if err != nil {
+		t.Fatalf("ReadTree: %v", err)
+	}
+	if len(tree.Agents) != 1 || !tree.Agents[0].Adopted {
+		t.Errorf("ReadTree Agents = %+v, want 1 adopted agent", tree.Agents)
+	}
+
+	// ReplaceAgent preserves Adopted when updated.
+	agent.Backend = "agy"
+	if err := store.ReplaceAgent(ctx, agent); err != nil {
+		t.Fatalf("ReplaceAgent: %v", err)
+	}
+	got, err = store.GetAgent(ctx, "adopted-dev")
+	if err != nil || got == nil || !got.Adopted || got.Backend != "agy" {
+		t.Errorf("after ReplaceAgent, GetAgent = %+v, %v", got, err)
+	}
+}

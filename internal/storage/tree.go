@@ -123,11 +123,11 @@ var treeStateKeys = []string{"_status", "_event", "_detail", "_tool", "_tool_inp
 // schema says which parts of the current schema a store has. A store
 // opened read-only may predate them.
 type schema struct {
-	spawnedBy, cwd, runs, events, endReason bool
+	spawnedBy, cwd, adopted, runs, events, endReason bool
 }
 
 // currentSchema is a migrated store's.
-var currentSchema = &schema{spawnedBy: true, cwd: true, runs: true, events: true, endReason: true}
+var currentSchema = &schema{spawnedBy: true, cwd: true, adopted: true, runs: true, events: true, endReason: true}
 
 // OpenReadOnly opens another binary's store without writing to it: no
 // migrations, and SQLite's read-only mode. Only the tree readers work on it.
@@ -171,6 +171,7 @@ func readSchema(db *sql.DB) (*schema, error) {
 	}{
 		{&sc.spawnedBy, column, []any{"agents", "spawned_by"}},
 		{&sc.cwd, column, []any{"agents", "cwd"}},
+		{&sc.adopted, column, []any{"agents", "adopted"}},
 		{&sc.runs, table, []any{"runs"}},
 		{&sc.events, table, []any{"agent_events"}},
 		{&sc.endReason, column, []any{"agent_events", "end_reason"}},
@@ -189,13 +190,20 @@ func (s *SQLiteStorage) schemaOf() *schema {
 	return s.schema
 }
 
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // createAgentTx records a new agent, opens its run, and appends its spawned
 // event.
 func createAgentTx(ctx context.Context, tx *sql.Tx, agent *Agent) error {
 	created := agent.CreatedAt.Format(time.RFC3339)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO agents (`+agentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := tx.ExecContext(ctx, `INSERT INTO agents (`+agentColumns+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		agent.Name, agent.SessionName, agent.Backend, agent.TaskFile, agent.LogFile,
-		created, agent.SpawnedBy, agent.Cwd); err != nil {
+		created, agent.SpawnedBy, agent.Cwd, boolToInt(agent.Adopted)); err != nil {
 		return fmt.Errorf("inserting agent: %w", err)
 	}
 	return openRunTx(ctx, tx, agent)
@@ -212,9 +220,9 @@ func replaceAgentTx(ctx context.Context, tx *sql.Tx, agent *Agent) error {
 	if !found {
 		return fmt.Errorf("no agent %s to replace", agent.Name)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agents SET session_name = ?, backend = ?, task_file = ?, log_file = ?, created_at = ?, spawned_by = ?, cwd = ? WHERE name = ?`,
+	if _, err := tx.ExecContext(ctx, `UPDATE agents SET session_name = ?, backend = ?, task_file = ?, log_file = ?, created_at = ?, spawned_by = ?, cwd = ?, adopted = ? WHERE name = ?`,
 		agent.SessionName, agent.Backend, agent.TaskFile, agent.LogFile, agent.CreatedAt.Format(time.RFC3339),
-		agent.SpawnedBy, agent.Cwd, agent.Name); err != nil {
+		agent.SpawnedBy, agent.Cwd, boolToInt(agent.Adopted), agent.Name); err != nil {
 		return fmt.Errorf("updating agent: %w", err)
 	}
 	return openRunTx(ctx, tx, agent)
@@ -409,7 +417,8 @@ func (s *SQLiteStorage) ReadTree(ctx context.Context, ended bool) (*Tree, error)
 
 	cols := `name, session_name, backend, task_file, log_file, created_at, ` +
 		map[bool]string{true: `spawned_by`, false: `NULL`}[sc.spawnedBy] + `, ` +
-		map[bool]string{true: `cwd`, false: `NULL`}[sc.cwd]
+		map[bool]string{true: `cwd`, false: `NULL`}[sc.cwd] + `, ` +
+		map[bool]string{true: `adopted`, false: `0`}[sc.adopted]
 	if t.Agents, err = queryAllTx(ctx, tx, scanAgent, `SELECT `+cols+` FROM agents ORDER BY created_at, name`); err != nil {
 		return nil, fmt.Errorf("reading agents: %w", err)
 	}

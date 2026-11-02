@@ -191,15 +191,16 @@ func printUnchecked(name, why string) {
 // senderID is who a message is from, as held messages record it: the
 // sending agent, or "user".
 func senderID() string {
-	if name := os.Getenv("AGENT_NAME"); name != "" {
+	if name := callerAgent(); name != "" {
 		return name
 	}
 	return "user"
 }
 
-// fromAgent marks a message with who sent it: AGENT_NAME, or a person.
+// fromAgent marks a message with who sent it: AGENT_NAME (or an adopted
+// session's agent), or a person.
 func fromAgent(message string) string {
-	return markSender(os.Getenv("AGENT_NAME"), message)
+	return markSender(callerAgent(), message)
 }
 
 // markSender prefixes message with its sender's address on this host, so

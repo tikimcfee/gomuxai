@@ -55,7 +55,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if caller := os.Getenv("AGENT_NAME"); caller != "" {
+	if caller := nonInteractiveCallerAgent(); caller != "" {
 		list, err := agentService.List(ctx)
 		if err != nil {
 			return err

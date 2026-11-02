@@ -552,7 +552,44 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 	if err != nil {
 		return nil, nil, err
 	}
+	if status == AgentStatusUnknown && s.stateValue(ctx, agent.Name, StateKeySpawnID) == "" {
+		if info, ok := s.unreportedScreenStatus(agent); ok {
+			return info, nil, nil
+		}
+	}
 	return &StatusInfo{Status: status, Source: StatusSourceScrape}, nil, nil
+}
+
+// unreportedScreenStatus inspects the visible pane for an unhooked TurnEndReader
+// CLI (e.g. an adopted live agy session started without per-spawn hooks), so
+// idle prompts and permission/question dialogs still resolve cleanly.
+func (s *AgentService) unreportedScreenStatus(agent *storage.Agent) (*StatusInfo, bool) {
+	provider, err := s.provider(agent)
+	if err != nil {
+		return nil, false
+	}
+	te, ok := provider.(backend.TurnEndReader)
+	if !ok {
+		return nil, false
+	}
+	screen, err := s.tmux.Capture(agent.SessionName, 0)
+	if err != nil {
+		return nil, false
+	}
+	if pr, ok := provider.(backend.PermissionResponder); ok && pr.PermissionPromptVisible(screen) {
+		return &StatusInfo{Status: AgentStatusWaiting, Source: StatusSourceScrape, Detail: "permission: prompt on screen"}, true
+	}
+	if qp, ok := provider.(backend.QuestionPrompter); ok && qp.QuestionPromptVisible(screen) {
+		return &StatusInfo{Status: AgentStatusWaiting, Source: StatusSourceScrape, Detail: "question: dialog on screen"}, true
+	}
+	if at, how := te.AtPrompt(screen); at {
+		detail := "at its prompt"
+		if how != "" {
+			detail = how + "; at its prompt"
+		}
+		return &StatusInfo{Status: AgentStatusIdle, Source: StatusSourceScrape, Detail: detail}, true
+	}
+	return nil, false
 }
 
 // turnEndLag is how long a report must stand before the screen can say the

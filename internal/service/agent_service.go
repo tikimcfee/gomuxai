@@ -94,6 +94,19 @@ type SpawnOptions struct {
 	// replacing is the ended agent's record a resume (AgentService.Resume)
 	// takes over, nil for a new agent.
 	replacing *storage.Agent
+	// existingSession, when non-empty, launches into an already-running
+	// user tmux session instead of creating agent-<name>, and marks the
+	// stored agent Adopted.
+	existingSession string
+	// sessionCwd overrides os.Getwd() for the stored agent's Cwd and the
+	// launch script's working directory when existingSession is set.
+	sessionCwd string
+	// samePane is true when Spawn is called from inside existingSession's
+	// own pane: the shell won't read typeahead until this process exits,
+	// so startup sleeps are skipped and deferredCmd (if non-nil) receives
+	// the launch command to send after the caller finishes printing output.
+	samePane    bool
+	deferredCmd *string
 }
 
 // agentNamePattern keeps names safe as tmux session names and as path
@@ -136,13 +149,30 @@ func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.A
 
 // spawnWithProvider spawns an agent on a built-in backend.
 func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions, provider backend.Provider) (*storage.Agent, error) {
-	newSession := s.newSession
-	if opts.replacing != nil {
-		newSession = func(_ context.Context, name string) (string, error) { return s.createSession(name) }
-	}
-	sessionName, err := newSession(ctx, opts.Name)
-	if err != nil {
-		return nil, err
+	var (
+		sessionName string
+		err         error
+	)
+	switch {
+	case opts.existingSession != "":
+		sessionName = opts.existingSession
+		if opts.replacing == nil {
+			if err := s.prepareExistingSession(ctx, opts.Name, sessionName); err != nil {
+				return nil, err
+			}
+		} else {
+			_ = s.tmux.PipePane(sessionName, s.cfg.LogPath(opts.Name))
+		}
+	case opts.replacing != nil:
+		sessionName, err = s.createSession(opts.Name)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		sessionName, err = s.newSession(ctx, opts.Name)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Create the agent record before launching: backend hooks report status
@@ -152,7 +182,11 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		return nil, err
 	}
 	abort := func(err error) (*storage.Agent, error) {
-		s.tmux.KillSession(sessionName)
+		if opts.existingSession != "" {
+			_ = s.tmux.StopPipePane(sessionName)
+		} else {
+			s.tmux.KillSession(sessionName)
+		}
 		if opts.replacing == nil {
 			s.storage.DeleteAgent(ctx, opts.Name)
 			_ = os.RemoveAll(s.cfg.AgentDir(opts.Name))
@@ -172,28 +206,34 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	if err != nil {
 		return abort(err)
 	}
-	runCmd, err := s.writeLaunchScript(opts.Name, launchCmd)
-	if err != nil {
-		return abort(err)
-	}
-	if promptInLaunch {
-		s.markSent(ctx, opts.Name)
-	}
-	if err := s.sendLine(sessionName, runCmd); err != nil {
-		return abort(fmt.Errorf("launching backend: %w", err))
-	}
-	if err := s.waitForStartup(ctx); err != nil {
-		return abort(err)
-	}
-
-	// Confirm the workspace trust prompt only when opted in via --trust-workspace
-	// (trusting a repo also enables its own hooks and settings).
-	if tp, ok := provider.(backend.TrustPrompter); ok && opts.TrustWorkspace {
-		if err := s.confirmTrust(ctx, sessionName, tp); err != nil {
+	if launchCmd != "" {
+		runCmd, err := s.writeLaunchScriptForOpts(opts, launchCmd)
+		if err != nil {
 			return abort(err)
 		}
-		if err := s.waitForStartup(ctx); err != nil {
-			return abort(err)
+		if promptInLaunch {
+			s.markSent(ctx, opts.Name)
+		}
+		if opts.samePane && opts.deferredCmd != nil {
+			*opts.deferredCmd = runCmd
+		} else if err := s.sendLine(sessionName, runCmd); err != nil {
+			return abort(fmt.Errorf("launching backend: %w", err))
+		}
+		if !opts.samePane {
+			if err := s.waitForStartup(ctx); err != nil {
+				return abort(err)
+			}
+
+			// Confirm the workspace trust prompt only when opted in via --trust-workspace
+			// (trusting a repo also enables its own hooks and settings).
+			if tp, ok := provider.(backend.TrustPrompter); ok && opts.TrustWorkspace {
+				if err := s.confirmTrust(ctx, sessionName, tp); err != nil {
+					return abort(err)
+				}
+				if err := s.waitForStartup(ctx); err != nil {
+					return abort(err)
+				}
+			}
 		}
 	}
 
@@ -239,23 +279,56 @@ func (s *AgentService) spawnWithBackend(ctx context.Context, opts SpawnOptions, 
 // newSession creates a new agent's tmux session, once the name is known to
 // be free, and pipes its output to the agent's log.
 func (s *AgentService) newSession(ctx context.Context, name string) (string, error) {
-	existing, err := s.storage.GetAgent(ctx, name)
-	if err != nil {
-		return "", fmt.Errorf("checking existing agent: %w", err)
-	}
-	if existing != nil {
-		hint := ""
-		if info, _, err := s.resolveStatus(ctx, name); err == nil && info.Status == AgentStatusEnded {
-			hint = fmt.Sprintf(" It has ended: agent resume %s continues its session.", name)
-		}
-		return "", fmt.Errorf("agent %s already exists (session %s, created %s): pick another name, or agent cleanup %s first.%s",
-			name, existing.SessionName, existing.CreatedAt.Format("2006-01-02 15:04"), name, hint)
+	if err := s.checkAgentNameFree(ctx, name); err != nil {
+		return "", err
 	}
 	if exists, _ := s.tmux.SessionExists(s.cfg.SessionName(name)); exists {
 		return "", fmt.Errorf("tmux session %s already exists, but no agent %s does (a leftover session?): pick another name, or agent session kill %s first",
 			s.cfg.SessionName(name), name, s.cfg.SessionName(name))
 	}
 	return s.createSession(name)
+}
+
+func (s *AgentService) checkAgentNameFree(ctx context.Context, name string) error {
+	existing, err := s.storage.GetAgent(ctx, name)
+	if err != nil {
+		return fmt.Errorf("checking existing agent: %w", err)
+	}
+	if existing != nil {
+		hint := ""
+		if info, _, err := s.resolveStatus(ctx, name); err == nil && info.Status == AgentStatusEnded {
+			hint = fmt.Sprintf(" It has ended: agent resume %s continues its session.", name)
+		}
+		return fmt.Errorf("agent %s already exists (session %s, created %s): pick another name, or agent cleanup %s first.%s",
+			name, existing.SessionName, existing.CreatedAt.Format("2006-01-02 15:04"), name, hint)
+	}
+	return nil
+}
+
+// prepareExistingSession checks that agent name and existing tmux sessionName
+// are both free to adopt, then starts piping pane output to the agent's log.
+func (s *AgentService) prepareExistingSession(ctx context.Context, name, sessionName string) error {
+	if err := s.checkAgentNameFree(ctx, name); err != nil {
+		return err
+	}
+	exists, err := s.tmux.SessionExists(sessionName)
+	if err != nil {
+		return fmt.Errorf("checking session %q: %w", sessionName, err)
+	}
+	if !exists {
+		return fmt.Errorf("tmux session %q not found", sessionName)
+	}
+	agents, err := s.storage.ListAgents(ctx)
+	if err != nil {
+		return fmt.Errorf("listing agents: %w", err)
+	}
+	for _, a := range agents {
+		if a.SessionName == sessionName {
+			return fmt.Errorf("tmux session %s is already registered as agent %s", sessionName, a.Name)
+		}
+	}
+	_ = s.tmux.PipePane(sessionName, s.cfg.LogPath(name)) // non-fatal: the agent runs unlogged
+	return nil
 }
 
 // createSession creates an agent's tmux session and pipes its output to the
@@ -281,7 +354,10 @@ func (s *AgentService) createSession(name string) (string, error) {
 
 // storeAgent records a spawned agent, killing its session if that fails.
 func (s *AgentService) storeAgent(ctx context.Context, opts SpawnOptions, sessionName string) (*storage.Agent, error) {
-	cwd, _ := os.Getwd() // the session started here
+	cwd := opts.sessionCwd
+	if cwd == "" {
+		cwd, _ = os.Getwd() // the session started here
+	}
 	agent := &storage.Agent{
 		Cwd:         cwd,
 		Name:        opts.Name,
@@ -290,6 +366,7 @@ func (s *AgentService) storeAgent(ctx context.Context, opts SpawnOptions, sessio
 		TaskFile:    opts.TaskFile,
 		LogFile:     s.cfg.LogPath(opts.Name),
 		SpawnedBy:   opts.SpawnedBy,
+		Adopted:     opts.existingSession != "",
 		CreatedAt:   time.Now(),
 	}
 	store := s.storage.CreateAgent
@@ -298,7 +375,11 @@ func (s *AgentService) storeAgent(ctx context.Context, opts SpawnOptions, sessio
 		store = s.storage.ReplaceAgent
 	}
 	if err := store(ctx, agent); err != nil {
-		s.tmux.KillSession(sessionName)
+		if opts.existingSession != "" {
+			_ = s.tmux.StopPipePane(sessionName)
+		} else {
+			s.tmux.KillSession(sessionName)
+		}
 		return nil, fmt.Errorf("storing agent: %w", err)
 	}
 	return agent, nil
@@ -626,19 +707,22 @@ func (s *AgentService) Cleanup(ctx context.Context, name string) error {
 
 	cleanupErrs := &CleanupError{}
 
-	// Ask an idle agent to exit cleanly before the session is killed: its
+	// Ask an idle spawned agent to exit cleanly before the session is killed: its
 	// hooks then record the exit, and some CLIs lose saved state when killed
-	// (agy's maintainers advise /exit). Only when idle: typed into a dialog,
-	// the exit command's Enter would answer the dialog instead.
-	if info, err := s.StatusInfo(ctx, name); err == nil && info.Status == AgentStatusIdle {
-		if p, err := s.provider(agent); err == nil && p.ExitCommand() != "" {
-			if s.sendLine(agent.SessionName, p.ExitCommand()) == nil {
-				time.Sleep(cleanupExitGrace)
+	// (agy's maintainers advise /exit). Only when idle (and not an adopted
+	// pre-existing user session, which cleanup leaves running): typed into a
+	// dialog, the exit command's Enter would answer the dialog instead.
+	if !agent.Adopted {
+		if info, err := s.StatusInfo(ctx, name); err == nil && info.Status == AgentStatusIdle {
+			if p, err := s.provider(agent); err == nil && p.ExitCommand() != "" {
+				if s.sendLine(agent.SessionName, p.ExitCommand()) == nil {
+					time.Sleep(cleanupExitGrace)
+				}
 			}
 		}
 	}
 
-	// Stop log piping and kill the session, unless it's already gone
+	// Stop log piping and (unless adopted) kill the session, unless it's already gone
 	exists, err := s.tmux.SessionExists(agent.SessionName)
 	if err != nil {
 		cleanupErrs.Add(fmt.Errorf("checking session exists: %w", err))
@@ -646,8 +730,10 @@ func (s *AgentService) Cleanup(ctx context.Context, name string) error {
 		if err := s.tmux.StopPipePane(agent.SessionName); err != nil {
 			cleanupErrs.Add(fmt.Errorf("stopping pipe pane: %w", err))
 		}
-		if err := s.tmux.KillSession(agent.SessionName); err != nil {
-			cleanupErrs.Add(fmt.Errorf("killing session: %w", err))
+		if !agent.Adopted {
+			if err := s.tmux.KillSession(agent.SessionName); err != nil {
+				cleanupErrs.Add(fmt.Errorf("killing session: %w", err))
+			}
 		}
 	}
 

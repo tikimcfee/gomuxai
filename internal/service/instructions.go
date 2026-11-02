@@ -148,6 +148,29 @@ func (s *AgentService) writeLaunchScript(name, launchCmd string) (string, error)
 	return "sh " + util.ShellQuote(path), nil
 }
 
+// writeLaunchScriptForOpts writes launch.sh. When launching into an adopted
+// pre-existing tmux session (whose shell was not created with -e AGENT_NAME),
+// the script sets AGENT_NAME, AGENT_HOST, PATH, and working directory inside
+// the subshell without mutating the user's outer interactive shell.
+func (s *AgentService) writeLaunchScriptForOpts(opts SpawnOptions, launchCmd string) (string, error) {
+	if opts.existingSession == "" {
+		return s.writeLaunchScript(opts.Name, launchCmd)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "export AGENT_NAME=%s\n", util.ShellQuote(opts.Name))
+	if s.cfg.Host != "" {
+		fmt.Fprintf(&b, "export AGENT_HOST=%s\n", util.ShellQuote(s.cfg.Host))
+	}
+	if s.cfg.AgentBinary != "" {
+		fmt.Fprintf(&b, "export PATH=%s:\"$PATH\"\n", util.ShellQuote(filepath.Dir(s.cfg.AgentBinary)))
+	}
+	if opts.sessionCwd != "" {
+		fmt.Fprintf(&b, "cd %s || exit 1\n", util.ShellQuote(opts.sessionCwd))
+	}
+	b.WriteString(launchCmd)
+	return s.writeLaunchScript(opts.Name, b.String())
+}
+
 // agentSafeCommands are the agent subcommands a spawned agent may run without
 // a permission prompt: they read status, screens, transcripts, sessions, or
 // history (a coordinator needs capture and logs to see why a helper is stuck,

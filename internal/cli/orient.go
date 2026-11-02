@@ -23,7 +23,7 @@ const orientBusTimeout = 500 * time.Millisecond
 
 // runOrient prints a short orientation for whoever runs "agent" alone.
 func runOrient(cmd *cobra.Command, args []string) error {
-	return orient(os.Stdout, os.Getenv("AGENT_NAME"))
+	return orient(os.Stdout, callerAgent())
 }
 
 // orient writes the orientation for me (an agent's name, or "" for a

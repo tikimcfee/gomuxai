@@ -48,6 +48,7 @@ func NewRegistry() *Registry {
 	r.Register(namedagents.NewClaudeBackend())
 	r.Register(namedagents.NewAiderBackend())
 	r.Register(namedagents.NewAgyBackend())
+	r.Register(namedagents.NewShellBackend())
 
 	r.RegisterFactory("claude", func(cfg ProviderConfig) Provider {
 		return namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{
@@ -64,6 +65,9 @@ func NewRegistry() *Registry {
 			AgentDir:        cfg.AgentDir,
 			Resume:          cfg.Resume,
 		})
+	})
+	r.RegisterFactory("shell", func(cfg ProviderConfig) Provider {
+		return namedagents.NewShellBackend()
 	})
 
 	return r

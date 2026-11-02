@@ -57,7 +57,8 @@ func (s *SQLiteStorage) migrate() error {
 		log_file TEXT,
 		created_at TEXT NOT NULL,
 		spawned_by TEXT,
-		cwd TEXT
+		cwd TEXT,
+		adopted INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS messages (
@@ -97,6 +98,7 @@ func (s *SQLiteStorage) migrate() error {
 	for _, c := range [][3]string{
 		{"agents", "spawned_by", "TEXT"},
 		{"agents", "cwd", "TEXT"},
+		{"agents", "adopted", "INTEGER NOT NULL DEFAULT 0"},
 		{"runs", "end_reason", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if _, err := s.addColumn(c[0], c[1], c[2]); err != nil {
@@ -199,19 +201,21 @@ func parseTime(s string) time.Time {
 	return t
 }
 
-const agentColumns = `name, session_name, backend, task_file, log_file, created_at, spawned_by, cwd`
+const agentColumns = `name, session_name, backend, task_file, log_file, created_at, spawned_by, cwd, adopted`
 
 func scanAgent(row scanner) (*Agent, error) {
 	var agent Agent
 	var createdAt string
 	var taskFile, logFile, spawnedBy, cwd sql.NullString
-	if err := row.Scan(&agent.Name, &agent.SessionName, &agent.Backend, &taskFile, &logFile, &createdAt, &spawnedBy, &cwd); err != nil {
+	var adopted sql.NullInt64
+	if err := row.Scan(&agent.Name, &agent.SessionName, &agent.Backend, &taskFile, &logFile, &createdAt, &spawnedBy, &cwd, &adopted); err != nil {
 		return nil, err
 	}
 	agent.TaskFile = taskFile.String
 	agent.LogFile = logFile.String
 	agent.SpawnedBy = spawnedBy.String
 	agent.Cwd = cwd.String
+	agent.Adopted = adopted.Int64 != 0
 	agent.CreatedAt = parseTime(createdAt)
 	return &agent, nil
 }
