@@ -87,7 +87,10 @@ type SpawnOptions struct {
 	TaskContent     string // Task content directly (from DB task repository)
 	SkipPermissions bool   // Pass --dangerously-skip-permissions to Claude / Agy
 	TrustWorkspace  bool   // Confirm the CLI's workspace trust prompt on launch
-	SpawnedBy       string // agent that requested the spawn ("" for a user)
+	SpawnedBy       string // agent that requested the spawn ("" for a user); name@host from another host
+	// Cwd is the absolute directory the agent starts in; "" for this
+	// process's working directory.
+	Cwd string
 	// Resume is the session the agent continues (Claude's session id, agy's
 	// conversation id) instead of starting a new one; claude and agy only.
 	Resume string
@@ -116,6 +119,11 @@ func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.A
 	if opts.Resume != "" && opts.Backend != "claude" && opts.Backend != "agy" {
 		return nil, fmt.Errorf("--resume continues a claude or agy session; backend %s can't resume one", opts.Backend)
 	}
+	if opts.Cwd != "" {
+		if err := checkCwd(opts.Cwd); err != nil {
+			return nil, err
+		}
+	}
 
 	// A fresh provider, configured for this agent. Custom JSON backends
 	// (--backend-config) have no factory, and spawn from their Backend.
@@ -138,9 +146,9 @@ func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.A
 func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions, provider backend.Provider) (*storage.Agent, error) {
 	newSession := s.newSession
 	if opts.replacing != nil {
-		newSession = func(_ context.Context, name string) (string, error) { return s.createSession(name) }
+		newSession = func(_ context.Context, name, dir string) (string, error) { return s.createSession(name, dir) }
 	}
-	sessionName, err := newSession(ctx, opts.Name)
+	sessionName, err := newSession(ctx, opts.Name, opts.Cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +162,9 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	abort := func(err error) (*storage.Agent, error) {
 		s.tmux.KillSession(sessionName)
 		if opts.replacing == nil {
-			s.storage.DeleteAgent(ctx, opts.Name)
+			// Even when ctx is why it failed (a bus stopping mid-spawn
+			// cancels its requests), the record must go with the session.
+			s.storage.DeleteAgent(context.WithoutCancel(ctx), opts.Name)
 			_ = os.RemoveAll(s.cfg.AgentDir(opts.Name))
 		} // a failed resume leaves the agent ended, to resume or clean up
 		return nil, err
@@ -212,7 +222,7 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 // launch command, typed into the session as is: no hooks, briefing, or
 // launch script.
 func (s *AgentService) spawnWithBackend(ctx context.Context, opts SpawnOptions, be backend.Backend) (*storage.Agent, error) {
-	sessionName, err := s.newSession(ctx, opts.Name)
+	sessionName, err := s.newSession(ctx, opts.Name, opts.Cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -236,9 +246,10 @@ func (s *AgentService) spawnWithBackend(ctx context.Context, opts SpawnOptions, 
 	return s.storeAgent(ctx, opts, sessionName)
 }
 
-// newSession creates a new agent's tmux session, once the name is known to
-// be free, and pipes its output to the agent's log.
-func (s *AgentService) newSession(ctx context.Context, name string) (string, error) {
+// newSession creates a new agent's tmux session, in dir ("" for this
+// process's working directory), once the name is known to be free, and
+// pipes its output to the agent's log.
+func (s *AgentService) newSession(ctx context.Context, name, dir string) (string, error) {
 	existing, err := s.storage.GetAgent(ctx, name)
 	if err != nil {
 		return "", fmt.Errorf("checking existing agent: %w", err)
@@ -255,12 +266,12 @@ func (s *AgentService) newSession(ctx context.Context, name string) (string, err
 		return "", fmt.Errorf("tmux session %s already exists, but no agent %s does (a leftover session?): pick another name, or agent session kill %s first",
 			s.cfg.SessionName(name), name, s.cfg.SessionName(name))
 	}
-	return s.createSession(name)
+	return s.createSession(name, dir)
 }
 
-// createSession creates an agent's tmux session and pipes its output to the
-// agent's log.
-func (s *AgentService) createSession(name string) (string, error) {
+// createSession creates an agent's tmux session in dir ("" for this
+// process's working directory) and pipes its output to the agent's log.
+func (s *AgentService) createSession(name, dir string) (string, error) {
 	env := map[string]string{
 		"AGENT_NAME": name,
 		// Hooks publish status events under this host; without it they'd
@@ -272,7 +283,7 @@ func (s *AgentService) createSession(name string) (string, error) {
 		env["PATH"] = filepath.Dir(s.cfg.AgentBinary) + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
 	sessionName := s.cfg.SessionName(name)
-	if err := s.tmux.CreateSession(sessionName, env); err != nil {
+	if err := s.tmux.CreateSessionIn(sessionName, dir, env); err != nil {
 		return "", fmt.Errorf("creating session: %w", err)
 	}
 	_ = s.tmux.PipePane(sessionName, s.cfg.LogPath(name)) // non-fatal: the agent runs unlogged
@@ -281,7 +292,10 @@ func (s *AgentService) createSession(name string) (string, error) {
 
 // storeAgent records a spawned agent, killing its session if that fails.
 func (s *AgentService) storeAgent(ctx context.Context, opts SpawnOptions, sessionName string) (*storage.Agent, error) {
-	cwd, _ := os.Getwd() // the session started here
+	cwd := opts.Cwd // the session started here
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
 	agent := &storage.Agent{
 		Cwd:         cwd,
 		Name:        opts.Name,
@@ -302,6 +316,21 @@ func (s *AgentService) storeAgent(ctx context.Context, opts SpawnOptions, sessio
 		return nil, fmt.Errorf("storing agent: %w", err)
 	}
 	return agent, nil
+}
+
+// checkCwd says why dir can't be a new agent's working directory, or nil.
+func checkCwd(dir string) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("working directory %q is not an absolute path", dir)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("working directory %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("working directory %s is not a directory", dir)
+	}
+	return nil
 }
 
 // initMessage is a new agent's first message: the task itself, or the

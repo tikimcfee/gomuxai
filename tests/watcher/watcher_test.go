@@ -51,17 +51,18 @@ type fakeTmux struct {
 	failSend bool
 }
 
-func (f *fakeTmux) CreateSession(string, map[string]string) error { return nil }
-func (f *fakeTmux) KillSession(string) error                      { return nil }
-func (f *fakeTmux) SessionExists(string) (bool, error)            { return true, nil }
-func (f *fakeTmux) ListSessions() ([]tmux.Session, error)         { return nil, nil }
-func (f *fakeTmux) SendSpecialKey(string, string) error           { return nil }
-func (f *fakeTmux) Capture(string, int) (string, error)           { return "", nil }
-func (f *fakeTmux) CaptureStyled(string, int) (string, error)     { return "", nil }
-func (f *fakeTmux) PipePane(string, string) error                 { return nil }
-func (f *fakeTmux) StopPipePane(string) error                     { return nil }
-func (f *fakeTmux) Clear(string) error                            { return nil }
-func (f *fakeTmux) PanePIDs() (map[int]string, error)             { return nil, nil }
+func (f *fakeTmux) CreateSession(string, map[string]string) error           { return nil }
+func (f *fakeTmux) CreateSessionIn(string, string, map[string]string) error { return nil }
+func (f *fakeTmux) KillSession(string) error                                { return nil }
+func (f *fakeTmux) SessionExists(string) (bool, error)                      { return true, nil }
+func (f *fakeTmux) ListSessions() ([]tmux.Session, error)                   { return nil, nil }
+func (f *fakeTmux) SendSpecialKey(string, string) error                     { return nil }
+func (f *fakeTmux) Capture(string, int) (string, error)                     { return "", nil }
+func (f *fakeTmux) CaptureStyled(string, int) (string, error)               { return "", nil }
+func (f *fakeTmux) PipePane(string, string) error                           { return nil }
+func (f *fakeTmux) StopPipePane(string) error                               { return nil }
+func (f *fakeTmux) Clear(string) error                                      { return nil }
+func (f *fakeTmux) PanePIDs() (map[int]string, error)                       { return nil, nil }
 
 func (f *fakeTmux) SendKeys(_ string, text string) error {
 	f.mu.Lock()

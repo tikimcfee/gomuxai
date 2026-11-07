@@ -267,8 +267,16 @@ agent capture builder@hub
 ```
 
 Peers may call only the ops in `--remote-ops`; raw `keys` stays local.
-`state`, `logs`, and `queue` are per host: ask the agent to `send` you what
-you need, or `capture` its screen. The bus's security model (TLS 1.3 with
+`spawn` is off for peers by default too, since it starts a process on the
+host. To let other machines start agents on the hub, add it there:
+`agent bus start --listen 0.0.0.0:7422 --remote-ops
+list,status,capture,send,respond,spawn` (`remote ops allowed` then lists
+it). Then `agent spawn builder@hub --backend claude --cwd /home/me/project`
+starts one on the hub; `--cwd` and a task file are paths on the hub.
+Listing `spawn` lets every linked peer run commands on the hub as the bus's
+user (spawn an agent, then approve its prompts), so do it only if you'd
+give those machines a shell there. Clean it up on the hub. `state`, `logs`, and `queue` are per host: ask the
+agent to `send` you what you need, or `capture` its screen. The bus's security model (TLS 1.3 with
 pinned certificates, a key per host, no shared secrets) is described in
 [`CLAUDE.md`](CLAUDE.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
