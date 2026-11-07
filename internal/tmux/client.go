@@ -26,6 +26,10 @@ type TmuxOps interface {
 	// CreateSession creates a new tmux session with the given name and environment.
 	CreateSession(name string, env map[string]string) error
 
+	// CreateSessionIn is CreateSession with the session's first shell
+	// started in dir ("" for the caller's working directory).
+	CreateSessionIn(name, dir string, env map[string]string) error
+
 	// KillSession terminates a tmux session.
 	KillSession(name string) error
 
@@ -83,6 +87,12 @@ func exact(session string) string { return "=" + session }
 
 // CreateSession creates a new tmux session.
 func (c *Client) CreateSession(name string, env map[string]string) error {
+	return c.CreateSessionIn(name, "", env)
+}
+
+// CreateSessionIn creates a new tmux session whose first shell starts in
+// dir, or in this process's working directory when dir is "".
+func (c *Client) CreateSessionIn(name, dir string, env map[string]string) error {
 	if exists, _ := c.SessionExists(name); exists {
 		return fmt.Errorf("session %q already exists", name)
 	}
@@ -90,6 +100,9 @@ func (c *Client) CreateSession(name string, env map[string]string) error {
 	// Pass env with -e so the session's first shell starts with it;
 	// set-environment after creation only reaches panes created later.
 	args := []string{"new-session", "-d", "-s", name}
+	if dir != "" {
+		args = append(args, "-c", dir)
+	}
 	keys := make([]string, 0, len(env))
 	for key := range env {
 		keys = append(keys, key)

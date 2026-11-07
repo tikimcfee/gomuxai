@@ -237,7 +237,7 @@ It continues session 3f34adff.
 	}
 	for _, tt := range tests {
 		agent.SpawnedBy = tt.parent
-		if got := spawnSummary(agent, tt.task, tt.taskFile, tt.resume); got != tt.want {
+		if got := spawnSummary(agent, "", tt.task, tt.taskFile, tt.resume); got != tt.want {
 			t.Errorf("spawnSummary(%q, %q, %q, %q) =\n%s\nwant:\n%s", tt.parent, tt.task, tt.taskFile, tt.resume, got, tt.want)
 		}
 	}

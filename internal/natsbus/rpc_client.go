@@ -123,6 +123,26 @@ func (c *RPCClient) Keys(ctx context.Context, ref AgentRef, text, key string) er
 	return c.callAgent(ctx, ref, OpKeys, KeysRequest{Agent: ref.Name, Text: text, Key: key}, nil)
 }
 
+// SpawnTimeout bounds a spawn request: the far side waits out the CLI's
+// startup (and a workspace trust prompt) before it answers.
+const SpawnTimeout = 2 * time.Minute
+
+// Spawn starts an agent on ref.Host. req.Agent is set from ref. It waits up
+// to SpawnTimeout, or the client's timeout if that is longer.
+func (c *RPCClient) Spawn(ctx context.Context, ref AgentRef, req SpawnRequest) (*SpawnResponse, error) {
+	req.Agent = ref.Name
+	long := *c
+	long.timeout = max(c.timeout, SpawnTimeout)
+	var resp SpawnResponse
+	if err := long.callAgent(ctx, ref, OpSpawn, req, &resp); err != nil {
+		return nil, err
+	}
+	for _, f := range []*string{&resp.Name, &resp.Session, &resp.Backend, &resp.SpawnedBy, &resp.Cwd, &resp.TaskFile, &resp.Status, &resp.EndReason} {
+		*f = clean(*f)
+	}
+	return &resp, nil
+}
+
 func (c *RPCClient) callAgent(ctx context.Context, ref AgentRef, op string, req, out any) error {
 	if ref.Host == "" {
 		return fmt.Errorf("%s: no host given for agent %q", op, ref.Name)

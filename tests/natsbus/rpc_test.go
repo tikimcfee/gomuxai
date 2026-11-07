@@ -13,11 +13,11 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 )
 
-var allOps = []string{natsbus.OpList, natsbus.OpStatus, natsbus.OpCapture, natsbus.OpSend, natsbus.OpRespond, natsbus.OpKeys}
+var allOps = []string{natsbus.OpList, natsbus.OpStatus, natsbus.OpCapture, natsbus.OpSend, natsbus.OpRespond, natsbus.OpKeys, natsbus.OpSpawn}
 
 // fakeRPC records requests and answers with canned data. An agent named
 // "ghost" doesn't exist; "slow" blocks until the request is canceled;
-// "boom" panics.
+// "lazy" takes lazyDelay to answer; "boom" panics.
 type fakeRPC struct {
 	mu   sync.Mutex
 	got  []any
@@ -47,11 +47,19 @@ func (f *fakeRPC) check(ctx context.Context, agent string) error {
 		close(f.slow)
 		<-ctx.Done()
 		return ctx.Err()
+	case "lazy":
+		select {
+		case <-time.After(lazyDelay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	case "boom":
 		panic("handler bug")
 	}
 	return nil
 }
+
+const lazyDelay = 200 * time.Millisecond
 
 func (f *fakeRPC) List(ctx context.Context) (*natsbus.ListResponse, error) {
 	f.record(natsbus.ListRequest{})
@@ -90,6 +98,15 @@ func (f *fakeRPC) Respond(ctx context.Context, req natsbus.RespondRequest) error
 func (f *fakeRPC) Keys(ctx context.Context, req natsbus.KeysRequest) error {
 	f.record(req)
 	return f.check(ctx, req.Agent)
+}
+
+func (f *fakeRPC) Spawn(ctx context.Context, req natsbus.SpawnRequest) (*natsbus.SpawnResponse, error) {
+	f.record(req)
+	if err := f.check(ctx, req.Agent); err != nil {
+		return nil, err
+	}
+	return &natsbus.SpawnResponse{Name: req.Agent, Session: "agent-" + req.Agent, Backend: req.Backend,
+		SpawnedBy: req.SpawnedBy, Cwd: req.Cwd, TaskFile: req.TaskFile, Status: "idle"}, nil
 }
 
 // serveFake serves a fakeRPC as host "h1" and returns a client on a second
@@ -155,6 +172,78 @@ func TestRPC_AllOpsRoundTrip(t *testing.T) {
 	if got := fake.last(); got != (natsbus.KeysRequest{Agent: "worker", Text: "ls", Key: "Enter"}) {
 		t.Errorf("keys request = %+v", got)
 	}
+
+	spawned, err := client.Spawn(ctx, worker, natsbus.SpawnRequest{Agent: "ignored", Backend: "claude",
+		Cwd: "/srv/project", TaskFile: "tasks/build.md", TaskContent: "do the thing", TrustWorkspace: true, SpawnedBy: "lead@laptop"})
+	if err != nil {
+		t.Errorf("Spawn: %v", err)
+	}
+	wantReq := natsbus.SpawnRequest{Agent: "worker", Backend: "claude",
+		Cwd: "/srv/project", TaskFile: "tasks/build.md", TaskContent: "do the thing", TrustWorkspace: true, SpawnedBy: "lead@laptop"}
+	if got := fake.last(); got != wantReq {
+		t.Errorf("spawn request = %+v", got)
+	}
+	wantResp := natsbus.SpawnResponse{Name: "worker", Session: "agent-worker", Backend: "claude",
+		SpawnedBy: "lead@laptop", Cwd: "/srv/project", TaskFile: "tasks/build.md", Status: "idle"}
+	if spawned == nil || *spawned != wantResp {
+		t.Errorf("Spawn = %+v", spawned)
+	}
+}
+
+// A spawn's spawned_by is empty (a person spawned it) or name@host. A bare
+// name is refused: it would make the new agent a helper of the serving
+// host's agent of that name.
+func TestRPC_SpawnedByNeedsAHost(t *testing.T) {
+	fake, client, _ := serveFake(t, allOps, 0)
+
+	_, err := client.Spawn(context.Background(), worker, natsbus.SpawnRequest{Backend: "claude", SpawnedBy: "lead"})
+	if err == nil || !strings.Contains(err.Error(), "names no host") {
+		t.Errorf("spawned_by %q: err = %v", "lead", err)
+	}
+	if got := fake.last(); got != nil {
+		t.Errorf("handler ran for a bare spawned_by: %+v", got)
+	}
+
+	for _, by := range []string{"", "lead@laptop"} {
+		if _, err := client.Spawn(context.Background(), worker, natsbus.SpawnRequest{Backend: "claude", SpawnedBy: by}); err != nil {
+			t.Errorf("spawned_by %q: %v", by, err)
+			continue
+		}
+		if got, ok := fake.last().(natsbus.SpawnRequest); !ok || got.SpawnedBy != by {
+			t.Errorf("spawned_by %q: request = %+v", by, fake.last())
+		}
+	}
+}
+
+// Spawn waits out the far side's CLI startup, so it outlasts the client's
+// usual timeout; other ops keep it.
+func TestRPC_SpawnUsesTheLongerTimeout(t *testing.T) {
+	fake, client, _ := serveFake(t, allOps, 50*time.Millisecond)
+	lazy := natsbus.AgentRef{Name: "lazy", Host: "h1"}
+
+	_, err := client.Status(context.Background(), lazy)
+	if err == nil || !strings.Contains(err.Error(), `host "h1" did not answer status within 50ms`) {
+		t.Errorf("Status with a %s handler: err = %v", lazyDelay, err)
+	}
+
+	start := time.Now()
+	resp, err := client.Spawn(context.Background(), lazy, natsbus.SpawnRequest{Backend: "claude"})
+	if err != nil || resp.Name != "lazy" || resp.Status != "idle" {
+		t.Errorf("Spawn with a %s handler = %+v, %v", lazyDelay, resp, err)
+	}
+	if elapsed := time.Since(start); elapsed < lazyDelay {
+		t.Errorf("Spawn answered in %s, before the handler could finish", elapsed)
+	}
+	if got := fake.last(); got != (natsbus.SpawnRequest{Agent: "lazy", Backend: "claude"}) {
+		t.Errorf("spawn request = %+v", got)
+	}
+
+	// The caller's own deadline still bounds it.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := client.Spawn(ctx, lazy, natsbus.SpawnRequest{Backend: "claude"}); err == nil {
+		t.Error("Spawn outlived its context's deadline")
+	}
 }
 
 func TestRPC_RemoteErrorComesBackUnchanged(t *testing.T) {
@@ -199,6 +288,16 @@ func TestRPC_MalformedRequests(t *testing.T) {
 		{natsbus.OpRespond, `{"agent":"../x"}`, "invalid agent name"},
 		{natsbus.OpKeys, `{"agent":"worker"}`, "neither text nor key"},
 		{natsbus.OpStatus, ``, "invalid agent name"},
+		{natsbus.OpSpawn, `{"agent":"worker"}`, "names no backend"},
+		{natsbus.OpSpawn, `{"agent":"worker","backend":""}`, "names no backend"},
+		{natsbus.OpSpawn, `{"agent":"worker","backend":"claude","spawned_by":"a b"}`, "spawned_by"},
+		{natsbus.OpSpawn, `{"agent":"worker","backend":"claude","spawned_by":"x@bad host"}`, "spawned_by"},
+		{natsbus.OpSpawn, `{"agent":"worker","backend":"claude","spawned_by":"lead@"}`, "spawned_by"},
+		{natsbus.OpSpawn, `{"agent":"a b","backend":"claude"}`, "invalid agent name"},
+		{natsbus.OpSpawn, `{"agent":"x@h1","backend":"claude"}`, "invalid agent name"},
+		{natsbus.OpSpawn, `{"backend":"claude"}`, "invalid agent name"},
+		{natsbus.OpSpawn, `{"agent":"worker","backend":7}`, "malformed spawn request"},
+		{natsbus.OpSpawn, ``, "invalid agent name"},
 	}
 	for _, tt := range tests {
 		msg, err := other.Request(natsbus.SubjectRPC("h1", tt.op), []byte(tt.body), 2*time.Second)
@@ -226,6 +325,10 @@ func TestRPC_OnlyAllowedOpsServed(t *testing.T) {
 	err := client.Keys(context.Background(), worker, "ls", "")
 	if err == nil || !strings.Contains(err.Error(), `no bus answering for host "h1"`) {
 		t.Errorf("keys on a bus not serving it: err = %v", err)
+	}
+	_, err = client.Spawn(context.Background(), worker, natsbus.SpawnRequest{Backend: "claude"})
+	if err == nil || !strings.Contains(err.Error(), `no bus answering for host "h1"`) {
+		t.Errorf("spawn on a bus not serving it: err = %v", err)
 	}
 }
 

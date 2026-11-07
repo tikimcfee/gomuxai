@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
@@ -108,6 +110,56 @@ func (h rpcHandler) Respond(ctx context.Context, req natsbus.RespondRequest) err
 
 func (h rpcHandler) Keys(ctx context.Context, req natsbus.KeysRequest) error {
 	return remoteErr(h.s.Keys(ctx, req.Agent, req.Text, req.Key))
+}
+
+// Spawn starts an agent for another host's agent spawn name@host. The
+// request has no --skip-permissions or --resume: a peer starts an agent on
+// the permission settings of the directory it names, on a backend this
+// host knows (built in, or the bus's own --backend-config). Paths are this
+// host's; with no Cwd the agent
+// starts in the home directory of the user the bus runs as, since the
+// bus's own working directory is wherever it happened to be started.
+func (h rpcHandler) Spawn(ctx context.Context, req natsbus.SpawnRequest) (*natsbus.SpawnResponse, error) {
+	cwd := req.Cwd
+	if cwd == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("no working directory given, and no home directory to start in: %w", err)
+		}
+		cwd = home
+	}
+	if err := checkCwd(cwd); err != nil {
+		return nil, err
+	}
+	taskFile := req.TaskFile
+	if taskFile != "" && !filepath.IsAbs(taskFile) {
+		taskFile = filepath.Join(cwd, taskFile)
+	}
+	agent, err := h.s.Spawn(ctx, SpawnOptions{
+		Name:           req.Agent,
+		Backend:        req.Backend,
+		TaskFile:       taskFile,
+		TaskContent:    req.TaskContent,
+		TrustWorkspace: req.TrustWorkspace,
+		SpawnedBy:      req.SpawnedBy,
+		Cwd:            cwd,
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp := &natsbus.SpawnResponse{
+		Name:      agent.Name,
+		Session:   agent.SessionName,
+		Backend:   agent.Backend,
+		SpawnedBy: agent.SpawnedBy,
+		Cwd:       agent.Cwd,
+		TaskFile:  taskFile,
+		Status:    string(AgentStatusUnknown),
+	}
+	if info, err := h.s.StatusInfo(ctx, agent.Name); err == nil {
+		resp.Status, resp.EndReason = string(info.Status), string(info.EndReason)
+	}
+	return resp, nil
 }
 
 // Keys sends text, then the special key, to an agent's session. Either may be

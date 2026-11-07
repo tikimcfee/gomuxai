@@ -253,6 +253,15 @@ clean up anything. An agent may clean up only its descendants, never itself
 named in the same command, since once the helper's record is gone nothing
 records whose they are.
 
+An agent spawned over the bus (`spawn name@host`) gets `spawned_by`
+`<caller>@<caller host>` on that host, or "" when a person spawned it.
+Such a parent names no local agent, so its helpers nest under nothing in
+`list` there, and only a person on that host can clean them up: `cleanup`
+doesn't cross hosts, and no agent there is their ancestor. The hub doesn't
+verify the name; it is the caller's claim, like a `[from name@host]` tag.
+It must carry a host: the bus refuses a bare `spawned_by`, which would make
+the new agent a helper of the serving host's agent of that name.
+
 `AgentService.Cleanup` types the backend's exit command (`/exit`) into an
 idle agent and waits 1.5s, so the CLI exits cleanly and its hooks record it.
 Then it stops pipe-pane, kills the session, deletes the agent's messages
@@ -1282,7 +1291,8 @@ than one. On the hub, each peer's leaf connection gets (`peerPermissions`):
 Each leaf also refuses, as `DenyImports`, requests for its own ops not in
 its `--remote-ops` and anything under its own `local.>`. The bus serves
 local clients every op; peers get `--remote-ops` (default `list,status,
-capture,send,respond`; `keys` is local-only).
+capture,send,respond`; `keys` and `spawn` are local-only unless listed,
+since `keys` types anything and `spawn` starts a process on the host).
 
 ### RPC ops
 
@@ -1303,12 +1313,23 @@ modes in your terminal.
 | `send` | `SendRequest` (`now`) → `SendResponse` (status, held, typed); none from older hosts | `send` | yes |
 | `respond` | `RespondRequest` (`approve`, `approve_always`, `deny`, `force`, `expect_tool`) → none | `approve`, `deny` | yes |
 | `keys` | `KeysRequest` (text, then a key) → none | `keys name@host` | no |
+| `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `trust_workspace`, `spawned_by`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
 
 `natsbus/ops_test.go` keeps `AllOps` and the server's op table in step. The
 remote side runs the same service code as a local call (`Send` holds a
 message for a busy Claude agent and refuses to type into dialogs;
 `RespondPermission` still checks the screen), and the CLI
-adds the `[from ...]` prefix before the request leaves. `cli/remote.go`
+adds the `[from ...]` prefix before the request leaves. For `spawn`, the
+caller reads `--task` from its own store and sends the content
+(`task_content`); `task_file` and `cwd` are paths on the remote host, `cwd`
+absolute (empty: the home directory of the user the bus runs as), and a relative
+`task_file` is relative to `cwd`. The caller refuses `--resume`,
+`--attach`, `--backend-config` and `--skip-permissions` for a remote spawn
+before sending; `SpawnRequest` has no field for the last two, so a peer
+can't ask for them either. `trust_workspace` is passed on: the serving host
+confirms the CLI's trust prompt for `cwd`. The client waits up to
+`SpawnTimeout` (2m) for the reply, since the far side sits out the CLI's
+startup first. `cli/remote.go`
 routes `name@host`: a bare name or `name@<this host>` stays local and needs
 no bus.
 
@@ -1364,7 +1385,10 @@ treated like SSH:
 - Links: TLS 1.3, certificates pinned by key; nkey authentication per host;
   no shared secrets, and only public bundles are copied.
 - Least privilege: fixed ops only, per-host `--remote-ops`, no raw keys
-  remotely by default, no general remote shell. Peers can't publish events
+  and no `spawn` remotely by default, no general remote shell. A host that
+  lists `spawn` lets every linked peer start an agent there (on a backend
+  it knows, never with `--skip-permissions`), in any directory its user can
+  reach, under a parent name the caller claims. Peers can't publish events
   as another host, and only receive replies under their own inbox.
 - Local clients: `127.0.0.1` only, nkey from a 0600 file, and the bus's
   certificate pinned by the client.

@@ -18,6 +18,7 @@ type RPCHandler interface {
 	Send(ctx context.Context, req SendRequest) (*SendResponse, error)
 	Respond(ctx context.Context, req RespondRequest) error
 	Keys(ctx context.Context, req KeysRequest) error
+	Spawn(ctx context.Context, req SpawnRequest) (*SpawnResponse, error)
 }
 
 // opFunc decodes an op's request, runs it, and returns the reply's data
@@ -69,6 +70,27 @@ var rpcOps = map[string]opFunc{
 			return nil, fmt.Errorf("keys request has neither text nor key")
 		}
 		return nil, h.Keys(ctx, req)
+	},
+	OpSpawn: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
+		var req SpawnRequest
+		if err := decodeAgent(OpSpawn, data, &req, &req.Agent); err != nil {
+			return nil, err
+		}
+		if req.Backend == "" {
+			return nil, fmt.Errorf("spawn request names no backend")
+		}
+		// A bare name would make the new agent a helper of this host's
+		// agent of that name, which could then clean it up.
+		if req.SpawnedBy != "" {
+			ref, err := ParseAgentRef(req.SpawnedBy)
+			if err != nil {
+				return nil, fmt.Errorf("spawn request's spawned_by: %w", err)
+			}
+			if ref.Host == "" {
+				return nil, fmt.Errorf("spawn request's spawned_by %q names no host: want name@host", req.SpawnedBy)
+			}
+		}
+		return h.Spawn(ctx, req)
 	},
 }
 

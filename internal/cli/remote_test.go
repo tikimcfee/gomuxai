@@ -56,6 +56,8 @@ func setupCLI(t *testing.T) {
 	t.Cleanup(func() {
 		cfg, store, tmuxClient, backends, agentService, busConnect = oldCfg, oldStore, oldTmux, oldBackends, oldService, oldConnect
 		statusVerbose, listHost, permissionExpect, keysNoEnter = false, "", "", false
+		spawnHost, spawnCwd, spawnTask, spawnResume = "", "", "", ""
+		spawnAttach, spawnSkipPermissions, spawnTrustWorkspace = false, false, false
 		hintOut, hinted = os.Stderr, false
 	})
 	hints = new(strings.Builder)
@@ -92,8 +94,13 @@ func createLiveAgent(t *testing.T, agent *storage.Agent) {
 // counter of bus connections.
 func serveAsH1(t *testing.T) *int {
 	t.Helper()
+	return serveAsH1With(t, append([]string{natsbus.OpKeys}, natsbus.DefaultRemoteOps...))
+}
+
+// serveAsH1With is serveAsH1 serving only ops.
+func serveAsH1With(t *testing.T, ops []string) *int {
+	t.Helper()
 	nc := natstest.Start(t)
-	ops := append([]string{natsbus.OpKeys}, natsbus.DefaultRemoteOps...)
 	stop, err := natsbus.ServeRPC(nc, "h1", service.NewRPCHandler(agentService), ops)
 	if err != nil {
 		t.Fatal(err)

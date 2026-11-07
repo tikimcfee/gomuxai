@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/discovery"
+	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
@@ -20,10 +21,12 @@ var (
 	spawnTask            string
 	spawnResume          string
 	spawnAttach          bool
+	spawnHost            string
+	spawnCwd             string
 )
 
 var spawnCmd = &cobra.Command{
-	Use:   "spawn <name> [task-file]",
+	Use:   "spawn <name>[@host] [task-file]",
 	Short: "Start a new agent in its own tmux session",
 	Long: `Spawn creates a new agent in a tmux session, running the backend's CLI
 (built in: claude, aider, agy).
@@ -62,15 +65,35 @@ directory the session ran in, whatever directory spawn runs from.
 --attach opens the new agent's tmux session in this terminal once it
 starts, as agent attach does (Ctrl-b d detaches; the agent keeps running).
 
+--cwd starts the agent in that directory instead of the one spawn runs
+from (a relative task file is then taken from spawn's directory).
+
 A custom backend (--backend-config <file>) is only known through that file:
-pass it again to status, wait, and watch for that agent.`,
+pass it again to status, wait, and watch for that agent.
+
+On another host: name@host (or --host) starts the agent on that host
+through the agent bus, as status, send and wait reach it there. That host's
+bus must allow it: spawn is off for other hosts unless its --remote-ops lists
+it (agent bus start --remote-ops list,status,capture,send,respond,spawn).
+Paths are that host's: --cwd must be absolute there, and without it the
+agent starts in the home directory of the user its bus runs as; a task file
+is a path there, relative to --cwd. --task is read from this host's tasks
+and sent as the first message. --trust-workspace is passed on: that host
+confirms the CLI's trust prompt for --cwd. --resume, --attach, --skip-permissions and
+--backend-config only work on the agent's own host: run spawn there for
+those. An agent spawned by agent lead on host laptop is recorded on the other
+host as a helper of lead@laptop, so it can reply with agent send lead@laptop;
+the other host takes that name on trust. cleanup doesn't reach other hosts:
+clean the agent up on its host.`,
 	Example: `  agent spawn researcher --backend claude
   agent spawn researcher --backend claude --task research-auth
   agent spawn builder --backend claude tasks/build.md
   agent spawn helper --backend aider
   agent spawn auto-worker --backend claude --skip-permissions
   agent spawn reviewer --backend agy --trust-workspace
-  agent spawn lead --backend claude --resume 3f34adff --attach`,
+  agent spawn lead --backend claude --resume 3f34adff --attach
+  agent spawn builder@hub --backend claude --cwd /srv/repo tasks/build.md
+  agent spawn builder --host hub --backend claude --task build`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: runSpawn,
 }
@@ -86,10 +109,21 @@ func init() {
 		"Continue this ended Claude or agy session as the agent (an id, the start of one, or a transcript's path)")
 	spawnCmd.Flags().BoolVar(&spawnAttach, "attach", false,
 		"Open the agent's tmux session in this terminal once it starts")
+	spawnCmd.Flags().StringVar(&spawnHost, "host", "",
+		"Start the agent on this host, through the agent bus (same as name@host)")
+	spawnCmd.Flags().StringVar(&spawnCwd, "cwd", "",
+		"Directory the agent starts in (on another host: an absolute path there)")
 }
 
 func runSpawn(cmd *cobra.Command, args []string) error {
-	name := args[0]
+	ref, remote, err := spawnTarget(args[0], spawnHost)
+	if err != nil {
+		return err
+	}
+	if remote {
+		return runRemoteSpawn(ref, args[1:])
+	}
+	name := ref.Name
 	var taskFile string
 	var taskContent string
 
@@ -107,6 +141,17 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	} else if len(args) > 1 {
 		taskFile = args[1]
+	}
+
+	var cwd string
+	if spawnCwd != "" {
+		if spawnResume != "" {
+			return fmt.Errorf("--cwd and --resume don't go together: a resumed agent starts where its session ran")
+		}
+		cwd = absPath(spawnCwd)
+		if taskFile != "" {
+			taskFile = absPath(taskFile) // the agent reads it from cwd
+		}
 	}
 
 	var resume string
@@ -135,6 +180,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		TrustWorkspace:  spawnTrustWorkspace,
 		SpawnedBy:       os.Getenv("AGENT_NAME"),
 		Resume:          resume,
+		Cwd:             cwd,
 	}
 
 	agent, err := agentService.Spawn(getContext(), opts)
@@ -145,7 +191,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Print(spawnSummary(agent, spawnTask, taskFile, resume))
+	where := ""
+	if cwd != "" {
+		where = "in " + cwd
+	}
+	fmt.Print(spawnSummary(agent, where, spawnTask, taskFile, resume))
 	if info, err := agentService.StatusInfo(getContext(), name); err == nil {
 		fmt.Println(spawnReadiness(name, info.Status))
 	}
@@ -153,6 +203,101 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return attachSession(agent.SessionName)
 	}
 	return nil
+}
+
+// spawnTarget reads spawn's name argument and --host: ref.Host is set, and
+// remote true, when either names another host. Naming this host is a local
+// spawn; naming two different hosts is an error.
+func spawnTarget(arg, host string) (ref natsbus.AgentRef, remote bool, err error) {
+	ref, remote, err = parseTarget(arg)
+	if err != nil {
+		return natsbus.AgentRef{}, false, err
+	}
+	if host == "" {
+		return ref, remote, nil
+	}
+	if err := natsbus.ValidateHost(host); err != nil {
+		return natsbus.AgentRef{}, false, err
+	}
+	argHost := ref.Host
+	if strings.Contains(arg, "@") && argHost == "" {
+		argHost = cfg.Host // name@<this host>, which parseTarget made bare
+	}
+	if argHost != "" && argHost != host {
+		return natsbus.AgentRef{}, false, fmt.Errorf("%s names host %s, but --host says %s: give one", arg, argHost, host)
+	}
+	if !isRemoteHost(host) {
+		return natsbus.AgentRef{Name: ref.Name}, false, nil
+	}
+	return natsbus.AgentRef{Name: ref.Name, Host: host}, true, nil
+}
+
+// runRemoteSpawn starts ref.Name on ref.Host through the agent bus. rest is
+// spawn's arguments after the name: the task file, if any.
+func runRemoteSpawn(ref natsbus.AgentRef, rest []string) error {
+	for _, f := range []struct {
+		set  bool
+		flag string
+	}{
+		{spawnResume != "", "--resume"},
+		{spawnAttach, "--attach"},
+		{spawnSkipPermissions, "--skip-permissions"},
+		{backendConfig != "", "--backend-config"},
+	} {
+		if f.set {
+			return fmt.Errorf("%s works only for an agent on this host: to spawn %s with it, run agent spawn on %s", f.flag, ref.Name, ref.Host)
+		}
+	}
+	if spawnCwd != "" && !strings.HasPrefix(spawnCwd, "/") {
+		return fmt.Errorf("--cwd %s: give an absolute path on %s (a relative one would be relative to wherever its bus runs)", spawnCwd, ref.Host)
+	}
+	req := natsbus.SpawnRequest{
+		Backend:        cfg.Backend,
+		Cwd:            spawnCwd,
+		TrustWorkspace: spawnTrustWorkspace,
+	}
+	if me := os.Getenv("AGENT_NAME"); me != "" {
+		req.SpawnedBy = natsbus.AgentRef{Name: me, Host: cfg.Host}.String()
+	}
+	if spawnTask != "" {
+		task, err := getTask(spawnTask)
+		if err != nil {
+			return err
+		}
+		req.TaskContent = task.Content // its source file, if any, is a path here
+	} else if len(rest) > 0 {
+		req.TaskFile = rest[0]
+	}
+
+	var resp *natsbus.SpawnResponse
+	err := callRemote(ref.Host, func(c *natsbus.RPCClient) (err error) {
+		resp, err = c.Spawn(getContext(), ref, req)
+		return err
+	})
+	var re *natsbus.RemoteError
+	switch {
+	case errors.As(err, &re):
+		return fmt.Errorf("%s couldn't spawn %s: %w", ref.Host, ref.Name, err)
+	case err != nil:
+		if strings.Contains(err.Error(), "no bus answering") {
+			hint("%s serves spawn to other hosts only if its bus runs with --remote-ops listing spawn (agent bus status there shows what it allows)", ref.Host)
+		}
+		return err
+	}
+
+	agent := &storage.Agent{Name: ref.String(), SessionName: resp.Session, Backend: resp.Backend, SpawnedBy: resp.SpawnedBy}
+	fmt.Print(spawnSummary(agent, fmt.Sprintf("on %s in %s", ref.Host, resp.Cwd), spawnTask, resp.TaskFile, ""))
+	fmt.Println(remoteSpawnReadiness(ref, service.AgentStatus(resp.Status)))
+	return nil
+}
+
+// remoteSpawnReadiness is spawnReadiness for an agent on another host,
+// where logs don't reach.
+func remoteSpawnReadiness(ref natsbus.AgentRef, status service.AgentStatus) string {
+	if status == service.AgentStatusEnded {
+		return fmt.Sprintf("Its session has already ended: agent capture %s shows its screen.", ref)
+	}
+	return spawnReadiness(ref.String(), status)
 }
 
 // resumableSession finds the session --resume names and checks that an
@@ -205,11 +350,15 @@ func spawnReadiness(name string, status service.AgentStatus) string {
 	return fmt.Sprintf("Its status is %s so far: agent wait %s --for idle --timeout 1m waits until it's ready.", status, name)
 }
 
-// spawnSummary says what spawn did: the new agent, its parent if an agent
+// spawnSummary says what spawn did: the new agent, where it started (where,
+// e.g. "on hub in /srv", if not the obvious place), its parent if an agent
 // spawned it, and what it was sent first.
-func spawnSummary(agent *storage.Agent, task, taskFile, resume string) string {
+func spawnSummary(agent *storage.Agent, where, task, taskFile, resume string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Spawned agent %s (session %s, backend %s)", agent.Name, agent.SessionName, agent.Backend)
+	if where != "" {
+		fmt.Fprintf(&b, " %s", where)
+	}
 	if agent.SpawnedBy != "" {
 		fmt.Fprintf(&b, ", a helper of %s", agent.SpawnedBy)
 	}

@@ -29,7 +29,8 @@ import (
 const SubjectRoot = "gomux"
 
 // RPC operations a bus serves. Each host's config allowlists which ones
-// remote callers may use; OpKeys is off for remote callers by default.
+// remote callers may use; OpKeys and OpSpawn are off for remote callers by
+// default.
 const (
 	OpList    = "list"    // ListRequest -> ListResponse
 	OpStatus  = "status"  // StatusRequest -> StatusResponse
@@ -37,10 +38,11 @@ const (
 	OpSend    = "send"    // SendRequest -> (no data)
 	OpRespond = "respond" // RespondRequest -> (no data): approve / deny
 	OpKeys    = "keys"    // KeysRequest -> (no data): raw keys, local-only by default
+	OpSpawn   = "spawn"   // SpawnRequest -> SpawnResponse: starts an agent, local-only by default
 )
 
 // AllOps lists every RPC op a bus serves to local clients.
-var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys}
+var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys, OpSpawn}
 
 // DefaultRemoteOps are the ops a bus serves to other hosts unless configured otherwise.
 var DefaultRemoteOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond}
@@ -232,6 +234,40 @@ type KeysRequest struct {
 	Agent string `json:"agent"`
 	Text  string `json:"text,omitempty"` // literal text, sent before Key
 	Key   string `json:"key,omitempty"`  // special key, e.g. "Enter", "c-c"
+}
+
+// SpawnRequest starts an agent on the host that serves it (agent spawn
+// name@host). Paths are on that host.
+type SpawnRequest struct {
+	Agent   string `json:"agent"`
+	Backend string `json:"backend"`
+	// Cwd is the directory the agent starts in: absolute, or empty for the
+	// home directory of the user the host's bus runs as.
+	Cwd string `json:"cwd,omitempty"`
+	// TaskFile asks the agent to read that file first; a relative path is
+	// relative to Cwd. TaskContent, if set, is the first message instead.
+	TaskFile       string `json:"task_file,omitempty"`
+	TaskContent    string `json:"task_content,omitempty"`
+	TrustWorkspace bool   `json:"trust_workspace,omitempty"`
+	// SpawnedBy is the calling agent as "name@host" (a bare name is
+	// refused), recorded as the new agent's parent; empty when a person
+	// spawned it. The serving host can't verify it, as with a message's
+	// [from ...] tag.
+	SpawnedBy string `json:"spawned_by,omitempty"`
+}
+
+// SpawnResponse describes the agent a spawn started, as a local spawn
+// prints it.
+type SpawnResponse struct {
+	Name      string `json:"name"`
+	Session   string `json:"session"`
+	Backend   string `json:"backend"`
+	SpawnedBy string `json:"spawned_by,omitempty"`
+	Cwd       string `json:"cwd"`
+	TaskFile  string `json:"task_file,omitempty"` // as resolved against Cwd
+	// Status is the agent's resolved status right after it started.
+	Status    string `json:"status"`
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // StatusEvent is published on SubjectStatus whenever an agent's reported
