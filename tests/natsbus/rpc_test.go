@@ -174,12 +174,12 @@ func TestRPC_AllOpsRoundTrip(t *testing.T) {
 	}
 
 	spawned, err := client.Spawn(ctx, worker, natsbus.SpawnRequest{Agent: "ignored", Backend: "claude",
-		Cwd: "/srv/project", TaskFile: "tasks/build.md", TaskContent: "do the thing", TrustWorkspace: true, SpawnedBy: "lead@laptop"})
+		Cwd: "/srv/project", TaskFile: "tasks/build.md", TaskContent: "do the thing", SpawnedBy: "lead@laptop"})
 	if err != nil {
 		t.Errorf("Spawn: %v", err)
 	}
 	wantReq := natsbus.SpawnRequest{Agent: "worker", Backend: "claude",
-		Cwd: "/srv/project", TaskFile: "tasks/build.md", TaskContent: "do the thing", TrustWorkspace: true, SpawnedBy: "lead@laptop"}
+		Cwd: "/srv/project", TaskFile: "tasks/build.md", TaskContent: "do the thing", SpawnedBy: "lead@laptop"}
 	if got := fake.last(); got != wantReq {
 		t.Errorf("spawn request = %+v", got)
 	}

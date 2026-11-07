@@ -433,8 +433,11 @@ host's bus is down, not linked, or doesn't serve that op.
 A remote spawn's `--cwd` and task file are paths on that host (`--cwd`
 absolute; without it, the agent starts in that user's home directory);
 `--task` is read from your own store and its content sent. `--resume`,
-`--attach`, `--backend-config`, and `--skip-permissions` are refused: run
-spawn on that host for those. Spawned by agent `lead` on `laptop`, its
+`--attach`, `--backend-config`, `--skip-permissions`, and
+`--trust-workspace` are refused: run spawn on that host for those. A host
+that lists `spawn` lets every linked peer run commands there as its user
+(spawn an agent, then approve its prompts), so list it only where you'd
+give peers a shell. Spawned by agent `lead` on `laptop`, its
 parent there is `lead@laptop`, and it replies with `agent send
 lead@laptop`; spawned by a person, it has no parent. Spawn prints the agent as
 `name@host` with its status, so `agent wait helper@hub` follows it.

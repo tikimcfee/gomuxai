@@ -1313,7 +1313,7 @@ modes in your terminal.
 | `send` | `SendRequest` (`now`) → `SendResponse` (status, held, typed); none from older hosts | `send` | yes |
 | `respond` | `RespondRequest` (`approve`, `approve_always`, `deny`, `force`, `expect_tool`) → none | `approve`, `deny` | yes |
 | `keys` | `KeysRequest` (text, then a key) → none | `keys name@host` | no |
-| `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `trust_workspace`, `spawned_by`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
+| `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `spawned_by`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
 
 `natsbus/ops_test.go` keeps `AllOps` and the server's op table in step. The
 remote side runs the same service code as a local call (`Send` holds a
@@ -1324,10 +1324,14 @@ caller reads `--task` from its own store and sends the content
 (`task_content`); `task_file` and `cwd` are paths on the remote host, `cwd`
 absolute (empty: the home directory of the user the bus runs as), and a relative
 `task_file` is relative to `cwd`. The caller refuses `--resume`,
-`--attach`, `--backend-config` and `--skip-permissions` for a remote spawn
-before sending; `SpawnRequest` has no field for the last two, so a peer
-can't ask for them either. `trust_workspace` is passed on: the serving host
-confirms the CLI's trust prompt for `cwd`. The client waits up to
+`--attach`, `--backend-config`, `--skip-permissions` and
+`--trust-workspace` for a remote spawn before sending; `SpawnRequest` has
+no field for `--skip-permissions`, `--trust-workspace` or `--resume`, so a
+peer can't ask for them either. (Confirming a trust prompt is saved in the
+host user's CLI config and would outlast the agent.) So `cwd` must be a
+directory the CLI already trusts there, or a person there confirms the
+prompt. A `spawned_by` naming the serving host itself is refused: that
+agent didn't ask over the bus. The client waits up to
 `SpawnTimeout` (2m) for the reply, since the far side sits out the CLI's
 startup first. `cli/remote.go`
 routes `name@host`: a bare name or `name@<this host>` stays local and needs
@@ -1385,11 +1389,13 @@ treated like SSH:
 - Links: TLS 1.3, certificates pinned by key; nkey authentication per host;
   no shared secrets, and only public bundles are copied.
 - Least privilege: fixed ops only, per-host `--remote-ops`, no raw keys
-  and no `spawn` remotely by default, no general remote shell. A host that
-  lists `spawn` lets every linked peer start an agent there (on a backend
-  it knows, never with `--skip-permissions`), in any directory its user can
-  reach, under a parent name the caller claims. Peers can't publish events
-  as another host, and only receive replies under their own inbox.
+  and no `spawn` remotely by default, no general remote shell. Listing
+  `spawn` on a host amounts to letting every linked peer run commands
+  there as the bus's user, at least as much as `keys`: with `send` and
+  `respond` (on by default) a peer can spawn a Claude agent and approve its
+  Bash prompts, or spawn aider and send it `/run ...`. List it only on a
+  host whose peers you'd give a shell. Peers can't publish events as
+  another host, and only receive replies under their own inbox.
 - Local clients: `127.0.0.1` only, nkey from a 0600 file, and the bus's
   certificate pinned by the client.
 - The hub is trusted as the router: it sees everything that crosses it and

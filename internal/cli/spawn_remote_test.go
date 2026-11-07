@@ -10,6 +10,7 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
+	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
@@ -55,6 +56,7 @@ func TestSpawnTarget(t *testing.T) {
 func setupSpawnCLI(t *testing.T) {
 	t.Helper()
 	setupCLI(t)
+	t.Setenv("AGENT_NAME", "") // a person's spawn, unless a test says otherwise
 	path := filepath.Join(t.TempDir(), "catty.json")
 	if err := os.WriteFile(path, []byte(`{"name": "catty", "launch_command": "cat", "init_message_format": "read %s"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -70,9 +72,19 @@ func killAfter(t *testing.T, name string) {
 	t.Cleanup(func() { tmuxClient.KillSession(cfg.SessionName(name)) })
 }
 
+// serveSpawnAsH1 serves every op as h1 with a service that knows itself as
+// h1, as a real bus's does, so it takes lead@local for a parent on another
+// host. It shares this host's store and tmux, so records are here to check.
+func serveSpawnAsH1(t *testing.T) {
+	t.Helper()
+	h1Cfg := *cfg
+	h1Cfg.Host = "h1"
+	serveAs(t, "h1", service.NewAgentService(&h1Cfg, store, tmuxClient, backends), natsbus.AllOps)
+}
+
 func TestRemoteSpawn(t *testing.T) {
 	setupSpawnCLI(t)
-	serveAsH1With(t, natsbus.AllOps)
+	serveSpawnAsH1(t)
 	t.Setenv("AGENT_NAME", "lead")
 	dir := t.TempDir()
 	killAfter(t, "builder")
@@ -138,17 +150,18 @@ func TestRemoteSpawn_RefusesLocalOnlyFlags(t *testing.T) {
 		{"--resume", func() { spawnResume = "3f34adff" }},
 		{"--attach", func() { spawnAttach = true }},
 		{"--skip-permissions", func() { spawnSkipPermissions = true }},
+		{"--trust-workspace", func() { spawnTrustWorkspace = true }},
 		{"--backend-config", func() { backendConfig = "my-cli.json" }},
 	}
 	for _, tt := range tests {
-		spawnResume, spawnAttach, spawnSkipPermissions, backendConfig = "", false, false, ""
+		spawnResume, spawnAttach, spawnSkipPermissions, spawnTrustWorkspace, backendConfig = "", false, false, false, ""
 		tt.set()
 		err := runSpawn(spawnCmd, []string{"x@hub"})
 		if want := tt.flag + " works only for an agent on this host: to spawn x with it, run agent spawn on hub"; err == nil || err.Error() != want {
 			t.Errorf("%s: err = %v, want %q", tt.flag, err, want)
 		}
 	}
-	spawnResume, spawnAttach, spawnSkipPermissions, backendConfig = "", false, false, ""
+	spawnResume, spawnAttach, spawnSkipPermissions, spawnTrustWorkspace, backendConfig = "", false, false, false, ""
 
 	spawnCwd = "src/repo"
 	if err := runSpawn(spawnCmd, []string{"x@hub"}); err == nil || !strings.Contains(err.Error(), "--cwd src/repo: give an absolute path on hub") {

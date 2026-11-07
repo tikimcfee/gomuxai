@@ -113,13 +113,16 @@ func (h rpcHandler) Keys(ctx context.Context, req natsbus.KeysRequest) error {
 }
 
 // Spawn starts an agent for another host's agent spawn name@host. The
-// request has no --skip-permissions or --resume: a peer starts an agent on
-// the permission settings of the directory it names, on a backend this
-// host knows (built in, or the bus's own --backend-config). Paths are this
-// host's; with no Cwd the agent
+// request has no --skip-permissions, --trust-workspace or --resume: a peer
+// starts an agent on the permission settings of the directory it names, on
+// a backend this host knows (built in, or the bus's own --backend-config).
+// Paths are this host's; with no Cwd the agent
 // starts in the home directory of the user the bus runs as, since the
 // bus's own working directory is wherever it happened to be started.
 func (h rpcHandler) Spawn(ctx context.Context, req natsbus.SpawnRequest) (*natsbus.SpawnResponse, error) {
+	if ref, err := natsbus.ParseAgentRef(req.SpawnedBy); err == nil && ref.Host == h.s.cfg.Host {
+		return nil, fmt.Errorf("spawned_by %s names an agent on this host (%s), but the spawn came over the bus", req.SpawnedBy, h.s.cfg.Host)
+	}
 	cwd := req.Cwd
 	if cwd == "" {
 		home, err := os.UserHomeDir()
@@ -136,13 +139,12 @@ func (h rpcHandler) Spawn(ctx context.Context, req natsbus.SpawnRequest) (*natsb
 		taskFile = filepath.Join(cwd, taskFile)
 	}
 	agent, err := h.s.Spawn(ctx, SpawnOptions{
-		Name:           req.Agent,
-		Backend:        req.Backend,
-		TaskFile:       taskFile,
-		TaskContent:    req.TaskContent,
-		TrustWorkspace: req.TrustWorkspace,
-		SpawnedBy:      req.SpawnedBy,
-		Cwd:            cwd,
+		Name:        req.Agent,
+		Backend:     req.Backend,
+		TaskFile:    taskFile,
+		TaskContent: req.TaskContent,
+		SpawnedBy:   req.SpawnedBy,
+		Cwd:         cwd,
 	})
 	if err != nil {
 		return nil, err

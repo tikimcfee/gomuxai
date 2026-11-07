@@ -237,7 +237,10 @@ type KeysRequest struct {
 }
 
 // SpawnRequest starts an agent on the host that serves it (agent spawn
-// name@host). Paths are on that host.
+// name@host). Paths are on that host. It has no field for
+// --skip-permissions, --trust-workspace, or --resume: a peer can't ask for
+// them. (Confirming a workspace trust prompt is saved in the host user's
+// CLI config, so it would outlast the agent.)
 type SpawnRequest struct {
 	Agent   string `json:"agent"`
 	Backend string `json:"backend"`
@@ -246,9 +249,8 @@ type SpawnRequest struct {
 	Cwd string `json:"cwd,omitempty"`
 	// TaskFile asks the agent to read that file first; a relative path is
 	// relative to Cwd. TaskContent, if set, is the first message instead.
-	TaskFile       string `json:"task_file,omitempty"`
-	TaskContent    string `json:"task_content,omitempty"`
-	TrustWorkspace bool   `json:"trust_workspace,omitempty"`
+	TaskFile    string `json:"task_file,omitempty"`
+	TaskContent string `json:"task_content,omitempty"`
 	// SpawnedBy is the calling agent as "name@host" (a bare name is
 	// refused), recorded as the new agent's parent; empty when a person
 	// spawned it. The serving host can't verify it, as with a message's

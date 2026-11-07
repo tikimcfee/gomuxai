@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/backend"
+	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 	"github.com/tikimcfee/gomuxai/internal/service"
@@ -170,5 +172,49 @@ func TestSpawn_Cwd(t *testing.T) {
 	}
 	if got := panePath(t, env.cfg.SessionName("placed")); got != dir {
 		t.Errorf("pane starts in %q, want %q", got, dir)
+	}
+}
+
+// A peer can't name an agent on the serving host as the parent: the spawn
+// came over the bus, so that agent didn't ask for it.
+func TestRPC_SpawnRefusesParentOnServingHost(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.Host = "h1"
+	client := serveSpawn(t, env)
+
+	_, err := client.Spawn(context.Background(), natsbus.AgentRef{Name: "imposter", Host: "h1"},
+		natsbus.SpawnRequest{Backend: "catty", Cwd: t.TempDir(), SpawnedBy: "victim@h1"})
+	if err == nil || !strings.Contains(err.Error(), "names an agent on this host (h1)") {
+		t.Errorf("err = %v, want a refusal", err)
+	}
+	if a, _ := env.store.GetAgent(context.Background(), "imposter"); a != nil {
+		t.Errorf("spawned anyway: %+v", a)
+	}
+}
+
+// A spawn whose context ends mid-startup (a bus stopping cancels the
+// requests it is serving) leaves neither its session nor its record.
+func TestSpawn_CanceledDuringStartupLeavesNothing(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.StartupDelay = 2 * time.Second
+	fake := &fakeHookBackend{ClaudeBackend: namedagents.NewClaudeBackend()}
+	env.backends.Register(fake)
+	env.backends.RegisterFactory("fakehooks", func(backend.ProviderConfig) backend.Provider { return fake })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := env.service.Spawn(ctx, service.SpawnOptions{Name: "stopped", Backend: "fakehooks"})
+	if err == nil {
+		env.tmux.KillSession(env.cfg.SessionName("stopped"))
+		t.Fatal("spawn succeeded after its context ended")
+	}
+	if a, _ := env.store.GetAgent(context.Background(), "stopped"); a != nil {
+		t.Errorf("a canceled spawn left its record: %+v", a)
+	}
+	if ok, _ := env.tmux.SessionExists(env.cfg.SessionName("stopped")); ok {
+		env.tmux.KillSession(env.cfg.SessionName("stopped"))
+		t.Error("a canceled spawn left its tmux session")
 	}
 }

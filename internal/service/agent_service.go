@@ -162,7 +162,9 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	abort := func(err error) (*storage.Agent, error) {
 		s.tmux.KillSession(sessionName)
 		if opts.replacing == nil {
-			s.storage.DeleteAgent(ctx, opts.Name)
+			// Even when ctx is why it failed (a bus stopping mid-spawn
+			// cancels its requests), the record must go with the session.
+			s.storage.DeleteAgent(context.WithoutCancel(ctx), opts.Name)
 			_ = os.RemoveAll(s.cfg.AgentDir(opts.Name))
 		} // a failed resume leaves the agent ended, to resume or clean up
 		return nil, err

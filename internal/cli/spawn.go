@@ -78,12 +78,13 @@ it (agent bus start --remote-ops list,status,capture,send,respond,spawn).
 Paths are that host's: --cwd must be absolute there, and without it the
 agent starts in the home directory of the user its bus runs as; a task file
 is a path there, relative to --cwd. --task is read from this host's tasks
-and sent as the first message. --trust-workspace is passed on: that host
-confirms the CLI's trust prompt for --cwd. --resume, --attach, --skip-permissions and
---backend-config only work on the agent's own host: run spawn there for
-those. An agent spawned by agent lead on host laptop is recorded on the other
-host as a helper of lead@laptop, so it can reply with agent send lead@laptop;
-the other host takes that name on trust. cleanup doesn't reach other hosts:
+and sent as the first message. --resume, --attach, --skip-permissions,
+--trust-workspace and --backend-config only work on the agent's own host:
+run spawn there for those (so --cwd must be a directory the CLI already
+trusts there, or a person there confirms its trust prompt). An agent
+spawned by agent lead on host laptop is recorded on the other host as a
+helper of lead@laptop, so it can reply with agent send lead@laptop; the
+other host takes that name on trust. cleanup doesn't reach other hosts:
 clean the agent up on its host.`,
 	Example: `  agent spawn researcher --backend claude
   agent spawn researcher --backend claude --task research-auth
@@ -242,6 +243,7 @@ func runRemoteSpawn(ref natsbus.AgentRef, rest []string) error {
 		{spawnResume != "", "--resume"},
 		{spawnAttach, "--attach"},
 		{spawnSkipPermissions, "--skip-permissions"},
+		{spawnTrustWorkspace, "--trust-workspace"},
 		{backendConfig != "", "--backend-config"},
 	} {
 		if f.set {
@@ -252,9 +254,8 @@ func runRemoteSpawn(ref natsbus.AgentRef, rest []string) error {
 		return fmt.Errorf("--cwd %s: give an absolute path on %s (a relative one would be relative to wherever its bus runs)", spawnCwd, ref.Host)
 	}
 	req := natsbus.SpawnRequest{
-		Backend:        cfg.Backend,
-		Cwd:            spawnCwd,
-		TrustWorkspace: spawnTrustWorkspace,
+		Backend: cfg.Backend,
+		Cwd:     spawnCwd,
 	}
 	if me := os.Getenv("AGENT_NAME"); me != "" {
 		req.SpawnedBy = natsbus.AgentRef{Name: me, Host: cfg.Host}.String()
