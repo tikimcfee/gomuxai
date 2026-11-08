@@ -25,6 +25,19 @@ type RemoteError struct {
 
 func (e *RemoteError) Error() string { return e.Msg }
 
+// NoRespondersError is the error for a request that no bus answered:
+// host's bus isn't running or linked, doesn't serve op to other hosts, or
+// host isn't a name any bus has (subjects are case-sensitive, so a host is
+// reached only by its own spelling).
+type NoRespondersError struct {
+	Host string
+	Op   string
+}
+
+func (e *NoRespondersError) Error() string {
+	return fmt.Sprintf("no bus answering for host %q (is its bus running and linked, and does it allow %q?)", e.Host, e.Op)
+}
+
 // RPCClient calls the RPC ops of other hosts' buses.
 type RPCClient struct {
 	nc      *nats.Conn
@@ -166,7 +179,7 @@ func (c *RPCClient) call(ctx context.Context, host, op string, req, out any) err
 	msg, err := c.nc.RequestWithContext(ctx, SubjectRPC(host, op), data)
 	switch {
 	case errors.Is(err, nats.ErrNoResponders):
-		return fmt.Errorf("no bus answering for host %q (is its bus running and linked, and does it allow %q?)", host, op)
+		return &NoRespondersError{Host: host, Op: op}
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout):
 		return fmt.Errorf("host %q did not answer %s within %s", host, op, c.timeout)
 	case err != nil:

@@ -417,6 +417,15 @@ func TestSendKeys_PaneInAMode(t *testing.T) {
 	if err := client.SendSpecialKey(sessionName, "Enter"); err != nil {
 		t.Fatalf("Enter into a pane in copy mode: %v", err)
 	}
+	// A paste (how messages are typed) leaves the mode too.
+	enter("copy-mode", "-e")
+	if err := client.PasteText(sessionName, "pasted out of copy mode"); err != nil {
+		t.Fatalf("pasting into a pane in copy mode: %v", err)
+	}
+	if inMode() != "0" {
+		t.Error("pane still in copy mode after a paste")
+	}
+	client.SendSpecialKey(sessionName, "Enter")
 	enter("clock-mode")
 	if err := client.SendSpecialKey(sessionName, "x"); err != nil {
 		t.Fatalf("a key into a pane in clock mode: %v", err)
@@ -435,6 +444,9 @@ func TestSendKeys_PaneInAMode(t *testing.T) {
 	// ASCII ends of the message: typed by the terminal, then echoed by cat.
 	if n := strings.Count(output, "tell me when gated."); n < 2 {
 		t.Errorf("message not typed into the program (%d copies); pane:\n%s", n, output)
+	}
+	if n := strings.Count(output, "pasted out of copy mode"); n < 2 {
+		t.Errorf("paste not typed into the program (%d copies); pane:\n%s", n, output)
 	}
 	lines := map[string]int{}
 	for _, line := range strings.Split(output, "\n") {
@@ -984,5 +996,73 @@ func TestPaneTargeting_IgnoresActiveWindow(t *testing.T) {
 			t.Fatalf("command never ran in the agent pane; capture:\n%s", output)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestPasteText_OnePasteWhenTheAppAsks(t *testing.T) {
+	requireTmux(t)
+	client, err := tmux.NewClient()
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+	// Long enough to be split; it can't end the paste early.
+	text := strings.Repeat("0123456789", 150) + "\x1b[201~" + strings.Repeat("abcdefghij", 150) + "\nlast line"
+	want := strings.ReplaceAll(text, "\x1b[201~", "")
+
+	for _, tt := range []struct {
+		name   string
+		asks   bool
+		wantIn string
+	}{
+		{"asks for bracketed paste", true, "\x1b[200~" + want + "\x1b[201~"},
+		{"doesn't ask", false, want},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionName := uniqueSessionName(t)
+			defer cleanupSession(sessionName)
+			if err := client.CreateSession(sessionName, nil); err != nil {
+				t.Fatalf("creating session: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+
+			// The pane's app takes its input raw and records every byte, as
+			// a CLI reads its terminal.
+			out := filepath.Join(t.TempDir(), "in")
+			mode := ""
+			if tt.asks {
+				mode = `printf '\033[?2004h'; `
+			}
+			client.SendKeys(sessionName, fmt.Sprintf(`stty raw -echo; %secho READY; cat > %s`, mode, out))
+			client.SendSpecialKey(sessionName, "Enter")
+			waitFor(t, func() bool {
+				screen, _ := client.Capture(sessionName, 0)
+				return strings.Contains(screen, "READY")
+			})
+
+			if err := client.PasteText(sessionName, text); err != nil {
+				t.Fatalf("PasteText: %v", err)
+			}
+			var got string
+			waitFor(t, func() bool {
+				data, _ := os.ReadFile(out)
+				got = string(data)
+				return len(got) >= len(tt.wantIn)
+			})
+			if got != tt.wantIn {
+				t.Errorf("the app read %d bytes:\n%q\nwant %d:\n%q", len(got), got, len(tt.wantIn), tt.wantIn)
+			}
+		})
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if cond() {
+			return
+		}
+	}
+	if !cond() {
+		t.Fatal("timed out")
 	}
 }
