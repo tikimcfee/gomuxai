@@ -115,6 +115,13 @@ with that project's permission settings; `--skip-permissions` bypasses
 them (use with caution). Inside an agent, name helpers
 `<yourname>-<role>`.
 
+`--resume <session>` makes the new agent continue a Claude or agy session
+that has ended, in the directory it ran in; `-c`/`--continue` picks the
+session the CLI's own `--continue` would (Claude: the most recent in this
+directory, or `--cwd`'s; agy: the same, falling back to a parent or child
+directory), says which (id, title, when last active), and goes on as
+`--resume` with it. Either refuses a session still running.
+
 ### 2. Send
 
 ```bash
@@ -285,7 +292,8 @@ A reboot (or a killed tmux server) ends every agent: `ended (gone)`.
 in, keeping its name, backend, parent (its helpers stay its helpers), its
 own state keys and `_result`, and delivers messages held for it. Claude
 and agy agents only. Inside an agent, only your own helpers. To continue
-a session no agent owns, `agent spawn <name> --resume <session>`.
+a session no agent owns, `agent spawn <name> --resume <session>`, or
+`--continue` for the most recent one in the directory.
 
 ## Coordination Patterns
 

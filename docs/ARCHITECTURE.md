@@ -311,6 +311,21 @@ enters the directory it ran in. The service then:
 Its name, backend and parent stay, so its helpers stay its helpers. A
 failed resume leaves the agent ended (its record and files are kept).
 
+### Continue: picking the session
+
+`spawn --continue` (`continueSession`, `discovery.Continue`) picks the
+session the CLI's own `--continue` would, then goes through `spawn
+--resume`'s path with its id, so the record knows the session and a running
+one is refused (`checkResumable`). Passing `-c` to the CLI instead would
+leave the agent not knowing which session it is on. Claude's `-c` is "the
+most recent conversation in the current directory": the session whose
+recorded cwd is the directory (Claude keeps a project's sessions in one
+folder named for it) with the newest transcript. agy's is the most recent
+conversation in its workspace, falling back (agy's changelog) to one in a
+parent or child directory. Subagent sessions are never picked. The
+directory is `--cwd`, or spawn's; the agent starts where the picked
+session ran, as with `--resume`.
+
 ## Messages
 
 `agent send` (`AgentService.Send`) types the message and Enter, or holds it
