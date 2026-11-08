@@ -1237,8 +1237,11 @@ All under `gomux.` (`natsbus/contract.go`):
 | `_INBOX.<host>.>` | replies to `<host>`'s requests; each host has its own prefix |
 
 Host and agent names share one pattern, `^[A-Za-z0-9][A-Za-z0-9_-]*$`, so
-they can't contain `.`, `*`, `>`, or spaces. The host name is `$AGENT_HOST`
-or the short hostname with unsafe characters replaced.
+they can't contain `.`, `*`, `>`, or spaces. The host name is `$AGENT_HOST`,
+else the name in the bus identity's `host` file (`.gomuxai/bus/host`), else
+the machine's name with unsafe characters replaced: macOS's LocalHostName
+(`scutil --get LocalHostName`), since its kernel hostname follows DHCP and
+reverse DNS, and the short hostname elsewhere.
 
 ### Identity and pinned TLS
 
