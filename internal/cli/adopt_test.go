@@ -75,3 +75,34 @@ func TestAdoptRequiresTmuxSession(t *testing.T) {
 		t.Errorf("err = %v, want not in a tmux session", err)
 	}
 }
+
+// agent resume refuses an adopted agent before it looks for a session or
+// enters a directory: its tmux session is the person's own.
+func TestResumeRefusesAdoptedAgent(t *testing.T) {
+	setupCLI(t)
+	t.Setenv("AGENT_NAME", "")
+	t.Setenv("TMUX_PANE", "")
+	userSess := fmt.Sprintf("rpc-cli-user-resume-%d", os.Getpid())
+	if err := tmuxClient.CreateSession(userSess, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tmuxClient.KillSession(userSess) })
+	adoptSession, backendName = userSess, "claude"
+	t.Cleanup(func() { adoptSession, backendName = "", "" })
+	if _, err := stdout(t, func() error { return runAdopt(adoptCmd, []string{"mine"}) }); err != nil {
+		t.Fatal(err)
+	}
+	wd, _ := os.Getwd()
+
+	err := runResume(resumeCmd, []string{"mine"})
+	want := "agent mine is an adopted session (tmux session " + userSess + "): resume doesn't relaunch CLIs in sessions gomuxai didn't start; start the CLI there yourself (claude -c continues its last conversation), and adopt keeps tracking it"
+	if err == nil || err.Error() != want {
+		t.Errorf("resume err = %v\nwant %s", err, want)
+	}
+	if now, _ := os.Getwd(); now != wd {
+		t.Errorf("resume moved to %s", now)
+	}
+	if exists, _ := tmuxClient.SessionExists(userSess); !exists {
+		t.Error("the person's tmux session is gone")
+	}
+}

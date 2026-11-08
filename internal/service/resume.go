@@ -27,11 +27,16 @@ var keptOnResume = map[string]bool{StateKeyResult: true, StateKeyTranscript: tru
 // the same name, backend and parent, so its helpers stay its helpers, its
 // own state keys stay, and messages held for it are delivered. It runs
 // from the current directory (the CLI enters the session's first). Only an
-// ended claude or agy agent can be resumed; a failed resume leaves it ended.
+// ended claude or agy agent that gomuxai started can be resumed: an adopted
+// one runs in the person's own tmux session (AdoptedResumeError). A failed
+// resume leaves it ended.
 func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage.Agent, error) {
 	agent, err := s.getAgent(ctx, opts.Name)
 	if err != nil {
 		return nil, err
+	}
+	if agent.Adopted {
+		return nil, s.AdoptedResumeError(agent)
 	}
 	if agent.Backend != "claude" && agent.Backend != "agy" {
 		return nil, fmt.Errorf("agent %s runs %s: resume continues claude and agy sessions", agent.Name, agent.Backend)
@@ -48,19 +53,8 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 	}
 
 	// A spawned CLI that quit leaves its pane behind, running a bare shell.
-	// An adopted pre-existing user session is preserved and relaunched into;
-	// if that user session is gone, resume creates a new managed session
-	// (agent-<name>) and preserves the adopted agent's recorded Cwd.
-	existingSession := ""
-	sessionCwd := ""
-	if agent.Adopted {
-		sessionCwd = agent.Cwd
-	}
 	if exists, _ := s.tmux.SessionExists(agent.SessionName); exists {
-		if agent.Adopted {
-			existingSession = agent.SessionName
-			_ = s.tmux.StopPipePane(agent.SessionName)
-		} else if err := s.tmux.KillSession(agent.SessionName); err != nil {
+		if err := s.tmux.KillSession(agent.SessionName); err != nil {
 			return nil, fmt.Errorf("closing its old tmux session %s: %w", agent.SessionName, err)
 		}
 	}
@@ -80,8 +74,6 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 		TrustWorkspace:  opts.TrustWorkspace,
 		Resume:          opts.SessionID,
 		replacing:       agent,
-		existingSession: existingSession,
-		sessionCwd:      sessionCwd,
 	})
 	if err != nil {
 		return nil, err
@@ -92,6 +84,22 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 		_ = s.startDeliverer(agent.Name)
 	}
 	return resumed, nil
+}
+
+// AdoptedResumeError is why an adopted agent can't be resumed: its tmux
+// session is the person's own, so gomuxai neither types a launch into
+// their shell nor makes a session to replace it. It says what to do instead.
+func (s *AgentService) AdoptedResumeError(agent *storage.Agent) error {
+	cli := "claude"
+	if agent.Backend == "agy" {
+		cli = "agy"
+	}
+	if exists, _ := s.tmux.SessionExists(agent.SessionName); !exists {
+		return fmt.Errorf("agent %s is an adopted session (tmux session %s, which is gone): resume doesn't relaunch CLIs in sessions gomuxai didn't start; agent cleanup %s, then agent spawn %s --backend %s --continue (or --resume <session>) starts it in a session of gomuxai's own",
+			agent.Name, agent.SessionName, agent.Name, agent.Name, cli)
+	}
+	return fmt.Errorf("agent %s is an adopted session (tmux session %s): resume doesn't relaunch CLIs in sessions gomuxai didn't start; start the CLI there yourself (%s -c continues its last conversation), and adopt keeps tracking it",
+		agent.Name, agent.SessionName, cli)
 }
 
 // clearRunState deletes the reserved state keys that describe the agent's

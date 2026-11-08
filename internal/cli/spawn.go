@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/backend"
@@ -20,6 +22,7 @@ var (
 	spawnTrustWorkspace  bool
 	spawnTask            string
 	spawnResume          string
+	spawnContinue        bool
 	spawnAttach          bool
 	spawnHost            string
 	spawnCwd             string
@@ -62,6 +65,19 @@ status): quit the CLI running it first, since two CLIs on one session would both
 subagent's session can't be resumed on its own. The agent starts in the
 directory the session ran in, whatever directory spawn runs from.
 
+--continue (-c) is --resume with the session the CLI's own --continue
+would pick, in the directory the agent would start in (--cwd, or spawn's
+directory), so the agent knows which session it is on:
+  - claude: the most recent conversation in that directory, as claude -c
+    picks it: the session recorded there whose transcript was written last.
+  - agy: the most recently active conversation whose workspace is that
+    directory, or, if there is none, one in a parent or child directory of
+    it, as agy -c falls back to.
+Subagents' sessions are never picked. Spawn says which session it picked
+(its id, title, and when it was last active), and then goes on exactly as
+--resume does with that id: a session still running is refused. It needs
+--backend claude or agy, and doesn't go with --resume.
+
 --attach opens the new agent's tmux session in this terminal once it
 starts, as agent attach does (Ctrl-b d detaches; the agent keeps running).
 
@@ -93,6 +109,7 @@ clean the agent up on its host.`,
   agent spawn auto-worker --backend claude --skip-permissions
   agent spawn reviewer --backend agy --trust-workspace
   agent spawn lead --backend claude --resume 3f34adff --attach
+  agent spawn lead --backend claude --continue
   agent spawn builder@hub --backend claude --cwd /srv/repo tasks/build.md
   agent spawn builder --host hub --backend claude --task build`,
 	Args: cobra.RangeArgs(1, 2),
@@ -108,6 +125,8 @@ func init() {
 		"Reference a task from the repository by name")
 	spawnCmd.Flags().StringVar(&spawnResume, "resume", "",
 		"Continue this ended Claude or agy session as the agent (an id, the start of one, or a transcript's path)")
+	spawnCmd.Flags().BoolVarP(&spawnContinue, "continue", "c", false,
+		"Continue the session the CLI's own --continue would pick here (claude, agy): its most recent one in this directory, or --cwd's")
 	spawnCmd.Flags().BoolVar(&spawnAttach, "attach", false,
 		"Open the agent's tmux session in this terminal once it starts")
 	spawnCmd.Flags().StringVar(&spawnHost, "host", "",
@@ -153,6 +172,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		taskFile = args[1]
 	}
 
+	if spawnContinue && spawnResume != "" {
+		return errors.New("--continue and --resume don't go together: --continue picks the session, --resume names it")
+	}
 	var cwd string
 	if spawnCwd != "" {
 		if spawnResume != "" {
@@ -164,21 +186,37 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	var resume string
-	if spawnResume != "" {
+	var from *discovery.Session
+	switch {
+	case spawnContinue:
+		dir := cwd
+		if dir == "" {
+			dir = absPath(".")
+		}
+		s, err := continueSession(getContext(), dir, cfg.Backend)
+		if err != nil {
+			return err
+		}
+		fmt.Print(continueChoice(s, dir))
+		from, cwd = &s, ""
+	case spawnResume != "":
 		s, err := resumableSession(getContext(), spawnResume, cfg.Backend)
 		if err != nil {
 			return err
 		}
+		from = &s
+	}
+	var resume string
+	if from != nil {
 		// The agent starts where the session ran: its tmux session opens in
 		// spawn's directory, and the CLI finds the session from there.
 		if taskFile != "" {
 			taskFile = absPath(taskFile)
 		}
-		if err := os.Chdir(s.Cwd); err != nil {
-			return fmt.Errorf("entering %s, where session %s ran: %w", s.Cwd, s.SessionID, err)
+		if err := os.Chdir(from.Cwd); err != nil {
+			return fmt.Errorf("entering %s, where session %s ran: %w", from.Cwd, from.SessionID, err)
 		}
-		resume = s.SessionID
+		resume = from.SessionID
 	}
 
 	opts := service.SpawnOptions{
@@ -273,6 +311,7 @@ func runRemoteSpawn(ref natsbus.AgentRef, rest []string) error {
 		flag string
 	}{
 		{spawnResume != "", "--resume"},
+		{spawnContinue, "--continue"},
 		{spawnAttach, "--attach"},
 		{spawnSkipPermissions, "--skip-permissions"},
 		{spawnTrustWorkspace, "--trust-workspace"},
@@ -341,6 +380,68 @@ func resumableSession(ctx context.Context, arg, backendName string) (discovery.S
 		return discovery.Session{}, err
 	}
 	return t.session, checkResumable(t.session, backendName)
+}
+
+// continueSession finds the session `<harness> --continue` would pick in
+// dir (discovery.Continue), the most recent of each harness's picks, and
+// checks, as --resume does, that an agent can continue it.
+func continueSession(ctx context.Context, dir string, harnesses ...string) (discovery.Session, error) {
+	for _, h := range harnesses {
+		if h != discovery.HarnessClaude && h != discovery.HarnessAgy {
+			return discovery.Session{}, fmt.Errorf("--continue continues a claude or agy session: backend %s keeps no sessions to continue", h)
+		}
+	}
+	sessions, err := resolveSessions(ctx, discovery.Scan(sessionDirs()))
+	if err != nil {
+		return discovery.Session{}, err
+	}
+	var pick discovery.Session
+	for _, h := range harnesses {
+		if s, ok := discovery.Continue(sessions, h, dir); ok && (pick.SessionID == "" || s.Mtime.After(pick.Mtime)) {
+			pick = s
+		}
+	}
+	which := strings.Join(harnesses, " or ")
+	if pick.SessionID == "" {
+		return discovery.Session{}, fmt.Errorf("no %s session to continue in %s (agent sessions lists the ones there are; --resume <id> names one)", which, dir)
+	}
+	if err := checkResumable(pick, pick.Harness); err != nil {
+		return discovery.Session{}, fmt.Errorf("--continue picks %s, the most recent %s session in %s, but %w", pick.SessionID, which, dir, err)
+	}
+	return pick, nil
+}
+
+// continueChoice says which session --continue picked: its id, title, and
+// when it was last active, and where, if not in dir itself.
+func continueChoice(s discovery.Session, dir string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Continuing %s session %s", s.Harness, s.SessionID)
+	if s.Title != "" {
+		fmt.Fprintf(&b, " (%q)", s.Title)
+	}
+	if !s.Mtime.IsZero() {
+		fmt.Fprintf(&b, ", last active %s", sessionWhen(s.Mtime, "2006-01-02 15:04"))
+		if a := age(time.Since(s.Mtime)); a != "now" {
+			fmt.Fprintf(&b, " (%s ago)", a)
+		}
+	}
+	if s.Cwd != "" && !sameDir(s.Cwd, dir) {
+		fmt.Fprintf(&b, ", in %s: the most recent near %s.\n", s.Cwd, dir)
+	} else {
+		fmt.Fprintf(&b, ": the most recent in %s.\n", dir)
+	}
+	return b.String()
+}
+
+// sameDir reports whether a and b name one directory.
+func sameDir(a, b string) bool {
+	canon := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return r
+		}
+		return filepath.Clean(p)
+	}
+	return canon(a) == canon(b)
 }
 
 // checkResumable says why an agent of backendName can't continue s, or nil.
