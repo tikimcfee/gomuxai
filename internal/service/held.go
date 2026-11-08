@@ -297,7 +297,7 @@ func (s *AgentService) typeHeld(ctx context.Context, agent *storage.Agent, extra
 	if len(texts) == 0 {
 		return 0, "", nil
 	}
-	unchecked, err := s.SendUnchecked(ctx, agent.Name, strings.Join(texts, "\n\n"))
+	unchecked, err := s.sendMessage(ctx, agent.Name, strings.Join(texts, "\n\n"), true)
 	if err != nil {
 		var unsubmitted *UnsubmittedError
 		if errors.As(err, &unsubmitted) {

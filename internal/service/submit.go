@@ -32,6 +32,15 @@ import (
 // taken its place) or shows anything else (a person typing). Each wait is
 // bounded by the config's SubmitWait; 0 turns all this off.
 //
+// A CLI that hasn't started a turn since it was launched may still be
+// starting: right after spawn (or resume) returns, Claude may not have drawn
+// its input box yet, and what is typed then sits in the box once it does,
+// its Enter lost (friction #38). So when the box isn't on screen and no turn
+// has started, it first waits, up to startupWaits SubmitWaits, for the box
+// to come up, then goes on as above. A dialog that comes up instead (the
+// trust prompt) ends the wait with checkScreen's error, unless the sender
+// meant to type into whatever is there (SendUnchecked).
+//
 // If it can't read the box before typing (it isn't on screen, or the screen
 // can't be captured), it types and presses Enter without checking, and says
 // so: the sender's result names why, and StateKeyUnchecked records it, so
@@ -42,6 +51,13 @@ const submitEnters = 3
 
 // submitPoll is how often the input box is read while typing a message.
 const submitPoll = 50 * time.Millisecond
+
+// startupWaits is how many SubmitWaits typing waits for the input box of
+// a CLI that may still be starting (see above): 30s by default.
+const startupWaits = 10
+
+// startupPoll is how often the screen is read while waiting for that box.
+const startupPoll = 200 * time.Millisecond
 
 // submitQuiet is how long the input box must stay unchanged after typing
 // before the text counts as taken in: a paste's placeholder or an image
@@ -96,12 +112,20 @@ func (s *AgentService) readInput(agent *storage.Agent, ir backend.InputReader) (
 // the Enter submitted it where the backend needs that (see above). It
 // returns why it couldn't check, or "" if it did or the backend needs no
 // checking.
-func (s *AgentService) typeMessage(ctx context.Context, agent *storage.Agent, text string) (string, error) {
+// With dialogs, a dialog that comes up while it waits for a starting CLI's
+// input box is an error, and nothing is typed.
+func (s *AgentService) typeMessage(ctx context.Context, agent *storage.Agent, text string, dialogs bool) (string, error) {
 	sc, ok := s.submitChecker(agent)
 	if !ok {
 		return "", s.sendLine(agent.SessionName, text)
 	}
 	before, why := s.inputBefore(agent, sc)
+	if why != "" && s.stateValue(ctx, agent.Name, StateKeyTurnAt) == "" {
+		var err error
+		if before, why, err = s.awaitInputBox(ctx, agent, sc, dialogs); err != nil {
+			return "", err
+		}
+	}
 	if why != "" {
 		if err := s.sendLine(agent.SessionName, text); err != nil {
 			return "", err
@@ -148,6 +172,37 @@ func (s *AgentService) inputBefore(agent *storage.Agent, ir backend.InputReader)
 		return "", "its input box isn't on screen (a dialog, or a screen agent doesn't recognize)"
 	}
 	return text, ""
+}
+
+// awaitInputBox waits, up to startupWaits SubmitWaits, for the input box
+// of an agent whose CLI may still be starting to come on screen. It returns
+// what the box shows once it does, or, if it doesn't, why it can't be read
+// (as inputBefore). With dialogs, a dialog on screen ends the wait with
+// checkScreen's error.
+func (s *AgentService) awaitInputBox(ctx context.Context, agent *storage.Agent, ir backend.InputReader, dialogs bool) (string, string, error) {
+	bound := startupWaits * s.cfg.SubmitWait
+	deadline := time.Now().Add(bound)
+	for {
+		if dialogs {
+			if err := s.checkScreen(agent); err != nil {
+				return "", "", err
+			}
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		if err := sleepCtx(ctx, startupPoll); err != nil {
+			return "", "", err
+		}
+		if before, why := s.inputBefore(agent, ir); why == "" {
+			return before, "", nil
+		}
+	}
+	_, why := s.inputBefore(agent, ir)
+	if why != "" {
+		why += fmt.Sprintf(", after waiting %s for it: no turn has started, so the CLI may still have been starting", bound)
+	}
+	return "", why, nil
 }
 
 // settledInput waits, up to SubmitWait, for the input box to show
