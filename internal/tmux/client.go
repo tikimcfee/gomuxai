@@ -189,29 +189,64 @@ func (c *Client) ListSessions() ([]Session, error) {
 // and logs all hit the agent's pane even when another window or pane is
 // active.
 func (c *Client) paneTarget(sessionName string) (string, error) {
-	out, err := run("list-panes", "-s", "-t", exact(sessionName), "-F", "#{pane_id}")
+	pane, _, err := c.firstPaneMode(sessionName)
+	return pane, err
+}
+
+// firstPaneMode returns the session's first pane (see paneTarget) and
+// whether it is in a mode (copy mode, choose-tree, ...).
+func (c *Client) firstPaneMode(sessionName string) (string, bool, error) {
+	out, err := run("list-panes", "-s", "-t", exact(sessionName), "-F", "#{pane_id} #{pane_in_mode}")
 	if err != nil {
 		if exists, _ := c.SessionExists(sessionName); !exists {
-			return "", fmt.Errorf("session %q not found", sessionName)
+			return "", false, fmt.Errorf("session %q not found", sessionName)
 		}
-		return "", fmt.Errorf("listing panes: %w", err)
+		return "", false, fmt.Errorf("listing panes: %w", err)
 	}
-	pane, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	first, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	pane, inMode, _ := strings.Cut(first, " ")
 	if pane == "" {
-		return "", fmt.Errorf("session %q has no panes", sessionName)
+		return "", false, fmt.Errorf("session %q has no panes", sessionName)
 	}
-	return pane, nil
+	return pane, inMode == "1", nil
+}
+
+// inputTarget is paneTarget for typing: it takes the pane out of any mode
+// first. In a mode, tmux hands send-keys' keys to the mode, not to the
+// program in the pane: copy mode (which a scroll of the mouse wheel enters)
+// runs each key's copy-mode binding, so typed text moves the cursor, opens
+// prompts (and with a client attached, send-keys waits for a person to
+// answer them), and fails with "not in a mode" once a binding has left the
+// mode; nothing reaches the program, and an Enter or a "1" meant for it
+// never arrives.
+func (c *Client) inputTarget(sessionName string) (string, error) {
+	pane, inMode, err := c.firstPaneMode(sessionName)
+	if err == nil && inMode {
+		leaveMode(pane) // best effort: send-keys says what's wrong if it can't type
+	}
+	return pane, err
+}
+
+// leaveMode takes pane out of every mode it is in. copy-mode -q (tmux 3.2
+// and later) leaves any mode; cancel, older tmux's way, leaves copy mode.
+// While a read-only client is attached tmux refuses both, but then keys go
+// in by paste, which no mode intercepts.
+func leaveMode(pane string) {
+	if _, err := run("copy-mode", "-q", "-t", pane); err != nil && !IsReadOnly(err) {
+		_, _ = run("send-keys", "-X", "-t", pane, "cancel")
+	}
 }
 
 // SendKeys types text into a tmux session literally. Without -l, tmux reads
 // text that happens to be a key name ("C-c", "Escape", "0x3") as that key,
 // and without "--" text starting with '-' as send-keys flags ("-R" resets
-// the terminal). Text can come from other hosts over the bus.
+// the terminal). Text can come from other hosts over the bus. A pane in a
+// mode is taken out of it first (see inputTarget).
 //
 // While a read-only client is attached, tmux refuses send-keys, so the text
 // is pasted instead, which types the same bytes.
 func (c *Client) SendKeys(session string, text string) error {
-	target, err := c.paneTarget(session)
+	target, err := c.inputTarget(session)
 	if err != nil {
 		return err
 	}
@@ -228,13 +263,14 @@ func (c *Client) SendKeys(session string, text string) error {
 }
 
 // SendSpecialKey sends a special key to a session. key is never read as a
-// flag: one that isn't a key name is typed as text.
+// flag: one that isn't a key name is typed as text. As for SendKeys, a pane
+// in a mode is taken out of it first.
 //
 // While a read-only client is attached, tmux refuses send-keys, so a key
 // with fixed bytes (see keyBytes) is pasted instead; any other fails with a
 // ReadOnlyError naming the client.
 func (c *Client) SendSpecialKey(session string, key string) error {
-	target, err := c.paneTarget(session)
+	target, err := c.inputTarget(session)
 	if err != nil {
 		return err
 	}
