@@ -102,13 +102,15 @@ func TestWaitTimeout_ReturnsExitCode(t *testing.T) {
 	setupCLI(t)
 	busConnect = func() (*nats.Conn, error) { return nil, natsbus.ErrNoBus }
 	t.Cleanup(func() { waitFor, waitTimeout, waitInterval = "", 0, 0 })
-	waitFor, waitTimeout, waitInterval = "idle", 50*time.Millisecond, 10*time.Millisecond
+	// Long enough for a first check on a loaded machine: the error names
+	// the last status seen.
+	waitFor, waitTimeout, waitInterval = "idle", 500*time.Millisecond, 10*time.Millisecond
 
 	err := runWait(waitCmd, []string{"worker"})
 	if ExitCode(err) != waitTimeoutExitCode {
 		t.Fatalf("err = %v, exit code %d; want %d", err, ExitCode(err), waitTimeoutExitCode)
 	}
-	if want := "timed out after 50ms waiting for worker to be idle (last status: waiting)"; err.Error() != want {
+	if want := "timed out after 500ms waiting for worker to be idle (last status: waiting)"; err.Error() != want {
 		t.Errorf("err = %q, want %q", err, want)
 	}
 }

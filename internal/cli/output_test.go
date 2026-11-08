@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -317,10 +318,12 @@ func TestWaitHintsWhenAgentWaits(t *testing.T) {
 	noBus(t)
 	t.Cleanup(func() { waitFor, waitInterval = "", 0 })
 	waitFor, waitInterval = "idle", 20*time.Millisecond
-	go func() {
-		time.Sleep(100 * time.Millisecond)
+	// The agent answers once wait has seen it waiting and said so.
+	live := &syncBuffer{}
+	hintOut = io.MultiWriter(hints, live)
+	whenPrinted(t, live, "hint: worker is waiting on a person (a permission prompt or question), so it won't be idle until someone answers: agent status worker -v shows what it's asking (--for idle,waiting returns on prompts)", func() {
 		agentService.Report(context.Background(), "worker", service.StatusReport{Status: service.AgentStatusIdle})
-	}()
+	})
 	out, err := stdout(t, func() error { return runWait(waitCmd, []string{"worker"}) })
 	if err != nil || out != "worker: idle\n" {
 		t.Fatalf("wait = %q, %v", out, err)

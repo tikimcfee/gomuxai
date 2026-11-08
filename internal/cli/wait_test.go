@@ -2,10 +2,14 @@ package cli
 
 import (
 	"context"
+	"io"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
@@ -37,22 +41,89 @@ func report(t *testing.T, name string, status service.AgentStatus, detail string
 	}
 }
 
-// later runs fn after d, in the background.
-func later(d time.Duration, fn func()) {
+// startTurn records what `agent send` leaves behind: a message sent, then
+// the turn it started. --next then counts the turn's end whenever it lands,
+// even before wait's first check, so a test needn't time it after one.
+func startTurn(t *testing.T, name string) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now()
+	if err := store.SetState(ctx, &storage.StateEntry{AgentName: name, Key: service.StateKeySentAt, Value: now.Format(time.RFC3339Nano), UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := agentService.Report(ctx, name, service.StatusReport{Status: service.AgentStatusProcessing, ClearResult: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// liveStdout is stdout, with what fn prints readable from out while it runs.
+func liveStdout(t *testing.T, out *syncBuffer, fn func() error) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied := make(chan struct{})
 	go func() {
-		time.Sleep(d)
-		fn()
+		io.Copy(out, r)
+		close(copied)
+	}()
+	old := os.Stdout
+	os.Stdout = w
+	runErr := fn()
+	w.Close()
+	os.Stdout = old
+	<-copied
+	return out.String(), runErr
+}
+
+// String returns everything written so far.
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// whenPrinted runs fn in the background once out holds line: wait has then
+// handled everything before it, so what fn changes comes after. It never
+// runs fn after the test has ended.
+func whenPrinted(t *testing.T, out *syncBuffer, line string, fn func()) {
+	stop, done := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() {
+		close(stop)
+		<-done
+	})
+	go func() {
+		defer close(done)
+		stopped := func() bool {
+			select {
+			case <-stop:
+				return true
+			default:
+				return false
+			}
+		}
+		_, printed := await.Poll(await.Timeout, func() (string, bool) {
+			return "", stopped() || slices.Contains(out.lines(), line)
+		})
+		if printed && !stopped() {
+			fn()
+		}
 	}()
 }
 
 func TestWaitSeveral_PrintsEachAsItArrives(t *testing.T) {
 	setupWait(t, service.AgentStatusProcessing)
-	report(t, "worker", service.AgentStatusProcessing, "")
+	startTurn(t, "worker")
+	startTurn(t, "builder")
 	waitFor, waitNext = "idle,waiting", true
-	later(50*time.Millisecond, func() { report(t, "builder", service.AgentStatusIdle, "") })
-	later(150*time.Millisecond, func() { report(t, "worker", service.AgentStatusWaiting, "permission: Bash: rm -rf build") })
+	report(t, "builder", service.AgentStatusIdle, "")
+	live := &syncBuffer{}
+	whenPrinted(t, live, "builder: idle", func() {
+		report(t, "worker", service.AgentStatusWaiting, "permission: Bash: rm -rf build")
+	})
 
-	out, err := stdout(t, func() error { return runWait(waitCmd, []string{"worker", "builder", "worker"}) })
+	out, err := liveStdout(t, live, func() error { return runWait(waitCmd, []string{"worker", "builder", "worker"}) })
 	if want := "builder: idle\nworker: waiting (permission: Bash: rm -rf build)\n"; err != nil || out != want {
 		t.Fatalf("wait = %q, %v; want %q", out, err, want)
 	}
@@ -123,14 +194,16 @@ func TestWaitSeveral_OneExits(t *testing.T) {
 
 func TestWaitSeveral_Timeout(t *testing.T) {
 	setupWait(t, service.AgentStatusProcessing)
-	waitFor, waitTimeout = "idle", 100*time.Millisecond
-	later(20*time.Millisecond, func() { report(t, "worker", service.AgentStatusIdle, "") })
+	// The timeout is what's tested; it only has to outlast wait's first
+	// checks on a loaded machine.
+	waitFor, waitTimeout = "idle", 500*time.Millisecond
+	report(t, "worker", service.AgentStatusIdle, "")
 
 	out, err := stdout(t, func() error { return runWait(waitCmd, []string{"worker", "builder"}) })
 	if out != "worker: idle\n" {
 		t.Errorf("stdout = %q", out)
 	}
-	if want := "timed out after 100ms waiting for 1 agent to be idle (last status: builder processing)"; err == nil || err.Error() != want || ExitCode(err) != waitTimeoutExitCode {
+	if want := "timed out after 500ms waiting for 1 agent to be idle (last status: builder processing)"; err == nil || err.Error() != want || ExitCode(err) != waitTimeoutExitCode {
 		t.Fatalf("err = %v (exit %d); want %q, exit 2", err, ExitCode(err), want)
 	}
 }
@@ -139,18 +212,21 @@ func TestWaitSeveral_Timeout(t *testing.T) {
 // between checks, until the timeout.
 func TestWaitFollow_PrintsEachArrivalOnce(t *testing.T) {
 	setupWait(t, service.AgentStatusIdle)
-	waitFor, waitFollow, waitTimeout = "waiting", true, 400*time.Millisecond
-	later(100*time.Millisecond, func() {
+	// --follow runs until the timeout: long enough for the three prompts
+	// on a loaded machine.
+	waitFor, waitFollow, waitTimeout = "waiting", true, time.Second
+	live := &syncBuffer{}
+	whenPrinted(t, live, "worker: waiting (permission: Bash: ls)", func() {
 		report(t, "worker", service.AgentStatusProcessing, "approved")
-		time.Sleep(50 * time.Millisecond)
 		report(t, "worker", service.AgentStatusWaiting, "permission: Bash: pwd")
-		time.Sleep(80 * time.Millisecond)
+	})
+	whenPrinted(t, live, "worker: waiting (permission: Bash: pwd)", func() {
 		// The next one comes and goes faster than a check.
 		report(t, "worker", service.AgentStatusProcessing, "approved")
 		report(t, "worker", service.AgentStatusWaiting, "permission: Bash: whoami")
 	})
 
-	out, err := stdout(t, func() error { return runWait(waitCmd, []string{"worker"}) })
+	out, err := liveStdout(t, live, func() error { return runWait(waitCmd, []string{"worker"}) })
 	want := "worker: waiting (permission: Bash: ls)\nworker: waiting (permission: Bash: pwd)\n"
 	if !strings.HasPrefix(out, want) || !strings.Contains(out, "whoami") || strings.Count(out, "\n") != 3 {
 		t.Errorf("stdout = %q; want the three prompts once each", out)
@@ -166,10 +242,15 @@ func TestWaitFollow_NoNamesPicksUpNewAgents(t *testing.T) {
 	old := waitRelistInterval
 	t.Cleanup(func() { waitRelistInterval = old })
 	waitRelistInterval = 30 * time.Millisecond
-	waitFor, waitFollow, waitTimeout = "waiting", true, 300*time.Millisecond
-	later(100*time.Millisecond, func() { addAgent(t, "late", service.AgentStatusWaiting, "permission: Edit: a.go") })
+	// --follow runs until the timeout: long enough for a relist on a
+	// loaded machine.
+	waitFor, waitFollow, waitTimeout = "waiting", true, time.Second
+	live := &syncBuffer{}
+	whenPrinted(t, live, "worker: waiting (permission: Bash: ls)", func() {
+		addAgent(t, "late", service.AgentStatusWaiting, "permission: Edit: a.go")
+	})
 
-	out, _ := stdout(t, func() error { return runWait(waitCmd, nil) })
+	out, _ := liveStdout(t, live, func() error { return runWait(waitCmd, nil) })
 	want := "worker: waiting (permission: Bash: ls)\nlate: waiting (permission: Edit: a.go)\n"
 	if out != want {
 		t.Errorf("stdout = %q, want %q", out, want)
