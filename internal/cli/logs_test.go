@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
@@ -75,7 +74,7 @@ const testTranscript = `{"type":"user","sessionId":"sess-1","cwd":"/home/user/pr
 {"type":"assistant","timestamp":"2026-08-01T12:05:02Z","message":{"role":"assistant","content":[{"type":"text","text":"All tests pass.\nNothing else to do."}]}}
 `
 
-// setupLogs is setupCLI with logs' flags reset and times printed in UTC.
+// setupLogs is setupCLI with logs' flags reset (times print in UTC: TestMain).
 func setupLogs(t *testing.T) {
 	t.Helper()
 	setupCLI(t)
@@ -83,10 +82,7 @@ func setupLogs(t *testing.T) {
 	if err := os.MkdirAll(cfg.LogDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	oldLocal := time.Local
-	time.Local = time.UTC
 	t.Cleanup(func() {
-		time.Local = oldLocal
 		logsLines, logsFull, logsJSON, logsTerminal = 50, false, false, false
 	})
 	logsLines, logsFull, logsJSON, logsTerminal = 50, false, false, false
@@ -252,9 +248,6 @@ func TestLogs_RefusesOtherHosts(t *testing.T) {
 }
 
 func TestFormatEvent(t *testing.T) {
-	old := time.Local
-	time.Local = time.UTC
-	defer func() { time.Local = old }()
 	const at = "2026-08-01T09:05:07.000Z"
 	tool := func(status, output string) transcript.Event {
 		input := json.RawMessage(`{"command":"make\nlint"}`)
