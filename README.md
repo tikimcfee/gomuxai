@@ -174,7 +174,8 @@ Other ways in:
 - `agent adopt <name>` (or `agent adopt <name> --session <session>`) gives
   an existing tmux session a seat on the bus without restarting what is
   running in it; `agent cleanup <name>` unregisters it and leaves the tmux
-  session running.
+  session running. `agent resume` refuses an adopted agent: if its CLI
+  exits, start it there yourself (`claude -c` continues its conversation).
 - Agents run these same commands. An agent's helpers show nested under their
   parent in `agent list`, and it can clean up only its own.
 

@@ -52,6 +52,9 @@ failed and what to try. Most read commands take `--json`.
 - An existing tmux session can also be registered on the bus without
   restarting what's running in it: `agent adopt <name>` (or `--session <session>`).
   Cleaning up an adopted agent unregisters it and leaves its tmux session running.
+  gomuxai never launches anything in an adopted session, so `agent resume`
+  refuses one: if its CLI exits, start it there yourself (`claude -c`
+  continues its last conversation) and adopt keeps tracking it.
 - A spawned agent has `AGENT_NAME` set, and its first message tells it its
   name, its host, who started it, and how to use `agent` (a briefing, saved
   as `.gomuxai/agents/<name>/instructions.md`).
@@ -291,7 +294,9 @@ A reboot (or a killed tmux server) ends every agent: `ended (gone)`.
 `resume` starts one again on its last session, in the directory it ran
 in, keeping its name, backend, parent (its helpers stay its helpers), its
 own state keys and `_result`, and delivers messages held for it. Claude
-and agy agents only. Inside an agent, only your own helpers. To continue
+and agy agents only, and not an adopted one (its tmux session is a
+person's: start the CLI there yourself). Inside an agent, only your own
+helpers. To continue
 a session no agent owns, `agent spawn <name> --resume <session>`, or
 `--continue` for the most recent one in the directory.
 

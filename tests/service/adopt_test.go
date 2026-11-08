@@ -2,9 +2,15 @@ package service_test
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
 	"github.com/tikimcfee/gomuxai/internal/service"
@@ -93,7 +99,9 @@ func TestAdopt_LiveClaudeInExistingSession(t *testing.T) {
 	}
 }
 
-func TestAdopt_ResumeAdoptedAgentKeepsExistingTmuxSession(t *testing.T) {
+// An adopted agent runs in the person's own tmux session: resume refuses
+// it, typing nothing into their shell and leaving the session as it was.
+func TestAdopt_ResumeRefusesAdoptedAgent(t *testing.T) {
 	env := setupTestEnv(t)
 	defer env.cleanup()
 	ctx := context.Background()
@@ -103,46 +111,64 @@ func TestAdopt_ResumeAdoptedAgentKeepsExistingTmuxSession(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	defer env.tmux.KillSession(userSession)
+	if err := env.tmux.SendKeys(userSession, "echo person-was-here"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.tmux.SendSpecialKey(userSession, "Enter"); err != nil {
+		t.Fatal(err)
+	}
+	before := await.Until(t, "the person's command to print", func() (string, bool) {
+		out, _ := env.tmux.Capture(userSession, 20)
+		return out, slices.Contains(strings.Split(out, "\n"), "person-was-here")
+	})
 
 	getResumed := registerFakeAgy(env)
 	env.cfg.AgentBinary = "/opt/x/agent"
-
-	res, err := env.service.Adopt(ctx, service.AdoptOptions{
-		Name:        "adopted-agy",
-		SessionName: userSession,
-		Backend:     "agy",
-	})
-	if err != nil {
+	if _, err := env.service.Adopt(ctx, service.AdoptOptions{Name: "adopted-agy", SessionName: userSession, Backend: "agy"}); err != nil {
 		t.Fatalf("Adopt: %v", err)
 	}
-	if !res.Agent.Adopted || res.Agent.SessionName != userSession {
-		t.Fatalf("Adopt agent = %+v, want Adopted=true SessionName=%s", res.Agent, userSession)
-	}
-
-	// Mark the session ended while userSession is still open (e.g. user ran /exit).
+	// The CLI in it quit (e.g. the person ran /exit).
 	if err := env.service.Report(ctx, "adopted-agy", service.StatusReport{
-		Status:    service.AgentStatusEnded,
-		EndReason: backend.EndQuit,
-		Event:     "SessionEnd",
+		Status: service.AgentStatusEnded, EndReason: backend.EndQuit, Event: "SessionEnd",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	resumed, err := env.service.Resume(ctx, service.ResumeOptions{
-		Name:      "adopted-agy",
-		SessionID: "conv-initial",
-	})
-	if err != nil {
-		t.Fatalf("Resume: %v", err)
+	_, err := env.service.Resume(ctx, service.ResumeOptions{Name: "adopted-agy", SessionID: "conv-initial"})
+	want := "agent adopted-agy is an adopted session (tmux session " + userSession + "): resume doesn't relaunch CLIs in sessions gomuxai didn't start; start the CLI there yourself (agy -c continues its last conversation), and adopt keeps tracking it"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Resume err = %v\nwant %s", err, want)
 	}
-	if !resumed.Adopted || resumed.SessionName != userSession {
-		t.Errorf("after Resume, agent = %+v, want Adopted=true SessionName=%s", resumed, userSession)
+	if getResumed() != nil {
+		t.Errorf("a launch was built for the adopted agent: %q", getResumed().launchedCmd)
 	}
-	if exists, _ := env.tmux.SessionExists(userSession); !exists {
-		t.Errorf("userSession %s was killed during Resume", userSession)
+	// Its prompt may redraw (a git status in it), so the screen is checked
+	// for what a launch would type, not compared whole.
+	after, _ := env.tmux.Capture(userSession, 20)
+	for _, typed := range []string{"launch.sh", "agy", "conv-initial", "AGENT_NAME"} {
+		if strings.Contains(after, typed) {
+			t.Errorf("%q was typed into the person's session:\nbefore:\n%s\nafter:\n%s", typed, before, after)
+		}
 	}
-	if getResumed() == nil || !strings.Contains(getResumed().launchedCmd, "--conversation 'conv-initial'") {
-		t.Errorf("resumed launch cmd = %v, want --conversation 'conv-initial'", getResumed())
+	if _, err := os.Stat(filepath.Join(env.cfg.AgentDir("adopted-agy"), "launch.sh")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a launch script was written: %v", err)
+	}
+	ag, err := env.store.GetAgent(ctx, "adopted-agy")
+	if err != nil || ag == nil || !ag.Adopted || ag.SessionName != userSession {
+		t.Errorf("agent = %+v, %v; want its adopted record unchanged", ag, err)
+	}
+
+	// With the person's session gone, resume still makes none of its own.
+	if err := env.tmux.KillSession(userSession); err != nil {
+		t.Fatal(err)
+	}
+	_, err = env.service.Resume(ctx, service.ResumeOptions{Name: "adopted-agy", SessionID: "conv-initial"})
+	if err == nil || !strings.Contains(err.Error(), "(tmux session "+userSession+", which is gone)") ||
+		!strings.Contains(err.Error(), "agent cleanup adopted-agy, then agent spawn adopted-agy --backend agy --continue") {
+		t.Errorf("Resume with the session gone: err = %v", err)
+	}
+	if exists, _ := env.tmux.SessionExists(env.cfg.SessionName("adopted-agy")); exists {
+		t.Error("resume created a session of its own for the adopted agent")
 	}
 }
 

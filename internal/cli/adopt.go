@@ -30,7 +30,11 @@ immediately).
 Adopting attaches tmux pipe-pane on the session's first pane for "agent logs"
 (replacing any existing pipe-pane on that pane). Cleaning up an adopted tmux
 session ("agent cleanup <name>") unregisters it from the bus and stops log
-piping while leaving the pre-existing tmux session running.`,
+piping while leaving the pre-existing tmux session running.
+
+gomuxai never launches anything in an adopted session: agent resume
+refuses an adopted agent. If its CLI exits, start it again there yourself
+(claude -c continues its last conversation); adopt keeps tracking it.`,
 	Example: `  agent adopt helper
   agent adopt helper --session dev
   agent adopt helper --session dev --backend agy`,
