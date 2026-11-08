@@ -2,10 +2,12 @@ package service_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
@@ -29,20 +31,13 @@ func serveService(t *testing.T, env *testEnv) *natsbus.RPCClient {
 // waitForScreen polls a remote capture until it contains want.
 func waitForScreen(t *testing.T, client *natsbus.RPCClient, ref natsbus.AgentRef, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	await.Until(t, fmt.Sprintf("a remote capture showing %q", want), func() (string, bool) {
 		out, err := client.Capture(context.Background(), ref, 50, false)
 		if err != nil {
 			t.Fatalf("Capture: %v", err)
 		}
-		if strings.Contains(out, want) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("capture never showed %q; last:\n%s", want, out)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return out, strings.Contains(out, want)
+	})
 }
 
 func TestRPC_EndToEndThroughService(t *testing.T) {
