@@ -442,7 +442,8 @@ func TestSubmit_SaysWhenItCannotCheck(t *testing.T) {
 		t.Errorf("Unchecked = %q, %v, %v; want it recorded", why, at, ok)
 	}
 
-	// A turn that starts after it shows the message was taken.
+	// A turn that starts after it shows the message was taken. Not a
+	// wait: the clock moves, so the turn's time is after the send's.
 	time.Sleep(10 * time.Millisecond)
 	if err := svc.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusProcessing, Event: "UserPromptSubmit", ClearResult: true}); err != nil {
 		t.Fatal(err)

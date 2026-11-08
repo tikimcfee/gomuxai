@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,12 +145,18 @@ func TestWait_LocalAgentReportsIdle(t *testing.T) {
 	nc := natstest.Start(t)
 	env.service.SetEventPublisher(busPublisher(t, nc))
 
+	// The hook fires once Wait has subscribed and checked (it subscribes
+	// first), so only the event can end the wait.
+	checked := make(chan struct{})
+	var once sync.Once
 	current := func(ctx context.Context) (natsbus.Observation, error) {
-		return observe(ctx, env, "worker")
+		obs, err := observe(ctx, env, "worker")
+		once.Do(func() { close(checked) })
+		return obs, err
 	}
 	reported := make(chan error, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		<-checked
 		reported <- env.service.ReportHook(ctx, "worker", "", "", []byte(`{"hook_event_name":"Stop","session_id":"s","last_assistant_message":"done"}`))
 	}()
 
@@ -171,16 +178,21 @@ func TestWait_LocalAgentWithoutBus(t *testing.T) {
 	spawnFake(t, env, "worker")
 	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusProcessing})
 
+	// The report comes once Wait has checked, so its polling finds it.
+	checked := make(chan struct{})
+	var once sync.Once
 	reported := make(chan error, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		<-checked
 		reported <- env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusIdle})
 	}()
 
 	status, err := natsbus.Wait(ctx, nil, natsbus.WaitOptions{
 		Host: eventsHost, Agent: "worker", For: []string{"idle"}, Interval: 20 * time.Millisecond,
 		Current: func(ctx context.Context) (natsbus.Observation, error) {
-			return observe(ctx, env, "worker")
+			obs, err := observe(ctx, env, "worker")
+			once.Do(func() { close(checked) })
+			return obs, err
 		},
 	})
 	if err != nil || status != "idle" {
