@@ -28,6 +28,13 @@ Only an ended claude or agy agent can be resumed ("agent list" shows
 "ended (...)"). A failed resume leaves it ended, to resume again or clean
 up.
 
+An adopted agent (agent adopt) is refused: its tmux session is your own,
+so resume neither types a launch into your shell nor creates a session to
+replace it. Start the CLI there yourself (claude -c continues its last
+conversation) and adopt keeps tracking it. If that tmux session is gone,
+agent cleanup <name>, then agent spawn <name> --continue (or --resume
+<session>) starts it in a session of gomuxai's own.
+
 Inside an agent (AGENT_NAME set), you can resume only your own helpers and
 theirs.
 
@@ -67,6 +74,11 @@ func runResume(cmd *cobra.Command, args []string) error {
 			}
 			return fmt.Errorf("can't resume %s: it was spawned by %s, not by you (%q) or your helpers", name, by, caller)
 		}
+	}
+
+	if agent.Adopted {
+		// Its tmux session is the person's: nothing is typed or created.
+		return agentService.AdoptedResumeError(agent)
 	}
 
 	t, err := resolveTranscript(ctx, name)

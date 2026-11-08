@@ -295,8 +295,9 @@ own record. The CLI finds that session as `agent transcript <name>` does,
 checks it can be continued (`checkResumable`, as `spawn --resume`), and
 enters the directory it ran in. The service then:
 
-1. Refuses unless the agent's resolved status is `ended`, and kills a
-   leftover tmux session (a CLI that quit leaves its pane's shell).
+1. Refuses an adopted agent (`AdoptedResumeError`), and refuses unless
+   the agent's resolved status is `ended`; then kills a leftover tmux
+   session (a CLI that quit leaves its pane's shell).
 2. Writes `_status` `ended` and its end reason, so its run closes with how
    it really ended (a reboot fires no hook).
 3. Spawns with `Resume` set and the old record to replace: a new tmux
@@ -312,6 +313,31 @@ enters the directory it ran in. The service then:
 
 Its name, backend and parent stay, so its helpers stay its helpers. A
 failed resume leaves the agent ended (its record and files are kept).
+
+An adopted agent (`agent adopt`) runs in a tmux session the person made,
+so resume refuses it: gomuxai doesn't type a launch into their shell, and
+doesn't create an `agent-<name>` session to replace theirs. The error says
+to start the CLI there (`claude -c` continues its last conversation), which
+pane adoption then tracks; if their session is gone, to clean the agent up
+and `spawn --continue` (or `--resume`) it in a session of gomuxai's own.
+The CLI refuses before it looks for the session or enters its directory.
+`Spawn` therefore never runs in an existing session: Adopt records the
+agent itself (`storeAgent` with `existingSession`).
+
+### Continue: picking the session
+
+`spawn --continue` (`continueSession`, `discovery.Continue`) picks the
+session the CLI's own `--continue` would, then goes through `spawn
+--resume`'s path with its id, so the record knows the session and a running
+one is refused (`checkResumable`). Passing `-c` to the CLI instead would
+leave the agent not knowing which session it is on. Claude's `-c` is "the
+most recent conversation in the current directory": the session whose
+recorded cwd is the directory (Claude keeps a project's sessions in one
+folder named for it) with the newest transcript. agy's is the most recent
+conversation in its workspace, falling back (agy's changelog) to one in a
+parent or child directory. Subagent sessions are never picked. The
+directory is `--cwd`, or spawn's; the agent starts where the picked
+session ran, as with `--resume`.
 
 ## Messages
 

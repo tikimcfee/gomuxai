@@ -148,6 +148,7 @@ func TestRemoteSpawn_RefusesLocalOnlyFlags(t *testing.T) {
 		set  func()
 	}{
 		{"--resume", func() { spawnResume = "3f34adff" }},
+		{"--continue", func() { spawnContinue = true }},
 		{"--attach", func() { spawnAttach = true }},
 		{"--skip-permissions", func() { spawnSkipPermissions = true }},
 		{"--trust-workspace", func() { spawnTrustWorkspace = true }},
@@ -155,6 +156,7 @@ func TestRemoteSpawn_RefusesLocalOnlyFlags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		spawnResume, spawnAttach, spawnSkipPermissions, spawnTrustWorkspace, backendConfig = "", false, false, false, ""
+		spawnContinue = false
 		tt.set()
 		err := runSpawn(spawnCmd, []string{"x@hub"})
 		if want := tt.flag + " works only for an agent on this host: to spawn x with it, run agent spawn on hub"; err == nil || err.Error() != want {
@@ -162,6 +164,7 @@ func TestRemoteSpawn_RefusesLocalOnlyFlags(t *testing.T) {
 		}
 	}
 	spawnResume, spawnAttach, spawnSkipPermissions, spawnTrustWorkspace, backendConfig = "", false, false, false, ""
+	spawnContinue = false
 
 	spawnCwd = "src/repo"
 	if err := runSpawn(spawnCmd, []string{"x@hub"}); err == nil || !strings.Contains(err.Error(), "--cwd src/repo: give an absolute path on hub") {

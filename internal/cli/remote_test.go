@@ -67,7 +67,7 @@ func setupCLI(t *testing.T) {
 		cfg, store, tmuxClient, backends, agentService, busConnect = oldCfg, oldStore, oldTmux, oldBackends, oldService, oldConnect
 		statusVerbose, listHost, permissionExpect, keysNoEnter = false, "", "", false
 		spawnHost, spawnCwd, spawnTask, spawnResume = "", "", "", ""
-		spawnAttach, spawnSkipPermissions, spawnTrustWorkspace = false, false, false
+		spawnAttach, spawnSkipPermissions, spawnTrustWorkspace, spawnContinue = false, false, false, false
 		hintOut, hinted = os.Stderr, false
 	})
 	hints = new(strings.Builder)
