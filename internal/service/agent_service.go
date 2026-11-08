@@ -235,7 +235,7 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	// Send initial message if it was not already passed on the launch command line
 	if !promptInLaunch && initMsg != "" {
 		s.markSent(ctx, opts.Name)
-		if err := s.sendLine(sessionName, initMsg); err != nil {
+		if err := s.pasteLine(sessionName, initMsg); err != nil {
 			return abort(fmt.Errorf("sending init message: %w", err))
 		}
 	}
@@ -263,7 +263,7 @@ func (s *AgentService) spawnWithBackend(ctx context.Context, opts SpawnOptions, 
 		return abort(err)
 	}
 	if initMsg := initMessage(opts, be.InitMessage); initMsg != "" {
-		if err := s.sendLine(sessionName, initMsg); err != nil {
+		if err := s.pasteLine(sessionName, initMsg); err != nil {
 			return abort(fmt.Errorf("sending init message: %w", err))
 		}
 	}
@@ -514,9 +514,19 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// sendLine types text into a session and presses Enter.
+// sendLine types text into a session and presses Enter: a command line
+// for its shell, or a CLI's exit command.
 func (s *AgentService) sendLine(sessionName, text string) error {
 	if err := s.tmux.SendKeys(sessionName, text); err != nil {
+		return err
+	}
+	return s.tmux.SendSpecialKey(sessionName, "Enter")
+}
+
+// pasteLine types a message into a session as a paste (see
+// tmux.Client.PasteText), so a long one arrives whole, and presses Enter.
+func (s *AgentService) pasteLine(sessionName, text string) error {
+	if err := s.tmux.PasteText(sessionName, text); err != nil {
 		return err
 	}
 	return s.tmux.SendSpecialKey(sessionName, "Enter")

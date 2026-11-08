@@ -56,6 +56,7 @@ type agentJSON struct {
 }
 
 func runList(cmd *cobra.Command, args []string) error {
+	listHost = canonicalHost(listHost)
 	agents, err := listAgents(listHost)
 	if err != nil {
 		return err

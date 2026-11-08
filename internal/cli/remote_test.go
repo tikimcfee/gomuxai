@@ -312,10 +312,73 @@ func TestRemoteNeedsBus(t *testing.T) {
 func TestRemoteHostNotAnswering(t *testing.T) {
 	setupCLI(t)
 	serveAsH1(t)
+	trustPeers(t, "monolith1", "h1")
 
 	_, err := stdout(t, func() error { return runStatus(statusCmd, []string{"worker@h2"}) })
 	if err == nil || !strings.Contains(err.Error(), `no bus answering for host "h2"`) {
 		t.Errorf("err = %v", err)
+	}
+	// It names the hosts it knows, so a misspelled one stands out.
+	if err == nil || !strings.HasSuffix(err.Error(), "; this host is local, and its bus trusts h1, monolith1") {
+		t.Errorf("err = %v, want the known hosts named", err)
+	}
+}
+
+// trustPeers writes a trusted peer bundle for each host into the CLI's bus
+// directory, as agent bus trust does.
+func trustPeers(t *testing.T, hosts ...string) {
+	t.Helper()
+	for _, host := range hosts {
+		id, err := natsbus.InitIdentity(t.TempDir(), host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := natsbus.TrustPeer(cfg.BusDir(), id.PublicBundle("")); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Host names match ignoring case. Bus subjects don't, so a host this one
+// knows (itself, or a trusted peer) is addressed in its own spelling: "agent
+// list --host il-air-m2" reached no bus when the peer was "IL-Air-M2".
+func TestHostNamesMatchIgnoringCase(t *testing.T) {
+	setupCLI(t)
+	serveAs(t, "IL-Air-M2", agentService, natsbus.DefaultRemoteOps)
+	trustPeers(t, "IL-Air-M2")
+
+	for arg, want := range map[string]natsbus.AgentRef{
+		"worker@LOCAL":     {Name: "worker"},
+		"worker@il-air-m2": {Name: "worker", Host: "IL-Air-M2"},
+		"worker@IL-AIR-M2": {Name: "worker", Host: "IL-Air-M2"},
+		"worker@h2":        {Name: "worker", Host: "h2"}, // unknown here: as given
+	} {
+		if ref, _, err := parseTarget(arg); err != nil || ref != want {
+			t.Errorf("parseTarget(%q) = %+v, %v; want %+v", arg, ref, err, want)
+		}
+	}
+	if isRemoteHost("Local") {
+		t.Error(`isRemoteHost("Local") = true; it is this host`)
+	}
+
+	statusVerbose = true
+	out, err := stdout(t, func() error { return runStatus(statusCmd, []string{"worker@il-air-m2"}) })
+	if err != nil || !strings.HasPrefix(out, "worker@il-air-m2: waiting\n") {
+		t.Errorf("status worker@il-air-m2 = %q, %v", out, err)
+	}
+	listHost = "il-air-m2"
+	out, err = stdout(t, func() error { return runList(listCmd, nil) })
+	if err != nil || !strings.Contains(out, "rpc-cli-worker") {
+		t.Errorf("list --host il-air-m2 = %q, %v", out, err)
+	}
+	if refs, err := parseWaitRefs([]string{"worker@il-air-m2", "worker@IL-Air-M2"}); err != nil || len(refs) != 1 || refs[0].Host != "IL-Air-M2" {
+		t.Errorf("parseWaitRefs = %+v, %v; want one ref on IL-Air-M2", refs, err)
+	}
+	if ref, remote, err := spawnTarget("helper", "il-air-m2"); err != nil || !remote || ref.Host != "IL-Air-M2" {
+		t.Errorf("spawnTarget(helper, --host il-air-m2) = %+v, %v, %v", ref, remote, err)
+	}
+	if hosts, err := exportHostList("il-air-m2,LOCAL,IL-Air-M2"); err != nil || len(hosts) != 1 || hosts[0] != "IL-Air-M2" {
+		t.Errorf("exportHostList = %q, %v; want [IL-Air-M2]", hosts, err)
 	}
 }
 

@@ -200,6 +200,7 @@ func parseWaitRefs(args []string) ([]natsbus.AgentRef, error) {
 		if err != nil {
 			return nil, err
 		}
+		ref.Host = canonicalHost(ref.Host)
 		if !slices.Contains(refs, ref) {
 			refs = append(refs, ref)
 		}

@@ -173,9 +173,9 @@ CLI a person started (it sets `AI_AGENT` or `CLAUDECODE=1`). Neither has an
 agent record, so the recipient answers in its reply. A slash command like
 `/compact` is left unmarked.
 
-Keep typed messages short: a long one can arrive in Claude as a pasted
-block, which Claude may treat as data rather than instructions. Put long
-instructions in a file and send its path.
+Keep typed messages short: a long one arrives in Claude whole, but as a
+pasted block, which Claude may treat as data rather than instructions. Put
+long instructions in a file and send its path.
 
 `agent queue helper "..."` delivers a message when the agent is idle. For a
 Claude agent it does what `send` does. For other backends it needs `agent
@@ -427,9 +427,13 @@ agent spawn helper@hub --backend claude --cwd /srv/project tasks/build.md
 ```
 
 `status`, `capture`, `send`, `wait`, `events`, `approve`, `deny`, `keys`,
-and `spawn` take `name@host` (`spawn` also takes `--host hub`). Not across
-hosts: `state` (ask the agent to send what you need, or `capture`), `logs`
-(use `capture`), `queue` (use `send`), `cleanup` (clean up on that host).
+and `spawn` take `name@host` (`spawn` also takes `--host hub`). Host names
+match ignoring case for this host and the peers it trusts (a hub trusts
+every peer): `@il-air-m2` reaches `IL-Air-M2`. A host known only through the
+hub is reached by its exact name; a "no bus answering" error names the
+hosts this one knows. Not across hosts: `state` (ask the agent to send what
+you need, or `capture`), `logs` (use `capture`), `queue` (use `send`),
+`cleanup` (clean up on that host).
 The other host's bus serves only its `--remote-ops` (default
 `list,status,capture,send,respond`), so `keys` and `spawn` to another host
 are refused unless it lists them. "no bus answering for host X" means that
@@ -522,7 +526,7 @@ Known gaps; `agent friction list` has the rest.
 - Reusing a parent's name gives the new agent the old one's helpers.
 - `capture` reads agents only, not raw `agent session new` sessions.
 - Long messages typed into Claude arrive as pasted content (held ones
-  arrive whole).
+  arrive as plain text).
 - A message held for a Claude or agy agent extends the turn it lands in:
   `wait --next` and `_result` then cover the reply to the held message
   too. The reply that came before it is in `agent logs`.

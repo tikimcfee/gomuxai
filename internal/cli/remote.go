@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
@@ -20,6 +21,7 @@ func parseTarget(arg string) (ref natsbus.AgentRef, remote bool, err error) {
 	if err != nil {
 		return natsbus.AgentRef{}, false, err
 	}
+	ref.Host = canonicalHost(ref.Host)
 	if ref.Host == cfg.Host {
 		return natsbus.AgentRef{Name: ref.Name}, false, nil
 	}
@@ -28,7 +30,54 @@ func parseTarget(arg string) (ref natsbus.AgentRef, remote bool, err error) {
 
 // isRemoteHost reports whether host names another host.
 func isRemoteHost(host string) bool {
-	return host != "" && host != cfg.Host
+	return host != "" && canonicalHost(host) != cfg.Host
+}
+
+// canonicalHost returns host as the bus spells it: this host's name, or a
+// trusted peer's, when host matches one ignoring case; any other host as
+// given. Host names are matched case-insensitively ("il-air-m2" is
+// "IL-Air-M2"), but bus subjects are case-sensitive, so a request must go
+// out under the host's own spelling. A host this one doesn't trust directly
+// (another host linked through the hub) is only known by the spelling it is
+// given.
+func canonicalHost(host string) string {
+	if host == "" || host == cfg.Host {
+		return host
+	}
+	if strings.EqualFold(host, cfg.Host) {
+		return cfg.Host
+	}
+	for _, peer := range trustedHosts() {
+		if strings.EqualFold(host, peer) {
+			return peer
+		}
+	}
+	return host
+}
+
+// trustedHosts returns the hosts this host's bus trusts (agent bus trust),
+// or none if it can't read them.
+func trustedHosts() []string {
+	peers, err := natsbus.LoadPeers(cfg.BusDir())
+	if err != nil {
+		return nil
+	}
+	hosts := make([]string, 0, len(peers))
+	for _, p := range peers {
+		hosts = append(hosts, p.Host)
+	}
+	return hosts
+}
+
+// knownHosts says which host names this host knows, for an error about a
+// host no bus answered for.
+func knownHosts() string {
+	s := fmt.Sprintf("this host is %s", cfg.Host)
+	if peers := trustedHosts(); len(peers) > 0 {
+		slices.Sort(peers)
+		s += fmt.Sprintf(", and its bus trusts %s", strings.Join(peers, ", "))
+	}
+	return s
 }
 
 // callRemote runs fn with an RPC client connected through this host's bus,
@@ -42,5 +91,9 @@ func callRemote(host string, fn func(*natsbus.RPCClient) error) error {
 		return fmt.Errorf("connecting to the agent bus: %w", err)
 	}
 	defer nc.Close()
-	return fn(natsbus.NewRPCClient(nc, 0))
+	err = fn(natsbus.NewRPCClient(nc, 0))
+	if noBus := (*natsbus.NoRespondersError)(nil); errors.As(err, &noBus) {
+		return fmt.Errorf("%w; %s", err, knownHosts())
+	}
+	return err
 }

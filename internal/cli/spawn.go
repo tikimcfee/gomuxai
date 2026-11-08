@@ -251,6 +251,7 @@ func spawnTarget(arg, host string) (ref natsbus.AgentRef, remote bool, err error
 	if err := natsbus.ValidateHost(host); err != nil {
 		return natsbus.AgentRef{}, false, err
 	}
+	host = canonicalHost(host)
 	argHost := ref.Host
 	if strings.Contains(arg, "@") && argHost == "" {
 		argHost = cfg.Host // name@<this host>, which parseTarget made bare

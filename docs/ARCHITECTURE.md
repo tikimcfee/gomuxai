@@ -77,7 +77,7 @@ tmux gives:
 1. **Process isolation.** An agent can crash without taking others down.
 2. **Persistent terminals.** Sessions survive disconnects, and a person can
    attach (`agent attach <name>`) to watch or steer any agent.
-3. **Scriptable I/O.** `send-keys` types messages and answers prompts;
+3. **Scriptable I/O.** `paste-buffer` types messages, `send-keys` keys;
    `capture-pane` reads the screen; `pipe-pane` logs everything.
 4. **Escape hatches.** `agent session`, `keys`, `key`, and `clear` expose
    raw tmux for when the higher-level commands fail.
@@ -108,6 +108,19 @@ BSpace, Space, the arrows (in the pane's cursor key mode,
 `#{keypad_cursor_flag}`), C-a to C-z, and single characters. Any other key
 name fails with a `tmux.ReadOnlyError` that names the read-only clients
 (`list-clients`) and says to detach them or watch with `agent capture`.
+
+**Typing messages.** A message (a send, held messages typed in, spawn's
+first message) is typed with `TmuxOps.PasteText`: `paste-buffer -d -r -S
+-p`, where `-p` wraps it in bracketed paste codes (`ESC [200~` ...
+`ESC [201~`) if the pane's program asked for bracketed paste, as Claude
+does; one that didn't gets the bytes `send-keys -l` would type. A pty's
+input queue holds 1024 bytes on macOS (4096 on Linux), so the program reads
+a longer write in pieces: 1022 bytes, then the rest. Typed without
+brackets, Claude took the pieces for separate pastes and kept only the
+last, so a 1066-byte message arrived as its last 44 bytes (friction #36,
+#37). The brackets make the pieces one paste, as a person's paste is. A
+message can't end its paste early: `ESC [201~` in it is dropped. Shell
+command lines (spawn's launch) and keys still go through `send-keys`.
 
 The cost is that input is typed, not delivered: a message is "sent" once its
 keys are in the terminal, whether or not the CLI read it, and anything typed
@@ -427,7 +440,7 @@ pending rows, shown by `status -v`, `--json`, the orientation, and the
 `status` RPC.
 
 **Submitting a typed message.** Typing a message and pressing Enter are two
-writes to the pane (`send-keys -l`, then `send-keys Enter`), and Claude
+writes to the pane (the paste, then `send-keys Enter`), and Claude
 handles whatever has arrived by the time it reads as one input. While its
 event loop is busy (a long render, a paste it is still collecting), the
 text and the Enter arrive in the same read; Claude takes that for a paste,
@@ -1333,12 +1346,22 @@ no field for `--skip-permissions`, `--trust-workspace` or `--resume`, so a
 peer can't ask for them either. (Confirming a trust prompt is saved in the
 host user's CLI config and would outlast the agent.) So `cwd` must be a
 directory the CLI already trusts there, or a person there confirms the
-prompt. A `spawned_by` naming the serving host itself is refused: that
-agent didn't ask over the bus. The client waits up to
+prompt. A `spawned_by` naming the serving host itself (in any case) is
+refused: that agent didn't ask over the bus. The client waits up to
 `SpawnTimeout` (2m) for the reply, since the far side sits out the CLI's
 startup first. `cli/remote.go`
 routes `name@host`: a bare name or `name@<this host>` stays local and needs
 no bus.
+
+Host names match ignoring case, but subjects don't: a request to
+`gomux.il-air-m2.rpc.list` reaches no bus when the host is `IL-Air-M2`.
+So the CLI spells a host as the bus does before it builds a subject
+(`canonicalHost`): this host's name, or a trusted peer's (`bus/peers/`),
+whichever matches ignoring case; `name@host`, `list --host`, `spawn
+--host`, `wait` and `export --hosts` all go through it. A hub trusts every
+peer, so it knows every spelling; a leaf trusts only the hub, and reaches
+other leaves by the exact name it is given. A request no bus answers fails
+with `natsbus.NoRespondersError`, to which the CLI adds the hosts it knows.
 
 ### Status events and wait
 
@@ -1617,8 +1640,8 @@ make lint          # golangci-lint
   the last.
 - `_result` is Claude-only; agy agents' replies are only in their
   transcripts.
-- Long messages typed into a Claude TUI arrive as pasted content (held
-  messages arrive whole, as hook output).
+- Long messages typed into a Claude TUI arrive whole, as pasted content
+  (held messages arrive as hook output).
 - A held message extends the turn it's delivered at the end of, so
   `_result` and `wait --next` cover its reply too.
 - The input line is read off the screen: a Claude or agy redesign of it
