@@ -915,11 +915,18 @@ func (s *transcriptStream) poll(ctx context.Context) error {
 	if open, err := s.f.Stat(); err != nil || !os.SameFile(info, open) {
 		return fmt.Errorf("the transcript %s was replaced by another file: the stream ends here; run agent transcript again to read the new one", path)
 	}
-	if read := s.readTo(); info.Size() < read {
+	shrank := func(size int64) error {
 		return fmt.Errorf("the transcript %s shrank from %d to %d bytes: it was rewritten, so the events sent may no longer match it; run agent transcript again",
-			path, read, info.Size())
+			path, s.readTo(), size)
+	}
+	if info.Size() < s.readTo() {
+		return shrank(info.Size())
 	}
 	if s.rewritten() {
+		// It may have shrunk since the Stat above: say so if it did.
+		if now, err := s.f.Stat(); err == nil && now.Size() < s.readTo() {
+			return shrank(now.Size())
+		}
 		return fmt.Errorf("the transcript %s was rewritten: the bytes the stream read last are no longer there, so the events sent may no longer match it; run agent transcript again", path)
 	}
 	if err := s.read(info.Size()); err != nil {

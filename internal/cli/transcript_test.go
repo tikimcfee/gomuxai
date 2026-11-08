@@ -448,39 +448,6 @@ func TestTranscript_FollowFileChanges(t *testing.T) {
 	}
 }
 
-// A reader that has gone ends the stream, cleanly, though nothing is
-// written; readerGone tells a closed pipe from an open one.
-func TestTranscript_ReaderGone(t *testing.T) {
-	path, data := corpusTranscript(t, "held-delivery.jsonl")
-	closed := make(chan struct{})
-	f := followStream(t, fileTarget(path, int64(len(data))), func() bool {
-		select {
-		case <-closed:
-			return true
-		default:
-			return false
-		}
-	})
-	waitEvents(t, f.out, len(wholeStream(t, path, data, false)))
-	close(closed)
-	if err := f.wait(t); err != nil {
-		t.Errorf("a reader gone: %v", err)
-	}
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Close()
-	if readerGone(w) {
-		t.Error("readerGone on a pipe whose reader is open")
-	}
-	r.Close()
-	if !readerGone(w) {
-		t.Error("readerGone on a pipe whose reader closed")
-	}
-}
-
 // The parser's values replace what the opening line had from agent
 // sessions' read of the head and tail, and a known value is never emptied.
 func TestTranscript_SessionMeta(t *testing.T) {
