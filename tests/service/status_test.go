@@ -490,21 +490,21 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	if _, err := env.service.SendUnchecked(ctx, "worker", "printf ' ❯ No, exit\\n   Yes, I trust this folder\\n'"); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		_, err := env.service.Send(ctx, "worker", "hello", service.SendOptions{})
-		if err != nil && strings.Contains(err.Error(), "trust prompt") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("send at a trust dialog: err = %v", err)
-		}
-		time.Sleep(50 * time.Millisecond)
+	// The printed line, not the typed command line, which holds it too.
+	session := env.cfg.SessionName("worker")
+	waitPane(t, env, session, "the trust dialog printed", func(screen string) bool {
+		return hasLine(screen, "Yes, I trust this folder")
+	})
+	if _, err := env.service.Send(ctx, "worker", "hello", service.SendOptions{}); err == nil || !strings.Contains(err.Error(), "trust prompt") {
+		t.Fatalf("send at a trust dialog: err = %v", err)
 	}
 
-	// No dialog: send goes through.
-	env.tmux.Clear(env.cfg.SessionName("worker"))
-	time.Sleep(200 * time.Millisecond)
+	// No dialog: send goes through. Send reads the visible screen, which
+	// the shell's clear empties (friction #5 is about the scrollback).
+	env.tmux.Clear(session)
+	waitPane(t, env, session, "the dialog cleared off the screen", func(screen string) bool {
+		return !strings.Contains(screen, "trust this folder")
+	})
 	if _, err := env.service.Send(ctx, "worker", "echo ok", service.SendOptions{}); err != nil {
 		t.Errorf("send with no dialog: %v", err)
 	}

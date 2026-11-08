@@ -3,6 +3,7 @@ package natsbus_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 )
 
@@ -83,13 +85,41 @@ func linkedPair(t *testing.T, hubOps, leafOps []string) (hub, leaf *busHost, hub
 
 func waitLinked(t *testing.T, d *natsbus.Daemon, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for d.LinkedPeers() != n {
-		if time.Now().After(deadline) {
-			t.Fatalf("expected %d linked peers, have %d", n, d.LinkedPeers())
-		}
-		time.Sleep(20 * time.Millisecond)
+	await.Until(t, fmt.Sprintf("%d linked peers", n), func() (string, bool) {
+		have := d.LinkedPeers()
+		return fmt.Sprintf("%d linked peers", have), have == n
+	})
+}
+
+// waitLog waits for h's bus.log to show want.
+func waitLog(t *testing.T, h *busHost, want string) {
+	t.Helper()
+	await.Until(t, fmt.Sprintf("%s's bus.log to show %q", h.name, want), func() (string, bool) {
+		log, _ := os.ReadFile(filepath.Join(h.dir, "bus.log"))
+		return string(log), strings.Contains(string(log), want)
+	})
+}
+
+// waitInterest returns once a message pub publishes as pubHost reaches sub.
+// Interest crosses links asynchronously but in the order it was made, so
+// then every subscription sub made before the call has reached pub's
+// server too, or been refused on the way: a check that something did not
+// cross can't pass just because the interest hadn't arrived yet.
+func waitInterest(t *testing.T, sub, pub *nats.Conn, pubHost string) {
+	t.Helper()
+	subj := natsbus.SubjectStatus(pubHost, "interest-probe")
+	probe, err := sub.SubscribeSync(subj)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer probe.Unsubscribe()
+	sub.Flush()
+	await.Until(t, "a probe on "+subj+" to cross", func() (string, bool) {
+		pub.Publish(subj, []byte("probe"))
+		pub.Flush()
+		_, err := probe.NextMsg(50 * time.Millisecond)
+		return fmt.Sprint(err), err == nil
+	})
 }
 
 // serve answers every op for host on nc, echoing which op ran.
@@ -116,18 +146,38 @@ func answerAll(t *testing.T, nc *nats.Conn, host string, answer func(*nats.Msg) 
 	nc.Flush()
 }
 
-// request asks op on host, waiting briefly for interest to propagate.
-func request(nc *nats.Conn, host, op string) (string, error) {
-	var lastErr error
-	for i := 0; i < 20; i++ {
-		msg, err := nc.Request(natsbus.SubjectRPC(host, op), []byte("{}"), 200*time.Millisecond)
-		if err == nil {
-			return string(msg.Data), nil
-		}
-		lastErr = err
-		time.Sleep(50 * time.Millisecond)
+// settleLink returns once the subscriptions each side has made have crossed
+// the link, or been refused on the way, so a refused request is refused
+// and not just early.
+func settleLink(t *testing.T, hubConn, leafConn *nats.Conn) {
+	t.Helper()
+	waitInterest(t, hubConn, leafConn, "leaf")
+	waitInterest(t, leafConn, hubConn, "hub")
+}
+
+// requestOnce asks op on host once, for a request that must be refused:
+// after settleLink, no answer is the answer.
+func requestOnce(nc *nats.Conn, host, op string) (string, error) {
+	msg, err := nc.Request(natsbus.SubjectRPC(host, op), []byte("{}"), time.Second)
+	if err != nil {
+		return "", err
 	}
-	return "", lastErr
+	return string(msg.Data), nil
+}
+
+// request asks op on host, retrying while interest propagates: for a
+// request that must be answered.
+func request(nc *nats.Conn, host, op string) (string, error) {
+	var data string
+	var lastErr error
+	await.Poll(5*time.Second, func() (string, bool) {
+		msg, err := nc.Request(natsbus.SubjectRPC(host, op), []byte("{}"), 200*time.Millisecond)
+		if lastErr = err; err == nil {
+			data = string(msg.Data)
+		}
+		return fmt.Sprint(err), err == nil
+	})
+	return data, lastErr
 }
 
 func TestBus_RPCCrossesLinkBothWays(t *testing.T) {
@@ -147,11 +197,12 @@ func TestBus_OpsNotAllowedRemotelyAreBlockedBothWays(t *testing.T) {
 	_, _, hubConn, leafConn := linkedPair(t, nil, nil) // defaults: keys is local-only
 	serve(t, hubConn, "hub")
 	serve(t, leafConn, "leaf")
+	settleLink(t, hubConn, leafConn)
 
-	if got, err := request(leafConn, "hub", natsbus.OpKeys); err == nil {
+	if got, err := requestOnce(leafConn, "hub", natsbus.OpKeys); err == nil {
 		t.Errorf("leaf ran keys on hub: %q", got)
 	}
-	if got, err := request(hubConn, "leaf", natsbus.OpKeys); err == nil {
+	if got, err := requestOnce(hubConn, "leaf", natsbus.OpKeys); err == nil {
 		t.Errorf("hub ran keys on leaf: %q", got)
 	}
 	// Still allowed locally.
@@ -166,11 +217,12 @@ func TestBus_SpawnIsLocalOnlyByDefault(t *testing.T) {
 	_, _, hubConn, leafConn := linkedPair(t, nil, nil)
 	serve(t, hubConn, "hub")
 	serve(t, leafConn, "leaf")
+	settleLink(t, hubConn, leafConn)
 
-	if got, err := request(leafConn, "hub", natsbus.OpSpawn); err == nil {
+	if got, err := requestOnce(leafConn, "hub", natsbus.OpSpawn); err == nil {
 		t.Errorf("leaf ran spawn on hub: %q", got)
 	}
-	if got, err := request(hubConn, "leaf", natsbus.OpSpawn); err == nil {
+	if got, err := requestOnce(hubConn, "leaf", natsbus.OpSpawn); err == nil {
 		t.Errorf("hub ran spawn on leaf: %q", got)
 	}
 	// Still allowed locally.
@@ -189,11 +241,12 @@ func TestBus_SpawnServedWhenAHostAllowsIt(t *testing.T) {
 		append(slices.Clone(natsbus.DefaultRemoteOps), natsbus.OpSpawn)) // leaf: also spawn
 	serve(t, hubConn, "hub")
 	serve(t, leafConn, "leaf")
+	settleLink(t, hubConn, leafConn)
 
 	if got, err := request(hubConn, "leaf", natsbus.OpSpawn); err != nil || got != "ran gomux.leaf.rpc.spawn" {
 		t.Errorf("leaf allows spawn remotely: %q, %v", got, err)
 	}
-	if got, err := request(leafConn, "hub", natsbus.OpSpawn); err == nil {
+	if got, err := requestOnce(leafConn, "hub", natsbus.OpSpawn); err == nil {
 		t.Errorf("leaf ran spawn on hub, which doesn't allow it: %q", got)
 	}
 	if got, err := request(hubConn, "hub", natsbus.OpSpawn); err != nil {
@@ -216,14 +269,10 @@ func TestBus_SpawnRoundTripsAcrossTheLink(t *testing.T) {
 
 	req := natsbus.SpawnRequest{Backend: "claude", Cwd: "/srv/project", TaskFile: "tasks/build.md", SpawnedBy: "lead@leaf"}
 	var resp *natsbus.SpawnResponse
-	deadline := time.Now().Add(5 * time.Second)
-	for { // interest propagates across the link
+	await.Poll(5*time.Second, func() (string, bool) { // interest propagates across the link
 		resp, err = client.Spawn(context.Background(), natsbus.AgentRef{Name: "helper", Host: "hub"}, req)
-		if err == nil || !strings.Contains(err.Error(), "no bus answering") || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return fmt.Sprint(err), err == nil || !strings.Contains(err.Error(), "no bus answering")
+	})
 	if err != nil || resp.Name != "helper" || resp.Session != "agent-helper" || resp.SpawnedBy != "lead@leaf" || resp.Cwd != "/srv/project" {
 		t.Fatalf("Spawn = %+v, %v", resp, err)
 	}
@@ -239,8 +288,9 @@ func TestBus_RemoteOpsAreConfigurablePerHost(t *testing.T) {
 		[]string{natsbus.OpStatus, natsbus.OpKeys}) // leaf: also allows keys
 	serve(t, hubConn, "hub")
 	serve(t, leafConn, "leaf")
+	settleLink(t, hubConn, leafConn)
 
-	if _, err := request(leafConn, "hub", natsbus.OpSend); err == nil {
+	if _, err := requestOnce(leafConn, "hub", natsbus.OpSend); err == nil {
 		t.Error("hub served send to a peer despite allowing only status")
 	}
 	if _, err := request(hubConn, "leaf", natsbus.OpKeys); err != nil {
@@ -255,7 +305,14 @@ func TestBus_EventsCrossLinkButPeersCantSpeakForOthers(t *testing.T) {
 	leafSub, _ := leafConn.SubscribeSync(natsbus.SubjectAllStatus("*"))
 	hubConn.Flush()
 	leafConn.Flush()
-	time.Sleep(200 * time.Millisecond) // interest propagation across the link
+	waitInterest(t, hubConn, leafConn, "leaf")
+	waitInterest(t, leafConn, hubConn, "hub")
+	drain := func(sub *nats.Subscription) {
+		for _, err := sub.NextMsg(0); err == nil; _, err = sub.NextMsg(0) {
+		}
+	}
+	drain(hubSub) // the probes
+	drain(leafSub)
 
 	// Genuine events cross in both directions.
 	leafConn.Publish(natsbus.SubjectStatus("leaf", "a"), []byte("leaf-real"))
@@ -263,20 +320,26 @@ func TestBus_EventsCrossLinkButPeersCantSpeakForOthers(t *testing.T) {
 	// A peer may not speak for the hub, or for a host it doesn't own.
 	leafConn.Publish(natsbus.SubjectStatus("hub", "x"), []byte("leaf-as-hub"))
 	leafConn.Publish(natsbus.SubjectStatus("other", "y"), []byte("leaf-as-other"))
+	// Each side's last event: messages from one connection arrive in
+	// order, so once it has, any earlier one that was let through has too.
+	leafConn.Publish(natsbus.SubjectStatus("leaf", "end"), []byte("leaf-end"))
+	hubConn.Publish(natsbus.SubjectStatus("hub", "end"), []byte("hub-end"))
 	leafConn.Flush()
 	hubConn.Flush()
 
-	got := func(sub *nats.Subscription) map[string]bool {
+	got := func(sub *nats.Subscription, end string) map[string]bool {
+		t.Helper()
 		seen := map[string]bool{}
-		for {
-			msg, err := sub.NextMsg(500 * time.Millisecond)
+		for !seen[end] {
+			msg, err := sub.NextMsg(await.Timeout)
 			if err != nil {
-				return seen
+				t.Fatalf("waiting for %s: %v; saw %v", end, err, seen)
 			}
 			seen[string(msg.Data)] = true
 		}
+		return seen
 	}
-	hubSeen, leafSeen := got(hubSub), got(leafSub)
+	hubSeen, leafSeen := got(hubSub, "leaf-end"), got(leafSub, "hub-end")
 
 	if !hubSeen["leaf-real"] || !leafSeen["hub-real"] {
 		t.Errorf("genuine events missing: hub saw %v, leaf saw %v", hubSeen, leafSeen)
@@ -314,7 +377,8 @@ func TestBus_UntrustedPeersCantLink(t *testing.T) {
 			trust(t, leaf, hub.id.PublicBundle("tls://"+hubD.LeafAddr()))
 			leaf.start(t, "", nil)
 
-			time.Sleep(1500 * time.Millisecond)
+			// The hub has turned an attempt away (it logs each one).
+			waitLog(t, hub, "Leafnode connection closed")
 			if n := hubD.LinkedPeers(); n != 0 {
 				t.Errorf("hub accepted %d link(s) from an untrusted peer", n)
 			}
@@ -334,7 +398,8 @@ func TestBus_LeafRejectsAnImpostorHub(t *testing.T) {
 	trust(t, leaf, bundle)
 	leaf.start(t, "", nil)
 
-	time.Sleep(1500 * time.Millisecond)
+	// The leaf has turned an attempt away (the hub logs each one closing).
+	waitLog(t, hub, "Leafnode connection closed")
 	if n := hubD.LinkedPeers(); n != 0 {
 		t.Errorf("leaf linked to a hub whose certificate doesn't match its pin")
 	}

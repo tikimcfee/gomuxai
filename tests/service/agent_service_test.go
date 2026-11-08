@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
@@ -141,21 +142,38 @@ func setupTestEnv(t *testing.T) *testEnv {
 // waitForSession waits until a session's screen shows every one of wants.
 func waitForSession(t *testing.T, env *testEnv, sessionName string, wants ...string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	await.Until(t, fmt.Sprintf("session %s to show %q", sessionName, wants), func() (string, bool) {
 		out, _ := env.tmux.Capture(sessionName, 20)
-		missing := false
 		for _, want := range wants {
-			missing = missing || !strings.Contains(out, want)
+			if !strings.Contains(out, want) {
+				return out, false
+			}
 		}
-		if !missing {
-			return
+		return out, true
+	})
+}
+
+// waitPane waits until ok holds for a session's visible screen.
+func waitPane(t *testing.T, env *testEnv, sessionName, what string, ok func(screen string) bool) string {
+	t.Helper()
+	return await.Until(t, what, func() (string, bool) {
+		screen, err := env.tmux.Capture(sessionName, 0)
+		if err != nil {
+			return "capture failed: " + err.Error(), false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("session %s doesn't show %q:\n%s", sessionName, wants, out)
+		return screen, ok(screen)
+	})
+}
+
+// hasLine reports whether a line of screen is line, ignoring surrounding
+// space.
+func hasLine(screen, line string) bool {
+	for _, l := range strings.Split(screen, "\n") {
+		if strings.TrimSpace(l) == line {
+			return true
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
+	return false
 }
 
 // TestSpawn_FullFlow tests the complete spawn operation.
@@ -351,9 +369,6 @@ func TestSend_ToExistingAgent(t *testing.T) {
 		t.Fatalf("spawn failed: %v", err)
 	}
 
-	// Wait briefly for session to be ready
-	time.Sleep(100 * time.Millisecond)
-
 	// Send a message
 	_, err = env.service.Send(ctx, opts.Name, "hello world", service.SendOptions{})
 	if err != nil {
@@ -452,9 +467,6 @@ func TestCapture_Output(t *testing.T) {
 		t.Fatalf("spawn failed: %v", err)
 	}
 
-	// Wait for session to be ready
-	time.Sleep(100 * time.Millisecond)
-
 	// Capture output (should return something, even if minimal)
 	output, err := env.service.Capture(ctx, opts.Name, 50, false)
 	if err != nil {
@@ -483,8 +495,6 @@ func TestCapture_DefaultLineLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn failed: %v", err)
 	}
-
-	time.Sleep(100 * time.Millisecond)
 
 	// Capture with 0 lines should use default
 	_, err = env.service.Capture(ctx, opts.Name, 0, false)
@@ -523,9 +533,6 @@ func TestStatus_Detection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn failed: %v", err)
 	}
-
-	// Wait for CLI to start
-	time.Sleep(100 * time.Millisecond)
 
 	// Get status (might be unknown, idle, or processing depending on timing)
 	status, err := env.service.Status(ctx, opts.Name)
