@@ -431,14 +431,18 @@ func TestSendKeys_PaneInAMode(t *testing.T) {
 		t.Fatalf("a key into a pane in clock mode: %v", err)
 	}
 	client.SendSpecialKey(sessionName, "Enter")
-	time.Sleep(300 * time.Millisecond)
 
 	if inMode() != "0" {
 		t.Error("pane still in a mode after typing")
 	}
-	output, err := client.Capture(sessionName, 50)
-	if err != nil {
-		t.Fatalf("capturing output: %v", err)
+	// Wait for cat to echo all three (typed, then echoed): fixed sleeps
+	// flaked under a loaded test run.
+	var output string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		output, _ = client.Capture(sessionName, 50)
+		if strings.Count(output, "tell me when gated.") >= 2 && strings.Count(output, "pasted out of copy mode") >= 2 {
+			break
+		}
 	}
 	// cat -v shows the bytes as UTF-8 escapes (M-...), so look for the
 	// ASCII ends of the message: typed by the terminal, then echoed by cat.
@@ -1032,7 +1036,10 @@ func TestPasteText_OnePasteWhenTheAppAsks(t *testing.T) {
 			if tt.asks {
 				mode = `printf '\033[?2004h'; `
 			}
-			client.SendKeys(sessionName, fmt.Sprintf(`stty raw -echo; %secho READY; cat > %s`, mode, out))
+			// READY is printed only once the mode is set: the command line
+			// itself says RE''ADY, so its echo can't count as ready (on a
+			// slower shell the paste then came before the app asked).
+			client.SendKeys(sessionName, fmt.Sprintf(`stty raw -echo; %secho RE''ADY; cat > %s`, mode, out))
 			client.SendSpecialKey(sessionName, "Enter")
 			waitFor(t, func() bool {
 				screen, _ := client.Capture(sessionName, 0)
