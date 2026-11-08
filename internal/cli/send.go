@@ -69,11 +69,12 @@ can't be read (not on screen), send types the message and presses Enter
 without checking, and says so; status shows it as unchecked until a turn
 starts.
 
-A long message typed into Claude's terminal can arrive as a pasted block,
-which Claude may treat as data rather than as instructions: keep instructions
-short, or put them in a file and send its path. A held message arrives
-whole, however long (agy gets one over 64 KB in labeled parts, since it cuts
-longer ones).`,
+A message is typed as a bracketed paste when the CLI asks for one (Claude
+does), so a long one arrives whole however the terminal splits it. In
+Claude it arrives as a pasted block, which Claude may treat as data rather
+than as instructions: keep instructions short, or put them in a file and
+send its path. A held message arrives whole, however long (agy gets one over
+64 KB in labeled parts, since it cuts longer ones).`,
 	Example: `  agent send researcher "analyze the codebase structure"
   agent send builder "run the tests" && agent wait builder --for idle,waiting --next
   agent send builder --now "stop: the tests are already fixed"

@@ -49,6 +49,11 @@ type TmuxOps interface {
 	// SendKeys sends text to a tmux session.
 	SendKeys(session string, text string) error
 
+	// PasteText types text into a tmux session as a paste: bracketed, if
+	// the application asked for bracketed paste, so it arrives as one
+	// paste however the terminal splits it.
+	PasteText(session string, text string) error
+
 	// SendSpecialKey sends a special key (like c-c, enter) to a session.
 	SendSpecialKey(session string, key string) error
 
@@ -226,6 +231,34 @@ func (c *Client) SendKeys(session string, text string) error {
 
 	return nil
 }
+
+// PasteText types text into a tmux session through a paste buffer, as a
+// bracketed paste (ESC [200~ text ESC [201~) if the application in the pane
+// asked for bracketed paste mode, else byte for byte as SendKeys types it.
+//
+// Text typed with send-keys reaches the application in as many reads as
+// the terminal splits it into: a pty's input queue holds 1024 bytes on
+// macOS (4096 on Linux), so a longer message arrives in pieces. With no
+// brackets to say where it starts and ends, a CLI that takes a burst of
+// input for a paste (Claude Code does) can take the pieces for separate
+// pastes and keep only the last one: the head of the message is lost. The
+// brackets make the whole message one paste, as a person's paste is. A
+// message can't end the paste early: ESC [201~ in it is dropped.
+//
+// tmux doesn't refuse a paste for read-only clients, as it does send-keys.
+func (c *Client) PasteText(session string, text string) error {
+	target, err := c.paneTarget(session)
+	if err != nil {
+		return err
+	}
+	if err := pasteBracketed(target, strings.ReplaceAll(text, pasteEnd, "")); err != nil {
+		return fmt.Errorf("pasting text: %w", err)
+	}
+	return nil
+}
+
+// pasteEnd ends a bracketed paste.
+const pasteEnd = "\x1b[201~"
 
 // SendSpecialKey sends a special key to a session. key is never read as a
 // flag: one that isn't a key name is typed as text.

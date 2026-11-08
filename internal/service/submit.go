@@ -99,17 +99,17 @@ func (s *AgentService) readInput(agent *storage.Agent, ir backend.InputReader) (
 func (s *AgentService) typeMessage(ctx context.Context, agent *storage.Agent, text string) (string, error) {
 	sc, ok := s.submitChecker(agent)
 	if !ok {
-		return "", s.sendLine(agent.SessionName, text)
+		return "", s.pasteLine(agent.SessionName, text)
 	}
 	before, why := s.inputBefore(agent, sc)
 	if why != "" {
-		if err := s.sendLine(agent.SessionName, text); err != nil {
+		if err := s.pasteLine(agent.SessionName, text); err != nil {
 			return "", err
 		}
 		_ = s.setState(ctx, agent.Name, StateKeyUnchecked, why)
 		return why, nil
 	}
-	if err := s.tmux.SendKeys(agent.SessionName, text); err != nil {
+	if err := s.tmux.PasteText(agent.SessionName, text); err != nil {
 		return "", err
 	}
 	typed, seen, err := s.settledInput(ctx, agent, sc, before)

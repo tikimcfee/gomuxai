@@ -367,6 +367,82 @@ func TestSendKeys_IsLiteral(t *testing.T) {
 	}
 }
 
+// PasteText carries messages typed into agents. Typed with send-keys, a
+// message longer than the pty's input queue (1024 bytes on macOS) reaches
+// the CLI in pieces, and Claude Code took the pieces for separate pastes and
+// kept only the last: a 1066-byte message arrived as its last 44 bytes. A
+// CLI that asked for bracketed paste (as Claude does) gets the message
+// between paste brackets instead, so it arrives as one paste however it is
+// split; one that didn't gets the bytes as typed.
+func TestPasteText_OnePasteWhenTheAppAsks(t *testing.T) {
+	requireTmux(t)
+	client, err := tmux.NewClient()
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+	// Long enough to be split; it can't end the paste early.
+	text := strings.Repeat("0123456789", 150) + "\x1b[201~" + strings.Repeat("abcdefghij", 150) + "\nlast line"
+	want := strings.ReplaceAll(text, "\x1b[201~", "")
+
+	for _, tt := range []struct {
+		name   string
+		asks   bool
+		wantIn string
+	}{
+		{"asks for bracketed paste", true, "\x1b[200~" + want + "\x1b[201~"},
+		{"doesn't ask", false, want},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionName := uniqueSessionName(t)
+			defer cleanupSession(sessionName)
+			if err := client.CreateSession(sessionName, nil); err != nil {
+				t.Fatalf("creating session: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+
+			// The pane's app takes its input raw and records every byte, as
+			// a CLI reads its terminal.
+			out := filepath.Join(t.TempDir(), "in")
+			mode := ""
+			if tt.asks {
+				mode = `printf '\033[?2004h'; `
+			}
+			client.SendKeys(sessionName, fmt.Sprintf(`stty raw -echo; %secho READY; cat > %s`, mode, out))
+			client.SendSpecialKey(sessionName, "Enter")
+			waitFor(t, func() bool {
+				screen, _ := client.Capture(sessionName, 0)
+				return strings.Contains(screen, "READY")
+			})
+
+			if err := client.PasteText(sessionName, text); err != nil {
+				t.Fatalf("PasteText: %v", err)
+			}
+			var got string
+			waitFor(t, func() bool {
+				data, _ := os.ReadFile(out)
+				got = string(data)
+				return len(got) >= len(tt.wantIn)
+			})
+			if got != tt.wantIn {
+				t.Errorf("the app read %d bytes:\n%q\nwant %d:\n%q", len(got), got, len(tt.wantIn), tt.wantIn)
+			}
+		})
+	}
+}
+
+// waitFor polls cond for up to 5s.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if cond() {
+			return
+		}
+	}
+	if !cond() {
+		t.Fatal("timed out")
+	}
+}
+
 // TestSendSpecialKey tests special key transmission
 func TestSendSpecialKey(t *testing.T) {
 	requireTmux(t)

@@ -64,6 +64,11 @@ func (f *fakeTmux) StopPipePane(string) error                               { re
 func (f *fakeTmux) Clear(string) error                                      { return nil }
 func (f *fakeTmux) PanePIDs() (map[int]string, error)                       { return nil, nil }
 
+// PasteText is how messages are typed (see tmux.Client.PasteText).
+func (f *fakeTmux) PasteText(session string, text string) error {
+	return f.SendKeys(session, text)
+}
+
 func (f *fakeTmux) SendKeys(_ string, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

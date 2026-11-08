@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -193,6 +194,16 @@ var bufferSeq atomic.Uint64
 // don't, and don't know -S), and without -p there's no bracketed paste. tmux
 // doesn't refuse it for read-only clients.
 func paste(target, data string) error {
+	return pasteBuffer(target, data, false)
+}
+
+// pasteBracketed is paste with -p: tmux wraps data in bracketed paste
+// codes if the application in the pane asked for them.
+func pasteBracketed(target, data string) error {
+	return pasteBuffer(target, data, true)
+}
+
+func pasteBuffer(target, data string, bracketed bool) error {
 	if data == "" {
 		return nil
 	}
@@ -200,9 +211,14 @@ func paste(target, data string) error {
 	if _, err := run("set-buffer", "-b", buf, "--", data); err != nil {
 		return err
 	}
-	_, err := run("paste-buffer", "-d", "-r", "-S", "-b", buf, "-t", target)
+	flags := []string{"paste-buffer", "-d", "-r", "-S"}
+	if bracketed {
+		flags = append(flags, "-p")
+	}
+	_, err := run(append(flags, "-b", buf, "-t", target)...)
 	if tmuxSays(err, "unknown flag -S") {
-		_, err = run("paste-buffer", "-d", "-r", "-b", buf, "-t", target)
+		flags = slices.DeleteFunc(flags, func(f string) bool { return f == "-S" })
+		_, err = run(append(flags, "-b", buf, "-t", target)...)
 	}
 	if err != nil {
 		_, _ = run("delete-buffer", "-b", buf)

@@ -13,6 +13,8 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
 	"github.com/tikimcfee/gomuxai/internal/config"
+	"github.com/tikimcfee/gomuxai/internal/natsbus"
+	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/tmux"
@@ -23,7 +25,10 @@ import (
 // Claude reads it, and Claude reads everything that has arrived at once.
 // A read that brings text and an Enter together is a paste, where the
 // Enter is a newline, and Claude then eats the next Enter (both as seen
-// with Claude Code v2.1.310). Screens are synthesized like those in
+// with Claude Code v2.1.310). Typed text longer than the pty's input queue
+// arrives in pieces, of which Claude keeps only the last; text pasted with
+// paste brackets is one paste however it arrives (both as seen with Claude
+// Code on macOS, 2026-11). Screens are synthesized like those in
 // tests/backend's TestClaudeInputText.
 type claudeTerminal struct {
 	tmux.TmuxOps // only the methods below are used
@@ -40,7 +45,14 @@ type claudeTerminal struct {
 	enters    int
 	submitted []string
 	pastes    int
+	pasted    map[string]string // a paste's placeholder: what was pasted
 }
+
+// ptyQueue is how much of what is written to a macOS pty its reader gets
+// in one read: its input queue's 1024 bytes, less 2.
+const ptyQueue = 1022
+
+const pasteStart, pasteEnd = "\x1b[200~", "\x1b[201~"
 
 func (c *claudeTerminal) SessionExists(string) (bool, error) { return true, nil }
 
@@ -48,6 +60,15 @@ func (c *claudeTerminal) SendKeys(_ string, text string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.unread += text
+	c.read()
+	return nil
+}
+
+// PasteText pastes text with paste brackets: Claude asks for them.
+func (c *claudeTerminal) PasteText(_ string, text string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unread += pasteStart + text + pasteEnd
 	c.read()
 	return nil
 }
@@ -94,10 +115,23 @@ func (c *claudeTerminal) read() {
 	if strings.Contains(chunk, "\r") {
 		c.eatEnter = true // the Enter came with the text: a newline
 	}
+	if start, end := strings.Index(chunk, pasteStart), strings.Index(chunk, pasteEnd); start >= 0 && end > start {
+		// One paste, however the pty split it.
+		chunk = chunk[:start] + chunk[start+len(pasteStart):end] + chunk[end+len(pasteEnd):]
+	} else if typed := strings.TrimRight(chunk, "\r"); len(typed) > ptyQueue {
+		// Read in pieces, each taken for a paste of its own, of which the
+		// last is kept.
+		chunk = typed[(len(typed)-1)/ptyQueue*ptyQueue:] + chunk[len(typed):]
+	}
 	text := strings.ReplaceAll(chunk, "\r", "\n")
 	if strings.Contains(strings.TrimRight(text, "\n"), "\n") || len(text) > 200 {
 		c.pastes++
-		c.box = append(c.box, fmt.Sprintf("[Pasted text #%d +%d lines]", c.pastes, strings.Count(text, "\n")))
+		placeholder := fmt.Sprintf("[Pasted text #%d +%d lines]", c.pastes, strings.Count(text, "\n"))
+		if c.pasted == nil {
+			c.pasted = map[string]string{}
+		}
+		c.pasted[placeholder] = strings.TrimRight(text, "\n")
+		c.box = append(c.box, placeholder)
 		return
 	}
 	if len(c.box) == 0 {
@@ -118,7 +152,11 @@ func (c *claudeTerminal) enter() {
 		c.eatEnter = false
 	case c.deafEnter || c.dialog:
 	case strings.TrimSpace(strings.Join(c.box, "")) != "":
-		c.submitted = append(c.submitted, strings.TrimRight(strings.Join(c.box, "\n"), "\n"))
+		prompt := strings.Join(c.box, "\n")
+		for placeholder, text := range c.pasted {
+			prompt = strings.ReplaceAll(prompt, placeholder, text)
+		}
+		c.submitted = append(c.submitted, strings.TrimRight(prompt, "\n"))
 		c.box = nil
 	}
 }
@@ -206,6 +244,73 @@ func TestSubmit_WaitsForTheBoxToShowTheText(t *testing.T) {
 		}
 		if len(submitted) == 1 && !strings.HasPrefix(msg, "[from lead@hub] Screenshot") && strings.Contains(submitted[0], "\n") {
 			t.Errorf("%q: submitted with a newline: %q", msg, submitted[0])
+		}
+	}
+}
+
+// A message over 1022 bytes typed into Claude on macOS reached it in two
+// reads, and Claude kept only the second: an agent got the last 44 bytes
+// of a 1066-byte message, and the tail of a --now message (friction #36,
+// #37). Messages are pasted with paste brackets now, which make the pieces
+// one paste.
+func TestSubmit_LongMessageArrivesWhole(t *testing.T) {
+	ctx := context.Background()
+	for _, size := range []int{ptyQueue + 44, 5000} {
+		msg := "[from lead@hub] the instructions come first. " + strings.Repeat("x", size)
+		for _, strange := range []bool{false, true} { // checked, and typed without checking
+			term := &claudeTerminal{strange: strange}
+			svc, _ := setupClaudeTerminal(t, term, submitTestWait)
+			if _, err := svc.Send(ctx, "worker", msg, service.SendOptions{Now: true}); err != nil {
+				t.Fatalf("%d bytes: %v", len(msg), err)
+			}
+			if _, submitted, _ := term.state(); len(submitted) != 1 || submitted[0] != msg {
+				got := ""
+				if len(submitted) > 0 {
+					got = submitted[0]
+				}
+				t.Errorf("%d bytes (unchecked %v): Claude got %d bytes starting %.30q; want the whole message", len(msg), strange, len(got), got)
+			}
+		}
+	}
+}
+
+// The same over the bus, as the reports came: a --now message to a busy
+// agent (#36), and a message to an agent whose turn had stopped with
+// background work running, which send types in at once (#37).
+func TestSubmit_LongMessageOverTheBusArrivesWhole(t *testing.T) {
+	ctx := context.Background()
+	msg := "[from lead@hub] the instructions come first. " + strings.Repeat("y", 1100)
+	for _, tt := range []struct {
+		name string
+		now  bool
+		ev   string
+	}{
+		{"--now while it works", true, "PreToolUse"},
+		{"held, its turn over but for background work", false, "Stop"},
+	} {
+		term := &claudeTerminal{}
+		svc, store := setupClaudeTerminal(t, term, submitTestWait)
+		if err := store.SetState(ctx, &storage.StateEntry{AgentName: "worker", Key: service.StateKeySpawnID, Value: "s1", UpdatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusProcessing, Event: tt.ev}); err != nil {
+			t.Fatal(err)
+		}
+		svc.SetDelivererStarter(func(string) error { return nil })
+		nc := natstest.Start(t)
+		stop, err := natsbus.ServeRPC(nc, "h1", service.NewRPCHandler(svc), natsbus.DefaultRemoteOps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(stop)
+		client := natsbus.NewRPCClient(natstest.Connect(t, nc.ConnectedUrl()), 5*time.Second)
+
+		resp, err := client.SendMessage(ctx, natsbus.AgentRef{Name: "worker", Host: "h1"}, natsbus.SendRequest{Message: msg, Now: tt.now})
+		if err != nil || resp == nil || resp.Typed != 1 {
+			t.Fatalf("%s: SendMessage = %+v, %v; want it typed", tt.name, resp, err)
+		}
+		if _, submitted, _ := term.state(); len(submitted) != 1 || submitted[0] != msg {
+			t.Errorf("%s: Claude got %q; want the whole message", tt.name, submitted)
 		}
 	}
 }
