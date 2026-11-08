@@ -7,7 +7,8 @@ The transcripts are synthesized. Their record shapes (record types, field names,
 order, nesting) are modelled on real Claude Code 2.1.310, agy and Kimi Code transcripts.
 All content is made up. The expected events were written by hand from the contract, not
 taken from any parser's output. Only the bookkeeping was computed: `seq`, `at`, `line`,
-and the session line's `size`.
+and the session line's `size`. The exception is `claude/rewind`, whose events were produced by the
+parser and then checked line by line against the contract.
 
 ## Layout
 
@@ -50,6 +51,7 @@ Compare parsed JSON values, not bytes:
 | `claude/system-records` | Auto-compaction mid-turn: the boundary and the summary, both in the current turn. `stop_hook_summary`, `turn_duration`. An API error. | `system` `compact_boundary{compactMetadata,logicalParentUuid}` with `parentUuid: null`; `user` with `isCompactSummary` and `isVisibleInTranscriptOnly`; an `assistant` record with `message.model: <synthetic>`, `isApiErrorMessage`, `error`, `apiErrorStatus`. |
 | `claude/derived-turns` | An older transcript with no `promptId`, `turnPosition`, `origin` or `promptSource`: turn ids are derived (`derived: true`). One record with two blocks (`#0`, and the tool's id). A plain interrupt. | The same envelope as 2.1.310 minus the turn fields (version 2.0.x); a leading `summary` record. |
 | `claude/session-meta` | A prompt with an image. `ai-title` written twice (the latest wins), `agent-name`, `continued-in`. | A `user` content array `[text, image{source{type: base64,media_type,data}}]` with `imagePasteIds`; `agent-name{agentName}`; `continued-in{continuedInSessionId}`. |
+| `claude/rewind` | A first prompt edited and sent again after its turn ran two Bash calls (one denied) and was interrupted: the new prompt has no parent either, and every event of the old branch is sent again `abandoned`, in transcript order, after the new prompt. A later prompt edited before anything answered it: only that prompt is abandoned. Both new prompts keep the old one's `promptIndex`. | Two `user` prompt records with the same `parentUuid` (`null` for a first prompt), different `promptId`s and the same `turnPosition`; a denied call's `is_error` `tool_result` and `toolUseResult: "Error: ..."`, then `[Request interrupted by user for tool use]`. |
 | `agy/conversation` | A USER_INPUT prompt. A step with three tool calls, each paired with its own GENERIC result in order (the existing parsers keep only the last). A command sent to the background (`RUNNING`), whose completion arrives later in a SYSTEM_MESSAGE. `ask_question`. `send_message`, and a peer's reply. | `transcript_full.jsonl` steps `{step_index,source,type,status,created_at,content,thinking,tool_calls[{name,args}],input_tokens,cache_read_tokens,output_tokens}`; `<USER_REQUEST>` with `<ADDITIONAL_METADATA>` and `<USER_SETTINGS_CHANGE>` (Model Selection); GENERIC content led by `Created At:`/`Completed At:`; view_file's `File Path:`/`Total Lines:`/`Showing lines A to B` header; `[Message] timestamp=… sender=… priority=… content=…`; `Task id "…" finished with result:`. |
 | `kimi/interleaved` | One turn whose thinking, text and tool calls interleave across steps. Events come out in wire order (glyph3d-rs groups all thinking, then tools, then text: the bug this case catches). | `wire.jsonl`: `metadata{protocol_version,created_at}`, `turn.prompt{input[]}`, `context.append_message`, `llm.request{provider,model,modelAlias}`, `context.append_loop_event{time,event}` with event types `step.begin`, `content.part{part{type: think|text, think|text}}`, `tool.call{toolCallId,name,args,display}`, `tool.result{toolCallId,result{output}}` and `step.end`, `usage.record`; `state.json{title,workDir,lastPrompt}`. Shapes come from the format survey in glyph3d-rs `kimi.rs` and glyph3d-js's Kimi tests; no Kimi sessions were on the survey host. |
 
@@ -69,6 +71,15 @@ should check the rest.
 - When one line both adds an event and updates an earlier one, the add comes first: a
   task notification, then the background call it completes; an interrupt, then the call
   it stops.
+- A Claude prompt edited and sent again (Esc to edit, or a rewind to an earlier prompt)
+  is a `user` prompt record whose `parentUuid` already has one: Claude Code keeps the old
+  branch in the file. Every event of that branch, from the old prompt down its records'
+  `parentUuid` links, is sent again as an update with `abandoned: true`, after the new
+  prompt's add, in transcript order; any later update of one of them (a background call
+  that reports back) is abandoned too. Records that share a parent for other reasons
+  (parallel tool calls, hook notes) abandon nothing: only two prompts do. A compaction
+  starts the tree again, so a prompt before it is never abandoned. In a file that counts
+  turns, the new prompt takes the old one's index.
 - The opening session line describes the session as of the end of the initial read. A
   static file therefore has exactly one session line. Later session lines come only from
   `--follow`.

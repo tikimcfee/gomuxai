@@ -37,7 +37,9 @@ The Go types are in `internal/transcript/events.go`; the Session is
     has the `seq` a whole read gives it, not 0.
   - `--until` leaves out the lines that start at or after a byte offset, so `--from A
     --until B` reads the lines after A's and before B: a history window. Not with
-    `--follow`.
+    `--follow`. The parser still reads on to the transcript's end, so an event of the
+    window whose branch a prompt past `--until` abandons is sent with `"abandoned": true`
+    already (see Framing); nothing past the window is sent.
   - `--follow` keeps reading as the transcript grows, polling every 250ms and never
     reading a line that isn't whole yet, until interrupted or the reader closes the pipe
     (both exit 0; a closed pipe is noticed within a poll, with nothing to write). A
@@ -74,6 +76,19 @@ Nothing is ever reordered. An event that changes later (a tool's result lands, a
 reply is confirmed) is sent again with the same `id` and `"op":"update"`: the whole event,
 with the `at`, `line` and `ts` of the line that changed it. When one line adds an event and
 updates an earlier one, the add comes first.
+
+A Claude prompt that is edited and sent again (Esc to edit it, or a rewind to an earlier
+prompt) leaves the old one in the transcript, with everything that answered it: a branch the
+model never sees again. When the new prompt arrives, every event of the old branch is sent
+again as an update with `"abandoned": true`, in transcript order, after the new prompt's
+own add; a later update of one of them (a background call that reports back) keeps it. A
+reader that folds updates (a whole read) therefore sees the branch abandoned where it was
+added, and one that follows the stream sees it change as the person resends. A `--until`
+window that ends between the two marks the window's events itself, so a reader paging back
+sees the branch abandoned too. Show such
+events dimmed, or drop them. The new prompt keeps the old one's turn index; its turn id is
+its own. A prompt before the last compaction is never abandoned. agy and Kimi events are
+never abandoned.
 
 ## Session
 
@@ -120,6 +135,8 @@ updates an earlier one, the add comes first.
   "turn": { "id": "…", "index": 0, "derived": false },  // the prompt this event belongs to
   "agent": "…",                   // the subagent id, on a subagent's own events (Claude: its agentId;
                                   // agy and Kimi, which record none: its session_id)
+  "abandoned": true,              // only on an event of a branch the conversation left (Claude: a
+                                  // prompt edited and sent again, and what answered it); see Framing
   "kind": "prompt|think|say|tool|system|request",
   "<kind>": { … } }               // exactly one, matching kind
 ```

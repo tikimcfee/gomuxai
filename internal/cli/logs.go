@@ -235,6 +235,10 @@ func formatEvent(e transcript.Event, full bool) string {
 		ts = t.Local().Format("15:04:05")
 	}
 	head := fmt.Sprintf("%s %-6s ", ts, e.Kind)
+	if e.Abandoned {
+		// A branch the conversation left: a prompt sent again edited.
+		head += "(abandoned) "
+	}
 	text := func(s string) string {
 		if full {
 			return indent(s)

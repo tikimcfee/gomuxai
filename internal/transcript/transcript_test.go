@@ -1179,6 +1179,76 @@ func TestClaudeCountedTurns(t *testing.T) {
 	}
 }
 
+// TestClaudeRewind: a prompt edited and sent again abandons the branch
+// the old one started, in a file that numbers turns by counting prompts
+// too: the new prompt takes the old one's index, and a background call of
+// the dead branch that reports back later stays abandoned.
+func TestClaudeRewind(t *testing.T) {
+	lines := []string{
+		`{"type":"user","uuid":"u1","parentUuid":null,"promptId":"p1","message":{"role":"user","content":"first"}}`,
+		`{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"role":"assistant","content":[{"type":"text","text":"one"}],"stop_reason":"end_turn"}}`,
+		`{"type":"user","uuid":"u2","parentUuid":"a1","promptId":"p2","message":{"role":"user","content":"second"}}`,
+		`{"type":"assistant","uuid":"a2","parentUuid":"u2","message":{"role":"assistant","content":[{"type":"tool_use","id":"bg1","name":"Bash","input":{"command":"make","description":"job","run_in_background":true}}],"stop_reason":"tool_use"}}`,
+		`{"type":"user","uuid":"r2","parentUuid":"a2","promptId":"p2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bg1","content":"started"}]},"toolUseResult":{"backgroundTaskId":"t1"}}`,
+		`{"type":"user","uuid":"i2","parentUuid":"r2","promptId":"p2","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}`,
+		`{"type":"user","uuid":"u3","parentUuid":"a1","promptId":"p3","message":{"role":"user","content":"second, edited"}}`,
+		`{"type":"user","uuid":"u4","parentUuid":"u3","promptId":"p4","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<tool-use-id>bg1</tool-use-id>\n<status>completed</status>\n<summary>job done</summary>\n</task-notification>"}}`,
+		`{"type":"user","uuid":"u5","parentUuid":"u4","promptId":"p5","message":{"role":"user","content":"third"}}`,
+	}
+	_, events := parse(Claude{}, []byte(strings.Join(lines, "\n")+"\n"))
+	var got []string
+	for _, e := range events {
+		s := summary(e)
+		if e.Abandoned {
+			s += " abandoned"
+		}
+		got = append(got, s)
+	}
+	want := []string{
+		`1 add prompt(human) "first"`,
+		`1 add say final "one"`,
+		`2 add prompt(human) "second"`,
+		`2 add tool Bash(make) pending ""`,
+		`2 update tool Bash(make) background "started"`,
+		`2 add system interrupt "[Request interrupted by user]"`,
+		`2 add prompt(human) "second, edited"`,
+		`2 update prompt(human) "second" abandoned`,
+		`2 update tool Bash(make) background "started" abandoned`,
+		`2 update system interrupt "[Request interrupted by user]" abandoned`,
+		`2 add prompt(task-notification) "<task-notification>\n<tool-use-id>bg1</tool-use-id>\n<status>completed</status>\n<summary>job done</summary>\n</task-notification>"`,
+		`2 update tool Bash(make) ok "job done" abandoned`,
+		`3 add prompt(human) "third"`,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// A reader that folds the stream sees the dead branch abandoned where it was added.
+	var dead []string
+	for _, e := range Latest(events) {
+		if e.Abandoned {
+			dead = append(dead, e.ID)
+		}
+	}
+	if want := []string{"u2#0", "bg1", "i2#0"}; !slices.Equal(dead, want) {
+		t.Errorf("Latest's abandoned events %q, want %q", dead, want)
+	}
+	// Records that share a parent for other reasons (a call and the next
+	// block of its message, a hook's note) abandon nothing.
+	fork := []string{
+		`{"type":"user","uuid":"u1","parentUuid":null,"promptId":"p1","message":{"role":"user","content":"go"}}`,
+		`{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"role":"assistant","content":[{"type":"tool_use","id":"c1","name":"Bash","input":{"command":"ls"}}],"stop_reason":"tool_use"}}`,
+		`{"type":"assistant","uuid":"a2","parentUuid":"a1","message":{"role":"assistant","content":[{"type":"tool_use","id":"c2","name":"Bash","input":{"command":"pwd"}}],"stop_reason":"tool_use"}}`,
+		`{"type":"user","uuid":"r1","parentUuid":"a1","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c1","content":"a"}]}}`,
+		`{"type":"user","uuid":"r2","parentUuid":"r1","promptId":"p1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c2","content":"b"}]}}`,
+	}
+	_, events = parse(Claude{}, []byte(strings.Join(fork, "\n")+"\n"))
+	for _, e := range events {
+		if e.Abandoned {
+			t.Errorf("%s abandoned in a conversation with no rewind", summary(e))
+		}
+	}
+}
+
 func TestSessionIDFromPath(t *testing.T) {
 	for path, want := range map[string]string{
 		"/home/user/.claude/projects/-p/0000-aa.jsonl":                                              "0000-aa",

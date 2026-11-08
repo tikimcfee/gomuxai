@@ -71,7 +71,12 @@ type Event struct {
 	Turn *TurnRef `json:"turn,omitempty"`
 	// Agent is the subagent id on a subagent's own events.
 	Agent string `json:"agent,omitempty"`
-	Kind  string `json:"kind"`
+	// Abandoned marks an event of a branch the conversation left: a
+	// prompt the person edited and sent again, or rewound past, and
+	// everything that answered it. It arrives as an update; the model
+	// no longer sees the branch.
+	Abandoned bool   `json:"abandoned,omitempty"`
+	Kind      string `json:"kind"`
 
 	Prompt  *PromptEvent  `json:"prompt,omitempty"`
 	Think   *ThinkEvent   `json:"think,omitempty"`

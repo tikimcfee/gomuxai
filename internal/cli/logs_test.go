@@ -291,6 +291,10 @@ func TestFormatEvent(t *testing.T) {
 			Text: "A message arrived while you were working:\n\n[from lead@hub] skip cmd/legacy"}},
 			false, `09:05:07 prompt (delivered) [from lead@hub] skip cmd/legacy`},
 		{transcript.Event{TS: at, Kind: transcript.KindThink, Think: &transcript.ThinkEvent{Redacted: true}}, false, "09:05:07 think"},
+		// A prompt sent again edited: the old one, and what answered it.
+		{transcript.Event{TS: at, Abandoned: true, Kind: transcript.KindPrompt, Prompt: &transcript.PromptEvent{Text: "Relaoded!", Origin: "human"}},
+			false, "09:05:07 prompt (abandoned) Relaoded!"},
+		{transcript.Event{TS: at, Abandoned: true, Kind: transcript.KindThink, Think: &transcript.ThinkEvent{Redacted: true}}, false, "09:05:07 think  (abandoned)"},
 		{transcript.Event{TS: at, Kind: transcript.KindSay, Say: &transcript.SayEvent{Text: long}}, false, "09:05:07 say    " + strings.TrimSpace(long[:119]) + "…"},
 		{tool("ok", ""), false, "09:05:07 tool   Bash: make lint → ok"},
 		{tool("ok", "1 issue\n"), false, "09:05:07 tool   Bash: make lint → ok: 1 issue"},

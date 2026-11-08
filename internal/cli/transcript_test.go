@@ -116,6 +116,57 @@ func eventAt(t *testing.T, line string) int64 {
 	return e.At
 }
 
+// A --until window that ends before the prompt that abandons a branch
+// still sends that branch's events abandoned: every window holds the
+// whole read's events of its lines, with each id the whole read abandons
+// marked, and nothing from past its end.
+func TestTranscript_WindowAbandoned(t *testing.T) {
+	path, data := corpusTranscript(t, "rewind.jsonl")
+	events := (transcript.Claude{}).NewParser(transcript.FileOptions("claude", path)).Feed(data)
+	dead := map[string]bool{}
+	for _, e := range events {
+		if e.Abandoned {
+			dead[e.ID] = true
+		}
+	}
+	if len(dead) == 0 {
+		t.Fatal("the rewind case abandons nothing")
+	}
+	target := fileTarget(path, int64(len(data)))
+	starts := lineStarts(data)
+	marked := 0
+	for _, from := range append([]int64{-1}, starts...) {
+		for _, until := range starts {
+			if until <= from {
+				continue
+			}
+			var want []string
+			for _, e := range events {
+				if e.At > from && e.At < until {
+					e.Abandoned = e.Abandoned || dead[e.ID]
+					line, err := json.Marshal(transcriptEventLine{"event", e})
+					if err != nil {
+						t.Fatal(err)
+					}
+					want = append(want, string(line))
+				}
+			}
+			_, got := streamLines(t, target, streamOptions{from: from, until: until})
+			if strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Errorf("--from %d --until %d:\n%s\nwant:\n%s", from, until, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+			for _, line := range got {
+				if strings.Contains(line, `"op":"add"`) && strings.Contains(line, `"abandoned":true`) {
+					marked++
+				}
+			}
+		}
+	}
+	if marked == 0 {
+		t.Error("no window sent an add abandoned: none ended before its rewind")
+	}
+}
+
 // A window holds exactly the whole read's events of its lines, numbered
 // and turned as the whole read numbers them.
 func TestTranscript_Window(t *testing.T) {

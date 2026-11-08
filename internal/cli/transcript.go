@@ -50,7 +50,9 @@ aren't sent again. The ones after have the seq, line and turn a whole read
 gives them, and updates to earlier events still come (whole, so you needn't
 hold what they update). -1, the default, reads from the start.
 --until <byte> leaves out the lines that start at or after it, so --from A
---until B reads the lines after A's and before B.
+--until B reads the lines after A's and before B. The rest is still read,
+unsent: an event of the window that a prompt past it abandons (an edited
+prompt sent again) comes with "abandoned": true.
 
 --follow keeps reading as the transcript grows, until Ctrl-C or until the
 reader closes the pipe (both exit 0; a closed pipe is noticed within
@@ -531,6 +533,12 @@ type transcriptStream struct {
 	// stopAt is when the latest one looked at was stored.
 	owner  string
 	stopAt time.Time
+	// With --until, window holds the window's events until the read has
+	// gone on to the transcript's end, and dead the ids a rewind abandoned
+	// there: the window's events of a branch abandoned past its end are
+	// sent abandoned (docs/EVENTS.md, --until).
+	window []transcript.Event
+	dead   map[string]bool
 }
 
 // streamTranscript writes target's event stream to out: the session line,
@@ -568,7 +576,13 @@ func streamTranscript(ctx context.Context, target *transcriptTarget, out io.Writ
 	if err := s.writeSession(); err != nil {
 		return err
 	}
+	if opts.until >= 0 {
+		s.dead = map[string]bool{} // read on past the window, for its abandoned events
+	}
 	if err := s.read(end); err != nil {
+		return err
+	}
+	if err := s.flushWindow(); err != nil {
 		return err
 	}
 	if opts.until < 0 {
@@ -693,10 +707,10 @@ func checkLineStart(f *os.File, from, end int64) error {
 	return fmt.Errorf("--from %d: the line there has no end yet; resume from an earlier event's at", from)
 }
 
-// read parses the transcript up to end, or up to until, and writes the
-// events in the window.
+// read parses the transcript up to end, past a --until too (flushWindow),
+// and writes the events in the window.
 func (s *transcriptStream) read(end int64) error {
-	for off := s.readTo(); off < end && !s.pastUntil(); {
+	for off := s.readTo(); off < end; {
 		n, err := s.f.ReadAt(s.buf[:min(int64(len(s.buf)), end-off)], off)
 		off += int64(n)
 		s.pending = append(s.pending, s.buf[:n]...)
@@ -725,8 +739,19 @@ func (s *transcriptStream) readTo() int64 {
 	return s.p.Pos().At + int64(len(s.pending))
 }
 
-func (s *transcriptStream) pastUntil() bool {
-	return s.until >= 0 && s.p.Pos().At >= s.until
+// flushWindow writes a --until window's events, once the read has gone
+// on, silently, to the transcript's end: those of a branch a later prompt
+// abandoned, abandoned, as a whole read's fold (transcript.Latest) has
+// them. Nothing past the window is sent.
+func (s *transcriptStream) flushWindow() error {
+	for _, e := range s.window {
+		e.Abandoned = e.Abandoned || s.dead[e.ID]
+		if err := s.enc.Encode(transcriptEventLine{"event", e}); err != nil {
+			return err
+		}
+	}
+	s.window = nil
+	return nil
 }
 
 // emit writes one event of the transcript's, if its line is in the window.
@@ -737,7 +762,14 @@ func (s *transcriptStream) emit(e transcript.Event) error {
 	if e.Kind != transcript.KindRequest && e.Turn != nil && (s.turn == nil || s.turn.ID != e.Turn.ID) {
 		s.turn, s.turnAt = e.Turn, e.Time()
 	}
+	if e.Abandoned && s.dead != nil {
+		s.dead[e.ID] = true
+	}
 	if (s.from >= 0 && e.At <= s.from) || (s.until >= 0 && e.At >= s.until) {
+		return nil
+	}
+	if s.until >= 0 {
+		s.window = append(s.window, e)
 		return nil
 	}
 	return s.enc.Encode(transcriptEventLine{"event", e})

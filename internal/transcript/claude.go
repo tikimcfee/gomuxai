@@ -24,7 +24,8 @@ type Claude struct{}
 func (Claude) Harness() string { return "claude" }
 
 func (Claude) NewParser(opts Options) *Parser {
-	c := &claudeLines{opts: opts, tools: map[string]*Event{}}
+	c := &claudeLines{opts: opts, tools: map[string]*Event{},
+		nodes: map[string]*claudeNode{}, asked: map[string]string{}, latest: map[string]Event{}, abandoned: map[string]bool{}}
 	if opts.Requests {
 		c.blobs = map[string]json.RawMessage{}
 	}
@@ -35,9 +36,12 @@ func (Claude) NewParser(opts Options) *Parser {
 type claudeRecord struct {
 	// The session's metadata: type, sessionId, agentId, cwd, version, ...
 	claudeMeta
-	Subtype   string `json:"subtype"`
-	UUID      string `json:"uuid"`
-	Timestamp string `json:"timestamp"`
+	Subtype string `json:"subtype"`
+	UUID    string `json:"uuid"`
+	// Parent is the record's parentUuid: a uuid, or null for the first
+	// record of a conversation (claude_rewind.go).
+	Parent    json.RawMessage `json:"parentUuid"`
+	Timestamp string          `json:"timestamp"`
 
 	PromptID     string `json:"promptId"`
 	TurnPosition *struct {
@@ -172,6 +176,13 @@ type claudeLines struct {
 	// reason (2.1.251-2.1.306): final if its turn ends with nothing more
 	// from the model.
 	closing *Event
+	// The conversation's tree, for rewinds (claude_rewind.go): each record by
+	// uuid; the prompt record that last answered each record; every
+	// event's latest copy, by id; and the ids of the abandoned events.
+	nodes     map[string]*claudeNode
+	asked     map[string]string
+	latest    map[string]Event
+	abandoned map[string]bool
 }
 
 func (c *claudeLines) session() Session { return c.sess }
@@ -248,7 +259,7 @@ func (c *claudeLines) read(line []byte, at int64, n int) ([]Event, bool) {
 	if closing != nil && c.closing == closing && c.turn != nil && (closing.Turn == nil || c.turn.ID != closing.Turn.ID) {
 		l.close()
 	}
-	return append(l.adds, l.updates...), true
+	return l.tree(), true
 }
 
 // close marks the reply that ended its turn's last message without a stop
