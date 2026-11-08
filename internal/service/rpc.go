@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
@@ -121,7 +122,7 @@ func (h rpcHandler) Keys(ctx context.Context, req natsbus.KeysRequest) error {
 // starts in the home directory of the user the bus runs as, since the
 // bus's own working directory is wherever it happened to be started.
 func (h rpcHandler) Spawn(ctx context.Context, req natsbus.SpawnRequest) (*natsbus.SpawnResponse, error) {
-	if ref, err := natsbus.ParseAgentRef(req.SpawnedBy); err == nil && ref.Host == h.s.cfg.Host {
+	if ref, err := natsbus.ParseAgentRef(req.SpawnedBy); err == nil && strings.EqualFold(ref.Host, h.s.cfg.Host) {
 		return nil, fmt.Errorf("spawned_by %s names an agent on this host (%s), but the spawn came over the bus", req.SpawnedBy, h.s.cfg.Host)
 	}
 	cwd := req.Cwd
