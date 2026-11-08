@@ -38,7 +38,7 @@ agent friction links --dangling       # links gone stale, with what to run
 
 A link goes stale when one end is closed and the other isn't (`out of
 step`), the other host has no link back (`one-sided`), has no such entry
-or a different one under that id (`missing`), or doesn't answer
+or a different one under that id (`not found`), or doesn't answer
 (`unreachable`, with what was last seen). `show` and `list` flag it with `!`,
 and `show` and `links` say what to run. If a host is unreachable when you
 link or resolve, it's done here and the command prints what's left; once

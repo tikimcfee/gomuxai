@@ -73,7 +73,7 @@ lists only those), with what to run:
 
   out of step   one entry is closed and the other still open
   one-sided     the other host has no link back
-  missing       the other host has no such entry, or a different one
+  not found     the other host has no such entry, or a different one
                 under that id now
   unreachable   the other host didn't answer; shows what was last seen`,
 	Example: `  agent friction links
@@ -84,7 +84,7 @@ lists only those), with what to run:
 
 func init() {
 	frictionLinkCmd.Flags().StringVar(&frictionNote, "note", "", "Why they're the same problem")
-	frictionLinksCmd.Flags().BoolVar(&frictionDangling, "dangling", false, "Only links that are out of step, one-sided, missing, or unreachable")
+	frictionLinksCmd.Flags().BoolVar(&frictionDangling, "dangling", false, "Only links that are out of step, one-sided, not found, or unreachable")
 	frictionLinksCmd.Flags().BoolVar(&frictionJSON, "json", false, "Print as JSON")
 	frictionResolveCmd.Flags().BoolVar(&frictionOnly, "only", false, "Resolve only this entry, not its linked entries on other hosts")
 	frictionResolveCmd.Flags().BoolVar(&frictionLinked, "linked", false, "Pass a closed entry's resolution on to its linked entries")
@@ -166,7 +166,7 @@ const (
 	linkOK          = "linked"
 	linkOutOfStep   = "out of step"
 	linkOneSided    = "one-sided"
-	linkMissing     = "missing"
+	linkNotFound    = "not found"
 	linkUnreachable = "unreachable"
 )
 
@@ -237,7 +237,7 @@ func checkFrictionLinks(ctx context.Context, local map[int64]*storage.Friction, 
 		}
 		a := answers[strings.ToLower(l.PeerHost)]
 		v := judgeLink(f, l, a.resp, a.err, now)
-		if a.err == nil && v.State != linkMissing {
+		if a.err == nil && v.State != linkNotFound {
 			_ = store.UpdateFrictionLink(ctx, l)
 		}
 		views = append(views, v)
@@ -270,7 +270,7 @@ func judgeLink(f *storage.Friction, l *storage.FrictionLink, resp *natsbus.Frict
 		}
 	}
 	if e == nil {
-		v.State, v.Problem, v.Fix = linkMissing, fmt.Sprintf("missing: %s has no #%d", l.PeerHost, l.PeerID), []string{unlink}
+		v.State, v.Problem, v.Fix = linkNotFound, fmt.Sprintf("not found: %s has no #%d", l.PeerHost, l.PeerID), []string{unlink}
 		return v
 	}
 	askedUID := e.UID
@@ -278,8 +278,8 @@ func judgeLink(f *storage.Friction, l *storage.FrictionLink, resp *natsbus.Frict
 		askedUID = e.Requested.UID
 	}
 	if l.PeerUID != "" && askedUID != l.PeerUID {
-		v.State = linkMissing
-		v.Problem = fmt.Sprintf("missing: #%d on %s is a different entry now (%s)", l.PeerID, l.PeerHost, clip(e.Summary, 60))
+		v.State = linkNotFound
+		v.Problem = fmt.Sprintf("not found: #%d on %s is a different entry now (%s)", l.PeerID, l.PeerHost, clip(e.Summary, 60))
 		v.Fix = []string{unlink}
 		return v
 	}
@@ -347,13 +347,18 @@ func resolveFlags(status, note string) string {
 	return "--note " + util.ShellQuote(note)
 }
 
-// peerSummary describes a link's other end as last seen, e.g. "bug, open,
-// +2 there: summary", or that it hasn't been seen.
+// peerSummary describes a link's other end as last seen, e.g. "(bug) open,
+// +2 there: summary", or that it hasn't been seen. The kind goes in
+// parentheses, so it doesn't read as the link's state.
 func peerSummary(l *storage.FrictionLink) string {
 	if l.PeerCheckedAt.IsZero() {
 		return "not seen yet: it was linked while " + l.PeerHost + " was unreachable"
 	}
-	return fmt.Sprintf("%s, %s, +%d there: %s", l.PeerKind, l.PeerStatus, l.PeerVotes, l.PeerSummary)
+	kind := ""
+	if l.PeerKind != "" {
+		kind = "(" + l.PeerKind + ") "
+	}
+	return fmt.Sprintf("%s%s, +%d there: %s", kind, l.PeerStatus, l.PeerVotes, l.PeerSummary)
 }
 
 // linksOf returns the links of the entries in entries, by entry id.
@@ -477,7 +482,7 @@ func runFrictionLink(cmd *cobra.Command, args []string) error {
 	if err := store.AddFrictionLink(ctx, l); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Linked #%d and %s (%s): the same problem; resolving either resolves both.\n",
+	fmt.Fprintf(out, "Linked #%d and %s %s\nThey're the same problem: resolving either resolves both.\n",
 		f.ID, frictionRef(host, e.ID), clip(peerSummary(l), 100))
 	if service.FrictionIsOpen(f.Status) != service.FrictionIsOpen(e.Status) {
 		fmt.Fprintf(out, "They're out of step: #%d is %s here and %s there (agent friction show %d says what to run).\n",
@@ -667,7 +672,7 @@ func resolveLinked(ctx context.Context, out io.Writer, f *storage.Friction) erro
 			continue
 		}
 		if len(resp.Entries) == 0 {
-			fmt.Fprintf(out, "%s is missing: %s has no #%d, so it wasn't resolved (agent friction links shows it).\n", ref, t.host, t.id)
+			fmt.Fprintf(out, "%s wasn't found: %s has no #%d, so it wasn't resolved (agent friction links shows it).\n", ref, t.host, t.id)
 			continue
 		}
 		e := resp.Entries[0]
