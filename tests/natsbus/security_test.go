@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 )
@@ -65,7 +66,8 @@ func TestSecurity_PeerCantReadOtherHostsReplies(t *testing.T) {
 		t.Fatal(err)
 	}
 	mallory.Flush()
-	time.Sleep(300 * time.Millisecond) // interest propagation
+	waitInterest(t, mallory, hubConn, "hub")
+	waitInterest(t, mallory, alpha, "alpha")
 
 	serveSecret(t, hubConn, "hub", "hub-capture-secret")
 	serveSecret(t, alpha, "alpha", "alpha-local-secret")
@@ -79,10 +81,22 @@ func TestSecurity_PeerCantReadOtherHostsReplies(t *testing.T) {
 		t.Fatalf("hub -> alpha capture: %q, %v", got, err)
 	}
 
-	for {
-		msg, err := spy.NextMsg(500 * time.Millisecond)
+	// A reply to mallory itself from each of them, after theirs: messages
+	// from one connection arrive in order, so once both have, any reply
+	// mallory could read has arrived too.
+	ends := map[string]bool{}
+	for host, nc := range map[string]*nats.Conn{"hub": hubConn, "alpha": alpha} {
+		nc.Publish(natsbus.InboxPrefix("mallory")+".end", []byte(host+"-end"))
+		nc.Flush()
+	}
+	for !ends["hub-end"] || !ends["alpha-end"] {
+		msg, err := spy.NextMsg(await.Timeout)
 		if err != nil {
-			break
+			t.Fatalf("waiting for the replies addressed to mallory: %v; saw %v", err, ends)
+		}
+		if strings.HasPrefix(msg.Subject, natsbus.InboxPrefix("mallory")+".") {
+			ends[string(msg.Data)] = true
+			continue
 		}
 		t.Errorf("mallory read a reply meant for someone else on %s: %q", msg.Subject, msg.Data)
 	}
@@ -105,6 +119,8 @@ func TestSecurity_PeerCantForgeRepliesToOthers(t *testing.T) {
 	replySubj := make(chan string, 1)
 	sub, err := hubConn.Subscribe(natsbus.SubjectRPC("hub", natsbus.OpStatus), func(m *nats.Msg) {
 		replySubj <- m.Reply
+		// Not a wait: the real reply comes late on purpose, so a forged
+		// one that is let through arrives first.
 		time.Sleep(500 * time.Millisecond)
 		m.Respond([]byte("real"))
 	})
@@ -113,7 +129,7 @@ func TestSecurity_PeerCantForgeRepliesToOthers(t *testing.T) {
 	}
 	t.Cleanup(func() { sub.Unsubscribe() })
 	hubConn.Flush()
-	time.Sleep(300 * time.Millisecond)
+	waitInterest(t, hubConn, alpha, "alpha")
 
 	go func() {
 		reply := <-replySubj
@@ -155,7 +171,8 @@ func TestSecurity_PeerCantReachDeniedOpsOrLocalSubjects(t *testing.T) {
 		}
 		nc.Flush()
 	}
-	time.Sleep(300 * time.Millisecond)
+	waitInterest(t, hubConn, mallory, "mallory")
+	waitInterest(t, alpha, mallory, "mallory")
 
 	for _, s := range []string{
 		"gomux.hub.rpc.keys", "gomux.alpha.rpc.keys",
@@ -165,10 +182,12 @@ func TestSecurity_PeerCantReachDeniedOpsOrLocalSubjects(t *testing.T) {
 		mallory.Publish(s, []byte(s))
 	}
 	mallory.Flush()
-	select {
-	case got := <-hit:
-		t.Errorf("mallory reached %s", got)
-	case <-time.After(500 * time.Millisecond):
+	// Mallory's messages arrive in order: once a later probe has reached
+	// both, any of the above that was let through has too.
+	waitInterest(t, hubConn, mallory, "mallory")
+	waitInterest(t, alpha, mallory, "mallory")
+	for len(hit) > 0 {
+		t.Errorf("mallory reached %s", <-hit)
 	}
 }
 
@@ -191,6 +210,8 @@ func TestSecurity_OnlyOneHub(t *testing.T) {
 		spy, _ := malConn.SubscribeSync(">")
 		malConn.Flush()
 		waitLinked(t, malD, 1)
+		// Not a wait: only reached when the test is already failing, to
+		// show what a second hub would see; best effort.
 		time.Sleep(300 * time.Millisecond)
 		alphaConn := alpha.connect(t)
 		alphaConn.Request(natsbus.SubjectRPC("hub", natsbus.OpSend), []byte(`{"agent":"x","message":"secret"}`), 500*time.Millisecond)
@@ -260,9 +281,9 @@ func TestSecurity_ForgedEventCantArmNext(t *testing.T) {
 	nc := natstest.Start(t)
 	pub := natstest.Connect(t, nc.ConnectedUrl())
 	src := &statusSource{status: "idle"} // never leaves idle
+	// After the first check has read idle:
 	src.onFirst = func() {
 		goBackground(t, func() {
-			time.Sleep(50 * time.Millisecond)
 			publish(t, pub, "worker", "processing") // forged
 		})
 	}
