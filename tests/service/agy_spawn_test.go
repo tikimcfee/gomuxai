@@ -2,11 +2,12 @@ package service_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/backend/namedagents"
 	"github.com/tikimcfee/gomuxai/internal/service"
@@ -202,23 +203,17 @@ func TestAgyWaitingAndApprove_WhenPermissionDialogVisible(t *testing.T) {
 		t.Fatalf("SendSpecialKey: %v", err)
 	}
 
-	// Wait briefly for the shell to print the dialog lines.
+	// Wait for the shell to print the dialog lines.
 	var info *service.StatusInfo
-	for i := 0; i < 40; i++ {
+	await.Until(t, "waiting, with the dialog on screen", func() (string, bool) {
 		var err error
 		info, err = env.service.StatusInfo(ctx, "agy-perm")
 		if err != nil {
 			t.Fatalf("StatusInfo: %v", err)
 		}
-		if info.Status == service.AgentStatusWaiting {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	if info.Status != service.AgentStatusWaiting {
 		screen, _ := env.tmux.Capture(session, 0)
-		t.Fatalf("with dialog on screen: status = %s, want waiting; screen:\n%s", info.Status, screen)
-	}
+		return fmt.Sprintf("status %s; screen:\n%s", info.Status, screen), info.Status == service.AgentStatusWaiting
+	})
 	if info.Detail != "permission: run_command: echo gated" || info.Tool != "run_command" {
 		t.Errorf("got detail=%q tool=%q, want \"permission: run_command: echo gated\" / \"run_command\"", info.Detail, info.Tool)
 	}

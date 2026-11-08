@@ -1,15 +1,18 @@
 package watcher_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"io"
+	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
@@ -117,46 +120,74 @@ func setupDelivery(t *testing.T, status service.AgentStatus) *deliveryEnv {
 	return &deliveryEnv{store: store, tmux: ft, svc: svc}
 }
 
-// runWatcher runs a fast watcher until the message leaves pending or the
-// deadline passes, and reports whether it is still pending. The fake tmux
-// tells delivered (typed) from failed (never typed).
-func (e *deliveryEnv) runWatcher(t *testing.T, d time.Duration) (pending bool) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w := watcher.NewWatcher(e.svc, e.store, 5*time.Millisecond,
-		watcher.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
-	w.Start(ctx)
-	defer w.Stop()
-
-	for deadline := time.Now().Add(d); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-		msgs, err := e.store.GetPendingMessages(ctx, "worker", 1)
-		if err != nil {
-			t.Fatalf("reading messages: %v", err)
-		}
-		if len(msgs) == 0 {
-			return false
-		}
-	}
-	return true
+// logBuffer collects a watcher's log lines, which say what it decided on
+// each tick.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
 }
 
-// pendingAfter runs a watcher for d, stops it, and reports whether the
-// message is pending then.
-func (e *deliveryEnv) pendingAfter(t *testing.T, d time.Duration) bool {
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// startWatcher runs a fast watcher, logging every decision to the returned
+// buffer, until stop is called (or the test ends).
+func (e *deliveryEnv) startWatcher(t *testing.T) (logs *logBuffer, stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	logs = &logBuffer{}
 	w := watcher.NewWatcher(e.svc, e.store, 5*time.Millisecond,
-		watcher.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+		watcher.WithLogger(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))))
 	w.Start(ctx)
-	time.Sleep(d)
-	w.Stop()
-	msgs, err := e.store.GetPendingMessages(ctx, "worker", 1)
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			w.Stop()
+			cancel()
+		})
+	}
+	t.Cleanup(stop)
+	return logs, stop
+}
+
+// pending reports whether the message is still pending.
+func (e *deliveryEnv) pending(t *testing.T) bool {
+	t.Helper()
+	msgs, err := e.store.GetPendingMessages(context.Background(), "worker", 1)
 	if err != nil {
 		t.Fatalf("reading messages: %v", err)
 	}
 	return len(msgs) > 0
+}
+
+// runWatcher runs a fast watcher until the message leaves pending, then
+// stops it. The fake tmux tells delivered (typed) from failed (never
+// typed).
+func (e *deliveryEnv) runWatcher(t *testing.T) {
+	t.Helper()
+	logs, stop := e.startWatcher(t)
+	defer stop()
+	await.Until(t, "the message to leave pending", func() (string, bool) {
+		return logs.String(), !e.pending(t)
+	})
+}
+
+// waitLogged waits until the watcher has logged msg n times.
+func waitLogged(t *testing.T, logs *logBuffer, msg string, n int) {
+	t.Helper()
+	await.Until(t, fmt.Sprintf("the watcher to log %q %d times", msg, n), func() (string, bool) {
+		out := logs.String()
+		return out, strings.Count(out, `msg="`+msg+`"`) >= n
+	})
 }
 
 // A failed turn (Claude's StopFailure) leaves the CLI at its prompt, and the
@@ -165,9 +196,7 @@ func TestWatcher_DeliversToIdleOrErroredAgent(t *testing.T) {
 	for _, st := range []service.AgentStatus{service.AgentStatusIdle, service.AgentStatusError} {
 		t.Run(string(st), func(t *testing.T) {
 			env := setupDelivery(t, st)
-			if env.runWatcher(t, time.Second) {
-				t.Fatalf("message to the %s agent is still pending, want delivered", st)
-			}
+			env.runWatcher(t)
 			if sent, _ := env.tmux.counts(); sent != 1 {
 				t.Errorf("typed %d message(s), want 1", sent)
 			}
@@ -180,9 +209,7 @@ func TestWatcher_DeliversToIdleOrErroredAgent(t *testing.T) {
 func TestWatcher_FailsMessagesToExitedAgent(t *testing.T) {
 	env := setupDelivery(t, service.AgentStatusEnded)
 
-	if env.runWatcher(t, time.Second) {
-		t.Fatal("message to an exited agent is still pending, want failed")
-	}
+	env.runWatcher(t)
 	if sent, _ := env.tmux.counts(); sent != 0 {
 		t.Errorf("typed %d message(s) into an exited agent's shell", sent)
 	}
@@ -192,7 +219,12 @@ func TestWatcher_HoldsMessagesWhileBusy(t *testing.T) {
 	for _, st := range []service.AgentStatus{service.AgentStatusProcessing, service.AgentStatusWaiting} {
 		t.Run(string(st), func(t *testing.T) {
 			env := setupDelivery(t, st)
-			if !env.runWatcher(t, 100*time.Millisecond) {
+			// The watcher says when it holds a message: once it has, twice,
+			// the message must still be waiting.
+			logs, stop := env.startWatcher(t)
+			waitLogged(t, logs, "agent busy, skipping delivery", 2)
+			stop()
+			if !env.pending(t) {
 				t.Errorf("message left pending while the agent was %s", st)
 			}
 		})
@@ -204,9 +236,7 @@ func TestWatcher_HoldsMessagesWhileBusy(t *testing.T) {
 func TestWatcher_FailsMessageAfterRepeatedUnknownStatus(t *testing.T) {
 	env := setupDelivery(t, service.AgentStatusUnknown)
 
-	if env.runWatcher(t, time.Second) {
-		t.Fatal("message to an agent of unknown status is still pending, want failed")
-	}
+	env.runWatcher(t)
 	if _, attempts := env.tmux.counts(); attempts != 0 {
 		t.Errorf("tried to type %d message(s) into an agent of unknown status", attempts)
 	}
@@ -219,9 +249,14 @@ func TestWatcher_RetriesFailedSendAfterBackoff(t *testing.T) {
 	env.tmux.failSend = true
 
 	// The watcher claims the message (marks it delivered) before typing and
-	// puts it back when typing fails, so look once it has run, not as soon
-	// as the message isn't pending.
-	if !env.pendingAfter(t, 200*time.Millisecond) {
+	// puts it back when typing fails, so look once it has passed it over
+	// for the backoff on later ticks, not as soon as the message isn't
+	// pending.
+	logs, stop := env.startWatcher(t)
+	waitLogged(t, logs, "delivery failed, will retry", 1)
+	waitLogged(t, logs, "skipping delivery: backoff active", 2)
+	stop()
+	if !env.pending(t) {
 		t.Fatal("message failed after one failed send, want pending for a retry")
 	}
 	if _, attempts := env.tmux.counts(); attempts != 1 {

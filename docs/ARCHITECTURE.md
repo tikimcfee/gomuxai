@@ -1665,9 +1665,18 @@ make lint          # golangci-lint
 - **tmux** is needed by `tests/tmux`, `tests/service`, and part of
   `internal/cli`; they skip without it. They use real sessions with a unique
   session prefix and a temp database. No test needs claude or agy installed.
-- **Opt-ins.** `GOMUXAI_KNOWN_BUGS=1` runs tests for known open bugs (now
-  the unsigned-replies one). `GOMUX_REAL_TRANSCRIPTS=<path>[:<path>...]`
-  parses real transcripts on your machine as a smoke test.
+- **Waiting.** Tests wait for state, never sleep for it: `internal/await`
+  polls a condition (a shell's printed marker, a screen, a status, a log
+  line) and on timeout says what it waited for and what it last saw. A
+  check that something did *not* happen waits for a later event that
+  proves the moment has passed (a probe message from the same connection,
+  a logged decision, a later line on the pane). The few `time.Sleep`s left
+  in tests say why they aren't waits.
+- **Opt-ins.** `GOMUXAI_KNOWN_BUGS=1` runs tests for known open bugs (the
+  unsigned-replies one, and friction #5's `tmux.Client.Clear` race, which
+  `TestClear` otherwise skips when it shows).
+  `GOMUX_REAL_TRANSCRIPTS=<path>[:<path>...]` parses real transcripts on
+  your machine as a smoke test.
 
 ## Known gaps
 

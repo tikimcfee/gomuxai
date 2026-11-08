@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/service"
 )
@@ -353,15 +355,8 @@ func TestDeliverHeld_GraceStartsWhenInputEmpties(t *testing.T) {
 // waitForOutput waits for want on the agent's screen and returns the screen.
 func waitForOutput(t *testing.T, env *testEnv, name, want string) string {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+	return await.Until(t, fmt.Sprintf("%q on %s's screen", want, name), func() (string, bool) {
 		screen, _ := env.service.Capture(context.Background(), name, 50, false)
-		if strings.Contains(screen, want) {
-			return screen
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%q never showed on screen:\n%s", want, screen)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return screen, strings.Contains(screen, want)
+	})
 }
