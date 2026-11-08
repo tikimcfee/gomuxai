@@ -3,6 +3,7 @@ package natsbus_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 )
@@ -234,6 +236,16 @@ func (s *statusSource) callCount() int {
 	return s.calls
 }
 
+// awaitCalls returns once Wait has checked the status n times, or after
+// await.Timeout: it runs off the test goroutine, so the test's own
+// assertions say what went wrong.
+func (s *statusSource) awaitCalls(n int) {
+	await.Poll(await.Timeout, func() (string, bool) {
+		c := s.callCount()
+		return fmt.Sprint(c), c >= n
+	})
+}
+
 func waitOpts(src *statusSource, interval time.Duration, statuses ...string) natsbus.WaitOptions {
 	return natsbus.WaitOptions{
 		Host:     testHost,
@@ -268,7 +280,6 @@ func TestWait_ReturnsOnEvent(t *testing.T) {
 	src := &statusSource{status: "processing"}
 	src.onFirst = func() {
 		goBackground(t, func() {
-			time.Sleep(50 * time.Millisecond)
 			publish(t, pub, "other", "idle")     // a different agent
 			publish(t, pub, "worker", "waiting") // not a target
 			src.set("idle")
@@ -297,7 +308,6 @@ func TestWait_UnconfirmedEventDoesNotEndWait(t *testing.T) {
 	src := &statusSource{status: "processing"}
 	src.onFirst = func() {
 		goBackground(t, func() {
-			time.Sleep(50 * time.Millisecond)
 			publish(t, pub, "worker", "idle") // forged: the agent is still working
 		})
 	}
@@ -322,10 +332,11 @@ func TestWait_LaggingStatusIsRecheckedSoon(t *testing.T) {
 	src := &statusSource{status: "processing"}
 	src.onFirst = func() {
 		goBackground(t, func() {
-			time.Sleep(50 * time.Millisecond)
 			publish(t, pub, "worker", "idle")
-			time.Sleep(300 * time.Millisecond)
-			src.set("idle") // the real status catches up
+			// The real status catches up only after the check that event
+			// set off has read it still processing.
+			src.awaitCalls(2)
+			src.set("idle")
 		})
 	}
 
@@ -374,7 +385,6 @@ func TestWait_BackstopCatchesChangeWithoutEvent(t *testing.T) {
 	src := &statusSource{status: "waiting"}
 	src.onFirst = func() {
 		goBackground(t, func() {
-			time.Sleep(50 * time.Millisecond)
 			src.set("idle")
 		})
 	}
@@ -389,7 +399,6 @@ func TestWait_NoBusPolls(t *testing.T) {
 	src := &statusSource{status: "processing"}
 	src.onFirst = func() {
 		goBackground(t, func() {
-			time.Sleep(50 * time.Millisecond)
 			src.set("idle")
 		})
 	}
@@ -452,12 +461,13 @@ func TestWait_NextWaitsForTheNextArrival(t *testing.T) {
 	var cameBack atomic.Bool
 	src.onFirst = func() {
 		goBackground(t, func() {
-			time.Sleep(50 * time.Millisecond)
 			publish(t, pub, "worker", "idle") // still the old turn
 			// As Report does: record the status, then publish it.
 			src.record("processing")
 			publish(t, pub, "worker", "processing")
-			time.Sleep(50 * time.Millisecond)
+			// Wait has checked on an event: had it taken the old turn's
+			// idle, it would have returned by now.
+			src.awaitCalls(2)
 			cameBack.Store(true)
 			src.record("idle")
 			publish(t, pub, "worker", "idle")
@@ -479,7 +489,6 @@ func TestWait_NextArmedByCurrentStatus(t *testing.T) {
 	src := &statusSource{status: "processing"} // the turn already started
 	src.onFirst = func() {
 		goBackground(t, func() {
-			time.Sleep(50 * time.Millisecond)
 			src.set("idle")
 		})
 	}
@@ -500,7 +509,7 @@ func TestWait_NextArmedByNewerReportBetweenChecks(t *testing.T) {
 	src.record("idle") // the previous turn's report
 	src.onFirst = func() {
 		goBackground(t, func() {
-			time.Sleep(50 * time.Millisecond)
+			tick()
 			src.record("idle") // a whole new turn, already finished
 		})
 	}
@@ -527,7 +536,8 @@ func TestWait_NextNotArmedBySameReport(t *testing.T) {
 	}
 }
 
-// tick separates timestamps that must compare as before and after.
+// tick separates timestamps that must compare as before and after. It
+// isn't a wait for anything: the clock just has to move.
 func tick() { time.Sleep(time.Millisecond) }
 
 // A turn the last send started, already over when Wait begins, is the
