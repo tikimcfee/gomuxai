@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/discovery"
 	"github.com/tikimcfee/gomuxai/internal/storage"
@@ -293,17 +295,15 @@ func (b *syncBuffer) lines() []string {
 // waitEvents waits until b holds n event lines, and returns them.
 func waitEvents(t *testing.T, b *syncBuffer, n int) []string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		events := eventLines(b.lines())
-		if len(events) >= n || time.Now().After(deadline) {
-			if len(events) != n {
-				t.Fatalf("stream has %d events, want %d:\n%s", len(events), n, strings.Join(b.lines(), "\n"))
-			}
-			return events
-		}
-		time.Sleep(5 * time.Millisecond)
+	var events []string
+	await.Until(t, fmt.Sprintf("%d events on the stream", n), func() (string, bool) {
+		events = eventLines(b.lines())
+		return strings.Join(b.lines(), "\n"), len(events) >= n
+	})
+	if len(events) != n {
+		t.Fatalf("stream has %d events, want %d:\n%s", len(events), n, strings.Join(b.lines(), "\n"))
 	}
+	return events
 }
 
 // follower is a following stream a test runs.
@@ -606,13 +606,10 @@ func TestTranscript_Provisional(t *testing.T) {
 	appendFile(t, path, data[secondAt:])
 	events = waitEvents(t, f.out, len(wholeStream(t, path, data, false))+2)
 	// The Stop's report reaches the session line by the report check.
-	deadline := time.Now().Add(5 * time.Second)
-	for s := sessionLines(t, f.out.lines()); s[len(s)-1].Status != "idle"; s = sessionLines(t, f.out.lines()) {
-		if time.Now().After(deadline) {
-			t.Fatalf("no session line says idle after the Stop:\n%s", strings.Join(f.out.lines(), "\n"))
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	await.Until(t, "a session line saying idle after the Stop", func() (string, bool) {
+		s := sessionLines(t, f.out.lines())
+		return strings.Join(f.out.lines(), "\n"), s[len(s)-1].Status == "idle"
+	})
 	if err := f.stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -724,6 +721,8 @@ func TestTranscript_FollowUnwritten(t *testing.T) {
 		return out, r, done
 	}
 	out, r, done := follow()
+	// A quiet period, not a wait: nothing marks the follow settling into
+	// its wait for the file, so give it a moment to (wrongly) end or write.
 	select {
 	case err := <-done:
 		t.Fatalf("--follow ended before the transcript was written: %v", err)
