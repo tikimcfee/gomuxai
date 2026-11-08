@@ -549,7 +549,7 @@ func (s *AgentService) Send(ctx context.Context, name string, message string, op
 	if err != nil {
 		return res, err
 	}
-	unchecked, err := s.SendUnchecked(ctx, name, message)
+	unchecked, err := s.sendMessage(ctx, name, message, true)
 	if err != nil {
 		return res, err
 	}
@@ -642,6 +642,12 @@ func sessionGone(agent *storage.Agent) error {
 // For a backend whose typed messages need checking (see submit.go), it
 // returns why it couldn't check this one was submitted, or "" if it did.
 func (s *AgentService) SendUnchecked(ctx context.Context, name string, message string) (string, error) {
+	return s.sendMessage(ctx, name, message, false)
+}
+
+// sendMessage is SendUnchecked; with dialogs, a dialog that comes up while
+// it waits for a starting CLI's input box stops it (see typeMessage).
+func (s *AgentService) sendMessage(ctx context.Context, name string, message string, dialogs bool) (string, error) {
 	agent, err := s.getAgent(ctx, name)
 	if err != nil {
 		return "", err
@@ -657,7 +663,7 @@ func (s *AgentService) SendUnchecked(ctx context.Context, name string, message s
 	}
 
 	s.markSent(ctx, name)
-	return s.typeMessage(ctx, agent, message)
+	return s.typeMessage(ctx, agent, message, dialogs)
 }
 
 // markSent records that a message is about to be typed into the agent

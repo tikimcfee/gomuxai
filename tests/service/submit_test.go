@@ -37,6 +37,7 @@ type claudeTerminal struct {
 	dialogOn  int      // the Enter after which a dialog replaces the box (1-based)
 	dialog    bool
 	strange   bool // a screen with no input box agent recognizes
+	starting  int  // captures Claude is still starting for: no box drawn, nothing read
 	enters    int
 	submitted []string
 	pastes    int
@@ -67,6 +68,10 @@ func (c *claudeTerminal) SendSpecialKey(_ string, key string) error {
 func (c *claudeTerminal) CaptureStyled(string, int) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.starting > 0 {
+		c.starting--
+		return " ▐▛███▜▌   Claude Code v2.1.319\n", nil
+	}
 	if c.stalled > 0 {
 		c.stalled--
 	}
@@ -80,7 +85,7 @@ func (c *claudeTerminal) Capture(session string, lines int) (string, error) {
 
 // read has Claude read what has arrived, unless it is stalled.
 func (c *claudeTerminal) read() {
-	if c.stalled > 0 || c.unread == "" {
+	if c.starting > 0 || c.stalled > 0 || c.unread == "" {
 		return
 	}
 	chunk := c.unread
@@ -316,6 +321,7 @@ func TestSubmit_SaysWhenItCannotCheck(t *testing.T) {
 	ctx := context.Background()
 	term := &claudeTerminal{strange: true}
 	svc, store := setupClaudeTerminal(t, term, submitTestWait)
+	turnStarted(t, store, "worker") // it isn't starting up: no wait for the box
 	res, err := svc.Send(ctx, "worker", "[from lead@hub] run the tests", service.SendOptions{Now: true})
 	if err != nil || res.Typed != 1 {
 		t.Fatalf("Send = %+v, %v; want typed", res, err)
@@ -349,5 +355,72 @@ func TestSubmit_SaysWhenItCannotCheck(t *testing.T) {
 	}
 	if entry, _ := store.GetState(ctx, "worker", service.StateKeyUnchecked); entry != nil {
 		t.Errorf("%s = %q after a checked message; want it deleted", service.StateKeyUnchecked, entry.Value)
+	}
+}
+
+// turnStarted records that a turn of name's CLI has started, as the hook
+// reporting it does.
+func turnStarted(t *testing.T, store *storage.SQLiteStorage, name string) {
+	t.Helper()
+	if err := store.SetState(context.Background(), &storage.StateEntry{AgentName: name, Key: service.StateKeyTurnAt,
+		Value: time.Now().Add(-time.Minute).Format(time.RFC3339Nano), UpdatedAt: time.Now().Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A send right after spawn, to a Claude that hadn't drawn its input box
+// yet, was typed in without checking: the text and its Enter waited in the
+// terminal until Claude read them together, as a paste, and the message sat
+// in the box unsent (friction #38). With no turn started yet, send now
+// waits for the box to come up, then types and checks as usual.
+func TestSubmit_WaitsForAStartingCLIsInputBox(t *testing.T) {
+	ctx := context.Background()
+	term := &claudeTerminal{starting: 8}
+	svc, _ := setupClaudeTerminal(t, term, submitTestWait)
+	res, err := svc.Send(ctx, "worker", "[from lead@hub] run the tests", service.SendOptions{})
+	if err != nil || res.Typed != 1 || res.Unchecked != "" {
+		t.Fatalf("Send = %+v, %v; want typed and checked", res, err)
+	}
+	if enters, submitted, box := term.state(); len(submitted) != 1 || box != "" {
+		t.Errorf("submitted %q with %d Enters, box %q; want it submitted", submitted, enters, box)
+	}
+	if _, _, ok := svc.Unchecked(ctx, "worker"); ok {
+		t.Error("Unchecked recorded for a checked message")
+	}
+}
+
+// A box that never comes up is waited for only while no turn has started,
+// and only so long; then the message is typed unchecked, as before, saying
+// so.
+func TestSubmit_WaitForAStartingCLIIsBounded(t *testing.T) {
+	ctx := context.Background()
+	term := &claudeTerminal{strange: true}
+	svc, _ := setupClaudeTerminal(t, term, submitTestWait)
+	start := time.Now()
+	res, err := svc.Send(ctx, "worker", "[from lead@hub] run the tests", service.SendOptions{})
+	if err != nil || res.Typed != 1 {
+		t.Fatalf("Send = %+v, %v; want typed", res, err)
+	}
+	if took := time.Since(start); took < 10*submitTestWait || took > 20*submitTestWait {
+		t.Errorf("took %v; want about %v", took, 10*submitTestWait)
+	}
+	if !strings.Contains(res.Unchecked, "input box isn't on screen") || !strings.Contains(res.Unchecked, "after waiting") {
+		t.Errorf("Unchecked = %q; want why, and that it waited", res.Unchecked)
+	}
+}
+
+// A dialog that comes up while send waits for a starting CLI's box ends
+// the wait: the message's Enter would answer it. --force (SendUnchecked)
+// types anyway, as it always has.
+func TestSubmit_StartingCLIsDialogStopsTheSend(t *testing.T) {
+	ctx := context.Background()
+	term := &claudeTerminal{starting: 4, dialog: true}
+	svc, _ := setupClaudeTerminal(t, term, submitTestWait)
+	_, err := svc.Send(ctx, "worker", "[from lead@hub] run the tests", service.SendOptions{})
+	if err == nil || !strings.Contains(err.Error(), "permission prompt on screen") {
+		t.Fatalf("err %v; want the dialog named", err)
+	}
+	if _, _, box := term.state(); box != "" || term.unread != "" {
+		t.Errorf("typed into the dialog: box %q, unread %q", box, term.unread)
 	}
 }
