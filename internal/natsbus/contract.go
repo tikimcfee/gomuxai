@@ -297,11 +297,12 @@ type FrictionRequest struct {
 	// act on. An entry closed there as a duplicate stands for its original.
 	ID int64 `json:"id,omitempty"`
 	// UID, for resolve, is the uid the caller knows ID by; a different
-	// entry under that id (a reset store) is left alone. Empty skips the
-	// check.
+	// entry under that id (a reset store) is left alone. Empty skips that
+	// check (the link to From is still required).
 	UID string `json:"uid,omitempty"`
-	// From is the caller's entry: the other end of the link (Host and ID
-	// required for link and unlink).
+	// From is the caller's entry, the other end of the link: Host and ID
+	// are required for link, unlink and resolve. Resolve closes ID only if
+	// it (or the original it was closed into) links to From.
 	From *FrictionEntry `json:"from,omitempty"`
 	// By is who asked, as "name@host" ("user@host" for a person).
 	By     string `json:"by,omitempty"`
