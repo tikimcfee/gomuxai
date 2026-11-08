@@ -220,8 +220,11 @@ Copy it to each peer and run `agent bus trust` there.
 
 On the Mac (and any other machine): `agent bus init`, no `--url`.
 
-The host name is the short hostname unless `AGENT_HOST` is set. An identity
-is bound to the name it was created with.
+The host name is `AGENT_HOST` if set, else the machine's name: on macOS its
+LocalHostName (Sharing settings), elsewhere the short hostname. An identity
+is bound to the name it was created with, and once it exists that name is
+the default, so a network that renames the machine (macOS can become "Mac")
+doesn't change it.
 
 **2. Exchange bundles and trust them.** Copy each `<host>.pub.json` to the
 other machine (`scp`, or `agent bus export` prints it), then on each:

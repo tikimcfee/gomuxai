@@ -48,7 +48,8 @@ type Config struct {
 	AgentBinary string `json:"agent_binary"`
 
 	// Host names this machine on the agent bus ("name@host" addressing and
-	// bus subjects). Default: the short hostname, made subject-safe.
+	// bus subjects). Default: $AGENT_HOST, else the host the bus identity
+	// was created for, else the system's name for this machine (defaultHost).
 	Host string `json:"host"`
 
 	// ClaudeProjectsDir, AgyBrainDir and KimiSessionsDir are where agent
@@ -79,18 +80,39 @@ func getStorageDir() string {
 	return StorageDirName
 }
 
-// defaultHost returns $AGENT_HOST if set, else the short hostname with
-// characters that can't appear in a bus subject token replaced, e.g.
-// "Studio-Mac.local" -> "Studio-Mac".
-func defaultHost() string {
+// defaultHost returns $AGENT_HOST if set, else the host name the bus
+// identity in busDir was created for, else systemHost's: this machine's
+// name on the bus stays the one its peers trust, whatever the network
+// later calls it (macOS renames itself "Mac" on some networks).
+func defaultHost(busDir string) string {
 	if host := os.Getenv("AGENT_HOST"); host != "" {
 		return host
 	}
-	name, err := os.Hostname()
-	if err != nil || name == "" {
-		return "localhost"
+	// The identity's own record (natsbus's hostNameFile): written by
+	// agent bus init, and checked against the host on every load.
+	if b, err := os.ReadFile(filepath.Join(busDir, "host")); err == nil {
+		if host := strings.TrimSpace(string(b)); host != "" {
+			return host
+		}
+	}
+	return systemHost()
+}
+
+// systemHost returns this machine's name with characters that can't
+// appear in a bus subject token replaced, e.g. "Studio-Mac.local" ->
+// "Studio-Mac": on macOS the LocalHostName set in Sharing settings, which
+// the network doesn't change, else the short hostname, else "localhost".
+func systemHost() string {
+	name := localHostName()
+	if name == "" {
+		if h, err := os.Hostname(); err == nil {
+			name = h
+		}
 	}
 	name, _, _ = strings.Cut(name, ".")
+	if name == "" {
+		return "localhost"
+	}
 	return hostUnsafe.ReplaceAllString(name, "-")
 }
 
@@ -124,7 +146,7 @@ func DefaultConfig() *Config {
 		StartupDelay:      DefaultStartupDelay,
 		SubmitWait:        DefaultSubmitWait,
 		AgentBinary:       agentBinaryPath(),
-		Host:              defaultHost(),
+		Host:              defaultHost(filepath.Join(baseDir, "bus")),
 	}
 }
 
@@ -138,6 +160,14 @@ func LoadFromFile(path string) (*Config, error) {
 	cfg := DefaultConfig()
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)
+	}
+	// A database_path elsewhere has its own bus dir, whose identity names
+	// the host, unless the file names one itself.
+	var set struct {
+		Host *string `json:"host"`
+	}
+	if json.Unmarshal(data, &set) == nil && set.Host == nil {
+		cfg.Host = defaultHost(cfg.BusDir())
 	}
 
 	return cfg, nil

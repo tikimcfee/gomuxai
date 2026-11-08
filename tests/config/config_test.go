@@ -482,3 +482,51 @@ func TestDefaultConfig_HostIsSubjectSafe(t *testing.T) {
 		t.Errorf("default host %q: %v", host, err)
 	}
 }
+
+// The host is $AGENT_HOST, else the app config's "host", else the name the
+// bus identity was created for, so a machine the network renames (macOS's
+// "Mac") keeps the name its peers trust.
+func TestLoadFromFile_HostOrder(t *testing.T) {
+	dir := t.TempDir()
+	busDir := filepath.Join(dir, "bus")
+	if err := os.MkdirAll(busDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	load := func(extra string) *config.Config {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "app.json")
+		body := `{"database_path": ` + jsonString(filepath.Join(dir, "gomuxai.db")) + extra + `}`
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.LoadFromFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	t.Setenv("AGENT_HOST", "")
+
+	system := load("").Host // no identity yet: the system's name
+	if err := natsbus.ValidateHost(system); err != nil {
+		t.Errorf("with no identity, host %q: %v", system, err)
+	}
+	if err := os.WriteFile(filepath.Join(busDir, "host"), []byte("IL-Air-M2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := load("").Host; got != "IL-Air-M2" {
+		t.Errorf("with an identity for IL-Air-M2, host = %q", got)
+	}
+	if got := load(`, "host": "from-file"`).Host; got != "from-file" {
+		t.Errorf(`with "host" in the app config, host = %q`, got)
+	}
+	t.Setenv("AGENT_HOST", "from-env")
+	if got := load("").Host; got != "from-env" {
+		t.Errorf("with AGENT_HOST set, host = %q", got)
+	}
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

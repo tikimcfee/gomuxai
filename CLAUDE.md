@@ -410,8 +410,10 @@ sent. `agent logs` is the same events for a person.
 
 ## Other Hosts
 
-Each machine has a host name on the bus: the short hostname, or
-`AGENT_HOST` if set. Address an agent on another
+Each machine has a host name on the bus: `AGENT_HOST` if set, else the
+name its bus identity was created with, else the machine's name (on macOS
+its LocalHostName, which the network doesn't change; elsewhere the short
+hostname). Address an agent on another
 host as `name@host`:
 
 ```bash
