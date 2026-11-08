@@ -409,8 +409,8 @@ const agyFooterBlankCols = 16
 const agyInterrupted = "Interrupted · What should Antigravity CLI do instead?"
 
 // AtPrompt reports whether agy is back at its prompt: the input box ("> ")
-// at the bottom of the screen, under its footer only, and the footer an
-// idle one ("? for shortcuts", or nothing on the left while text is typed).
+// at the bottom of the screen, with only its footer below it (and the
+// background tasks' panel, if any, between them), and the footer an idle one ("? for shortcuts", or nothing on the left while text is typed).
 // A turn shows "esc to cancel" there instead, or "Press up to edit queued
 // messages", and a dialog replaces the box. Esc and Ctrl+C fire no hook, so
 // this is how gomuxai sees that the turn ended: how is "interrupted" when
@@ -420,11 +420,11 @@ func (b *AgyBackend) AtPrompt(screen string) (bool, string) {
 	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
-	start, end, ok := inputBox(lines)
-	if !ok || end != len(lines)-2 || !strings.HasPrefix(strings.TrimLeft(lines[start], " "), ">") {
+	start, _, ok := inputBox(lines, ">", agyPanels)
+	if !ok || len(lines) < 2 || !isRule(util.StripANSI(lines[len(lines)-2])) {
 		return false, ""
 	}
-	footer := lines[end+1]
+	footer := lines[len(lines)-1]
 	text := strings.TrimLeft(footer, " ")
 	if !strings.HasPrefix(text, "? for shortcuts") && len(footer)-len(text) < agyFooterBlankCols {
 		return false, ""
@@ -441,11 +441,18 @@ func (b *AgyBackend) AtPrompt(screen string) (bool, string) {
 	return true, ""
 }
 
-// InputText reads agy's input box: the lines between the last two rules of
-// "─" at the bottom of the screen, the first starting with the ">" prompt.
-// Text drawn dim, if any, is left out as for Claude.
+// agyPanels is how many ruled regions agy draws below its input box, at
+// most: the panel listing its running background tasks ("● [15:22:44] sleep
+// 300 running", agy 1.5.3), which also adds "· 1 task(s) · /tasks" to its
+// footer.
+const agyPanels = 1
+
+// InputText reads agy's input box: the lines between two rules of "─" at
+// the bottom of the screen, the first starting with the ">" prompt, above
+// the background tasks' panel if one is drawn. Text drawn dim, if any, is
+// left out as for Claude.
 func (b *AgyBackend) InputText(screen string) (string, bool) {
-	return inputBoxText(screen, ">")
+	return inputBoxText(screen, ">", agyPanels)
 }
 
 // CanDeliver: agy's PostInvocation, which fires after every model call and

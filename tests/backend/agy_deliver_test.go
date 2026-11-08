@@ -130,7 +130,14 @@ func agyScreen(body []string, input, footer string) string {
 	return strings.Join(lines, "\n")
 }
 
-// Screens from agy 1.4.7, trimmed.
+// agyTasksScreen is agyScreen with agy's panel of running background tasks
+// between the input box and the footer, as agy 1.5.3 draws it.
+func agyTasksScreen(body []string, input, footer string) string {
+	lines := append(append([]string{}, body...), agyRule, ">"+input, agyRule, "  ● [15:22:44] sleep 300 running", agyRule, footer, "", "")
+	return strings.Join(lines, "\n")
+}
+
+// Screens from agy 1.4.7 (and 1.5.3's tasks panel), trimmed.
 func TestAgyAtPrompt(t *testing.T) {
 	b := namedagents.NewAgyBackend()
 	reply := []string{"> [from lead@hub] Reply READY.", "", "  READY", ""}
@@ -149,6 +156,10 @@ func TestAgyAtPrompt(t *testing.T) {
 		{"running", agyScreen(running, "", "esc to cancel                                              Gemini 4 Argon · high"), false, ""},
 		{"running, text typed", agyScreen(running, " typed while busy", "esc to cancel                                              Gemini 4 Argon · high"), false, ""},
 		{"running, text queued", agyScreen(append(running, "▸ typed while busy (alt+m to send immediately)"), "", "  Press up to edit queued messages                         Gemini 4 Argon · high"), false, ""},
+		{"idle, background task running", agyTasksScreen(reply, "", "? for shortcuts                       Gemini 4 Argon · high · 1 task(s) · /tasks"), true, ""},
+		{"idle, background task running, text typed", agyTasksScreen(reply, " half typed", "                                      Gemini 4 Argon · high · 1 task(s) · /tasks"), true, ""},
+		{"interrupted, background task running", agyTasksScreen(interrupted, "", "? for shortcuts                       Gemini 4 Argon · high · 1 task(s) · /tasks"), true, "interrupted"},
+		{"running, background task running", agyTasksScreen(running, "", "esc to cancel                         Gemini 4 Argon · high · 1 task(s) · /tasks"), false, ""},
 		{"question dialog", agyQuestionScreen, false, ""},
 		{"no box", "user@laptop $ agy\n", false, ""},
 	}
@@ -178,6 +189,26 @@ func TestAgyInputText(t *testing.T) {
 	}
 	if _, found := b.InputText(agyQuestionScreen); found {
 		t.Error("question dialog: found an input line")
+	}
+
+	// A background task's panel sits between the box and the footer (agy
+	// 1.5.3): a send to the idle agent was held as "its input line isn't on
+	// screen" (friction #39).
+	tasks := func(input string) string {
+		return strings.Join([]string{"  started.", "", rule, "\x1b[94m>\x1b[39m" + input, rule,
+			"\x1b[39m  \x1b[33m●\x1b[39m [15:22:44] \x1b[94msleep 300\x1b[39m \x1b[33mrunning\x1b[39m", rule,
+			"? for shortcuts\x1b[39m                       \x1b[2mGemini 4 Argon · high · 1 task(s) · /tasks"}, "\n")
+	}
+	if text, found := b.InputText(tasks("")); !found || text != "" {
+		t.Errorf("empty, tasks panel: %q, %v", text, found)
+	}
+	if text, found := b.InputText(tasks(" half typed")); !found || text != "half typed" {
+		t.Errorf("typed, tasks panel: %q, %v", text, found)
+	}
+	// The panel is never taken for the box, nor is a box above two panels.
+	twoPanels := strings.Join([]string{rule, "\x1b[94m>\x1b[39m old", rule, "  ● one", rule, "  ● two", rule, "footer"}, "\n")
+	if text, found := b.InputText(twoPanels); found {
+		t.Errorf("a box above two panels: found %q", text)
 	}
 }
 
