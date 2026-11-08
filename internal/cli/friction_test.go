@@ -290,7 +290,7 @@ func TestFormatFrictionList(t *testing.T) {
 #12 help       +3   2h lead a
 #9  missing    +0   3d user b
 `
-	if got := formatFrictionList(entries, now); got != want {
+	if got := formatFrictionList(entries, nil, now); got != want {
 		t.Errorf("all open:\n%s\nwant:\n%s", got, want)
 	}
 	entries[1].Status = "accepted"
@@ -298,7 +298,7 @@ func TestFormatFrictionList(t *testing.T) {
 #12           help       +3   2h lead a
 #9  accepted  missing    +0   3d user b
 `
-	if got := formatFrictionList(entries, now); got != want {
+	if got := formatFrictionList(entries, nil, now); got != want {
 		t.Errorf("one accepted:\n%s\nwant:\n%s", got, want)
 	}
 }

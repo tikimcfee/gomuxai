@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/buildinfo"
+	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
@@ -57,12 +58,21 @@ original).
 Check "agent friction list" first, and +1 an entry that's already there.
 add won't file a summary close to an open or accepted entry's: it lists
 the matches and exits 3, and --new files it anyway. add and +1 attach your
-last failed agent command from the past 15 minutes; --no-command skips it.`,
+last failed agent command from the past 15 minutes; --no-command skips it.
+
+Each host has its own box. The same problem filed on two hosts is linked
+with "agent friction link 4 34@monolith1": both entries stay open and count
+their own votes, show and list name the other, and resolving either
+resolves both, over the agent bus. "agent friction links" checks every link
+and says which have gone stale (one end resolved without the other, a
+missing entry, a host that doesn't answer), with what to run.`,
 	Example: `  agent friction list
   agent friction add "wait --timeout doesn't say what status it last saw" --kind error
   agent friction +1 12 "hit it again with --next"
   agent friction show 12
-  agent friction resolve 12 --note "wait names the last status (abc1234)"`,
+  agent friction link 12 34@monolith1
+  agent friction resolve 12 --note "wait names the last status (abc1234)"
+  agent friction links --dangling`,
 	RunE: runGroup,
 }
 
@@ -121,6 +131,10 @@ var frictionListCmd = &cobra.Command{
 votes, age, who filed it, and the summary. Most votes first, then newest.
 By default it lists open and accepted entries.
 
+An entry linked to the same problem on another host ends with the links,
+checked over the bus: [= #34@monolith1], and a stale one is flagged, e.g.
+[= #34@monolith1 !out of step] (agent friction show says what to run).
+
 --status takes open, accepted, resolved, wontfix, duplicate, or all, or
 several separated by commas.`,
 	Example: `  agent friction list
@@ -134,7 +148,14 @@ var frictionShowCmd = &cobra.Command{
 	Use:   "show <id>",
 	Short: "Show everything about a friction entry",
 	Long: `Show prints a friction entry in full: who filed it, where, and with which
-build, its detail, attached command, votes, duplicates, and resolution.`,
+build, its detail, attached command, votes, duplicates, and resolution.
+
+Its links to the same problem on other hosts are checked over the bus and
+listed with that entry's status and votes there. A link that has gone stale
+is flagged with "!" and what to run: out of step (one end closed, the other
+open), one-sided (the other host has no link back), missing (no such entry
+there, or a different one under its id), or unreachable (what was last
+seen).`,
 	Example: `  agent friction show 12
   agent friction show 12 --json`,
 	Args: cobra.ExactArgs(1),
@@ -152,17 +173,25 @@ who accepted it, and an optional note.`,
 }
 
 var frictionResolveCmd = &cobra.Command{
-	Use:   "resolve <id> (--note TEXT | --wontfix --note TEXT | --dup OTHER_ID)",
+	Use:   "resolve <id> (--note TEXT | --wontfix --note TEXT | --dup OTHER_ID | --linked)",
 	Short: "Close a friction entry: fixed, won't fix, or duplicate",
 	Long: `Resolve closes an open or accepted entry, recording who closed it:
 
   --note TEXT              fixed; the note says how (a commit, a command)
   --wontfix --note TEXT    not going to change; the note says why
-  --dup OTHER_ID           the same as another entry, whose votes then
-                           include this one's`,
+  --dup OTHER_ID           the same as another entry here, whose votes
+                           then include this one's (and which takes over
+                           its links to other hosts)
+
+Fixed or won't fix, it closes the entries linked to it on other hosts the
+same way, over the agent bus, and theirs in turn; --only closes just this
+one. A host that can't be reached is listed with what to run: once its bus
+answers, --linked passes a closed entry's resolution on to its linked
+entries still open.`,
 	Example: `  agent friction resolve 12 --note "wait names the last status (abc1234)"
   agent friction resolve 13 --wontfix --note "keys is raw by design; use send"
-  agent friction resolve 14 --dup 12`,
+  agent friction resolve 14 --dup 12
+  agent friction resolve 12 --linked`,
 	Args: cobra.ExactArgs(1),
 	RunE: runFrictionResolve,
 }
@@ -400,11 +429,16 @@ func runFrictionList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	out := cmd.OutOrStdout()
+	links, err := linksOf(getContext(), entries)
+	if err != nil {
+		return err
+	}
 	if frictionJSON {
-		if entries == nil {
-			entries = []*storage.Friction{}
+		listed := make([]frictionListEntry, 0, len(entries))
+		for _, f := range entries {
+			listed = append(listed, frictionListEntry{Friction: f, Links: links[f.ID]})
 		}
-		return json.NewEncoder(out).Encode(entries)
+		return json.NewEncoder(out).Encode(listed)
 	}
 	if len(entries) == 0 {
 		all, err := store.ListFriction(getContext(), storage.FrictionFilter{})
@@ -423,8 +457,14 @@ func runFrictionList(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "No %s (%s: agent friction list --status all).\n", describeFrictionFilter(), in)
 		return nil
 	}
-	fmt.Fprint(out, formatFrictionList(entries, time.Now()))
+	fmt.Fprint(out, formatFrictionList(entries, links, time.Now()))
 	return nil
+}
+
+// frictionListEntry is an entry as list --json prints it.
+type frictionListEntry struct {
+	*storage.Friction
+	Links []*linkView `json:"links,omitempty"`
 }
 
 // describeFrictionFilter names the entries list's flags select, e.g. "open
@@ -489,9 +529,10 @@ func parseFrictionStatuses(s string) ([]string, error) {
 	return statuses, nil
 }
 
-// formatFrictionList renders entries one per line under a header. The
-// STATUS column only appears if some entry isn't open.
-func formatFrictionList(entries []*storage.Friction, now time.Time) string {
+// formatFrictionList renders entries one per line under a header, with
+// their links (by entry id) after the summary. The STATUS column only
+// appears if some entry isn't open.
+func formatFrictionList(entries []*storage.Friction, links map[int64][]*linkView, now time.Time) string {
 	idW, byW, showStatus := len("ID"), len("BY"), false
 	for _, f := range entries {
 		idW = max(idW, len(fmt.Sprintf("#%d", f.ID)))
@@ -513,7 +554,7 @@ func formatFrictionList(entries []*storage.Friction, now time.Time) string {
 			status = ""
 		}
 		row(fmt.Sprintf("#%d", f.ID), status, f.Kind, fmt.Sprintf("+%d", f.Votes),
-			age(now.Sub(f.CreatedAt)), f.FiledBy, clip(f.Summary, 100))
+			age(now.Sub(f.CreatedAt)), f.FiledBy, clip(f.Summary, 100)+formatLinkMarker(links[f.ID]))
 	}
 	return b.String()
 }
@@ -536,6 +577,8 @@ type frictionDetails struct {
 	*storage.Friction
 	VoteList   []*storage.FrictionVote `json:"vote_list"`
 	Duplicates []*storage.Friction     `json:"duplicates"`
+	// Links are its links to the same problem on other hosts, checked.
+	Links []*linkView `json:"links"`
 }
 
 func runFrictionShow(cmd *cobra.Command, args []string) error {
@@ -544,7 +587,7 @@ func runFrictionShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	d := frictionDetails{Friction: f, VoteList: []*storage.FrictionVote{}, Duplicates: []*storage.Friction{}}
+	d := frictionDetails{Friction: f, VoteList: []*storage.FrictionVote{}, Duplicates: []*storage.Friction{}, Links: []*linkView{}}
 	if votes, err := store.ListFrictionVotes(ctx, f.ID); err != nil {
 		return err
 	} else if votes != nil {
@@ -554,6 +597,11 @@ func runFrictionShow(cmd *cobra.Command, args []string) error {
 		return err
 	} else if dups != nil {
 		d.Duplicates = dups
+	}
+	if links, err := linksOf(ctx, []*storage.Friction{f}); err != nil {
+		return err
+	} else if links[f.ID] != nil {
+		d.Links = links[f.ID]
 	}
 	if frictionJSON {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(d)
@@ -600,6 +648,7 @@ func formatFrictionShow(d frictionDetails) string {
 			fmt.Fprintf(&b, "  #%d +%d by %s: %s\n", dup.ID, dup.Votes, dup.FiledBy, dup.Summary)
 		}
 	}
+	b.WriteString(formatFrictionLinks(f, d.Links))
 	return b.String()
 }
 
@@ -671,6 +720,9 @@ func byWhom(f *storage.Friction) string {
 func runFrictionResolve(cmd *cobra.Command, args []string) error {
 	ctx := getContext()
 	note := strings.TrimSpace(frictionNote)
+	if frictionLinked {
+		return resolveLinkedOnly(ctx, cmd.OutOrStdout(), args[0], note)
+	}
 	if note == "" && frictionDup == "" {
 		return fmt.Errorf("--note is required: say how it was fixed, or with --wontfix, why it won't be (or close it with --dup ID)")
 	}
@@ -698,6 +750,15 @@ func runFrictionResolve(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	hadLinks := false
+	if original != nil {
+		links, err := store.ListFrictionLinks(ctx, f.ID)
+		if err != nil {
+			return err
+		}
+		hadLinks = len(links) > 0
+	}
+
 	now := time.Now()
 	f.UpdatedAt, f.ResolvedAt, f.Resolution = now, now, note
 	f.ResolvedBy, _ = frictionCaller(ctx)
@@ -721,12 +782,46 @@ func runFrictionResolve(cmd *cobra.Command, args []string) error {
 			votes = updated.Votes
 		}
 		fmt.Fprintf(out, "Closed friction #%d as a duplicate of #%d (now +%d).\n", f.ID, original.ID, votes)
+		if hadLinks {
+			fmt.Fprintf(out, "Its links to other hosts' entries moved to #%d.\n", original.ID)
+		}
+		return nil
 	case storage.FrictionWontfix:
 		fmt.Fprintf(out, "Closed friction #%d (%s) as wontfix.\n", f.ID, f.Kind)
 	default:
 		fmt.Fprintf(out, "Resolved friction #%d (%s).\n", f.ID, f.Kind)
 	}
-	return nil
+	if frictionOnly {
+		return nil
+	}
+	return resolveLinked(ctx, out, f)
+}
+
+// resolveLinkedOnly is resolve --linked: it passes a closed entry's
+// resolution on to its linked entries still open, e.g. once a host that
+// was unreachable when the entry was resolved answers again.
+func resolveLinkedOnly(ctx context.Context, out io.Writer, arg, note string) error {
+	if note != "" || frictionWontfix || frictionDup != "" || frictionOnly {
+		return fmt.Errorf("--linked takes no --note, --wontfix, --dup or --only: it passes the entry's own resolution on to its linked entries")
+	}
+	f, err := getFriction(ctx, arg)
+	if err != nil {
+		return err
+	}
+	switch {
+	case f.Status == storage.FrictionDuplicate:
+		return fmt.Errorf("friction #%d is a duplicate of #%d, which holds its links: agent friction resolve %d --linked", f.ID, f.DuplicateOf, f.DuplicateOf)
+	case service.FrictionIsOpen(f.Status):
+		return fmt.Errorf("friction #%d is still %s: agent friction resolve %d --note \"...\" resolves it and its linked entries", f.ID, f.Status, f.ID)
+	}
+	links, err := store.ListFrictionLinks(ctx, f.ID)
+	if err != nil {
+		return err
+	}
+	if len(links) == 0 {
+		return fmt.Errorf("friction #%d has no links to other hosts' entries (agent friction link %d ID@HOST makes one)", f.ID, f.ID)
+	}
+	return resolveLinked(ctx, out, f)
 }
 
 // getFriction reads the entry an id argument ("12" or "#12") names, or
@@ -758,7 +853,15 @@ func runFrictionExport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(cmd.OutOrStdout(), formatFrictionExport(entries, cfg.Host))
+	links, err := store.ListFrictionLinks(getContext(), 0)
+	if err != nil {
+		return err
+	}
+	byEntry := map[int64][]*storage.FrictionLink{}
+	for _, l := range links {
+		byEntry[l.FrictionID] = append(byEntry[l.FrictionID], l)
+	}
+	fmt.Fprint(cmd.OutOrStdout(), formatFrictionExport(entries, byEntry, cfg.Host))
 	return nil
 }
 
@@ -784,8 +887,9 @@ var frictionStatusHeadings = map[string]string{
 }
 
 // formatFrictionExport renders entries as Markdown, a section per status
-// in lifecycle order, keeping the entries' order within each.
-func formatFrictionExport(entries []*storage.Friction, host string) string {
+// in lifecycle order, keeping the entries' order within each, with their
+// links (by entry id) as last seen.
+func formatFrictionExport(entries []*storage.Friction, links map[int64][]*storage.FrictionLink, host string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Friction on %s\n", host)
 	if len(entries) == 0 {
@@ -817,6 +921,7 @@ func formatFrictionExport(entries []*storage.Friction, host string) string {
 			case storage.FrictionDuplicate:
 				fmt.Fprintf(&b, "Duplicate of #%d (%s, %s)%s.\n", f.DuplicateOf, f.ResolvedBy, stamp(f.ResolvedAt), notePart(f.Resolution))
 			}
+			b.WriteString(formatExportLinks(links[f.ID]))
 			if f.Command != nil {
 				fmt.Fprintf(&b, "\nCommand: %s\n", formatAttached(f.Command, markdownCode))
 			}

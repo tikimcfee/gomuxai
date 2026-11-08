@@ -9,7 +9,7 @@ import (
 
 var safe = []string{
 	"send", "deliver", "list", "status", "wait", "events", "capture", "logs", "state get", "history",
-	"friction add", "friction +1", "friction list", "friction show",
+	"friction add", "friction +1", "friction list", "friction show", "friction link", "friction links",
 }
 
 // fixture lays out root/bin/agent (the program), root/link/agent (a
@@ -75,6 +75,8 @@ lines"`,
 		`agent send helper@hub done`,
 		`agent wait a b --for idle,waiting --next --timeout 30m`,
 		`agent friction +1 12 "hit it again"`,
+		`agent friction link 4 34@monolith1`,
+		`agent friction links --dangling`,
 		`agent state get helper _result`,
 		`agent list 2>&1`,
 		`agent list >/dev/null 2>&1`,
@@ -97,6 +99,7 @@ func TestCheckRefuses(t *testing.T) {
 		"agent", "agent -q", "agent spawn helper --backend claude", "agent approve helper",
 		"agent deny helper", "agent keys agent-helper Enter", "agent state set helper k v",
 		"agent state", "agent cleanup helper", "agent friction resolve 3", "agent friction",
+		"agent friction unlink 4 34@monolith1", "agent friction linkx 4 34@h",
 		"agent bus start", "agent help", "agent sendx helper hi", "agent Send helper hi",
 		"agent --backend-config x.json status", "agent --quiet=true list",
 		// More than one command, or not a plain one.

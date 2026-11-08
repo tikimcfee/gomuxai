@@ -35,14 +35,16 @@ func TestBriefingCoversFriction(t *testing.T) {
 	s := &AgentService{cfg: &config.Config{Host: "h", AgentBinary: "/opt/x/agent"}}
 	brief := s.agentInstructions("lead", "", "claude")
 	for _, want := range []string{"## When the agent tool gets in your way", "`agent friction list`",
-		"`agent friction +1 ID`", "    agent friction add \"summary\" --kind help|error|missing|bug|docs|other\n"} {
+		"`agent friction +1 ID`", "    agent friction add \"summary\" --kind help|error|missing|bug|docs|other\n",
+		"    agent friction link ID ID@HOST\n"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("briefing lacks %q", want)
 		}
 	}
 
 	prefixes := s.allowedCommandPrefixes()
-	for _, want := range []string{"agent friction add", "/opt/x/agent friction +1", "agent friction list", "agent friction show", "agent history", "agent capture", "/opt/x/agent capture", "agent logs", "/opt/x/agent logs"} {
+	for _, want := range []string{"agent friction add", "/opt/x/agent friction +1", "agent friction list", "agent friction show",
+		"agent friction link", "/opt/x/agent friction links", "agent history", "agent capture", "/opt/x/agent capture", "agent logs", "/opt/x/agent logs"} {
 		if !slices.Contains(prefixes, want) {
 			t.Errorf("pre-allowed commands lack %q", want)
 		}
@@ -50,6 +52,9 @@ func TestBriefingCoversFriction(t *testing.T) {
 	for _, p := range prefixes {
 		if strings.Contains(p, "accept") || strings.Contains(p, "resolve") || p == "agent friction" {
 			t.Errorf("pre-allowed %q: accepting and resolving friction is for people", p)
+		}
+		if strings.Contains(p, "unlink") {
+			t.Errorf("pre-allowed %q: unlink erases a link on both hosts", p)
 		}
 	}
 }

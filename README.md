@@ -259,7 +259,7 @@ hub$ agent bus status
 hub: bus running (clients on tls://127.0.0.1:7420)
   hub, accepting peer links on 0.0.0.0:7422
   linked peers: 1; trusted: mac
-  remote ops allowed: list, status, capture, send, respond
+  remote ops allowed: list, status, capture, send, respond, friction
 ```
 
 Then address agents on the other machine as `name@host`:
@@ -277,7 +277,7 @@ Peers may call only the ops in `--remote-ops`; raw `keys` stays local.
 `spawn` is off for peers by default too, since it starts a process on the
 host. To let other machines start agents on the hub, add it there:
 `agent bus start --listen 0.0.0.0:7422 --remote-ops
-list,status,capture,send,respond,spawn` (`remote ops allowed` then lists
+list,status,capture,send,respond,friction,spawn` (`remote ops allowed` then lists
 it). Then `agent spawn builder@hub --backend claude --cwd /home/me/project`
 starts one on the hub; `--cwd` and a task file are paths on the hub.
 Listing `spawn` lets every linked peer run commands on the hub as the bus's
@@ -343,4 +343,5 @@ add` found a similar entry.
 
 Known gaps are listed in [`CLAUDE.md`](CLAUDE.md); open requests are in
 `agent friction list`. If the tool gets in your way, `agent friction add
-"..."`.
+"..."`. The same problem filed on two hosts is linked with `agent friction
+link ID ID@HOST`, so resolving either resolves both.

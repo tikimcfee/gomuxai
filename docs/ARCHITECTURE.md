@@ -29,7 +29,7 @@ installed one:
 
 ```
 .gomuxai/
-├── gomuxai.db               # agents, runs, agent_events, messages, tasks, state, session_reports, command_log, friction
+├── gomuxai.db               # agents, runs, agent_events, messages, tasks, state, session_reports, command_log, friction, friction_links
 ├── logs/
 │   ├── <name>.log           # tmux pipe-pane output (survives cleanup)
 │   ├── <name>.transcripts   # "<backend>\t<path>" per CLI transcript (survives cleanup)
@@ -218,11 +218,13 @@ Notes on each:
   agent's shell may not have it on `PATH`.
 - **Pre-allowed commands** (`agentSafeCommands`): `send`, `deliver`, `list`,
   `status`, `wait`, `events`, `capture`, `logs`, `sessions`, `transcript`,
-  `state get`, `history`, `friction add`, `friction +1`, `friction list`, `friction show`. Each becomes two rules, `agent <cmd>` and
+  `state get`, `history`, `friction add`, `friction +1`, `friction list`, `friction show`,
+  `friction link`, `friction links`. Each becomes two rules, `agent <cmd>` and
   `<full binary path> <cmd>`, for that Claude session only. Left out on
   purpose: `approve`, `deny`, `keys`, and `send --force` (one agent answering
   another's prompts), `spawn` and `cleanup` (a person approves each), and
-  `friction accept`/`resolve` (for the people working on the tool). Rules
+  `friction accept`/`resolve` (for the people working on the tool) and
+  `friction unlink` (it erases a link on both hosts). Rules
   match the literal command text, so `./bin/agent send` or `agent -q send`
   would still prompt; the PreToolUse hook covers those (next item).
 - **The PreToolUse approval** (`AgentService.hookApproval`, `allowcmd`):
@@ -1307,8 +1309,10 @@ than one. On the hub, each peer's leaf connection gets (`peerPermissions`):
 Each leaf also refuses, as `DenyImports`, requests for its own ops not in
 its `--remote-ops` and anything under its own `local.>`. The bus serves
 local clients every op; peers get `--remote-ops` (default `list,status,
-capture,send,respond`; `keys` and `spawn` are local-only unless listed,
+capture,send,respond,friction`; `keys` and `spawn` are local-only unless listed,
 since `keys` types anything and `spawn` starts a process on the host).
+`friction` is on by default: what it lets a peer do (read entries, link
+them, resolve a linked one) is far less than `send` already does.
 
 ### RPC ops
 
@@ -1330,6 +1334,7 @@ modes in your terminal.
 | `respond` | `RespondRequest` (`approve`, `approve_always`, `deny`, `force`, `expect_tool`) → none | `approve`, `deny` | yes |
 | `keys` | `KeysRequest` (text, then a key) → none | `keys name@host` | no |
 | `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `spawned_by`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
+| `friction` | `FrictionRequest` (`action`: `get` `ids`; `link`/`unlink`/`resolve` `id`, with `from`, `by`, `note`; resolve's `uid` and `status`) → `FrictionResponse` (`entries` with their `links` and `requested`, `missing`, `resolved`) | `friction show`/`list`/`links`/`link`/`unlink`/`resolve` | yes |
 
 `natsbus/ops_test.go` keeps `AllOps` and the server's op table in step. The
 remote side runs the same service code as a local call (`Send` holds a
@@ -1498,6 +1503,7 @@ One SQLite database, `.gomuxai/gomuxai.db`, through `modernc.org/sqlite`
 | `command_log` | `id`, `started_at`, `duration_ms`, `host`, `agent`, `parent`, `cwd`, `args` (JSON), `exit_code`, `error`, `build` | `agent history`; indexed on `(agent, id)` |
 | `friction` | `id`, `uid`, `host`, `filed_by`, `parent`, `cwd`, `build`, timestamps, `kind`, `summary`, `detail`, `command` (JSON), `status`, accept and resolve fields, `duplicate_of` | the friction box |
 | `friction_votes` | `id`, `friction_id` (FK, cascade), `uid`, `host`, `voter`, `parent`, `build`, `created_at`, `note`, `command` | `+1`s |
+| `friction_links` | `id`, `friction_id` (FK, cascade), `peer_host` (`COLLATE NOCASE`), `peer_id`, `peer_uid`, `linked_by`, `linked_at`, `note`, `confirmed_at`, `peer_*` (status, kind, summary, votes, resolved_by, resolution, checked_at); unique `(friction_id, peer_host, peer_id)` | this host's half of a link to another host's entry, and what was last seen of it |
 
 There is no logs table: logs are files (see
 [Results and transcripts](#results-and-transcripts)).
@@ -1551,9 +1557,51 @@ votes (and its own filing) count toward the original. `add` and `+1` attach
 the caller's last failed command from the command log within 15 minutes
 (copied, since the log is pruned). `add` refuses a summary similar to an open
 or accepted entry's (word overlap, `cli/friction_similar.go`), lists the
-matches, and exits 3; `--new` files anyway. The box is per host for now;
-each entry and vote has a `uid` so boxes can be merged later. Resolved
-entries, via `friction export`, are the tool's changelog.
+matches, and exits 3; `--new` files anyway. The box is per host; each
+entry and vote has a `uid` so boxes can be merged later. Resolved entries,
+via `friction export`, are the tool's changelog.
+
+**Links across hosts** (`cli/friction_links.go`, `service/friction.go`).
+The same problem filed on two hosts is linked with `friction link 4
+34@monolith1`. Unlike a same-store `--dup`, both entries stay open and
+count their own votes (each may say why it happened on its host).
+Each host stores its own half in `friction_links`, so `show 34` on the
+other host knows about `#4` without asking. A half keeps the other entry's
+`uid` (a reset store's new `#34` isn't taken for the old one), whether the
+other host was seen to hold its half (`confirmed_at`), and what was last
+seen of the other entry (`peer_*`).
+
+Everything that crosses hosts goes through the bus's `friction` op, and
+the calling CLI drives it: the serving host only reads, records or removes
+its half, and resolves its own entry. It never calls out. An entry closed
+there as a duplicate stands for its original (the reply's `requested` says
+so; links move to the original with `--dup`, and the caller's half follows
+on its next check).
+
+- `link` asks the other host to record its half, then records this one.
+  If the other host doesn't answer (including a host whose bus predates
+  the op), the half is recorded here unconfirmed and link prints what to
+  run there; if it refuses (no such entry), nothing is recorded.
+- `show`, `list` and `links` check links with one `get` per host, at most
+  3s each, in parallel, and save what they see in the link. A host that
+  doesn't answer shows its last-seen state. A link's state is computed,
+  never stored: `out of step` (one end open, the other closed), `one-sided`
+  (no link back), `missing` (no such id, or a different `uid`),
+  `unreachable`, or `linked`. `export` uses only the saved state, with no
+  bus.
+- `resolve` (fixed or won't fix) closes the entry here, then sends
+  `resolve` for each link, with the uid it knows and the same status and
+  note (`resolved_by` is `name@host`). The other host closes its entry only
+  if it is still open and the uid matches, and replies with its links, which
+  the caller follows in turn, with a visited set, so a chain A-B-C resolves
+  and a loop ends. An entry here reached that way is closed locally.
+  Hosts that don't answer are listed with what to run; `resolve ID
+  --linked` later passes a closed entry's resolution on, walking the same
+  way (already-closed entries are walked through, not changed). `--only`
+  skips the walk. A resolve also updates the other host's half with this
+  entry's new state.
+- `resolve --dup` moves the duplicate's links to its original
+  (`UpdateFriction`), dropping any the original already has.
 
 ## CLI conventions
 

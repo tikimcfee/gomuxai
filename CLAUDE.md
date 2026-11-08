@@ -23,6 +23,28 @@ agent friction add "logs can't show just one turn" --kind missing
 
 People working on the tool fix what's filed and resolve the entries.
 
+Each host has its own friction box. When an entry is the same problem as
+one filed on another host, link them; both stay open and count their own
+votes, `show` and `list` name the other, and resolving either resolves both
+over the bus:
+
+```bash
+agent friction link 4 34@monolith1    # this host's #4 is monolith1's #34
+agent friction show 4                 # lists #34@monolith1, its status and votes there
+agent friction resolve 4 --note "status reads the trust prompt (abc1234)"
+                                      # resolves #34@monolith1 too (--only: just #4)
+agent friction links --dangling       # links gone stale, with what to run
+```
+
+A link goes stale when one end is closed and the other isn't (`out of
+step`), the other host has no link back (`one-sided`), has no such entry
+or a different one under that id (`missing`), or doesn't answer
+(`unreachable`, with what was last seen). `show` and `list` flag it with `!`,
+and `show` and `links` say what to run. If a host is unreachable when you
+link or resolve, it's done here and the command prints what's left; once
+that host answers, `agent friction resolve 4 --linked` passes #4's
+resolution on. `unlink` removes a link on both hosts.
+
 ## Start Here
 
 ```bash
@@ -79,11 +101,14 @@ failed and what to try. Most read commands take `--json`.
 
 Spawn pre-allows these for the agent's session: `send`, `deliver`, `list`,
 `status`, `wait`, `events`, `capture`, `logs`, `sessions`, `transcript`, `state get`,
-`history`, `friction add`, `friction +1`, `friction list`, `friction show`.
+`history`, `friction add`, `friction +1`, `friction list`, `friction show`,
+`friction link`, `friction links`.
 
 Everything else prompts the person, on purpose: `spawn` and `cleanup` start
 and stop agents; `approve`, `deny`, `keys`, and `send --force` would let one
-agent answer another's prompts; `state set` isn't on the list either.
+agent answer another's prompts; `state set` isn't on the list either, nor
+are `friction accept`, `resolve` and `unlink` (which erases a link on both
+hosts).
 
 Two things allow them. Spawn adds rules for `agent <cmd>` and the
 binary's full path, and gomuxai's own PreToolUse hook approves the same
@@ -435,7 +460,7 @@ hosts this one knows. Not across hosts: `state` (ask the agent to send what
 you need, or `capture`), `logs` (use `capture`), `queue` (use `send`),
 `cleanup` (clean up on that host).
 The other host's bus serves only its `--remote-ops` (default
-`list,status,capture,send,respond`), so `keys` and `spawn` to another host
+`list,status,capture,send,respond,friction`), so `keys` and `spawn` to another host
 are refused unless it lists them. "no bus answering for host X" means that
 host's bus is down, not linked, or doesn't serve that op.
 

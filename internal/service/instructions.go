@@ -106,6 +106,12 @@ something you need, file it, then carry on with your work. Check
 ` + "`agent friction list`" + ` first, and ` + "`agent friction +1 ID`" + ` a matching entry instead:
 
     agent friction add "summary" --kind help|error|missing|bug|docs|other
+
+If an entry is the same problem as one filed on another host, link them
+(` + "`agent friction show ID`" + ` then names the other, and resolving either
+resolves both):
+
+    agent friction link ID ID@HOST
 `)
 	return b.String()
 }
@@ -176,14 +182,16 @@ func (s *AgentService) writeLaunchScriptForOpts(opts SpawnOptions, launchCmd str
 // and sessions to find its peers), deliver
 // messages that
 // the recipient's own permission prompts still guard, or file and vote on
-// friction, which only writes a note. approve/deny, keys, and send --force
+// friction, which only writes a note, and link entries to the same problem
+// on other hosts (unlink is left out: it erases a link on both hosts).
+// approve/deny, keys, and send --force
 // are left out: they would let one agent answer another agent's prompts,
 // which is the user's call. So are spawn and cleanup, which start and stop
 // agents: the user approves each one. So are friction accept and resolve,
 // which are for the people working on the tool.
 var agentSafeCommands = []string{
 	"send", "deliver", "list", "status", "statuses", "wait", "events", "capture", "logs", "sessions", "transcript", "state get", "history",
-	"friction add", "friction +1", "friction list", "friction show",
+	"friction add", "friction +1", "friction list", "friction show", "friction link", "friction links",
 }
 
 // hookApproval is the hook output that approves hr's shell command without
