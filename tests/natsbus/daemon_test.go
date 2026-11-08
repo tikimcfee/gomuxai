@@ -1,9 +1,11 @@
 package natsbus_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +157,79 @@ func TestBus_OpsNotAllowedRemotelyAreBlockedBothWays(t *testing.T) {
 	// Still allowed locally.
 	if got, err := request(hubConn, "hub", natsbus.OpKeys); err != nil {
 		t.Errorf("local keys on hub failed: %q, %v", got, err)
+	}
+}
+
+// Spawn starts processes on the serving host, so like keys it is local-only
+// unless a host lists it.
+func TestBus_SpawnIsLocalOnlyByDefault(t *testing.T) {
+	_, _, hubConn, leafConn := linkedPair(t, nil, nil)
+	serve(t, hubConn, "hub")
+	serve(t, leafConn, "leaf")
+
+	if got, err := request(leafConn, "hub", natsbus.OpSpawn); err == nil {
+		t.Errorf("leaf ran spawn on hub: %q", got)
+	}
+	if got, err := request(hubConn, "leaf", natsbus.OpSpawn); err == nil {
+		t.Errorf("hub ran spawn on leaf: %q", got)
+	}
+	// Still allowed locally.
+	if got, err := request(hubConn, "hub", natsbus.OpSpawn); err != nil || got != "ran gomux.hub.rpc.spawn" {
+		t.Errorf("local spawn on hub: %q, %v", got, err)
+	}
+	if got, err := request(leafConn, "leaf", natsbus.OpSpawn); err != nil || got != "ran gomux.leaf.rpc.spawn" {
+		t.Errorf("local spawn on leaf: %q, %v", got, err)
+	}
+}
+
+// A host that lists spawn serves it to peers; one that doesn't still refuses.
+func TestBus_SpawnServedWhenAHostAllowsIt(t *testing.T) {
+	_, _, hubConn, leafConn := linkedPair(t,
+		nil, // hub: defaults, no spawn
+		append(slices.Clone(natsbus.DefaultRemoteOps), natsbus.OpSpawn)) // leaf: also spawn
+	serve(t, hubConn, "hub")
+	serve(t, leafConn, "leaf")
+
+	if got, err := request(hubConn, "leaf", natsbus.OpSpawn); err != nil || got != "ran gomux.leaf.rpc.spawn" {
+		t.Errorf("leaf allows spawn remotely: %q, %v", got, err)
+	}
+	if got, err := request(leafConn, "hub", natsbus.OpSpawn); err == nil {
+		t.Errorf("leaf ran spawn on hub, which doesn't allow it: %q", got)
+	}
+	if got, err := request(hubConn, "hub", natsbus.OpSpawn); err != nil {
+		t.Errorf("local spawn on hub: %q, %v", got, err)
+	}
+}
+
+// A spawn through two linked buses: the leaf's RPCClient reaches the hub's
+// handler, which sees the request as sent.
+func TestBus_SpawnRoundTripsAcrossTheLink(t *testing.T) {
+	_, _, hubConn, leafConn := linkedPair(t,
+		append(slices.Clone(natsbus.DefaultRemoteOps), natsbus.OpSpawn), nil)
+	fake := &fakeRPC{slow: make(chan struct{})}
+	stop, err := natsbus.ServeRPC(hubConn, "hub", fake, natsbus.AllOps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	client := natsbus.NewRPCClient(leafConn, 2*time.Second)
+
+	req := natsbus.SpawnRequest{Backend: "claude", Cwd: "/srv/project", TaskFile: "tasks/build.md", SpawnedBy: "lead@leaf"}
+	var resp *natsbus.SpawnResponse
+	deadline := time.Now().Add(5 * time.Second)
+	for { // interest propagates across the link
+		resp, err = client.Spawn(context.Background(), natsbus.AgentRef{Name: "helper", Host: "hub"}, req)
+		if err == nil || !strings.Contains(err.Error(), "no bus answering") || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil || resp.Name != "helper" || resp.Session != "agent-helper" || resp.SpawnedBy != "lead@leaf" || resp.Cwd != "/srv/project" {
+		t.Fatalf("Spawn = %+v, %v", resp, err)
+	}
+	req.Agent = "helper"
+	if got := fake.last(); got != req {
+		t.Errorf("hub's handler got %+v, want %+v", got, req)
 	}
 }
 

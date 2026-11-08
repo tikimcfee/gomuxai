@@ -110,9 +110,10 @@ agent spawn helper --backend claude --task review   # first message: a stored ta
 Spawn sends the task file or `--task` as the first message. Without either,
 send the first message yourself. It returns once the CLI has started and
 says what status it found: "idle" means ready for a message. The agent
-starts in the directory you run spawn from, with that project's permission
-settings; `--skip-permissions` bypasses them (use with caution). Inside an
-agent, name helpers `<yourname>-<role>`.
+starts in the directory you run spawn from (`--cwd DIR` picks another),
+with that project's permission settings; `--skip-permissions` bypasses
+them (use with caution). Inside an agent, name helpers
+`<yourname>-<role>`.
 
 ### 2. Send
 
@@ -420,15 +421,29 @@ agent send helper@hub "run the tests"
 agent wait helper@hub --for idle,waiting --next --timeout 30m
 agent capture helper@hub --lines 100
 agent approve helper@hub --expect Bash
+agent spawn helper@hub --backend claude --cwd /srv/project tasks/build.md
 ```
 
-`status`, `capture`, `send`, `wait`, `events`, `approve`, `deny`, and `keys`
-take `name@host`. Not across hosts: `state` (ask the agent to send what you
-need, or `capture`), `logs` (use `capture`), `queue` (use `send`), `spawn`,
-`cleanup`. The other host's bus serves only its `--remote-ops` (default
-`list,status,capture,send,respond`), so `keys` to another host is refused
-unless it allows it. "no bus answering for host X" means that host's bus is
-down, not linked, or doesn't serve that op.
+`status`, `capture`, `send`, `wait`, `events`, `approve`, `deny`, `keys`,
+and `spawn` take `name@host` (`spawn` also takes `--host hub`). Not across
+hosts: `state` (ask the agent to send what you need, or `capture`), `logs`
+(use `capture`), `queue` (use `send`), `cleanup` (clean up on that host).
+The other host's bus serves only its `--remote-ops` (default
+`list,status,capture,send,respond`), so `keys` and `spawn` to another host
+are refused unless it lists them. "no bus answering for host X" means that
+host's bus is down, not linked, or doesn't serve that op.
+
+A remote spawn's `--cwd` and task file are paths on that host (`--cwd`
+absolute; without it, the agent starts in that user's home directory);
+`--task` is read from your own store and its content sent. `--resume`,
+`--attach`, `--backend-config`, `--skip-permissions`, and
+`--trust-workspace` are refused: run spawn on that host for those. A host
+that lists `spawn` lets every linked peer run commands there as its user
+(spawn an agent, then approve its prompts), so list it only where you'd
+give peers a shell. Spawned by agent `lead` on `laptop`, its
+parent there is `lead@laptop`, and it replies with `agent send
+lead@laptop`; spawned by a person, it has no parent. Spawn prints the agent as
+`name@host` with its status, so `agent wait helper@hub` follows it.
 
 ### Setting up the bus
 

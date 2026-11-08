@@ -369,6 +369,20 @@ func TestRPCClient_SanitizesRemoteText(t *testing.T) {
 	if err := client.Send(ctx, ref, "x"); err == nil || strings.ContainsAny(err.Error(), "\x1b\x07") {
 		t.Errorf("remote error not sanitized: %v", err)
 	}
+
+	spawned, err := client.Spawn(ctx, ref, natsbus.SpawnRequest{Backend: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, f := range map[string]string{
+		"name": spawned.Name, "session": spawned.Session, "backend": spawned.Backend,
+		"spawned_by": spawned.SpawnedBy, "cwd": spawned.Cwd, "task_file": spawned.TaskFile,
+		"status": spawned.Status, "end_reason": spawned.EndReason,
+	} {
+		if f != st.Detail {
+			t.Errorf("spawn %s = %q, want it sanitized like status detail %q", name, f, st.Detail)
+		}
+	}
 }
 
 type evilHandler struct{ text string }
@@ -389,6 +403,9 @@ func (h evilHandler) Respond(context.Context, natsbus.RespondRequest) error {
 	return nil
 }
 func (h evilHandler) Keys(context.Context, natsbus.KeysRequest) error { return nil }
+func (h evilHandler) Spawn(context.Context, natsbus.SpawnRequest) (*natsbus.SpawnResponse, error) {
+	return &natsbus.SpawnResponse{Name: h.text, Session: h.text, Backend: h.text, SpawnedBy: h.text, Cwd: h.text, TaskFile: h.text, Status: h.text, EndReason: h.text}, nil
+}
 
 // A flood of slow requests gets "busy" replies past the in-flight limit
 // instead of unbounded concurrent work.

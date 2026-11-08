@@ -18,18 +18,19 @@ import (
 // nopTmux is a tmux where every session exists and nothing happens.
 type nopTmux struct{}
 
-func (nopTmux) CreateSession(string, map[string]string) error { return nil }
-func (nopTmux) KillSession(string) error                      { return nil }
-func (nopTmux) SessionExists(string) (bool, error)            { return true, nil }
-func (nopTmux) ListSessions() ([]tmux.Session, error)         { return nil, nil }
-func (nopTmux) SendKeys(string, string) error                 { return nil }
-func (nopTmux) SendSpecialKey(string, string) error           { return nil }
-func (nopTmux) Capture(string, int) (string, error)           { return "", nil }
-func (nopTmux) CaptureStyled(string, int) (string, error)     { return "", nil }
-func (nopTmux) PipePane(string, string) error                 { return nil }
-func (nopTmux) StopPipePane(string) error                     { return nil }
-func (nopTmux) Clear(string) error                            { return nil }
-func (nopTmux) PanePIDs() (map[int]string, error)             { return nil, nil }
+func (nopTmux) CreateSession(string, map[string]string) error           { return nil }
+func (nopTmux) CreateSessionIn(string, string, map[string]string) error { return nil }
+func (nopTmux) KillSession(string) error                                { return nil }
+func (nopTmux) SessionExists(string) (bool, error)                      { return true, nil }
+func (nopTmux) ListSessions() ([]tmux.Session, error)                   { return nil, nil }
+func (nopTmux) SendKeys(string, string) error                           { return nil }
+func (nopTmux) SendSpecialKey(string, string) error                     { return nil }
+func (nopTmux) Capture(string, int) (string, error)                     { return "", nil }
+func (nopTmux) CaptureStyled(string, int) (string, error)               { return "", nil }
+func (nopTmux) PipePane(string, string) error                           { return nil }
+func (nopTmux) StopPipePane(string) error                               { return nil }
+func (nopTmux) Clear(string) error                                      { return nil }
+func (nopTmux) PanePIDs() (map[int]string, error)                       { return nil, nil }
 
 // The unknown threshold counts unknowns in a row: busy checks between them
 // start the count over, so an agent that is mostly busy keeps its message.
