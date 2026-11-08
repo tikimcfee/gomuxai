@@ -116,27 +116,36 @@ func screenTail(screen string) []string {
 }
 
 // inputBox finds the input box at the bottom of screen (lines, as split from
-// it): the lines between its last two rules of "─". It returns their
-// indexes, rules excluded, or ok false if there is no such box.
-func inputBox(lines []string) (start, end int, ok bool) {
+// it): lines between two consecutive rules of "─", the first starting with
+// prompt. The box is the bottom such region, or, with panels > 0, one of
+// up to that many regions above it: agy draws a panel of running
+// background tasks between rules of its own below its box. It returns the
+// box's indexes, rules excluded, or ok false if there is no such box.
+func inputBox(lines []string, prompt string, panels int) (start, end int, ok bool) {
 	var rules []int
-	for i := len(lines) - 1; i >= 0 && len(rules) < 2; i-- {
+	for i := len(lines) - 1; i >= 0 && len(rules) < panels+2; i-- {
 		if isRule(util.StripANSI(lines[i])) {
 			rules = append(rules, i)
 		}
 	}
-	if len(rules) < 2 || rules[0]-rules[1] < 2 {
-		return 0, 0, false
+	for k := 0; k+1 < len(rules); k++ {
+		top, bottom := rules[k+1], rules[k]
+		if bottom-top < 2 {
+			continue // an empty region is no box (and no panel)
+		}
+		if strings.HasPrefix(strings.TrimLeft(util.StripANSI(lines[top+1]), " "), prompt) {
+			return top + 1, bottom, true
+		}
 	}
-	return rules[1] + 1, rules[0], true
+	return 0, 0, false
 }
 
 // inputBoxText returns the text typed in the input box of screen (with its
-// styling escapes), whose first line starts with prompt. Text drawn dim
-// (placeholders, suggestions) is left out.
-func inputBoxText(screen, prompt string) (string, bool) {
+// styling escapes), whose first line starts with prompt, found as inputBox
+// finds it. Text drawn dim (placeholders, suggestions) is left out.
+func inputBoxText(screen, prompt string, panels int) (string, bool) {
 	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
-	start, end, ok := inputBox(lines)
+	start, end, ok := inputBox(lines, prompt, panels)
 	if !ok {
 		return "", false
 	}

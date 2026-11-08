@@ -373,7 +373,7 @@ func (b *ClaudeBackend) PermissionPromptVisible(screen string) bool {
 // prompt. Placeholder text ("Try ...") and suggestions are drawn dim, so
 // dim text is left out; what remains was typed.
 func (b *ClaudeBackend) InputText(screen string) (string, bool) {
-	return inputBoxText(screen, "❯")
+	return inputBoxText(screen, "❯", 0)
 }
 
 // EnterCanBeANewline: Claude takes input that arrives in one read with more
