@@ -367,6 +367,84 @@ func TestSendKeys_IsLiteral(t *testing.T) {
 	}
 }
 
+// A pane in copy mode (a mouse-wheel scroll enters it with -e) took typed
+// text as copy-mode commands: send-keys failed with "not in a mode" once
+// one left the mode, and nothing reached the program (friction #40). Text
+// and keys now go to the program, out of whatever mode the pane was in.
+func TestSendKeys_PaneInAMode(t *testing.T) {
+	requireTmux(t)
+
+	client, err := tmux.NewClient()
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+	sessionName := uniqueSessionName(t)
+	defer cleanupSession(sessionName)
+	if err := client.CreateSession(sessionName, nil); err != nil {
+		t.Fatalf("creating session: %v", err)
+	}
+	// tmux's default; a user's config may pick vi.
+	if out, err := exec.Command("tmux", "set-option", "-w", "-t", sessionName+":", "mode-keys", "emacs").CombinedOutput(); err != nil {
+		t.Fatalf("setting mode-keys: %v: %s", err, out)
+	}
+	time.Sleep(100 * time.Millisecond)
+	client.SendKeys(sessionName, "cat -v")
+	client.SendSpecialKey(sessionName, "Enter")
+	time.Sleep(200 * time.Millisecond)
+
+	inMode := func() string {
+		out, err := exec.Command("tmux", "display-message", "-p", "-t", sessionName+":", "#{pane_in_mode}").Output()
+		if err != nil {
+			t.Fatalf("reading pane_in_mode: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	enter := func(mode ...string) {
+		t.Helper()
+		if out, err := exec.Command("tmux", append(mode, "-t", sessionName+":")...).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", mode, err, out)
+		}
+		if inMode() != "1" {
+			t.Fatalf("%v: pane not in a mode", mode)
+		}
+	}
+
+	msg := "[from glyph3d-js-root@monolith1] [CF] One more fix, urgent: read …/briefs/e2e-shared-fix.md and do it; tell me when gated."
+	enter("copy-mode", "-e")
+	if err := client.SendKeys(sessionName, msg); err != nil {
+		t.Fatalf("typing into a pane in copy mode: %v", err)
+	}
+	if err := client.SendSpecialKey(sessionName, "Enter"); err != nil {
+		t.Fatalf("Enter into a pane in copy mode: %v", err)
+	}
+	enter("clock-mode")
+	if err := client.SendSpecialKey(sessionName, "x"); err != nil {
+		t.Fatalf("a key into a pane in clock mode: %v", err)
+	}
+	client.SendSpecialKey(sessionName, "Enter")
+	time.Sleep(300 * time.Millisecond)
+
+	if inMode() != "0" {
+		t.Error("pane still in a mode after typing")
+	}
+	output, err := client.Capture(sessionName, 50)
+	if err != nil {
+		t.Fatalf("capturing output: %v", err)
+	}
+	// cat -v shows the bytes as UTF-8 escapes (M-...), so look for the
+	// ASCII ends of the message: typed by the terminal, then echoed by cat.
+	if n := strings.Count(output, "tell me when gated."); n < 2 {
+		t.Errorf("message not typed into the program (%d copies); pane:\n%s", n, output)
+	}
+	lines := map[string]int{}
+	for _, line := range strings.Split(output, "\n") {
+		lines[strings.TrimSpace(line)]++
+	}
+	if lines["x"] < 2 {
+		t.Errorf("key not typed into the program; pane:\n%s", output)
+	}
+}
+
 // TestSendSpecialKey tests special key transmission
 func TestSendSpecialKey(t *testing.T) {
 	requireTmux(t)
