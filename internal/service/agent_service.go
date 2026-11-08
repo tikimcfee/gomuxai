@@ -97,11 +97,11 @@ type SpawnOptions struct {
 	// replacing is the ended agent's record a resume (AgentService.Resume)
 	// takes over, nil for a new agent.
 	replacing *storage.Agent
-	// existingSession, when non-empty, uses an already-running user tmux
-	// session instead of creating agent-<name>, and marks the stored agent Adopted.
+	// existingSession is the person's own tmux session Adopt records the
+	// agent in (storeAgent marks the record Adopted); Spawn never takes it.
 	existingSession string
-	// sessionCwd overrides os.Getwd() for the stored agent's Cwd and the
-	// launch script's working directory when existingSession is set.
+	// sessionCwd is the adopted session's working directory, for the
+	// stored agent's Cwd.
 	sessionCwd string
 }
 
@@ -155,11 +155,6 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		err         error
 	)
 	switch {
-	case opts.existingSession != "":
-		// Resume of an adopted agent whose tmux session still exists;
-		// StopPipePane ran in Resume before re-piping here.
-		sessionName = opts.existingSession
-		_ = s.tmux.PipePane(sessionName, s.cfg.LogPath(opts.Name))
 	case opts.replacing != nil:
 		sessionName, err = s.createSession(opts.Name, opts.Cwd)
 		if err != nil {
@@ -179,11 +174,7 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		return nil, err
 	}
 	abort := func(err error) (*storage.Agent, error) {
-		if opts.existingSession != "" {
-			_ = s.tmux.StopPipePane(sessionName)
-		} else {
-			s.tmux.KillSession(sessionName)
-		}
+		s.tmux.KillSession(sessionName)
 		if opts.replacing == nil {
 			// Even when ctx is why it failed (a bus stopping mid-spawn
 			// cancels its requests), the record must go with the session.
@@ -206,7 +197,7 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 		return abort(err)
 	}
 	if launchCmd != "" {
-		runCmd, err := s.writeLaunchScriptForOpts(opts, launchCmd)
+		runCmd, err := s.writeLaunchScript(opts.Name, launchCmd)
 		if err != nil {
 			return abort(err)
 		}
