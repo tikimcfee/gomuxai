@@ -151,11 +151,12 @@ var frictionShowCmd = &cobra.Command{
 build, its detail, attached command, votes, duplicates, and resolution.
 
 Its links to the same problem on other hosts are checked over the bus and
-listed with that entry's status and votes there. A link that has gone stale
-is flagged with "!" and what to run: out of step (one end closed, the other
-open), one-sided (the other host has no link back), missing (no such entry
-there, or a different one under its id), or unreachable (what was last
-seen).`,
+listed with that entry's kind (in parentheses), status and votes there, e.g.
+"#34@monolith1 (bug) open, +2 there: ...". A link that has gone stale is
+flagged with "!" and what to run: out of step (one end closed, the other
+open), one-sided (the other host has no link back), not found (no such
+entry there, or a different one under its id), or unreachable (what was
+last seen).`,
 	Example: `  agent friction show 12
   agent friction show 12 --json`,
 	Args: cobra.ExactArgs(1),

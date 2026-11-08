@@ -1586,9 +1586,11 @@ on its next check).
   3s each, in parallel, and save what they see in the link. A host that
   doesn't answer shows its last-seen state. A link's state is computed,
   never stored: `out of step` (one end open, the other closed), `one-sided`
-  (no link back), `missing` (no such id, or a different `uid`),
-  `unreachable`, or `linked`. `export` uses only the saved state, with no
-  bus.
+  (no link back), `not found` (no such id, or a different `uid`),
+  `unreachable`, or `linked`. (Not "missing": that is a friction kind,
+  and `show` prints the other entry's kind in parentheses, `#34@monolith1
+  (bug) open, +2 there`, so neither reads as the other.) `export` uses only
+  the saved state, with no bus.
 - `resolve` (fixed or won't fix) closes the entry here, then sends
   `resolve` for each link, with the uid it knows and the same status and
   note (`resolved_by` is `name@host`). The other host closes its entry only

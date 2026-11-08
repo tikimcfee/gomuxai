@@ -194,7 +194,7 @@ func TestFrictionLinkAcrossHosts(t *testing.T) {
 	}
 
 	out := local.must("friction", "link", "1", "#2@h1", "--note", "same prompt")
-	if out != "Linked #1 and #2@h1 (bug, open, +1 there: trust prompt agent reads unknown, not waiting): the same problem; resolving either resolves both.\n" {
+	if out != "Linked #1 and #2@h1 (bug) open, +1 there: trust prompt agent reads unknown, not waiting\nThey're the same problem: resolving either resolves both.\n" {
 		t.Errorf("link printed %q", out)
 	}
 	mine, theirs := local.links(1), h1.links(2)
@@ -208,10 +208,10 @@ func TestFrictionLinkAcrossHosts(t *testing.T) {
 
 	show := local.must("friction", "show", "1")
 	wantIn(t, "show", show, "Linked (the same problem on other hosts; resolving #1 resolves these too):\n"+
-		"  #2@h1 bug, open, +1 there: trust prompt agent reads unknown, not waiting\n"+
+		"  #2@h1 (bug) open, +1 there: trust prompt agent reads unknown, not waiting\n"+
 		"    linked by user, ")
 	wantNotIn(t, "show", show, "!")
-	wantIn(t, "show on h1", h1.must("friction", "show", "2"), "  #1@local bug, open, +0 there: a claude agent at its trust prompt")
+	wantIn(t, "show on h1", h1.must("friction", "show", "2"), "  #1@local (bug) open, +0 there: a claude agent at its trust prompt")
 	wantIn(t, "list", local.must("friction", "list"), "a claude agent at its trust prompt shows as unknown [= #2@h1]")
 
 	var listed []struct {
@@ -239,7 +239,7 @@ func TestFrictionLinkAcrossHosts(t *testing.T) {
 	if f := h1.entry(1); f.Status != storage.FrictionOpen {
 		t.Errorf("h1's unlinked #1 was closed: %+v", f)
 	}
-	wantIn(t, "links", local.must("friction", "links"), "#1 resolved = #2@h1: bug, resolved, +1 there")
+	wantIn(t, "links", local.must("friction", "links"), "#1 resolved = #2@h1: (bug) resolved, +1 there")
 	if out := local.must("friction", "links", "--dangling"); out != "No dangling links (1 in all: agent friction links).\n" {
 		t.Errorf("links --dangling printed %q", out)
 	}
@@ -278,7 +278,7 @@ func TestFrictionLinkWhileUnreachable(t *testing.T) {
 
 	h1.up()
 	wantIn(t, "show once h1 answers", local.must("friction", "show", "1"),
-		"  #1@h1 other, open, +0 there: wait timeout says nothing\n", "    ! one-sided: h1 has no link back to #1\n",
+		"  #1@h1 (other) open, +0 there: wait timeout says nothing\n", "    ! one-sided: h1 has no link back to #1\n",
 		"      agent friction link 1 1@h1\n")
 	// Linking from the other side confirms both halves.
 	h1.must("friction", "link", "1", "1@local")
@@ -358,7 +358,7 @@ func TestFrictionLinksGoStale(t *testing.T) {
 	h1.must("friction", "add", "status flickers between idle and processing", "--new")
 	h1.must("friction", "resolve", "3", "--dup", "4")
 	show := local.must("friction", "show", "3")
-	wantIn(t, "show", show, "  #4@h1 other, open, +1 there: status flickers between idle", "(#3 there, which it links to, is closed as its duplicate)")
+	wantIn(t, "show", show, "  #4@h1 (other) open, +1 there: status flickers between idle", "(#3 there, which it links to, is closed as its duplicate)")
 	wantNotIn(t, "show", show, "!")
 	if l := local.links(3); len(l) != 1 || l[0].PeerID != 4 || l[0].PeerUID != h1.entry(4).UID {
 		t.Errorf("link after h1's dup = %+v", l)
@@ -368,10 +368,10 @@ func TestFrictionLinksGoStale(t *testing.T) {
 	old := h1.store
 	h1.reset("h1")
 	h1.up()
-	wantIn(t, "links", local.must("friction", "links", "--dangling"), "#2 open = #2@h1: missing: h1 has no #2\n    agent friction unlink 2 2@h1\n")
+	wantIn(t, "links", local.must("friction", "links", "--dangling"), "#2 open = #2@h1: not found: h1 has no #2\n    agent friction unlink 2 2@h1\n")
 	h1.must("friction", "add", "one")
 	h1.must("friction", "add", "two")
-	wantIn(t, "show", local.must("friction", "show", "2"), "! missing: #2 on h1 is a different entry now (two)")
+	wantIn(t, "show", local.must("friction", "show", "2"), "! not found: #2 on h1 is a different entry now (two)")
 	out := local.must("friction", "resolve", "2", "--note", "fixed")
 	wantIn(t, "resolve", out, "#2@h1 wasn't resolved: it's a different entry there now (two)")
 	if f := h1.entry(2); f.Status != storage.FrictionOpen {
@@ -420,7 +420,7 @@ func TestFrictionDupMovesLinks(t *testing.T) {
 	}
 	// h1 still names #2 here, which stands for #1 now.
 	show := h1.must("friction", "show", "1")
-	wantIn(t, "show on h1", show, "  #1@local other, open, +1 there: keys refuses", "(#2 there, which it links to, is closed as its duplicate)")
+	wantIn(t, "show on h1", show, "  #1@local (other) open, +1 there: keys refuses", "(#2 there, which it links to, is closed as its duplicate)")
 	wantNotIn(t, "show on h1", show, "!")
 	if out := h1.must("friction", "resolve", "1", "--note", "pastes past it"); out != "Resolved friction #1 (other).\nResolved #1@local too.\n" {
 		t.Errorf("resolve on h1 printed %q", out)
@@ -494,5 +494,39 @@ func TestFrictionResolveOverTheBusNeedsALinkBack(t *testing.T) {
 	// The real link still resolves.
 	if out := local.must("friction", "resolve", "1", "--note", "fixed"); out != "Resolved friction #1 (other).\nResolved #1@h1 too.\n" {
 		t.Errorf("resolve printed %q", out)
+	}
+}
+
+// "missing" is a friction kind; a link whose other end is gone is "not
+// found", and the other entry's kind is in parentheses, so a linked entry
+// of kind missing doesn't read as a dangling link.
+func TestFrictionLinkStateIsntAKind(t *testing.T) {
+	hosts := frictionHosts(t, "h1")
+	local, h1 := hosts["local"], hosts["h1"]
+	local.must("friction", "add", "no way to wait for several agents", "--kind", "missing")
+	local.must("friction", "add", "status flickers", "--new")
+	h1.must("friction", "add", "wait takes one agent only", "--kind", "missing")
+	local.must("friction", "link", "1", "1@h1")
+	h1.down()
+	local.must("friction", "link", "2", "7@h1")
+	h1.up()
+	h1.must("friction", "link", "1", "1@local")
+
+	show := local.must("friction", "show", "1")
+	wantIn(t, "show", show, "  #1@h1 (missing) open, +0 there: wait takes one agent only\n")
+	wantNotIn(t, "show", show, "!")
+	wantIn(t, "list", local.must("friction", "list"), "no way to wait for several agents [= #1@h1]\n", "status flickers [= #7@h1 !not found]\n")
+	wantIn(t, "links", local.must("friction", "links"), "#1 open = #1@h1: (missing) open, +0 there: wait takes one agent only\n",
+		"#2 open = #7@h1: not found: h1 has no #7\n")
+
+	var dangling []struct {
+		Ref   string `json:"ref"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(local.must("friction", "links", "--dangling", "--json")), &dangling); err != nil {
+		t.Fatal(err)
+	}
+	if len(dangling) != 1 || dangling[0].Ref != "#7@h1" || dangling[0].State != "not found" {
+		t.Errorf("links --dangling --json = %+v", dangling)
 	}
 }
