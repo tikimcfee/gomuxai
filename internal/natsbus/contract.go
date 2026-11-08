@@ -39,13 +39,16 @@ const (
 	OpRespond = "respond" // RespondRequest -> (no data): approve / deny
 	OpKeys    = "keys"    // KeysRequest -> (no data): raw keys, local-only by default
 	OpSpawn   = "spawn"   // SpawnRequest -> SpawnResponse: starts an agent, local-only by default
+	// OpFriction reads, links and resolves the host's friction entries, for
+	// entries linked across hosts: FrictionRequest -> FrictionResponse.
+	OpFriction = "friction"
 )
 
 // AllOps lists every RPC op a bus serves to local clients.
-var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys, OpSpawn}
+var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys, OpSpawn, OpFriction}
 
 // DefaultRemoteOps are the ops a bus serves to other hosts unless configured otherwise.
-var DefaultRemoteOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond}
+var DefaultRemoteOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpFriction}
 
 // namePattern matches host and agent names. Both become subject tokens, so
 // they must not contain '.', '*', '>' or whitespace. Agent names are already
@@ -271,6 +274,76 @@ type SpawnResponse struct {
 	// Status is the agent's resolved status right after it started.
 	Status    string `json:"status"`
 	EndReason string `json:"end_reason,omitempty"`
+}
+
+// Friction actions, FrictionRequest.Action.
+const (
+	FrictionGet     = "get"     // IDs -> their entries
+	FrictionLink    = "link"    // record the serving host's half of a link from From to ID
+	FrictionUnlink  = "unlink"  // remove it
+	FrictionResolve = "resolve" // close ID as Status with Note, if it is still open
+)
+
+// FrictionActions lists the friction actions a bus serves.
+var FrictionActions = []string{FrictionGet, FrictionLink, FrictionUnlink, FrictionResolve}
+
+// FrictionRequest asks a host about its friction entries, or changes one,
+// for an entry linked to it from the calling host. Like a message's
+// [from ...] tag, the serving host can't verify From or By.
+type FrictionRequest struct {
+	Action string  `json:"action"`
+	IDs    []int64 `json:"ids,omitempty"` // get
+	// ID is the entry on the serving host that link, unlink and resolve
+	// act on. An entry closed there as a duplicate stands for its original.
+	ID int64 `json:"id,omitempty"`
+	// UID, for resolve, is the uid the caller knows ID by; a different
+	// entry under that id (a reset store) is left alone. Empty skips the
+	// check.
+	UID string `json:"uid,omitempty"`
+	// From is the caller's entry: the other end of the link (Host and ID
+	// required for link and unlink).
+	From *FrictionEntry `json:"from,omitempty"`
+	// By is who asked, as "name@host" ("user@host" for a person).
+	By     string `json:"by,omitempty"`
+	Note   string `json:"note,omitempty"`   // link's note; resolve's resolution
+	Status string `json:"status,omitempty"` // resolve: "resolved" or "wontfix"
+}
+
+// FrictionRef names an entry on a host.
+type FrictionRef struct {
+	Host string `json:"host"`
+	ID   int64  `json:"id"`
+	UID  string `json:"uid,omitempty"`
+}
+
+// FrictionEntry is what a host tells others about one of its entries.
+type FrictionEntry struct {
+	Host       string    `json:"host"`
+	ID         int64     `json:"id"`
+	UID        string    `json:"uid"`
+	Status     string    `json:"status"`
+	Kind       string    `json:"kind,omitempty"`
+	Summary    string    `json:"summary,omitempty"`
+	Votes      int       `json:"votes"`
+	ResolvedBy string    `json:"resolved_by,omitempty"`
+	ResolvedAt time.Time `json:"resolved_at,omitzero"`
+	Resolution string    `json:"resolution,omitempty"`
+	// Requested is the entry asked for when it was closed as a duplicate
+	// of this one, which then stands for it.
+	Requested *FrictionRef `json:"requested,omitempty"`
+	// Links are the entry's links to other hosts' entries.
+	Links []FrictionRef `json:"links,omitempty"`
+}
+
+// FrictionResponse answers a FrictionRequest: the entries asked for (for
+// link, unlink and resolve, the one acted on, as it is afterwards), and
+// the ids the host has no entry for.
+type FrictionResponse struct {
+	Entries []FrictionEntry `json:"entries"`
+	Missing []int64         `json:"missing,omitempty"`
+	// Resolved says resolve closed the entry; false when it was already
+	// closed, or isn't the entry UID names.
+	Resolved bool `json:"resolved,omitempty"`
 }
 
 // StatusEvent is published on SubjectStatus whenever an agent's reported

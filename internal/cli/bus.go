@@ -58,11 +58,11 @@ trusts a peer by installing the peer's public bundle. Nothing secret is copied.
   agent bus start                         # other hosts
 
 Peers may only call the ops in --remote-ops on this host (default: list,
-status, capture, send, respond). keys and spawn stay local-only unless
+status, capture, send, respond, friction). keys and spawn stay local-only unless
 listed: spawn lets every linked peer start agents here (agent spawn
 name@<this host>), which amounts to letting them run commands as this
 user (spawn an agent, then approve its prompts); list it only for peers
-you'd give a shell. E.g. --remote-ops list,status,capture,send,respond,spawn.
+you'd give a shell. E.g. --remote-ops list,status,capture,send,respond,friction,spawn.
 
 Only reaching other hosts needs a bus: everything on one host works without.`,
 	Example: `  agent bus status

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/nats-io/nats.go"
@@ -19,6 +21,7 @@ type RPCHandler interface {
 	Respond(ctx context.Context, req RespondRequest) error
 	Keys(ctx context.Context, req KeysRequest) error
 	Spawn(ctx context.Context, req SpawnRequest) (*SpawnResponse, error)
+	Friction(ctx context.Context, req FrictionRequest) (*FrictionResponse, error)
 }
 
 // opFunc decodes an op's request, runs it, and returns the reply's data
@@ -92,6 +95,47 @@ var rpcOps = map[string]opFunc{
 		}
 		return h.Spawn(ctx, req)
 	},
+	OpFriction: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
+		var req FrictionRequest
+		if err := decode(OpFriction, data, &req); err != nil {
+			return nil, err
+		}
+		if err := checkFrictionRequest(req); err != nil {
+			return nil, err
+		}
+		return h.Friction(ctx, req)
+	},
+}
+
+// checkFrictionRequest refuses a friction request missing what its action
+// needs.
+func checkFrictionRequest(req FrictionRequest) error {
+	if !slices.Contains(FrictionActions, req.Action) {
+		return fmt.Errorf("unknown friction action %q (want %s)", req.Action, strings.Join(FrictionActions, ", "))
+	}
+	if req.Action == FrictionGet {
+		if len(req.IDs) == 0 {
+			return fmt.Errorf("friction get request names no ids")
+		}
+		return nil
+	}
+	if req.ID < 1 {
+		return fmt.Errorf("friction %s request names no entry", req.Action)
+	}
+	if req.Action == FrictionLink || req.Action == FrictionUnlink {
+		if req.From == nil || req.From.ID < 1 {
+			return fmt.Errorf("friction %s request names no entry to link from", req.Action)
+		}
+	}
+	if req.From != nil {
+		if err := ValidateHost(req.From.Host); err != nil {
+			return fmt.Errorf("friction %s request's from: %w", req.Action, err)
+		}
+	}
+	if req.Action == FrictionResolve && req.Status != "resolved" && req.Status != "wontfix" {
+		return fmt.Errorf("friction resolve request's status %q isn't resolved or wontfix", req.Status)
+	}
+	return nil
 }
 
 // decode parses an op's request into req. An empty body is the zero request.

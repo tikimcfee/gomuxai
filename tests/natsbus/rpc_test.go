@@ -13,7 +13,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 )
 
-var allOps = []string{natsbus.OpList, natsbus.OpStatus, natsbus.OpCapture, natsbus.OpSend, natsbus.OpRespond, natsbus.OpKeys, natsbus.OpSpawn}
+var allOps = []string{natsbus.OpList, natsbus.OpStatus, natsbus.OpCapture, natsbus.OpSend, natsbus.OpRespond, natsbus.OpKeys, natsbus.OpSpawn, natsbus.OpFriction}
 
 // fakeRPC records requests and answers with canned data. An agent named
 // "ghost" doesn't exist; "slow" blocks until the request is canceled;
@@ -109,6 +109,16 @@ func (f *fakeRPC) Spawn(ctx context.Context, req natsbus.SpawnRequest) (*natsbus
 		SpawnedBy: req.SpawnedBy, Cwd: req.Cwd, TaskFile: req.TaskFile, Status: "idle"}, nil
 }
 
+func (f *fakeRPC) Friction(ctx context.Context, req natsbus.FrictionRequest) (*natsbus.FrictionResponse, error) {
+	f.record(req.Action)
+	return &natsbus.FrictionResponse{
+		Entries: []natsbus.FrictionEntry{{Host: "h1", ID: 34, UID: "h1-34", Status: "open", Summary: "trust \x1b]0;evil\x07prompt",
+			Links: []natsbus.FrictionRef{{Host: "laptop", ID: 4, UID: "laptop-4"}}}},
+		Missing:  []int64{35},
+		Resolved: req.Action == natsbus.FrictionResolve,
+	}, nil
+}
+
 // serveFake serves a fakeRPC as host "h1" and returns a client on a second
 // connection to the same server.
 func serveFake(t *testing.T, ops []string, timeout time.Duration) (*fakeRPC, *natsbus.RPCClient, func()) {
@@ -187,6 +197,18 @@ func TestRPC_AllOpsRoundTrip(t *testing.T) {
 		SpawnedBy: "lead@laptop", Cwd: "/srv/project", TaskFile: "tasks/build.md", Status: "idle"}
 	if spawned == nil || *spawned != wantResp {
 		t.Errorf("Spawn = %+v", spawned)
+	}
+
+	fr, err := client.Friction(ctx, "h1", natsbus.FrictionRequest{Action: natsbus.FrictionResolve, ID: 34, Status: "resolved",
+		From: &natsbus.FrictionEntry{Host: "laptop", ID: 4}})
+	if err != nil || !fr.Resolved || len(fr.Entries) != 1 || fr.Entries[0].Links[0] != (natsbus.FrictionRef{Host: "laptop", ID: 4, UID: "laptop-4"}) ||
+		len(fr.Missing) != 1 || fr.Missing[0] != 35 {
+		t.Errorf("Friction = %+v, %v", fr, err)
+	} else if strings.Contains(fr.Entries[0].Summary, "\x1b") {
+		t.Errorf("Friction's summary kept a terminal control: %q", fr.Entries[0].Summary)
+	}
+	if got := fake.last(); got != natsbus.FrictionResolve {
+		t.Errorf("friction request's action = %v", got)
 	}
 }
 
@@ -298,6 +320,13 @@ func TestRPC_MalformedRequests(t *testing.T) {
 		{natsbus.OpSpawn, `{"backend":"claude"}`, "invalid agent name"},
 		{natsbus.OpSpawn, `{"agent":"worker","backend":7}`, "malformed spawn request"},
 		{natsbus.OpSpawn, ``, "invalid agent name"},
+		{natsbus.OpFriction, `{"action":"delete","id":3}`, "unknown friction action"},
+		{natsbus.OpFriction, `{"action":"get"}`, "names no ids"},
+		{natsbus.OpFriction, `{"action":"resolve","status":"resolved"}`, "names no entry"},
+		{natsbus.OpFriction, `{"action":"link","id":3}`, "names no entry to link from"},
+		{natsbus.OpFriction, `{"action":"link","id":3,"from":{"host":"bad host","id":4}}`, "invalid host name"},
+		{natsbus.OpFriction, `{"action":"resolve","id":3,"status":"duplicate"}`, "isn't resolved or wontfix"},
+		{natsbus.OpFriction, `{"action":"get","ids":"x"}`, "malformed friction request"},
 	}
 	for _, tt := range tests {
 		msg, err := other.Request(natsbus.SubjectRPC("h1", tt.op), []byte(tt.body), 2*time.Second)
