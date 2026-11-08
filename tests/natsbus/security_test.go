@@ -383,6 +383,21 @@ func TestRPCClient_SanitizesRemoteText(t *testing.T) {
 			t.Errorf("spawn %s = %q, want it sanitized like status detail %q", name, f, st.Detail)
 		}
 	}
+
+	fr, err := client.Friction(ctx, "h1", natsbus.FrictionRequest{Action: natsbus.FrictionGet, IDs: []int64{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := fr.Entries[0]
+	for name, f := range map[string]string{
+		"host": e.Host, "uid": e.UID, "status": e.Status, "kind": e.Kind, "summary": e.Summary,
+		"resolved_by": e.ResolvedBy, "resolution": e.Resolution, "requested.host": e.Requested.Host,
+		"requested.uid": e.Requested.UID, "links.host": e.Links[0].Host, "links.uid": e.Links[0].UID,
+	} {
+		if f != st.Detail {
+			t.Errorf("friction entry's %s = %q, want it sanitized like status detail %q", name, f, st.Detail)
+		}
+	}
 }
 
 type evilHandler struct{ text string }
@@ -405,6 +420,14 @@ func (h evilHandler) Respond(context.Context, natsbus.RespondRequest) error {
 func (h evilHandler) Keys(context.Context, natsbus.KeysRequest) error { return nil }
 func (h evilHandler) Spawn(context.Context, natsbus.SpawnRequest) (*natsbus.SpawnResponse, error) {
 	return &natsbus.SpawnResponse{Name: h.text, Session: h.text, Backend: h.text, SpawnedBy: h.text, Cwd: h.text, TaskFile: h.text, Status: h.text, EndReason: h.text}, nil
+}
+
+func (h evilHandler) Friction(context.Context, natsbus.FrictionRequest) (*natsbus.FrictionResponse, error) {
+	t := h.text
+	return &natsbus.FrictionResponse{Entries: []natsbus.FrictionEntry{{
+		Host: t, ID: 1, UID: t, Status: t, Kind: t, Summary: t, ResolvedBy: t, Resolution: t,
+		Requested: &natsbus.FrictionRef{Host: t, UID: t}, Links: []natsbus.FrictionRef{{Host: t, UID: t}},
+	}}}, nil
 }
 
 // A flood of slow requests gets "busy" replies past the in-flight limit

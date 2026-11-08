@@ -156,6 +156,28 @@ func (c *RPCClient) Spawn(ctx context.Context, ref AgentRef, req SpawnRequest) (
 	return &resp, nil
 }
 
+// Friction sends a friction request to host and returns its answer, with
+// the text in it sanitized.
+func (c *RPCClient) Friction(ctx context.Context, host string, req FrictionRequest) (*FrictionResponse, error) {
+	var resp FrictionResponse
+	if err := c.call(ctx, host, OpFriction, req, &resp); err != nil {
+		return nil, err
+	}
+	for i := range resp.Entries {
+		e := &resp.Entries[i]
+		for _, f := range []*string{&e.Host, &e.UID, &e.Status, &e.Kind, &e.Summary, &e.ResolvedBy, &e.Resolution} {
+			*f = clean(*f)
+		}
+		if e.Requested != nil {
+			e.Requested.Host, e.Requested.UID = clean(e.Requested.Host), clean(e.Requested.UID)
+		}
+		for j := range e.Links {
+			e.Links[j].Host, e.Links[j].UID = clean(e.Links[j].Host), clean(e.Links[j].UID)
+		}
+	}
+	return &resp, nil
+}
+
 func (c *RPCClient) callAgent(ctx context.Context, ref AgentRef, op string, req, out any) error {
 	if ref.Host == "" {
 		return fmt.Errorf("%s: no host given for agent %q", op, ref.Name)

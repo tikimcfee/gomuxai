@@ -131,6 +131,32 @@ type FrictionVote struct {
 	Command    *AttachedCommand `json:"command,omitempty"`
 }
 
+// FrictionLink says that a friction entry and one on another host are the
+// same problem. Each host stores its own half; the Peer fields are what
+// this host last saw of the other end.
+type FrictionLink struct {
+	ID         int64  `json:"-"`
+	FrictionID int64  `json:"friction_id"`
+	PeerHost   string `json:"host"`
+	PeerID     int64  `json:"id"`
+	// PeerUID is the other entry's uid, so a reused id isn't taken for it;
+	// empty until the other host has answered.
+	PeerUID  string    `json:"uid,omitempty"`
+	LinkedBy string    `json:"linked_by"`
+	LinkedAt time.Time `json:"linked_at"`
+	Note     string    `json:"note,omitempty"`
+	// ConfirmedAt is when the other host was seen to hold its half; zero
+	// for a link recorded while it was unreachable.
+	ConfirmedAt    time.Time `json:"confirmed_at,omitzero"`
+	PeerStatus     string    `json:"status,omitempty"`
+	PeerKind       string    `json:"kind,omitempty"`
+	PeerSummary    string    `json:"summary,omitempty"`
+	PeerVotes      int       `json:"votes"`
+	PeerResolvedBy string    `json:"resolved_by,omitempty"`
+	PeerResolution string    `json:"resolution,omitempty"`
+	PeerCheckedAt  time.Time `json:"checked_at,omitzero"`
+}
+
 // FrictionFilter selects friction entries. The zero value selects all.
 type FrictionFilter struct {
 	Statuses    []string // any of these, if set

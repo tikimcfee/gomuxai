@@ -174,7 +174,8 @@ func (s *SQLiteStorage) LastFrictionID(ctx context.Context) (int64, error) {
 
 // UpdateFriction saves f's status and the accept and resolve fields. Marking
 // it a duplicate also moves entries that were duplicates of f onto its
-// original, so duplicates stay one level deep.
+// original, so duplicates stay one level deep, and its links to other
+// hosts' entries.
 func (s *SQLiteStorage) UpdateFriction(ctx context.Context, f *Friction) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -194,6 +195,14 @@ func (s *SQLiteStorage) UpdateFriction(ctx context.Context, f *Friction) error {
 	if dup.Valid {
 		if _, err := tx.ExecContext(ctx, `UPDATE friction SET duplicate_of = ? WHERE duplicate_of = ?`, dup, f.ID); err != nil {
 			return fmt.Errorf("moving duplicates: %w", err)
+		}
+		// Its links to other hosts' entries go to the original too; one
+		// the original already has is dropped.
+		if _, err := tx.ExecContext(ctx, `UPDATE OR IGNORE friction_links SET friction_id = ? WHERE friction_id = ?`, dup, f.ID); err != nil {
+			return fmt.Errorf("moving friction links: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM friction_links WHERE friction_id = ?`, f.ID); err != nil {
+			return fmt.Errorf("moving friction links: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

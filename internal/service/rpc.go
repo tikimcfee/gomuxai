@@ -114,6 +114,10 @@ func (h rpcHandler) Keys(ctx context.Context, req natsbus.KeysRequest) error {
 	return remoteErr(h.s.Keys(ctx, req.Agent, req.Text, req.Key))
 }
 
+func (h rpcHandler) Friction(ctx context.Context, req natsbus.FrictionRequest) (*natsbus.FrictionResponse, error) {
+	return h.s.ServeFriction(ctx, req)
+}
+
 // Spawn starts an agent for another host's agent spawn name@host. The
 // request has no --skip-permissions, --trust-workspace or --resume: a peer
 // starts an agent on the permission settings of the directory it names, on

@@ -62,6 +62,10 @@ type Storage interface {
 	UpdateFriction(ctx context.Context, f *Friction) error
 	AddFrictionVote(ctx context.Context, v *FrictionVote) error
 	ListFrictionVotes(ctx context.Context, frictionID int64) ([]*FrictionVote, error) // oldest first
+	AddFrictionLink(ctx context.Context, l *FrictionLink) error                       // or update the existing one
+	ListFrictionLinks(ctx context.Context, frictionID int64) ([]*FrictionLink, error) // 0: every link
+	UpdateFrictionLink(ctx context.Context, l *FrictionLink) error
+	DeleteFrictionLink(ctx context.Context, frictionID int64, peerHost string, peerID int64) (bool, error)
 
 	// Lifecycle
 	Close() error
