@@ -194,13 +194,16 @@ func TestRPC_SpawnRefusesParentOnServingHost(t *testing.T) {
 	env.cfg.Host = "h1"
 	client := serveSpawn(t, env)
 
-	_, err := client.Spawn(context.Background(), natsbus.AgentRef{Name: "imposter", Host: "h1"},
-		natsbus.SpawnRequest{Backend: "catty", Cwd: t.TempDir(), SpawnedBy: "victim@h1"})
-	if err == nil || !strings.Contains(err.Error(), "names an agent on this host (h1)") {
-		t.Errorf("err = %v, want a refusal", err)
-	}
-	if a, _ := env.store.GetAgent(context.Background(), "imposter"); a != nil {
-		t.Errorf("spawned anyway: %+v", a)
+	// Host names match ignoring case, so "H1" is this host too.
+	for _, by := range []string{"victim@h1", "victim@H1"} {
+		_, err := client.Spawn(context.Background(), natsbus.AgentRef{Name: "imposter", Host: "h1"},
+			natsbus.SpawnRequest{Backend: "catty", Cwd: t.TempDir(), SpawnedBy: by})
+		if err == nil || !strings.Contains(err.Error(), "names an agent on this host (h1)") {
+			t.Errorf("spawned_by %s: err = %v, want a refusal", by, err)
+		}
+		if a, _ := env.store.GetAgent(context.Background(), "imposter"); a != nil {
+			t.Errorf("spawned_by %s: spawned anyway: %+v", by, a)
+		}
 	}
 }
 

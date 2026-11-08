@@ -427,9 +427,13 @@ agent spawn helper@hub --backend claude --cwd /srv/project tasks/build.md
 ```
 
 `status`, `capture`, `send`, `wait`, `events`, `approve`, `deny`, `keys`,
-and `spawn` take `name@host` (`spawn` also takes `--host hub`). Not across
-hosts: `state` (ask the agent to send what you need, or `capture`), `logs`
-(use `capture`), `queue` (use `send`), `cleanup` (clean up on that host).
+and `spawn` take `name@host` (`spawn` also takes `--host hub`). Host names
+match ignoring case for this host and the peers it trusts (a hub trusts
+every peer): `@il-air-m2` reaches `IL-Air-M2`. A host known only through the
+hub is reached by its exact name; a "no bus answering" error names the
+hosts this one knows. Not across hosts: `state` (ask the agent to send what
+you need, or `capture`), `logs` (use `capture`), `queue` (use `send`),
+`cleanup` (clean up on that host).
 The other host's bus serves only its `--remote-ops` (default
 `list,status,capture,send,respond`), so `keys` and `spawn` to another host
 are refused unless it lists them. "no bus answering for host X" means that

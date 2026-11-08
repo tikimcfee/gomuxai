@@ -274,11 +274,12 @@ func exportHostList(flag string) ([]string, error) {
 	var out []string
 	for _, h := range hosts {
 		h = strings.TrimSpace(h)
-		if h == cfg.Host || slices.Contains(out, h) {
-			continue // this host's agents are in its store
-		}
 		if err := natsbus.ValidateHost(h); err != nil {
 			return nil, fmt.Errorf("--hosts: %w", err)
+		}
+		h = canonicalHost(h)
+		if h == cfg.Host || slices.Contains(out, h) {
+			continue // this host's agents are in its store
 		}
 		out = append(out, h)
 	}

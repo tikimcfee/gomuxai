@@ -1346,12 +1346,22 @@ no field for `--skip-permissions`, `--trust-workspace` or `--resume`, so a
 peer can't ask for them either. (Confirming a trust prompt is saved in the
 host user's CLI config and would outlast the agent.) So `cwd` must be a
 directory the CLI already trusts there, or a person there confirms the
-prompt. A `spawned_by` naming the serving host itself is refused: that
-agent didn't ask over the bus. The client waits up to
+prompt. A `spawned_by` naming the serving host itself (in any case) is
+refused: that agent didn't ask over the bus. The client waits up to
 `SpawnTimeout` (2m) for the reply, since the far side sits out the CLI's
 startup first. `cli/remote.go`
 routes `name@host`: a bare name or `name@<this host>` stays local and needs
 no bus.
+
+Host names match ignoring case, but subjects don't: a request to
+`gomux.il-air-m2.rpc.list` reaches no bus when the host is `IL-Air-M2`.
+So the CLI spells a host as the bus does before it builds a subject
+(`canonicalHost`): this host's name, or a trusted peer's (`bus/peers/`),
+whichever matches ignoring case; `name@host`, `list --host`, `spawn
+--host`, `wait` and `export --hosts` all go through it. A hub trusts every
+peer, so it knows every spelling; a leaf trusts only the hub, and reaches
+other leaves by the exact name it is given. A request no bus answers fails
+with `natsbus.NoRespondersError`, to which the CLI adds the hosts it knows.
 
 ### Status events and wait
 
