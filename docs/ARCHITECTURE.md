@@ -1334,7 +1334,7 @@ modes in your terminal.
 | `respond` | `RespondRequest` (`approve`, `approve_always`, `deny`, `force`, `expect_tool`) → none | `approve`, `deny` | yes |
 | `keys` | `KeysRequest` (text, then a key) → none | `keys name@host` | no |
 | `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `spawned_by`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
-| `friction` | `FrictionRequest` (`action`: `get` `ids`; `link`/`unlink`/`resolve` `id`, with `from`, `by`, `note`; resolve's `uid` and `status`) → `FrictionResponse` (`entries` with their `links` and `requested`, `missing`, `resolved`) | `friction show`/`list`/`links`/`link`/`unlink`/`resolve` | yes |
+| `friction` | `FrictionRequest` (`action`: `get` `ids`; `link`/`unlink`/`resolve` `id`, with `from` (required), `by`, `note`; resolve's `uid` and `status`; resolve closes only an entry linked to `from`) → `FrictionResponse` (`entries` with their `links` and `requested`, `missing`, `resolved`) | `friction show`/`list`/`links`/`link`/`unlink`/`resolve` | yes |
 
 `natsbus/ops_test.go` keeps `AllOps` and the server's op table in step. The
 remote side runs the same service code as a local call (`Send` holds a
@@ -1592,9 +1592,13 @@ on its next check).
 - `resolve` (fixed or won't fix) closes the entry here, then sends
   `resolve` for each link, with the uid it knows and the same status and
   note (`resolved_by` is `name@host`). The other host closes its entry only
-  if it is still open and the uid matches, and replies with its links, which
-  the caller follows in turn, with a visited set, so a chain A-B-C resolves
-  and a loop ends. An entry here reached that way is closed locally.
+  if it is still open, the uid matches, and it (or the original it was
+  closed into) links back to the request's `from`. `from` is required, so
+  a mistyped id or a one-sided link closes nothing; the refusal says to
+  link from that side first, and the caller prints it. The reply carries
+  the entry's links, which the caller follows in turn, with a visited set,
+  so a chain A-B-C resolves and a loop ends; each request's `from` is the
+  entry whose link led to it (C is linked to B, not A). An entry here reached that way is closed locally.
   Hosts that don't answer are listed with what to run; `resolve ID
   --linked` later passes a closed entry's resolution on, walking the same
   way (already-closed entries are walked through, not changed). `--only`

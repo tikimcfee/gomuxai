@@ -122,18 +122,16 @@ func checkFrictionRequest(req FrictionRequest) error {
 	if req.ID < 1 {
 		return fmt.Errorf("friction %s request names no entry", req.Action)
 	}
-	if req.Action == FrictionLink || req.Action == FrictionUnlink {
-		if req.From == nil || req.From.ID < 1 {
-			return fmt.Errorf("friction %s request names no entry to link from", req.Action)
-		}
-	}
-	if req.From != nil {
-		if err := ValidateHost(req.From.Host); err != nil {
-			return fmt.Errorf("friction %s request's from: %w", req.Action, err)
-		}
-	}
 	if req.Action == FrictionResolve && req.Status != "resolved" && req.Status != "wontfix" {
 		return fmt.Errorf("friction resolve request's status %q isn't resolved or wontfix", req.Status)
+	}
+	// Every change names the entry on the calling host it's linked from:
+	// resolve closes only an entry linked to it.
+	if req.From == nil || req.From.ID < 1 {
+		return fmt.Errorf("friction %s request names no entry it comes from", req.Action)
+	}
+	if err := ValidateHost(req.From.Host); err != nil {
+		return fmt.Errorf("friction %s request's from: %w", req.Action, err)
 	}
 	return nil
 }

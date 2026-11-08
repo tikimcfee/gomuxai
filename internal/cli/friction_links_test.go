@@ -446,3 +446,53 @@ func TestServeFrictionRefusesItsOwnHost(t *testing.T) {
 		t.Errorf("it recorded %d links", n)
 	}
 }
+
+// Another host resolves only an entry linked to the one the request comes
+// from: a mistyped id, or a link this host never recorded, closes nothing.
+func TestFrictionResolveOverTheBusNeedsALinkBack(t *testing.T) {
+	hosts := frictionHosts(t, "h1")
+	local, h1 := hosts["local"], hosts["h1"]
+	local.must("friction", "add", "capture drops the last line")
+	h1.must("friction", "add", "capture misses its last line")
+	h1.must("friction", "add", "spawn hangs on a slow disk", "--new")
+	local.must("friction", "link", "1", "1@h1")
+
+	svc := service.NewAgentService(h1.cfg, h1.store, nil, backend.NewRegistry())
+	ctx := context.Background()
+	from := &natsbus.FrictionEntry{Host: "local", ID: 1, UID: local.entry(1).UID}
+
+	// No From: refused, whatever the id.
+	_, err := svc.ServeFriction(ctx, natsbus.FrictionRequest{Action: natsbus.FrictionResolve, ID: 1, Status: "resolved", Note: "x"})
+	if err == nil || !strings.Contains(err.Error(), "names no entry it comes from") {
+		t.Errorf("resolve with no from: err = %v", err)
+	}
+	// A mistyped id, no uid: #2 isn't linked to local's #1.
+	_, err = svc.ServeFriction(ctx, natsbus.FrictionRequest{Action: natsbus.FrictionResolve, ID: 2, From: from, Status: "resolved", Note: "x"})
+	if err == nil || !strings.Contains(err.Error(), "#2 on h1 has no link to #1@local, so it wasn't resolved: link it from this side first (on h1: agent friction link 2 1@local)") {
+		t.Errorf("resolve of an unlinked entry: err = %v", err)
+	}
+	for _, id := range []int64{1, 2} {
+		if f := h1.entry(id); f.Status != storage.FrictionOpen {
+			t.Errorf("a refused resolve closed h1's #%d: %+v", id, f)
+		}
+	}
+
+	// A link recorded here while h1 was down is one-sided: h1 refuses, and
+	// resolve passes on what to run instead of listing it as left to do.
+	h1.down()
+	local.must("friction", "add", "status flickers", "--new")
+	local.must("friction", "link", "2", "1@h1")
+	h1.up()
+	out := local.must("friction", "resolve", "2", "--note", "debounced")
+	wantIn(t, "resolve", out, "Resolved friction #2 (other).\n",
+		"h1 didn't resolve #1@h1: #1 on h1 has no link to #2@local, so it wasn't resolved: link it from this side first (on h1: agent friction link 1 2@local).\n")
+	wantNotIn(t, "resolve", out, "Left to do")
+	if f := h1.entry(1); f.Status != storage.FrictionOpen {
+		t.Errorf("resolving #2, whose link h1 never recorded, closed h1's #1: %+v", f)
+	}
+
+	// The real link still resolves.
+	if out := local.must("friction", "resolve", "1", "--note", "fixed"); out != "Resolved friction #1 (other).\nResolved #1@h1 too.\n" {
+		t.Errorf("resolve printed %q", out)
+	}
+}

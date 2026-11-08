@@ -121,6 +121,9 @@ func (s *AgentService) ServeFriction(ctx context.Context, req natsbus.FrictionRe
 			return nil, err
 		}
 	case natsbus.FrictionResolve:
+		if req.From == nil {
+			return nil, fmt.Errorf("the friction resolve request names no entry it comes from: another host resolves only entries linked to its own")
+		}
 		if req.UID != "" && asked.UID != req.UID {
 			// Another entry has the id now: say what it is, change nothing.
 			e, err := FrictionEntryOf(ctx, s.storage, s.cfg.Host, asked)
@@ -130,15 +133,23 @@ func (s *AgentService) ServeFriction(ctx context.Context, req natsbus.FrictionRe
 			resp.Entries = append(resp.Entries, e)
 			return resp, nil
 		}
+		// Only an entry linked to the caller's: a mistyped id, or a link
+		// this host never recorded, closes nothing.
+		linked, err := s.linksTo(ctx, f.ID, req.From.Host, req.From.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !linked {
+			return nil, fmt.Errorf("#%d on %s has no link to #%d@%s, so it wasn't resolved: link it from this side first (on %s: agent friction link %d %d@%s)",
+				f.ID, s.cfg.Host, req.From.ID, req.From.Host, s.cfg.Host, f.ID, req.From.ID, req.From.Host)
+		}
 		if FrictionIsOpen(f.Status) {
 			if err := CloseFriction(ctx, s.storage, f, req.Status, req.Note, req.By); err != nil {
 				return nil, err
 			}
 			resp.Resolved = true
 		}
-		if req.From != nil {
-			s.seeLinkedFrom(ctx, f.ID, *req.From, now)
-		}
+		s.seeLinkedFrom(ctx, f.ID, *req.From, now)
 	}
 	// Re-read it: votes and links may have changed.
 	if f, err = s.storage.GetFriction(ctx, f.ID); err != nil {
@@ -160,6 +171,20 @@ func (s *AgentService) frictionEntry(ctx context.Context, asked, f *storage.Fric
 		e.Requested = &natsbus.FrictionRef{Host: s.cfg.Host, ID: asked.ID, UID: asked.UID}
 	}
 	return e, err
+}
+
+// linksTo reports whether entry id has a link to peerID on peerHost.
+func (s *AgentService) linksTo(ctx context.Context, id int64, peerHost string, peerID int64) (bool, error) {
+	links, err := s.storage.ListFrictionLinks(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	for _, l := range links {
+		if strings.EqualFold(l.PeerHost, peerHost) && l.PeerID == peerID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // seeLinkedFrom updates entry id's link to from, if it has one, with

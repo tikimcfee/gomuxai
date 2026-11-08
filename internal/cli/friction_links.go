@@ -604,15 +604,18 @@ func resolveLinked(ctx context.Context, out io.Writer, f *storage.Friction) erro
 	by := frictionWho(ctx)
 	who, _ := frictionCaller(ctx)
 
+	// A target carries the entry whose link led to it: another host
+	// resolves only an entry linked to the one a request comes from.
 	type target struct {
 		host string
 		id   int64
 		uid  string
 		link *storage.FrictionLink // f's own link to it, to update
+		via  natsbus.FrictionEntry
 	}
 	var queue, left []target
 	for _, l := range links {
-		queue = append(queue, target{l.PeerHost, l.PeerID, l.PeerUID, l})
+		queue = append(queue, target{l.PeerHost, l.PeerID, l.PeerUID, l, from})
 	}
 	visited := map[string]bool{frictionKey(cfg.Host, f.ID): true}
 	bus := openFrictionBus(0)
@@ -639,26 +642,27 @@ func resolveLinked(ctx context.Context, out io.Writer, f *storage.Friction) erro
 				}
 				fmt.Fprintf(out, "Resolved #%d too (linked through another host's entry).\n", g.ID)
 			}
-			more, err := store.ListFrictionLinks(ctx, g.ID)
+			via, err := service.FrictionEntryOf(ctx, store, cfg.Host, g)
 			if err != nil {
 				return err
 			}
-			for _, l := range more {
-				queue = append(queue, target{l.PeerHost, l.PeerID, l.PeerUID, nil})
+			for _, r := range via.Links {
+				queue = append(queue, target{r.Host, r.ID, r.UID, nil, via})
 			}
 			continue
 		}
 
 		ref := frictionRef(t.host, t.id)
 		resp, err := bus.call(ctx, t.host, natsbus.FrictionRequest{
-			Action: natsbus.FrictionResolve, ID: t.id, UID: t.uid, From: &from, By: by, Status: f.Status, Note: f.Resolution,
+			Action: natsbus.FrictionResolve, ID: t.id, UID: t.uid, From: &t.via, By: by, Status: f.Status, Note: f.Resolution,
 		})
 		if err != nil {
 			if isRefusal(err) {
+				// Its error says what to run.
 				fmt.Fprintf(out, "%s didn't resolve %s: %v.\n", t.host, ref, err)
-			} else {
-				fmt.Fprintf(out, "Couldn't reach %s to resolve %s: %v.\n", t.host, ref, err)
+				continue
 			}
+			fmt.Fprintf(out, "Couldn't reach %s to resolve %s: %v.\n", t.host, ref, err)
 			left = append(left, t)
 			continue
 		}
@@ -687,7 +691,7 @@ func resolveLinked(ctx context.Context, out io.Writer, f *storage.Friction) erro
 			_ = store.UpdateFrictionLink(ctx, t.link)
 		}
 		for _, r := range e.Links {
-			queue = append(queue, target{canonicalHost(r.Host), r.ID, r.UID, nil})
+			queue = append(queue, target{canonicalHost(r.Host), r.ID, r.UID, nil, e})
 		}
 	}
 
