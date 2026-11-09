@@ -3,6 +3,7 @@ package discovery
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,53 +18,62 @@ import (
 // started it. The project folder's name is a slug of the cwd and
 // is never read: the records carry the cwd itself.
 
-// scanClaude lists the sessions under a projects dir: <dir>/*.jsonl,
-// <dir>/<project>/*.jsonl, and their subagents.
-func scanClaude(dir string) []Session {
+// listClaude lists the sessions under a projects dir, unread (stubs):
+// <dir>/*.jsonl, <dir>/<project>/*.jsonl, and their subagents.
+func listClaude(dir string) []Session {
 	var out []Session
-	add := func(folder string) {
+	add := func(folder, project string) {
 		entries, err := os.ReadDir(folder)
 		if err != nil {
 			return
 		}
+		canon := canonical(folder)
 		for _, e := range entries {
 			path := filepath.Join(folder, e.Name())
 			if e.IsDir() {
-				out = append(out, scanClaudeSubagents(filepath.Join(path, "subagents"))...)
+				out = append(out, listClaudeSubagents(filepath.Join(path, "subagents"), project)...)
 				continue
 			}
 			if !strings.HasSuffix(e.Name(), ".jsonl") {
 				continue
 			}
 			if info, err := e.Info(); err == nil && info.Size() > 0 {
-				out = append(out, probeClaude(path, info))
+				s := stub(HarnessClaude, path, info)
+				s.folder = project
+				if e.Type()&fs.ModeSymlink == 0 {
+					s.key = filepath.Join(canon, e.Name())
+				}
+				out = append(out, s)
 			}
 		}
 	}
-	add(dir)
+	add(dir, "")
 	if entries, err := os.ReadDir(dir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() {
-				add(filepath.Join(dir, e.Name()))
+				add(filepath.Join(dir, e.Name()), e.Name())
 			}
 		}
 	}
 	return out
 }
 
-// scanClaudeSubagents lists the subagent sessions in a session's
-// subagents dir: the agents it started, at the top, and each workflow
-// run's agents, in workflows/<run>/. Where two transcripts share an agent
-// id (a message to a workflow's agent can start a copy of it outside the
-// run), the shallower one is listed.
-func scanClaudeSubagents(dir string) []Session {
+// listClaudeSubagents lists the subagent sessions in a session's
+// subagents dir, unread (stubs): the agents it started, at the top, and
+// each workflow run's agents, in workflows/<run>/. Where two transcripts
+// share an agent id (a message to a workflow's agent can start a copy of
+// it outside the run), the shallower one is listed. project is the
+// session's project folder's name.
+func listClaudeSubagents(dir, project string) []Session {
 	var out []Session
 	listed := map[string]bool{}
+	parent := &ParentSession{SessionID: filepath.Base(filepath.Dir(dir))}
 	add := func(folder string) {
 		entries, err := os.ReadDir(folder)
 		if err != nil {
 			return
 		}
+		canon := canonical(folder)
 		for _, e := range entries {
 			name := e.Name()
 			if e.IsDir() || !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".jsonl") || listed[name] {
@@ -71,7 +81,13 @@ func scanClaudeSubagents(dir string) []Session {
 			}
 			if info, err := e.Info(); err == nil && info.Size() > 0 {
 				listed[name] = true
-				out = append(out, probeClaudeSubagent(filepath.Join(folder, name), info))
+				s := stub(HarnessClaude, filepath.Join(folder, name), info)
+				p := *parent
+				s.ParentSession, s.folder = &p, project
+				if e.Type()&fs.ModeSymlink == 0 {
+					s.key = filepath.Join(canon, name)
+				}
+				out = append(out, s)
 			}
 		}
 	}

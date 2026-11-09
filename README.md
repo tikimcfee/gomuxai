@@ -330,7 +330,7 @@ bus prints a note about it in its `gomux-bus` session
 | `agent wait --follow --for waiting` | A line each time any agent here is at a new prompt, with what it's asking |
 | `agent events` | Status events as they're reported (needs a running bus) |
 | `agent export --json --follow` | The whole agent tree for a display or script, then a JSON line per change (spawn, status, cleanup); `--all` adds departed agents. Shapes in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#export) |
-| `agent sessions [--json]` | Every agent session on this host, workgroup agents' and the Claude Code, agy and Kimi sessions people ran, in one shape ([`docs/EVENTS.md`](docs/EVENTS.md)) |
+| `agent sessions [--json] [--all\|--limit N] [--since 2h] [--project P]` | The agent sessions on this host, newest 25 by default (`--json`: all), workgroup agents' and the Claude Code, agy and Kimi sessions people ran, in one shape ([`docs/EVENTS.md`](docs/EVENTS.md)) |
 | `agent transcript NAME --follow` | One session's events (by agent name, session id or path) as JSON lines, live: what a display reads ([`docs/EVENTS.md`](docs/EVENTS.md)) |
 | `agent friction list` | Open requests and complaints about the tool |
 
