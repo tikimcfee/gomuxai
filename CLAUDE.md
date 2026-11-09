@@ -89,7 +89,10 @@ failed and what to try. Most read commands take `--json`.
   processes, and Claude Code's session registry (`~/.claude/sessions/`, each
   entry proven by pid and start time) says which session an agent's pane
   runs, including one a person started there by hand. agy's hooks are wired
-  at spawn. `waiting` means blocked on a person, e.g. a permission prompt.
+  at spawn. `waiting` means blocked on a person, e.g. a permission prompt,
+  or the CLI's workspace trust prompt (Claude or agy in a folder it hasn't
+  trusted, which runs no hook: read off its screen, tool `trust`, detail
+  `trust: <folder>`).
   `error` means the last turn failed (a rate limit, say) and the agent takes
   input again. `ended` comes with an end reason (`quit`, `gone`, `replaced`,
   `finished`, `parent`, `closed`), shown as `ended (quit)`. What agy's hooks don't
@@ -137,7 +140,12 @@ agent spawn helper --backend claude --task review   # first message: a stored ta
 
 Spawn sends the task file or `--task` as the first message. Without either,
 send the first message yourself. It returns once the CLI has started and
-says what status it found: "idle" means ready for a message. The agent
+says what status it found: "idle" means ready for a message. In a folder
+the CLI hasn't trusted, it says the agent is waiting at its workspace trust
+prompt: `agent approve <name>` trusts the folder (a Claude agent's first
+message waits for that, then goes in), or respawn with `--trust-workspace`,
+which answers it at launch (trusting a folder enables its own hooks and
+settings, so only for folders you trust). The agent
 starts in the directory you run spawn from (`--cwd DIR` picks another),
 with that project's permission settings; `--skip-permissions` bypasses
 them (use with caution). Inside an agent, name helpers
@@ -278,6 +286,7 @@ agent approve helper --expect Bash      # yes, once, only if it's still that pro
 agent approve helper --always           # yes, and don't ask again
 agent deny helper                       # no; for Claude this cancels the turn
 agent send helper "do it without rm"    # after a deny, redirect it
+agent approve helper --expect trust     # trust the folder at its workspace trust prompt
 ```
 
 Read the detail before approving. `approve` and `deny` refuse unless the
@@ -288,6 +297,12 @@ picks agy's option 2; `agent keys` types text). A `send` to a waiting agent
 is held, never typed into the dialog. `--expect` guards against a
 different prompt having replaced the one you read. These commands prompt the
 person when an agent runs them.
+
+The CLI's workspace trust prompt is one too (`status -v`: tool `trust`,
+detail `trust: <folder>`): `approve` picks "Yes, I trust this folder" (for
+good, so no `--always`) and the CLI starts; `deny` picks "No, exit", the CLI
+exits, and the agent is `ended (quit)`. Approve only folders you'd let it
+work in: trusting one also enables its own hooks and settings.
 
 Claude can queue several prompts (parallel tool calls, or a subagent's, which
 can still be asking after the main turn ends). `status -v` describes the one
@@ -577,7 +592,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 
 | Symptom | What to do |
 |---------|------------|
-| `waiting` | `status -v` shows the prompt; approve, deny, or ask the person. |
+| `waiting` | `status -v` shows the prompt; approve, deny, or ask the person. Tool `trust` is the CLI's workspace trust prompt: approve trusts the folder. |
 | `unknown` (non-hook backends) | `capture` to look; coordinate on state or messages instead. |
 | `error` | The last turn failed (e.g. rate limit); it takes input again. `capture` or `logs` shows why. |
 | `ended (...)` | The reason says how (`agent statuses`); `agent resume <name>` continues its session (claude, agy); `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |

@@ -166,11 +166,20 @@ type CommandAllower interface {
 }
 
 // TrustPrompter is implemented by backends whose CLI asks whether to trust a
-// new workspace before it starts.
+// new workspace before it starts. Each method reads screen, the visible
+// pane, ANSI-stripped. The CLI runs no hooks until the folder is trusted,
+// so only the screen shows the prompt.
 type TrustPrompter interface {
-	// TrustKeys returns the keys that answer "trust" to the prompt on screen
-	// (visible pane, ANSI-stripped), or nil if no trust prompt is showing.
+	// TrustPrompt reports whether the trust prompt is on screen, and the
+	// folder it asks about ("" if the screen doesn't show it).
+	TrustPrompt(screen string) (folder string, ok bool)
+	// TrustKeys returns the keys that answer "trust" to the prompt on
+	// screen, or nil if no trust prompt is showing or its highlighted
+	// option can't be told.
 	TrustKeys(screen string) []string
+	// DeclineTrustKeys returns the keys that answer "no" to it (the CLI
+	// then exits), or nil likewise.
+	DeclineTrustKeys(screen string) []string
 }
 
 // PromptFlagProvider is implemented by backends whose CLI can accept the

@@ -478,6 +478,10 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 		return info, reported, nil
 	}
 
+	if info, ok := s.trustPromptStatus(agent, reported); ok {
+		return info, reported, nil
+	}
+
 	native := s.nativeStatus(ctx, agent)
 	nativeErr = native.Err
 	if (native.Queried && !native.Listed) || (agent.Adopted && agent.Backend == "shell") {
@@ -520,7 +524,8 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 		// report says it's alive: the CLI died without its SessionEnd hook
 		// (crash, kill -9, OOM). Echoing the stale report would let the
 		// watcher type queued messages into the bare shell left behind.
-		if decision == discovery.NativeGone {
+		// Just trusted, the CLI may not be listed yet: it is starting.
+		if decision == discovery.NativeGone && !trustStarting(reported) {
 			detail := "session not running (exited without a SessionEnd hook)"
 			if native.PaneErr != nil {
 				detail += "; its pane: " + native.PaneErr.Error()
@@ -879,6 +884,9 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 	if opts.ExpectTool != "" && info.Tool != opts.ExpectTool {
 		return nil, fmt.Errorf("agent %s is waiting on %q, not %q: check the new prompt with agent status %s -v before answering it", name, info.Tool, opts.ExpectTool, name)
 	}
+	if info.IsTrustPrompt() {
+		return s.respondTrust(ctx, agent, info, resp)
+	}
 
 	provider, err := s.provider(agent)
 	if err != nil {
@@ -908,6 +916,13 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 		screen, err := s.tmux.Capture(agent.SessionName, 0)
 		if err != nil {
 			return nil, fmt.Errorf("capturing screen: %w", err)
+		}
+		// A trust prompt has an Esc and an Enter of its own: never answer
+		// it with a permission prompt's key.
+		if tp, ok := provider.(backend.TrustPrompter); ok {
+			if _, on := tp.TrustPrompt(screen); on {
+				return nil, fmt.Errorf("agent %s shows its workspace trust prompt, not the permission prompt its status described: agent status %s -v shows it now", name, name)
+			}
 		}
 		if !pr.PermissionPromptVisible(screen) {
 			return nil, fmt.Errorf("agent %s has no permission prompt on screen; it may have just been answered (agent status %s -v shows what it's doing; --force sends the key anyway)", name, name)
