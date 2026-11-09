@@ -43,6 +43,10 @@ func (f *fakeHookBackend) InputText(string) (string, bool) {
 	return f.input, true
 }
 
+// TypedAsPaste: the test session is a shell, which runs no UserPromptSubmit
+// hook to hand a message over, so messages are typed as they are.
+func (f *fakeHookBackend) TypedAsPaste(string) bool { return false }
+
 // PermissionPromptVisible stands in for the screen check: the test session
 // is a plain shell, so the real check would never see a dialog.
 func (f *fakeHookBackend) PermissionPromptVisible(string) bool { return !f.promptGone }

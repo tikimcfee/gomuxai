@@ -108,13 +108,24 @@ func (s *AgentService) readInput(agent *storage.Agent, ir backend.InputReader) (
 	return ir.InputText(screen)
 }
 
-// typeMessage types text into the agent and presses Enter, making sure
+// typeMessage types text into the agent and presses Enter (typeText). Text
+// the CLI would take as a paste goes as one short line, with the whole text
+// handed over by the agent's hook, when its hook reaches the CLI
+// (typeHandover, see handover.go).
+func (s *AgentService) typeMessage(ctx context.Context, agent *storage.Agent, text string, dialogs bool) (string, error) {
+	if ph, ok := s.promptHandover(ctx, agent); ok && ph.TypedAsPaste(text) {
+		return s.typeHandover(ctx, agent, text, dialogs)
+	}
+	return s.typeText(ctx, agent, text, dialogs)
+}
+
+// typeText types text into the agent and presses Enter, making sure
 // the Enter submitted it where the backend needs that (see above). It
 // returns why it couldn't check, or "" if it did or the backend needs no
 // checking.
 // With dialogs, a dialog that comes up while it waits for a starting CLI's
 // input box is an error, and nothing is typed.
-func (s *AgentService) typeMessage(ctx context.Context, agent *storage.Agent, text string, dialogs bool) (string, error) {
+func (s *AgentService) typeText(ctx context.Context, agent *storage.Agent, text string, dialogs bool) (string, error) {
 	sc, ok := s.submitChecker(agent)
 	if !ok {
 		return "", s.pasteLine(agent.SessionName, text)

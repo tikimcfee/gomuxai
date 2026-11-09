@@ -23,6 +23,10 @@ const (
 	MessageStatusPending   MessageStatus = "pending"
 	MessageStatusDelivered MessageStatus = "delivered"
 	MessageStatusFailed    MessageStatus = "failed"
+	// MessageStatusHandover is a message typed into the agent as one short
+	// line, whose whole text the hook of the prompt that line starts hands
+	// over (see service/handover.go). Nothing else delivers it.
+	MessageStatusHandover MessageStatus = "handover"
 )
 
 // Message represents a queued message between agents.

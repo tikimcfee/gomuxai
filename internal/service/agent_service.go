@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -250,13 +251,52 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 			return abort(err)
 		}
 		if !held {
-			if err := s.pasteLine(sessionName, initMsg); err != nil {
+			if err := s.typeFirstMessage(ctx, agent, initMsg); err != nil {
 				return abort(fmt.Errorf("sending init message: %w", err))
 			}
 		}
 	}
 
 	return agent, nil
+}
+
+// typeFirstMessage types a new agent's first message. One its CLI would take
+// as a paste goes as a short line with its text handed over by hook, as
+// send types it (see handover.go), once the hook has reported the session.
+// A handover the hook missed leaves the agent with the short line: spawn
+// goes on, and says so on stderr.
+func (s *AgentService) typeFirstMessage(ctx context.Context, agent *storage.Agent, msg string) error {
+	p, err := s.provider(agent)
+	if ph, ok := p.(backend.PromptHandover); err != nil || !ok || !ph.TypedAsPaste(msg) {
+		return s.pasteLine(agent.SessionName, msg)
+	}
+	if !s.awaitHooked(ctx, agent) {
+		return s.pasteLine(agent.SessionName, msg)
+	}
+	_, err = s.typeHandover(ctx, agent, msg, true)
+	var handover *HandoverError
+	var unsubmitted *UnsubmittedError
+	if errors.As(err, &handover) || errors.As(err, &unsubmitted) {
+		fmt.Fprintf(os.Stderr, "%s's first message: %v\n", agent.Name, err)
+		return nil
+	}
+	return err
+}
+
+// hookedWait bounds how long a new agent's first message waits for its
+// hook to report the session.
+const hookedWait = 15 * time.Second
+
+// awaitHooked waits until the agent's hook has reported its session
+// (holdsMessages), up to hookedWait.
+func (s *AgentService) awaitHooked(ctx context.Context, agent *storage.Agent) bool {
+	deadline := time.Now().Add(hookedWait)
+	for !s.holdsMessages(ctx, agent) {
+		if time.Now().After(deadline) || sleepCtx(ctx, startupPoll) != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // spawnWithBackend spawns an agent on a custom JSON backend. It only knows a

@@ -300,8 +300,15 @@ func (s *AgentService) typeHeld(ctx context.Context, agent *storage.Agent, extra
 	unchecked, err := s.sendMessage(ctx, agent.Name, strings.Join(texts, "\n\n"), true)
 	if err != nil {
 		var unsubmitted *UnsubmittedError
-		if errors.As(err, &unsubmitted) {
+		var handover *HandoverError
+		switch {
+		case errors.As(err, &unsubmitted):
 			return len(texts), "", err // typed: they sit in its input box
+		case errors.As(err, &handover):
+			// Typed as a short line the agent took, and kept in the failed
+			// message: holding them again would have the deliverer type
+			// that line over and over.
+			return len(texts), "", err
 		}
 		for _, m := range claimed {
 			_ = s.storage.UpdateMessageStatus(ctx, m.ID, storage.MessageStatusPending)
