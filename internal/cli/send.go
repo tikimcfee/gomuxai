@@ -50,8 +50,10 @@ A message sent by an agent (AGENT_NAME set) starts with "[from name@host]",
 so the recipient knows where to reply. One sent without AGENT_NAME starts
 with "[from a person on host]", or "[from a Claude session on host]" from an
 AI CLI a person started (AI_AGENT or CLAUDECODE=1 set): neither has an agent
-record to reply to. A slash command like "/compact" is left unmarked, and
-never held: a hook can't run it, so it is typed in now.
+record to reply to. A slash command ("/compact", "/model claude-fable-5-1")
+is left unmarked whoever sends it, so the CLI runs it (agent history
+still records who sent it), and is never held: a hook can't run it, so it
+is typed in now. A path ("/tmp/out.txt is ready") isn't a slash command.
 
 "Sent" means the message was typed into the agent's terminal, not that the
 agent has read it: right after a send, the agent still looks idle until it
@@ -208,14 +210,15 @@ func fromAgent(message string) string {
 // the recipient knows who to reply to. A sender without an agent record
 // (sender "") has no address to reply to with agent send, so the tag only
 // says what it is: "[from a person on host]", or "[from a Claude session on
-// host]" for an AI CLI a person started (see unrecordedSender). Their slash
-// commands ("/compact") stay unmarked, since a prefix would turn them into
-// plain messages.
+// host]" for an AI CLI a person started (see unrecordedSender). A slash
+// command ("/compact", "/model claude-fable-5-1") stays unmarked, whoever
+// sends it, since a prefix would turn it into a plain message; the command
+// log (agent history) still records who sent it.
 func markSender(sender, message string) string {
-	if sender == "" {
-		if strings.HasPrefix(message, "/") {
-			return message
-		}
+	switch {
+	case service.IsSlashCommand(message):
+		return message
+	case sender == "":
 		return fmt.Sprintf("[from %s on %s] %s", unrecordedSender(), cfg.Host, message)
 	}
 	return fmt.Sprintf("[from %s@%s] %s", sender, cfg.Host, message)
