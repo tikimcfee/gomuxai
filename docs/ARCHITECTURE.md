@@ -1849,8 +1849,38 @@ make lint          # golangci-lint
   events, `Wait`, and the security tests. `storage`, `config`, `tmux`,
   `util`, `watcher`: as named.
 - **tmux** is needed by `tests/tmux`, `tests/service`, and part of
-  `internal/cli`; they skip without it. They use real sessions with a unique
-  session prefix and a temp database. No test needs claude or agy installed.
+  `internal/cli`; they skip without it. They use real sessions and a temp
+  database. No test needs claude or agy installed.
+- **A private tmux server per test binary.** Tests never touch the tmux
+  server the environment names, which is where the real agents and the bus
+  run. Each package whose tests can run tmux (`internal/cli`, `tests/tmux`,
+  `tests/service`, `tests/backend`, `tests/natsbus`, `tests/watcher`) calls
+  `tmuxtest.Run` from its `TestMain`: it makes a short socket directory
+  (`gmx*` under `$TMPDIR`, or `/tmp` if that's too long for a socket path),
+  unsets `TMUX` and `TMUX_PANE`, points `TMUX_TMPDIR` at it for the whole
+  process, so every tmux the code and its children run uses that server, and
+  after the tests kills that server by its socket (`tmux -S`, with `TMUX`
+  left out) and removes the directory. Why: tests sharing the real server
+  collided on fixed session names when two runs overlapped (friction #9),
+  and inside an agent's pane `$TMUX` names the real server *ahead of*
+  `TMUX_TMPDIR`, so a `TMUX_TMPDIR=$dir tmux kill-server` meant for a test
+  server killed every agent on the host, twice (#10). Unsetting `TMUX` is
+  what makes `TMUX_TMPDIR` count. With a server per binary, fixed names like
+  `rpc-cli-worker` can only meet within one binary, whose tests run one at a
+  time and kill their sessions as they end.
+- **The guard.** `internal/tmux` refuses to run tmux from a test binary
+  (`testing.Testing()`) that isn't on its private server: `GOMUXAI_TEST_TMUX_TMPDIR`
+  (set by `tmuxtest.Run`) is missing, `$TMUX` is set, or `TMUX_TMPDIR` was
+  changed. The refusal names the fix, so a new package that forgets its
+  `TestMain` fails at once instead of reaching the real server.
+  `tmuxtest.Require(t)` makes the same check for a test that runs `tmux`
+  itself (the setup helpers call it). `internal/tmux`'s own tests run a fake
+  tmux, which declares itself the private server. A test binary killed
+  mid-run (a `-timeout` panic) leaves its private server and `gmx*`
+  directory behind; they touch nothing else, and `env -u TMUX
+  TMUX_TMPDIR=<dir> tmux kill-server` ends one. By hand, always use
+  `env -u TMUX` with a private `TMUX_TMPDIR` (made with `mktemp -d -t gmx`:
+  a scratchpad path is too long for a socket) or `tmux -S <socket>`.
 - **Waiting.** Tests wait for state, never sleep for it: `internal/await`
   polls a condition (a shell's printed marker, a screen, a status, a log
   line) and on timeout says what it waited for and what it last saw. A
