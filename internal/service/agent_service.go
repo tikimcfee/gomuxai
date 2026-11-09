@@ -88,6 +88,9 @@ type SpawnOptions struct {
 	SkipPermissions bool   // Pass --dangerously-skip-permissions to Claude / Agy
 	TrustWorkspace  bool   // Confirm the CLI's workspace trust prompt on launch
 	SpawnedBy       string // agent that requested the spawn ("" for a user); name@host from another host
+	// Model is the model the CLI runs on (its --model), "" for its
+	// default; backends that take one only (backend.ModelChooser).
+	Model string
 	// Cwd is the absolute directory the agent starts in; "" for this
 	// process's working directory.
 	Cwd string
@@ -130,6 +133,11 @@ func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.A
 			return nil, err
 		}
 	}
+	if opts.Model != "" {
+		if err := ValidateModel(opts.Model); err != nil {
+			return nil, err
+		}
+	}
 
 	// A fresh provider, configured for this agent. Custom JSON backends
 	// (--backend-config) have no factory, and spawn from their Backend.
@@ -143,7 +151,13 @@ func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.A
 		if err != nil {
 			return nil, err
 		}
+		if opts.Model != "" {
+			return nil, modelRefusal(opts.Backend)
+		}
 		return s.spawnWithBackend(ctx, opts, be)
+	}
+	if _, ok := provider.(backend.ModelChooser); opts.Model != "" && !ok {
+		return nil, modelRefusal(opts.Backend)
 	}
 	return s.spawnWithProvider(ctx, opts, provider)
 }
@@ -451,6 +465,13 @@ func (s *AgentService) launchCommand(ctx context.Context, opts SpawnOptions, pro
 				return "", false, fmt.Errorf("storing %s: %w", key, err)
 			}
 		}
+	}
+	if mc, ok := provider.(backend.ModelChooser); ok && opts.Model != "" {
+		// Recorded for resume, which relaunches on it.
+		if err := s.setState(ctx, name, StateKeyModel, opts.Model); err != nil {
+			return "", false, fmt.Errorf("storing %s: %w", StateKeyModel, err)
+		}
+		cmd = mc.WithModel(cmd, opts.Model)
 	}
 	if ip, ok := provider.(backend.InstructionsProvider); ok {
 		path, err := s.writeInstructions(name, opts.SpawnedBy, provider.Name())

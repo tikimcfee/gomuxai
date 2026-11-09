@@ -1,6 +1,10 @@
 package namedagents
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/tikimcfee/gomuxai/internal/util"
+)
 
 // AiderBackend implements Provider for Aider CLI.
 type AiderBackend struct{}
@@ -39,4 +43,9 @@ func (b *AiderBackend) IdlePattern() string {
 func (b *AiderBackend) ProcessingPattern() string {
 	// Aider shows various indicators when processing
 	return `(Thinking|Working|Applying)`
+}
+
+// WithModel runs aider on model (--model).
+func (b *AiderBackend) WithModel(launchCmd, model string) string {
+	return launchCmd + " --model " + util.ShellQuote(model)
 }

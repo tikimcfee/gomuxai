@@ -64,3 +64,8 @@ func (b *ClaudeBackend) IdlePattern() string {
 func (b *ClaudeBackend) ProcessingPattern() string {
 	return `(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|Thinking)`
 }
+
+// WithModel runs claude on model (--model).
+func (b *ClaudeBackend) WithModel(launchCmd, model string) string {
+	return launchCmd + " --model " + util.ShellQuote(model)
+}

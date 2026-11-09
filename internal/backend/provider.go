@@ -182,6 +182,13 @@ type TrustPrompter interface {
 	DeclineTrustKeys(screen string) []string
 }
 
+// ModelChooser is implemented by backends whose CLI takes the model to run
+// on at launch (spawn --model).
+type ModelChooser interface {
+	// WithModel returns launchCmd changed to run on model.
+	WithModel(launchCmd, model string) string
+}
+
 // PromptFlagProvider is implemented by backends whose CLI can accept the
 // initial task prompt via a launch flag (e.g. agy -i <prompt>).
 type PromptFlagProvider interface {

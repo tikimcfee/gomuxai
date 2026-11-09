@@ -119,6 +119,7 @@ func (h rpcHandler) Status(ctx context.Context, req natsbus.StatusRequest) (*nat
 		SentAt:         info.SentAt,
 		TurnAt:         info.TurnAt,
 		Held:           info.Held,
+		Model:          info.Model,
 	}, nil
 }
 
@@ -201,6 +202,7 @@ func (h rpcHandler) Spawn(ctx context.Context, req natsbus.SpawnRequest) (*natsb
 		TaskContent: req.TaskContent,
 		SpawnedBy:   req.SpawnedBy,
 		Cwd:         cwd,
+		Model:       req.Model,
 	})
 	if err != nil {
 		return nil, err
@@ -212,6 +214,7 @@ func (h rpcHandler) Spawn(ctx context.Context, req natsbus.SpawnRequest) (*natsb
 		SpawnedBy: agent.SpawnedBy,
 		Cwd:       agent.Cwd,
 		TaskFile:  taskFile,
+		Model:     req.Model,
 		Status:    string(AgentStatusUnknown),
 	}
 	if info, err := h.s.StatusInfo(ctx, agent.Name); err == nil {

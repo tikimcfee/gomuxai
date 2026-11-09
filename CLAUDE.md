@@ -148,8 +148,10 @@ which answers it at launch (trusting a folder enables its own hooks and
 settings, so only for folders you trust). The agent
 starts in the directory you run spawn from (`--cwd DIR` picks another),
 with that project's permission settings; `--skip-permissions` bypasses
-them (use with caution). Inside an agent, name helpers
-`<yourname>-<role>`.
+them (use with caution). `--model <model>` runs the CLI on that model
+(claude, agy and aider take one; other backends refuse it), over the bus
+too; `agent resume` relaunches on it, and `status -v` shows it. Inside an
+agent, name helpers `<yourname>-<role>`.
 
 `--resume <session>` makes the new agent continue a Claude or agy session
 that has ended, in the directory it ran in; `-c`/`--continue` picks the
@@ -213,8 +215,11 @@ Messages from an agent start with `[from name@host]`, so the recipient knows
 where to reply. Messages from anyone without `AGENT_NAME` start with
 `[from a person on host]`, or `[from a Claude session on host]` from an AI
 CLI a person started (it sets `AI_AGENT` or `CLAUDECODE=1`). Neither has an
-agent record, so the recipient answers in its reply. A slash command like
-`/compact` is left unmarked.
+agent record, so the recipient answers in its reply. A slash command
+(`/compact`, `/model claude-fable-5-1`) is left unmarked whoever sends it,
+so the CLI runs it: a parent can switch its helper's model with `agent
+send helper "/model opus"`. `agent history` still records who sent it. A
+message starting with a path (`/tmp/out.txt is ready`) isn't a command.
 
 Keep typed messages short: a long one arrives in Claude whole, but as a
 pasted block, which Claude may treat as data rather than instructions. Put
@@ -343,8 +348,8 @@ agent resume helper          # an ended agent, on its last session
 
 A reboot (or a killed tmux server) ends every agent: `ended (gone)`.
 `resume` (or `resume name@host`, for another host's) starts one again on
-its last session, in the directory it ran in, keeping its name, backend, parent (its helpers stay its helpers), its
-own state keys and `_result`, and delivers messages held for it. Claude
+its last session, in the directory it ran in, keeping its name, backend, parent (its helpers stay its helpers),
+the model it was spawned on, its own state keys and `_result`, and delivers messages held for it. Claude
 and agy agents only, and not an adopted one (its tmux session is a
 person's: start the CLI there yourself). Inside an agent, only your own
 helpers. To continue
