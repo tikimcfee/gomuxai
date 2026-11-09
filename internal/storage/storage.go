@@ -67,6 +67,10 @@ type Storage interface {
 	UpdateFrictionLink(ctx context.Context, l *FrictionLink) error
 	DeleteFrictionLink(ctx context.Context, frictionID int64, peerHost string, peerID int64) (bool, error)
 
+	// RenameHost rewrites references to another host renamed from old to
+	// new: agents' spawned_by and friction links.
+	RenameHost(ctx context.Context, old, new string) (HostRenamed, error)
+
 	// Lifecycle
 	Close() error
 }

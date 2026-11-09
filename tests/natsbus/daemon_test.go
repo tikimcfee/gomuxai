@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -511,7 +512,7 @@ func TestTrustPeer_Validates(t *testing.T) {
 		t.Fatalf("good bundle rejected: %v", err)
 	}
 	peers, err := natsbus.LoadPeers(h.dir)
-	if err != nil || len(peers) != 1 || peers[0] != good {
+	if err != nil || len(peers) != 1 || !reflect.DeepEqual(peers[0], good) {
 		t.Errorf("LoadPeers = %+v, %v", peers, err)
 	}
 }
