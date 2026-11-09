@@ -479,8 +479,8 @@ agent spawn helper@hub --backend claude --cwd /srv/project tasks/build.md
 ```
 
 `status`, `capture`, `logs`, `send`, `wait`, `events`, `approve`, `deny`,
-`keys`, `spawn` and `resume` take `name@host` (`spawn` also takes `--host
-hub`). Host names
+`keys`, `spawn`, `resume` and `attach` take `name@host` (`spawn` also takes
+`--host hub`). Host names
 match ignoring case for this host and the peers it trusts (a hub trusts
 every peer): `@il-air-m2` reaches `IL-Air-M2`. A host known only through the
 hub is reached by its exact name; a "no bus answering" error names the
@@ -518,7 +518,24 @@ off for peers unless the host lists it, and like a remote spawn it refuses
 `--skip-permissions` and `--trust-workspace` (run resume on that host for
 those). Inside an agent, the other
 host lets you resume only your own helpers there (`lead@laptop`'s).
-`--attach` for another host's agent isn't supported yet.
+
+```bash
+agent attach helper@hub              # ssh -t hub '<hub's agent binary>' attach 'helper'
+agent resume helper@hub --attach     # ssh -t hub '<...>' resume 'helper' --attach
+agent bus ssh hub me@hub.lan         # where ssh goes for hub (default: the host's name)
+```
+
+The bus can't carry a terminal, so `attach name@host` and `resume
+name@host --attach` run ssh: to the host's destination (`agent bus ssh
+<host> <dest>` sets one, `agent bus status` shows them; `~/.ssh/config`
+still applies), running the agent binary that host names in its `list`
+reply (an absolute path of plain characters, quoted). `agent` becomes ssh
+(exec, so a signal to it reaches ssh and nothing is orphaned), and so
+needs a terminal. ssh is a separate trust path from the bus: your ssh
+keys, not the bus's pinned ones. Attaching to another host needs `ssh
+<dest>` to work from here; if ssh fails, its own error is what you see,
+after a line saying it was ssh. Over ssh, `resume --attach` runs as you on
+that host, as if typed there, not through its `resume` op.
 
 ### Setting up the bus
 
@@ -657,7 +674,7 @@ Everything lives in `.gomuxai/` next to the binary:
 ├── logs/             # <name>.log (terminal) and <name>.transcripts; survive cleanup
 ├── agents/<name>/    # launch.sh, instructions.md (the briefing), deliver.log
 │                     #   and deliver.lock (the held-message deliverer)
-├── bus/              # this host's keys and certificate, peers/, bus.log
+├── bus/              # this host's keys and certificate, peers/, bus.log, ssh.json
 └── watch.lock        # held by each running watcher
 ```
 

@@ -285,7 +285,9 @@ Listing `spawn` lets every linked peer run commands on the hub as the bus's
 user (spawn an agent, then approve its prompts), so do it only if you'd
 give those machines a shell there. `agent resume builder@hub` starts an
 ended agent there again, and `agent logs builder@hub` prints what `agent
-logs` prints there. Clean it up on the hub. `state` and `queue` are per
+logs` prints there. `agent attach builder@hub` opens its session in your
+terminal over ssh (the bus can't carry a terminal), so it needs `ssh hub`
+to work from here; `agent bus ssh hub me@hub.lan` sets where ssh goes. Clean it up on the hub. `state` and `queue` are per
 host: ask the agent to `send` you what you need, or `capture` its screen. The bus's security model (TLS 1.3 with
 pinned certificates, a key per host, no shared secrets) is described in
 [`CLAUDE.md`](CLAUDE.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

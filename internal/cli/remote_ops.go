@@ -153,9 +153,6 @@ func serveResume(ctx context.Context, req natsbus.ResumeRequest) (*natsbus.Resum
 
 // runRemoteResume resumes ref.Name on ref.Host through the agent bus.
 func runRemoteResume(ref natsbus.AgentRef) error {
-	if resumeAttach {
-		return fmt.Errorf("--attach for an agent on another host isn't supported yet: agent resume %s, then attach to it on %s", ref, ref.Host)
-	}
 	for _, f := range []struct {
 		set  bool
 		flag string
@@ -166,6 +163,11 @@ func runRemoteResume(ref natsbus.AgentRef) error {
 		if f.set {
 			return fmt.Errorf("%s works only for an agent on this host: to resume %s with it, run agent resume on %s", f.flag, ref.Name, ref.Host)
 		}
+	}
+	if resumeAttach {
+		// The bus can't carry a terminal: that host's own resume --attach
+		// runs over ssh.
+		return sshAttach(ref, "resume", "--attach")
 	}
 	var req natsbus.ResumeRequest
 	if me := nonInteractiveCallerAgent(); me != "" {

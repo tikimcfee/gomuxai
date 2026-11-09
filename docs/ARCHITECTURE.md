@@ -1395,7 +1395,7 @@ modes in your terminal.
 
 | Op | Request → reply | CLI | Remote by default |
 |---|---|---|---|
-| `list` | `ListRequest` → `ListResponse` (agents: `name`, `session`, `backend`, `spawned_by`, `adopted`, `created_at`, resolved `status`, `end_reason`, `detail`, `session_id`, `cwd`, `attached`, `resumable`; older hosts send no `detail` onward) | `list --host H`, `export --hosts` | yes |
+| `list` | `ListRequest` → `ListResponse` (`agent_binary`: the serving host's agent binary, absolute; agents: `name`, `session`, `backend`, `spawned_by`, `adopted`, `created_at`, resolved `status`, `end_reason`, `detail`, `session_id`, `cwd`, `attached`, `resumable`; older hosts send no `detail` onward) | `list --host H`, `export --hosts` | yes |
 | `status` | `StatusRequest` → `StatusResponse` (mirrors `StatusInfo`) | `status`, `wait` | yes |
 | `capture` | `CaptureRequest` → `CaptureResponse` | `capture` | yes |
 | `send` | `SendRequest` (`now`) → `SendResponse` (status, held, typed); none from older hosts | `send` | yes |
@@ -1464,6 +1464,35 @@ peer, so it knows every spelling; a leaf trusts only the hub, and reaches
 other leaves by the exact name it is given. A request no bus answers fails
 with `natsbus.NoRespondersError`, to which the CLI adds the hosts it knows.
 
+### Attach over ssh
+
+The bus can't carry a terminal, so `attach name@host` and `resume
+name@host --attach` (`cli/ssh.go`) run ssh themselves; a display or agent
+never builds the ssh command or guesses a binary's path:
+
+1. **Where:** the destination set per peer with `agent bus ssh <host>
+   <dest>` (`bus/ssh.json`, plain config, shown by `bus status`), else the
+   host's name. It may be a host, `user@host`, an alias or a bracketed
+   address, never starting with `-`; `~/.ssh/config` still applies.
+2. **What:** the host's `list` reply names its agent binary
+   (`agent_binary`, `cfg.AgentBinary`, absolute with symlinks resolved).
+   The caller refuses one that isn't an absolute path of plain characters
+   (`ValidateAgentBinary`), refuses an agent the reply doesn't list, and
+   says so for a host that predates the field, without running ssh.
+3. **Run:** `ssh -t -- <dest> '<binary>' attach '<name>'` (or `resume
+   '<name>' --attach`): ssh hands the command to a shell there, so both
+   are quoted. It needs a terminal here, and says so without one.
+4. **Exec:** `execInto` replaces the agent process with ssh
+   (`syscall.Exec`), so a signal to `agent attach` reaches ssh and nothing
+   is orphaned; local attach does the same with tmux. The command-log row
+   is written just before, since nothing runs after. Before the exec, a
+   line on stderr says it is ssh, not the bus, and needs `ssh <dest>` to
+   work: once ssh runs, its errors are its own.
+
+Over ssh, the remote `resume --attach` is the person's own command on that
+host, not the `resume` op: that host's `--remote-ops` doesn't apply, and
+the `--skip-permissions` and `--trust-workspace` refusals are the caller's.
+
 ### Status events and wait
 
 `Report` publishes a `StatusEvent` (host, agent, status, `end_reason`,
@@ -1529,6 +1558,14 @@ treated like SSH:
   could forge events, which is why consumers confirm events with a status
   check. Run it on the machine you trust most.
 - Text from other hosts is sanitized before printing.
+- Attaching to another host's agent runs ssh, a separate trust path (the
+  person's ssh keys and `~/.ssh/config`), to run the binary that host
+  names in its `list` reply. The path must be absolute and of plain
+  characters (`ValidateAgentBinary`), and is shell-quoted, as the agent
+  name is; the destination can't start with `-`, and `--` ends ssh's
+  options. A host (or the hub, see below) that lies about its path can at
+  most make ssh run another existing program there, as the person, with
+  `attach <name>` as its arguments.
 - **Known gap: replies are unsigned.** A peer may publish to any `_INBOX.`
   subject (narrower response permissions stop genuine replies from crossing
   the link), so a peer that learns another host's reply subject could

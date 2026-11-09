@@ -170,9 +170,11 @@ func TestRemoteResume(t *testing.T) {
 			t.Errorf("resume %s: local %v\nremote %v\nwant   %s", name, local, remote, want)
 		}
 	}
+	// --attach goes over ssh (ssh_test.go), which needs a terminal: a
+	// test has none.
 	resumeAttach = true
-	if err := runResume(resumeCmd, []string{"worker@h1"}); err == nil || !strings.Contains(err.Error(), "--attach") {
-		t.Errorf("resume --attach of another host's agent: %v", err)
+	if err := runResume(resumeCmd, []string{"worker@h1"}); err == nil || !strings.Contains(err.Error(), "over ssh, so it needs one") {
+		t.Errorf("resume --attach of another host's agent with no terminal: %v", err)
 	}
 	resumeAttach = false
 

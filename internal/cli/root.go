@@ -98,11 +98,22 @@ var commandGroups = []struct {
 // exit code is ExitCode(err).
 func Execute() error {
 	defer closeBusPublisher()
-	start := time.Now()
+	runStart = time.Now()
 	cmd, err := rootCmd.ExecuteC()
-	recordCommand(cmd, os.Args[1:], start, err)
+	if !runRecorded {
+		recordCommand(cmd, os.Args[1:], runStart, err)
+	}
 	return err
 }
+
+// runStart is when this run began, runCmd the command it runs (set by
+// setup), and runRecorded whether its command-log row is written: a run
+// that execs another program (execInto) writes it first.
+var (
+	runStart    time.Time
+	runCmd      *cobra.Command
+	runRecorded bool
+)
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&backendName, "backend", "", "Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)")
@@ -126,6 +137,7 @@ func init() {
 }
 
 func setup(cmd *cobra.Command, args []string) error {
+	runCmd = cmd
 	// Skip setup for commands that don't need it
 	if cmd.Name() == "help" {
 		return nil
