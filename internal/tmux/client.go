@@ -72,7 +72,8 @@ type TmuxOps interface {
 	// StopPipePane stops piping pane output.
 	StopPipePane(session string) error
 
-	// Clear clears the terminal screen and scrollback.
+	// Clear clears the pane's screen and scrollback, without typing into
+	// the program running in it.
 	Clear(session string) error
 
 	// PanePIDs maps the pid of the process each pane runs (its shell, for
@@ -392,24 +393,24 @@ func (c *Client) StopPipePane(session string) error {
 	return nil
 }
 
-// Clear clears the terminal screen and scrollback.
+// Clear clears the pane's screen and scrollback without involving the
+// program running in it. tmux resets the pane's terminal (send-keys -R),
+// which blanks the screen and homes the cursor; with scroll-on-clear on (the
+// default) that pushes the old screen into the scrollback, so clear-history
+// runs after it, in the same tmux command, and drops all of it. Nothing is
+// typed: a shell's prompt isn't redrawn until it next prints, and a
+// full-screen program's screen stays blank until it next draws.
+//
+// Typing "clear" instead raced the shell (friction #5): when the shell ran it
+// after clear-history, scroll-on-clear put the old screen back.
 func (c *Client) Clear(session string) error {
-	if err := c.SendKeys(session, "clear"); err != nil {
-		return err
-	}
-	if err := c.SendSpecialKey(session, "Enter"); err != nil {
-		return err
-	}
-
-	// clear only wipes the screen; tmux keeps its own scrollback.
 	target, err := c.paneTarget(session)
 	if err != nil {
 		return err
 	}
-	if _, err := run("clear-history", "-t", target); err != nil {
-		return fmt.Errorf("clearing history: %w", err)
+	if _, err := run("send-keys", "-R", "-t", target, ";", "clear-history", "-t", target); err != nil {
+		return fmt.Errorf("clearing pane: %w", err)
 	}
-
 	return nil
 }
 
