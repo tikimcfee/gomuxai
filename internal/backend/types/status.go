@@ -36,7 +36,7 @@ func (s Status) String() string {
 var Statuses = []Meaning{
 	{"idle", "at its prompt, its turn over, nothing it started still running: a message can be typed in"},
 	{"processing", "a turn is running (or a turn ended leaving background work, whose completion starts the next turn)"},
-	{"waiting", "stopped on something only a person can answer: a permission prompt or a question"},
+	{"waiting", "stopped on something only a person can answer: a permission prompt, a question, or the CLI's workspace trust prompt"},
 	{"error", "its last turn failed (an API error, a rate limit); it is at its prompt"},
 	{"ended", "no CLI runs the session any more; the end reason says how it ended"},
 	{"unknown", "nothing reliable says yet (a CLI still starting, or a harness with no status of its own)"},

@@ -271,8 +271,10 @@ type SpawnResponse struct {
 	SpawnedBy string `json:"spawned_by,omitempty"`
 	Cwd       string `json:"cwd"`
 	TaskFile  string `json:"task_file,omitempty"` // as resolved against Cwd
-	// Status is the agent's resolved status right after it started.
+	// Status is the agent's resolved status right after it started, and
+	// Detail what it is doing or asking (e.g. "trust: <folder>").
 	Status    string `json:"status"`
+	Detail    string `json:"detail,omitempty"`
 	EndReason string `json:"end_reason,omitempty"`
 }
 

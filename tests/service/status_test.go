@@ -487,7 +487,7 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	fake.promptGone = true
 
 	// Claude's trust dialog on screen (shown here by the shell echoing it).
-	if _, err := env.service.SendUnchecked(ctx, "worker", "printf ' ❯ No, exit\\n   Yes, I trust this folder\\n'"); err != nil {
+	if _, err := env.service.SendUnchecked(ctx, "worker", "printf ' Quick safety check: Is this a project you created or one you trust?\\n\\n ❯ No, exit\\n   Yes, I trust this folder\\n\\n Enter to confirm\\n'; read -r -n 1 _"); err != nil {
 		t.Fatal(err)
 	}
 	// The printed line, not the typed command line, which holds it too.
@@ -500,7 +500,11 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	}
 
 	// No dialog: send goes through. Send reads the visible screen, which
-	// the shell's clear empties (friction #5 is about the scrollback).
+	// the shell's clear empties (friction #5 is about the scrollback). The
+	// Enter ends the read that kept the shell's prompt off the dialog.
+	if err := env.tmux.SendSpecialKey(session, "Enter"); err != nil {
+		t.Fatal(err)
+	}
 	env.tmux.Clear(session)
 	waitPane(t, env, session, "the dialog cleared off the screen", func(screen string) bool {
 		return !strings.Contains(screen, "trust this folder")

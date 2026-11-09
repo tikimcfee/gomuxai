@@ -111,7 +111,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%d held message(s) go to it once it is at its prompt.\n", n)
 	}
 	if info, err := agentService.StatusInfo(ctx, name); err == nil {
-		fmt.Println(spawnReadiness(name, info.Status))
+		fmt.Println(spawnReadiness(name, resumed.Backend, info.Status, info.Detail, readiness{}))
 	}
 	if resumeAttach {
 		return attachSession(resumed.SessionName)

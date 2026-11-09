@@ -29,9 +29,16 @@ Claude agent is held for the end of its turn). --force overrides both.
 
 Use --expect with the tool you inspected, so a prompt that replaced it in the
 meantime isn't approved blind. An agent on another host is addressed as
-name@host (needs a running bus); its host runs the same checks.`,
+name@host (needs a running bus); its host runs the same checks.
+
+At the CLI's workspace trust prompt (Claude or agy in a folder it hasn't
+trusted; status shows tool "trust", detail "trust: <folder>"), approve
+picks "Yes, I trust this folder", which trusts it for good (so there is no
+--always), and the CLI starts. --expect trust names that prompt. A message
+spawn held while the prompt was up goes in once the CLI is at its prompt.`,
 	Example: `  agent status helper -v && agent approve helper --expect Bash
   agent approve helper --always   # Claude's "yes, don't ask again" option
+  agent approve helper --expect trust   # trust the folder at its trust prompt
   agent approve helper@hub --expect Bash`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -51,9 +58,13 @@ cancels the current turn; follow up with "agent send" to redirect it.
 
 Refuses unless the agent's status is "waiting" and the prompt is still on
 screen (override with --force): for Claude the deny key is Escape, which
-would cancel the turn if the prompt was answered in the meantime.`,
+would cancel the turn if the prompt was answered in the meantime.
+
+At the CLI's workspace trust prompt, deny picks "No, exit": the CLI exits,
+and the agent is ended (quit).`,
 	Example: `  agent deny helper
   agent deny helper --expect Bash
+  agent deny helper --expect trust   # decline its workspace trust prompt
   agent deny helper@hub`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -95,7 +106,7 @@ func respondPermission(name string, resp backend.PermissionResponse, verb string
 		line += fmt.Sprintf(" (%s)", service.OneLine(info.Detail))
 	}
 	fmt.Println(line + ".")
-	if resp == backend.PermissionDeny && !remote {
+	if resp == backend.PermissionDeny && !remote && !info.IsTrustPrompt() {
 		if a, err := agentService.Agent(getContext(), ref.Name); err == nil && a.Backend == "claude" {
 			hint("denying cancels Claude's turn: tell it what to do instead with agent send %s \"...\"", name)
 		}
