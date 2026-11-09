@@ -55,6 +55,16 @@ binary's hook.
 Spawn returns once the CLI has had its startup time, and says the status it
 found the agent in: "idle" means it is ready for a message.
 
+In a folder the CLI hasn't trusted yet, Claude and agy first ask whether to
+trust it. Spawn then says so ("It is waiting at Claude's workspace trust
+prompt for <folder>: agent approve <name> trusts it, or respawn with
+--trust-workspace."), and the agent's status is waiting until someone
+answers: agent approve trusts the folder, agent deny declines it (the CLI
+exits). A Claude agent's first message waits for it, held rather than typed
+into the prompt, and goes in once the CLI is at its prompt.
+--trust-workspace answers the prompt at launch instead (trusting a folder
+also enables its own hooks and settings, so only for folders you trust).
+
 --resume continues a Claude or agy session that already exists, as this
 agent, instead of starting a new one: a session you ran in a terminal joins
 the workgroup, and agent send reaches it from then on. It takes what agent
@@ -245,7 +255,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Print(spawnSummary(agent, where, spawnTask, taskFile, resume))
 	if info, err := agentService.StatusInfo(getContext(), name); err == nil {
-		fmt.Println(spawnReadiness(name, info.Status))
+		fmt.Println(spawnReadiness(name, agent.Backend, info.Status, info.Detail, readiness{task: spawnTask != "" || taskFile != ""}))
 	}
 	if spawnAttach {
 		return attachSession(agent.SessionName)
@@ -359,13 +369,18 @@ func runRemoteSpawn(ref natsbus.AgentRef, rest []string) error {
 
 	agent := &storage.Agent{Name: ref.String(), SessionName: resp.Session, Backend: resp.Backend, SpawnedBy: resp.SpawnedBy}
 	fmt.Print(spawnSummary(agent, fmt.Sprintf("on %s in %s", ref.Host, resp.Cwd), spawnTask, resp.TaskFile, ""))
-	fmt.Println(remoteSpawnReadiness(ref, service.AgentStatus(resp.Status)))
+	fmt.Println(remoteSpawnReadiness(ref, resp, spawnTask != "" || resp.TaskFile != ""))
 	return nil
 }
 
-// remoteSpawnReadiness is spawnReadiness for an agent on another host.
-func remoteSpawnReadiness(ref natsbus.AgentRef, status service.AgentStatus) string {
-	return spawnReadiness(ref.String(), status)
+// remoteSpawnReadiness is spawnReadiness for an agent on another host,
+// where logs don't reach.
+func remoteSpawnReadiness(ref natsbus.AgentRef, resp *natsbus.SpawnResponse, task bool) string {
+	status := service.AgentStatus(resp.Status)
+	if status == service.AgentStatusEnded {
+		return fmt.Sprintf("Its session has already ended: agent capture %s shows its screen.", ref)
+	}
+	return spawnReadiness(ref.String(), resp.Backend, status, resp.Detail, readiness{task: task, remote: true})
 }
 
 // resumableSession finds the session --resume names and checks that an
@@ -464,9 +479,26 @@ func checkResumable(s discovery.Session, backendName string) error {
 	return nil
 }
 
+// readiness is what spawnReadiness says beside the status.
+type readiness struct {
+	task   bool // the agent was given a task
+	remote bool // it runs on another host, where --trust-workspace can't reach
+}
+
 // spawnReadiness says what the status spawn found the new agent in means
 // for sending to it.
-func spawnReadiness(name string, status service.AgentStatus) string {
+func spawnReadiness(name, backendName string, status service.AgentStatus, detail string, r readiness) string {
+	if folder, ok := service.TrustPromptFolder(status, detail); ok {
+		line := fmt.Sprintf("It is waiting at %s's workspace trust prompt for %s: agent approve %s trusts it", service.TrustBackendName(backendName), folder, name)
+		if !r.remote {
+			line += ", or respawn with --trust-workspace"
+		}
+		line += "."
+		if r.task {
+			line += " Its task waits until the folder is trusted."
+		}
+		return line
+	}
 	switch status {
 	case service.AgentStatusIdle:
 		return "It is idle: ready for a message."

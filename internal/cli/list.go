@@ -116,7 +116,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%screated: %s\n", metaIndent, agent.CreatedAt.Format("2006-01-02 15:04:05"))
 	}
 	if waiting > 0 {
-		hint("%s waiting on a person (a permission prompt or question): agent status <name> -v shows what it's asking", plural(waiting, "agent"))
+		hint("%s waiting on a person (a permission prompt, a question, or a trust prompt): agent status <name> -v shows what it's asking", plural(waiting, "agent"))
 	}
 	return nil
 }

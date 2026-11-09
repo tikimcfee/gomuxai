@@ -50,6 +50,11 @@ pane runs: a CLI a person started anew there becomes the agent's session
 (event "adopted"). If it runs none, a session last reported running is
 ended (gone).
 
+A Claude or agy agent started in a folder its CLI hasn't trusted waits at
+the CLI's workspace trust prompt, which runs no hook: status reads it off
+the screen as waiting, tool "trust", detail "trust: <folder>". agent approve
+trusts the folder; agent deny declines it, and the CLI exits.
+
 agy shows its permission and ask_question dialogs with no hook of their own,
 so a dialog on screen after the tool's PreToolUse makes it waiting, with
 "permission: ..." or "question: ..." as the detail.
@@ -172,6 +177,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		hint("agent logs %s shows how it ended; agent cleanup %s removes it; agent statuses says what each status means", ref.Name, ref.Name)
 	case info.Status == service.AgentStatusUnknown && info.Source == service.StatusSourceScrape:
 		hint("its backend doesn't report status and its screen matched no known prompt: agent capture %s shows the screen", name)
+	case info.IsTrustPrompt():
+		hint("agent approve %s trusts the folder; agent deny %s declines it, and its CLI exits", name, name)
 	case info.Status == service.AgentStatusWaiting && !statusVerbose:
 		hint("agent status %s -v shows what it's waiting on", name)
 	}
@@ -204,6 +211,8 @@ func heldLine(name string, remote bool, info *service.StatusInfo) string {
 	switch {
 	case remote:
 		line = "  held:   " + n
+	case info.IsTrustPrompt():
+		line = "  held:   " + n + ", typed in once the folder is trusted (agent approve " + name + ") and it is at its prompt"
 	case agentService.HoldsMessages(getContext(), name) && (info.Status == service.AgentStatusIdle || info.Status == service.AgentStatusError):
 		// The turn ended without its Stop hook: Esc, a deny, a failure.
 		if why := agentService.InputBlocked(getContext(), name); why != "" {

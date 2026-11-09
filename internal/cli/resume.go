@@ -101,7 +101,7 @@ func printResumed(name string, resp *natsbus.ResumeResponse) {
 		fmt.Printf("%d held message(s) go to it once it is at its prompt.\n", resp.Held)
 	}
 	if resp.Status != "" {
-		fmt.Println(spawnReadiness(name, service.AgentStatus(resp.Status)))
+		fmt.Println(spawnReadiness(name, resp.Backend, service.AgentStatus(resp.Status), resp.Detail, readiness{}))
 	}
 }
 
@@ -159,7 +159,7 @@ func resumeAgent(ctx context.Context, name, caller string, skipPermissions, trus
 		SessionID: s.SessionID, Cwd: s.Cwd, Held: agentService.HeldCount(ctx, name),
 	}
 	if info, err := agentService.StatusInfo(ctx, name); err == nil {
-		resp.Status, resp.EndReason = string(info.Status), string(info.EndReason)
+		resp.Status, resp.EndReason, resp.Detail = string(info.Status), string(info.EndReason), info.Detail
 	}
 	return resp, nil
 }

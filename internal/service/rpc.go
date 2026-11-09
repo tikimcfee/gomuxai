@@ -215,7 +215,7 @@ func (h rpcHandler) Spawn(ctx context.Context, req natsbus.SpawnRequest) (*natsb
 		Status:    string(AgentStatusUnknown),
 	}
 	if info, err := h.s.StatusInfo(ctx, agent.Name); err == nil {
-		resp.Status, resp.EndReason = string(info.Status), string(info.EndReason)
+		resp.Status, resp.Detail, resp.EndReason = string(info.Status), info.Detail, string(info.EndReason)
 	}
 	return resp, nil
 }
