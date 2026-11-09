@@ -34,8 +34,8 @@ func isRemoteHost(host string) bool {
 }
 
 // canonicalHost returns host as the bus spells it: this host's name, or a
-// trusted peer's, when host matches one ignoring case; any other host as
-// given. Host names are matched case-insensitively ("il-air-m2" is
+// trusted peer's, when host matches one ignoring case, or a name either had
+// before it was renamed; any other host as given. Host names are matched case-insensitively ("il-air-m2" is
 // "IL-Air-M2"), but bus subjects are case-sensitive, so a request must go
 // out under the host's own spelling. A host this one doesn't trust directly
 // (another host linked through the hub) is only known by the spelling it is
@@ -44,12 +44,19 @@ func canonicalHost(host string) string {
 	if host == "" || host == cfg.Host {
 		return host
 	}
-	if strings.EqualFold(host, cfg.Host) {
-		return cfg.Host
+	same := func(name string) bool { return strings.EqualFold(host, name) }
+	if same(cfg.Host) || slices.ContainsFunc(natsbus.PreviousHosts(cfg.BusDir()), same) {
+		return cfg.Host // or a name it had before agent bus rename
 	}
-	for _, peer := range trustedHosts() {
-		if strings.EqualFold(host, peer) {
-			return peer
+	peers, _ := natsbus.LoadPeers(cfg.BusDir())
+	for _, p := range peers {
+		if same(p.Host) {
+			return p.Host
+		}
+	}
+	for _, p := range peers {
+		if p.Names(host) { // a name it had before (trust --renames)
+			return p.Host
 		}
 	}
 	return host

@@ -530,3 +530,44 @@ func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// After agent bus rename, a former name (in AGENT_HOST, which agents spawned
+// before the rename keep, or in the app config) means the identity's
+// current name, so those agents keep reaching their own bus.
+func TestLoadFromFile_FormerHostNameMeansTheCurrentOne(t *testing.T) {
+	dir := t.TempDir()
+	busDir := filepath.Join(dir, "bus")
+	if err := os.MkdirAll(busDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"host": "new-name\n", "host.previous": "older\nold-name\n"} {
+		if err := os.WriteFile(filepath.Join(busDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	load := func(extra string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "app.json")
+		body := `{"database_path": ` + jsonString(filepath.Join(dir, "gomuxai.db")) + extra + `}`
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.LoadFromFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Host
+	}
+	t.Setenv("AGENT_HOST", "OLD-NAME")
+	if got := load(""); got != "new-name" {
+		t.Errorf("AGENT_HOST naming a former name: host = %q, want new-name", got)
+	}
+	t.Setenv("AGENT_HOST", "elsewhere")
+	if got := load(""); got != "elsewhere" {
+		t.Errorf("AGENT_HOST naming another host: host = %q", got)
+	}
+	t.Setenv("AGENT_HOST", "")
+	if got := load(`, "host": "older"`); got != "new-name" {
+		t.Errorf(`"host" naming a former name: host = %q, want new-name`, got)
+	}
+}
