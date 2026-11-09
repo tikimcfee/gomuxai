@@ -86,7 +86,7 @@ func getStorageDir() string {
 // later calls it (macOS renames itself "Mac" on some networks).
 func defaultHost(busDir string) string {
 	if host := os.Getenv("AGENT_HOST"); host != "" {
-		return host
+		return currentHost(busDir, host)
 	}
 	// The identity's own record (natsbus's hostNameFile): written by
 	// agent bus init, and checked against the host on every load.
@@ -96,6 +96,27 @@ func defaultHost(busDir string) string {
 		}
 	}
 	return systemHost()
+}
+
+// currentHost returns host, or the bus identity's name if host is one the
+// identity had before (natsbus's host.previous, written by agent bus
+// rename): agents spawned before a rename keep the old name in AGENT_HOST,
+// and a config file may still name it.
+func currentHost(busDir, host string) string {
+	data, err := os.ReadFile(filepath.Join(busDir, "host.previous"))
+	if err != nil {
+		return host
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.EqualFold(strings.TrimSpace(line), host) {
+			if b, err := os.ReadFile(filepath.Join(busDir, "host")); err == nil {
+				if name := strings.TrimSpace(string(b)); name != "" {
+					return name
+				}
+			}
+		}
+	}
+	return host
 }
 
 // systemHost returns this machine's name with characters that can't
@@ -168,6 +189,8 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 	if json.Unmarshal(data, &set) == nil && set.Host == nil {
 		cfg.Host = defaultHost(cfg.BusDir())
+	} else if cfg.Host != "" {
+		cfg.Host = currentHost(cfg.BusDir(), cfg.Host)
 	}
 
 	return cfg, nil

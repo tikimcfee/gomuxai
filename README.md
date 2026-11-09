@@ -234,7 +234,7 @@ other machine (`scp`, or `agent bus export` prints it), then on each:
 mac$ agent bus trust hub.pub.json
 Trusted "hub": key UDZ7HRETTSGNRVHUYNVXT7RC…, certificate pin e4ff45de0734748eb8ad951c…
 This host will link to it at tls://192.0.2.10:7422 (unless it is the hub).
-Restart the bus to apply: agent bus stop && agent bus start ...
+Restart the bus to apply: agent bus restart
 ```
 
 Compare the key and pin with what `bus init` printed on the other machine.
@@ -291,6 +291,25 @@ to work from here; `agent bus ssh hub me@hub.lan` sets where ssh goes. Clean it 
 host: ask the agent to `send` you what you need, or `capture` its screen. The bus's security model (TLS 1.3 with
 pinned certificates, a key per host, no shared secrets) is described in
 [`CLAUDE.md`](CLAUDE.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+**Later changes.** `agent bus untrust <host>` drops a peer (its bundle and
+ssh destination) and restarts the bus; run it on both sides. `agent bus
+rename <new-name>` renames this host, keeping its keys, restarts its bus as
+the new name, and prints what each peer runs to follow it:
+
+```console
+mac$ agent bus rename studio
+Renamed this host's bus identity from "mac" to "studio" in …/.gomuxai/bus
+  same key UCITKEFZEAI3UG7XFYNTEKYMUCZNV4YY…, certificate pin f890ca201cadbb67a402a2c2…
+…
+  on hub: agent bus trust studio.pub.json --renames mac
+hub$ agent bus trust studio.pub.json --renames mac
+Trusted "studio" as mac renamed: same key UCITKEFZEAI3UG7XFYNTEKYMUCZNV4YY…, certificate pin f890ca201cadbb67a402a2c2…
+```
+
+`trust --renames` refuses a bundle whose keys aren't the old name's, and
+updates the hub's references to the old name. `agent bus restart` restarts
+the bus with the settings it runs with.
 
 On the Mac, use a `make macos` build (see [macOS](#macos)). Without one, the
 bus prints a note about it in its `gomux-bus` session
