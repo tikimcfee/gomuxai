@@ -13,6 +13,7 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/tmuxtest"
 )
 
 // testSessionPrefix ensures unique session names for tests
@@ -28,12 +29,14 @@ func cleanupSession(name string) {
 	exec.Command("tmux", "kill-session", "-t", name).Run()
 }
 
-// requireTmux skips the test if tmux is not available
+// requireTmux skips the test if tmux is not available, and fails it if
+// this binary isn't on its private tmux server (TestMain).
 func requireTmux(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	tmuxtest.Require(t)
 }
 
 // TestCreateSession tests session creation
