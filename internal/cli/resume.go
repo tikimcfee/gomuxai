@@ -47,8 +47,10 @@ bus: that host runs its own resume, so the refusals are its own (not
 claude or agy, no session, not ended, adopted). Its bus must list resume
 in --remote-ops: resume is off for other hosts by default, since it starts
 a process as that host's user. Inside an agent, the other host lets you
-resume only your own helpers there. --attach isn't supported for another
-host's agent yet.`,
+resume only your own helpers there. --skip-permissions and
+--trust-workspace are refused for another host's agent, as for agent spawn
+name@host: run agent resume on that host for those. --attach isn't
+supported for another host's agent yet.`,
 	Example: `  agent resume lead
   agent resume lead --attach
   agent resume lead@hub`,

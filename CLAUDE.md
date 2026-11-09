@@ -503,8 +503,9 @@ a bus message (512 KB; the newest events are kept, and stderr says how
 much was left out). `resume name@host` runs that host's resume, so its
 refusals are that host's (not claude or agy, no session, not ended,
 adopted); like `spawn`, it starts a process as that host's user, so it is
-off for peers unless the host lists it, and a peer may pass
-`--skip-permissions` and `--trust-workspace`. Inside an agent, the other
+off for peers unless the host lists it, and like a remote spawn it refuses
+`--skip-permissions` and `--trust-workspace` (run resume on that host for
+those). Inside an agent, the other
 host lets you resume only your own helpers there (`lead@laptop`'s).
 `--attach` for another host's agent isn't supported yet.
 

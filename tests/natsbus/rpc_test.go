@@ -224,12 +224,12 @@ func TestRPC_AllOpsRoundTrip(t *testing.T) {
 		t.Errorf("logs request = %+v", got)
 	}
 
-	resumed, err := client.Resume(ctx, worker, natsbus.ResumeRequest{Agent: "ignored", SkipPermissions: true, ResumedBy: "lead@laptop"})
+	resumed, err := client.Resume(ctx, worker, natsbus.ResumeRequest{Agent: "ignored", ResumedBy: "lead@laptop"})
 	if err != nil || *resumed != (natsbus.ResumeResponse{Name: "worker", Session: "agent-worker", Backend: "claude",
 		SessionID: "5f0c", Cwd: "/srv/project", Held: 2, Status: "idle"}) {
 		t.Errorf("Resume = %+v, %v", resumed, err)
 	}
-	if got := fake.last(); got != (natsbus.ResumeRequest{Agent: "worker", SkipPermissions: true, ResumedBy: "lead@laptop"}) {
+	if got := fake.last(); got != (natsbus.ResumeRequest{Agent: "worker", ResumedBy: "lead@laptop"}) {
 		t.Errorf("resume request = %+v", got)
 	}
 
