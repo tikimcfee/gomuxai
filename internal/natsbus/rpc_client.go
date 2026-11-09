@@ -158,6 +158,35 @@ func (c *RPCClient) Spawn(ctx context.Context, ref AgentRef, req SpawnRequest) (
 	return &resp, nil
 }
 
+// Logs returns what agent logs prints for a remote agent. req.Agent is set
+// from ref. Output and Hint are sanitized: no terminal controls but newline
+// and tab.
+func (c *RPCClient) Logs(ctx context.Context, ref AgentRef, req LogsRequest) (*LogsResponse, error) {
+	req.Agent = ref.Name
+	var resp LogsResponse
+	if err := c.callAgent(ctx, ref, OpLogs, req, &resp); err != nil {
+		return nil, err
+	}
+	resp.Output, resp.Hint = clean(resp.Output), clean(resp.Hint)
+	return &resp, nil
+}
+
+// Resume starts an ended agent on ref.Host again. req.Agent is set from
+// ref. Like Spawn, it waits up to SpawnTimeout for the CLI to start.
+func (c *RPCClient) Resume(ctx context.Context, ref AgentRef, req ResumeRequest) (*ResumeResponse, error) {
+	req.Agent = ref.Name
+	long := *c
+	long.timeout = max(c.timeout, SpawnTimeout)
+	var resp ResumeResponse
+	if err := long.callAgent(ctx, ref, OpResume, req, &resp); err != nil {
+		return nil, err
+	}
+	for _, f := range []*string{&resp.Name, &resp.Session, &resp.Backend, &resp.SessionID, &resp.Cwd, &resp.Status, &resp.EndReason} {
+		*f = clean(*f)
+	}
+	return &resp, nil
+}
+
 // Friction sends a friction request to host and returns its answer, with
 // the text in it sanitized.
 func (c *RPCClient) Friction(ctx context.Context, host string, req FrictionRequest) (*FrictionResponse, error) {

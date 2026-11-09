@@ -405,6 +405,31 @@ func TestRPCClient_SanitizesRemoteText(t *testing.T) {
 		}
 	}
 
+	logs, err := client.Logs(ctx, ref, natsbus.LogsRequest{Lines: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := client.Resume(ctx, ref, natsbus.ResumeRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := client.List(ctx, "h1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, f := range map[string]string{
+		"logs output": logs.Output, "logs hint": logs.Hint,
+		"resume name": resumed.Name, "resume session": resumed.Session, "resume backend": resumed.Backend,
+		"resume session_id": resumed.SessionID, "resume cwd": resumed.Cwd, "resume status": resumed.Status,
+		"resume end_reason": resumed.EndReason,
+		"list detail":       agents[0].Detail, "list cwd": agents[0].Cwd, "list session_id": agents[0].SessionID,
+		"list spawned_by": agents[0].SpawnedBy, "list end_reason": agents[0].EndReason,
+	} {
+		if f != st.Detail {
+			t.Errorf("%s = %q, want it sanitized like status detail %q", name, f, st.Detail)
+		}
+	}
+
 	fr, err := client.Friction(ctx, "h1", natsbus.FrictionRequest{Action: natsbus.FrictionGet, IDs: []int64{1}})
 	if err != nil {
 		t.Fatal(err)
@@ -424,7 +449,8 @@ func TestRPCClient_SanitizesRemoteText(t *testing.T) {
 type evilHandler struct{ text string }
 
 func (h evilHandler) List(context.Context) (*natsbus.ListResponse, error) {
-	return &natsbus.ListResponse{Agents: []natsbus.AgentInfo{{Name: h.text}}}, nil
+	t := h.text
+	return &natsbus.ListResponse{Agents: []natsbus.AgentInfo{{Name: t, Detail: t, Cwd: t, SessionID: t, SpawnedBy: t, EndReason: t}}}, nil
 }
 func (h evilHandler) Status(context.Context, natsbus.StatusRequest) (*natsbus.StatusResponse, error) {
 	return &natsbus.StatusResponse{Status: "idle", Detail: h.text}, nil
@@ -441,6 +467,15 @@ func (h evilHandler) Respond(context.Context, natsbus.RespondRequest) error {
 func (h evilHandler) Keys(context.Context, natsbus.KeysRequest) error { return nil }
 func (h evilHandler) Spawn(context.Context, natsbus.SpawnRequest) (*natsbus.SpawnResponse, error) {
 	return &natsbus.SpawnResponse{Name: h.text, Session: h.text, Backend: h.text, SpawnedBy: h.text, Cwd: h.text, TaskFile: h.text, Status: h.text, EndReason: h.text}, nil
+}
+
+func (h evilHandler) Logs(context.Context, natsbus.LogsRequest) (*natsbus.LogsResponse, error) {
+	return &natsbus.LogsResponse{Output: h.text, Hint: h.text}, nil
+}
+
+func (h evilHandler) Resume(context.Context, natsbus.ResumeRequest) (*natsbus.ResumeResponse, error) {
+	t := h.text
+	return &natsbus.ResumeResponse{Name: t, Session: t, Backend: t, SessionID: t, Cwd: t, Status: t, EndReason: t}, nil
 }
 
 func (h evilHandler) Friction(context.Context, natsbus.FrictionRequest) (*natsbus.FrictionResponse, error) {

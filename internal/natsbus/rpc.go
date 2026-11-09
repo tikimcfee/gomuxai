@@ -22,6 +22,8 @@ type RPCHandler interface {
 	Keys(ctx context.Context, req KeysRequest) error
 	Spawn(ctx context.Context, req SpawnRequest) (*SpawnResponse, error)
 	Friction(ctx context.Context, req FrictionRequest) (*FrictionResponse, error)
+	Logs(ctx context.Context, req LogsRequest) (*LogsResponse, error)
+	Resume(ctx context.Context, req ResumeRequest) (*ResumeResponse, error)
 }
 
 // opFunc decodes an op's request, runs it, and returns the reply's data
@@ -94,6 +96,32 @@ var rpcOps = map[string]opFunc{
 			}
 		}
 		return h.Spawn(ctx, req)
+	},
+	OpLogs: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
+		var req LogsRequest
+		if err := decodeAgent(OpLogs, data, &req, &req.Agent); err != nil {
+			return nil, err
+		}
+		if req.Lines < 1 {
+			return nil, fmt.Errorf("logs request's lines must be at least 1")
+		}
+		return h.Logs(ctx, req)
+	},
+	OpResume: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
+		var req ResumeRequest
+		if err := decodeAgent(OpResume, data, &req, &req.Agent); err != nil {
+			return nil, err
+		}
+		if req.ResumedBy != "" {
+			ref, err := ParseAgentRef(req.ResumedBy)
+			if err != nil {
+				return nil, fmt.Errorf("resume request's resumed_by: %w", err)
+			}
+			if ref.Host == "" {
+				return nil, fmt.Errorf("resume request's resumed_by %q names no host: want name@host", req.ResumedBy)
+			}
+		}
+		return h.Resume(ctx, req)
 	},
 	OpFriction: func(ctx context.Context, h RPCHandler, data []byte) (any, error) {
 		var req FrictionRequest

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
@@ -239,11 +240,14 @@ func TestLogs_Unparseable(t *testing.T) {
 	}
 }
 
-func TestLogs_RefusesOtherHosts(t *testing.T) {
+// A host whose bus doesn't serve logs (an older agent) is no bus
+// answering, and the hint points at capture.
+func TestLogs_HostWithoutLogsOp(t *testing.T) {
 	setupLogs(t)
-	err := runLogs(logsCmd, []string{"worker@hub"})
-	if err == nil || !strings.Contains(err.Error(), "agent capture worker@hub") {
-		t.Errorf("remote: %v", err)
+	serveAsH1With(t, []string{natsbus.OpList, natsbus.OpStatus, natsbus.OpCapture})
+	err := runLogs(logsCmd, []string{"worker@h1"})
+	if err == nil || !strings.Contains(err.Error(), `does it allow "logs"`) || !strings.Contains(hints.String(), "agent capture worker@h1") {
+		t.Errorf("remote: %v, hint %q", err, hints)
 	}
 }
 
