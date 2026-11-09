@@ -59,9 +59,15 @@ and screen redraws left out; it has no timestamps. Log files are in the
 data dir next to the agent binary, not in the working directory; here:
   ` + filepath.Join(config.DefaultConfig().LogDir, "<name>.log") + `
 
-For the live screen, or an agent on another host (logs are kept per host),
-use agent capture.`,
+For an agent on another host, agent logs name@host prints what agent logs
+prints there, with the same flags, through the agent bus (its logs op,
+which a host serves to peers by default). A bus message holds at most
+512 KB: a longer answer keeps the newest events (whole events, whole JSON
+lines) and says on stderr how much was left out; --lines asks for fewer.
+Terminal controls are stripped from the text, as capture's are. For the
+live screen, use agent capture.`,
 	Example: `  agent logs researcher
+  agent logs researcher@hub --lines 20
   agent logs researcher --lines 10 --full
   agent logs researcher --terminal --lines 100`,
 	Args: cobra.ExactArgs(1),
@@ -87,53 +93,95 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if remote {
-		return fmt.Errorf("logs are kept per host, and %s's are on %q: agent capture %s shows its screen", ref, ref.Host, ref)
-	}
-	name := ref.Name
-	if logsLines < 1 {
-		return fmt.Errorf("--lines must be at least 1")
-	}
-	if logsJSON && (logsTerminal || logsFull) {
-		return fmt.Errorf("--json prints transcript events whole; it doesn't go with --terminal or --full")
-	}
-	// The name becomes a path component.
-	if err := service.ValidateAgentName(name); err != nil {
+	opts := logsOptions{Lines: logsLines, Full: logsFull, JSON: logsJSON, Terminal: logsTerminal}
+	if err := opts.check(); err != nil {
 		return err
 	}
-	if logsTerminal {
-		return printTerminalLog(name)
+	if remote {
+		return runRemoteLogs(ref, opts)
+	}
+	chunks, why, err := buildLogs(ref.Name, opts)
+	if err != nil {
+		return err
+	}
+	if why != "" {
+		hint("%s", why)
+	}
+	for _, c := range chunks {
+		fmt.Print(c.text)
+	}
+	return nil
+}
+
+// logsOptions are agent logs' flags.
+type logsOptions struct {
+	Lines                int
+	Full, JSON, Terminal bool
+}
+
+func (o logsOptions) check() error {
+	if o.Lines < 1 {
+		return fmt.Errorf("--lines must be at least 1")
+	}
+	if o.JSON && (o.Terminal || o.Full) {
+		return fmt.Errorf("--json prints transcript events whole; it doesn't go with --terminal or --full")
+	}
+	return nil
+}
+
+// logsChunk is one piece of what agent logs prints, ending in a newline:
+// an event (its line, or with --full its lines), a session's separator or
+// JSON session line (session set), or a line of the terminal log or a
+// message. A reply that must be cut drops whole chunks.
+type logsChunk struct {
+	text    string
+	session bool
+}
+
+// buildLogs works out what agent logs prints for name on this host: the
+// chunks for stdout, and a hint for stderr ("" for none). The bus's logs
+// op serves the same, so agent logs name@host prints what logs prints
+// there.
+func buildLogs(name string, o logsOptions) ([]logsChunk, string, error) {
+	// The name becomes a path component.
+	if err := service.ValidateAgentName(name); err != nil {
+		return nil, "", err
+	}
+	if o.Terminal {
+		chunks, err := terminalLogChunks(name, o.Lines)
+		return chunks, "", err
 	}
 
-	sessions, why := readTranscripts(name, logsLines)
+	sessions, why := readTranscripts(name, o.Lines)
 	if why != "" {
-		if logsJSON {
-			return fmt.Errorf("no transcript to print for %s: %s; agent logs %s --terminal prints its terminal log", name, why, name)
+		if o.JSON {
+			return nil, "", fmt.Errorf("no transcript to print for %s: %s; agent logs %s --terminal prints its terminal log", name, why, name)
 		}
 		if !logExists(name) {
 			if _, err := agentService.Agent(getContext(), name); err != nil {
-				return noLog(name)
+				return nil, "", noLog(name)
 			}
 		}
-		hint("printing %s's terminal log: %s", name, why)
-		return printTerminalLog(name)
+		chunks, err := terminalLogChunks(name, o.Lines)
+		return chunks, fmt.Sprintf("printing %s's terminal log: %s", name, why), err
 	}
-	if logsJSON {
-		return printEventLines(sessions)
+	if o.JSON {
+		chunks, err := eventLineChunks(sessions)
+		return chunks, "", err
 	}
 	if len(sessions) == 1 && len(sessions[0].events) == 0 {
-		fmt.Printf("Agent %s's transcript has no events yet (%s).\n", name, sessions[0].Session.Path)
-		return nil
+		return []logsChunk{{text: fmt.Sprintf("Agent %s's transcript has no events yet (%s).\n", name, sessions[0].Session.Path)}}, "", nil
 	}
+	var chunks []logsChunk
 	for i, s := range sessions {
 		if i > 0 {
-			fmt.Printf("--- session %s (%s)\n", s.Session.SessionID, s.Session.Harness)
+			chunks = append(chunks, logsChunk{text: fmt.Sprintf("--- session %s (%s)\n", s.Session.SessionID, s.Session.Harness), session: true})
 		}
 		for _, e := range s.events {
-			fmt.Println(formatEvent(e, logsFull))
+			chunks = append(chunks, logsChunk{text: formatEvent(e, o.Full) + "\n"})
 		}
 	}
-	return nil
+	return chunks, "", nil
 }
 
 // logsSession is a transcript read for logs: the stream its lines make,
@@ -181,15 +229,25 @@ func readTranscripts(name string, n int) ([]logsSession, string) {
 	return sessions, ""
 }
 
-// printEventLines prints each session as docs/EVENTS.md frames it: a
+// eventLineChunks renders each session as docs/EVENTS.md frames it: a
 // session line, then its events, updates included, for the events logs
 // would print.
-func printEventLines(sessions []logsSession) error {
-	enc := json.NewEncoder(os.Stdout)
+func eventLineChunks(sessions []logsSession) ([]logsChunk, error) {
+	var chunks []logsChunk
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
-	for _, s := range sessions {
-		if err := enc.Encode(sessionLine{"session", s.Session}); err != nil {
+	line := func(v any, session bool) error {
+		b.Reset()
+		if err := enc.Encode(v); err != nil {
 			return err
+		}
+		chunks = append(chunks, logsChunk{text: b.String(), session: session})
+		return nil
+	}
+	for _, s := range sessions {
+		if err := line(sessionLine{"session", s.Session}, true); err != nil {
+			return nil, err
 		}
 		kept := make(map[string]bool, len(s.events))
 		for _, e := range s.events {
@@ -199,12 +257,12 @@ func printEventLines(sessions []logsSession) error {
 			if !kept[e.ID] {
 				continue
 			}
-			if err := enc.Encode(eventLine{"event", e}); err != nil {
-				return err
+			if err := line(eventLine{"event", e}, false); err != nil {
+				return nil, err
 			}
 		}
 	}
-	return nil
+	return chunks, nil
 }
 
 // sessionLine and eventLine are the JSON lines of an event stream.
@@ -430,24 +488,24 @@ func logExists(name string) bool {
 	return err == nil
 }
 
-// printTerminalLog prints the last logsLines lines of the agent's terminal log.
-func printTerminalLog(name string) error {
-	lines, err := tailLogLines(cfg.LogPath(name), logsLines)
+// terminalLogChunks returns the last n lines of the agent's terminal log,
+// or a line saying it has logged nothing yet.
+func terminalLogChunks(name string, n int) ([]logsChunk, error) {
+	lines, err := tailLogLines(cfg.LogPath(name), n)
 	if errors.Is(err, fs.ErrNotExist) || (err == nil && len(lines) == 0) {
 		if _, agentErr := agentService.Agent(getContext(), name); agentErr != nil {
-			return noLog(name)
+			return nil, noLog(name)
 		}
-		fmt.Printf("Agent %s has logged no output yet (%s).\n", name, absPath(cfg.LogPath(name)))
-		return nil
+		return []logsChunk{{text: fmt.Sprintf("Agent %s has logged no output yet (%s).\n", name, absPath(cfg.LogPath(name)))}}, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	for _, line := range lines {
-		fmt.Println(line)
+	chunks := make([]logsChunk, len(lines))
+	for i, line := range lines {
+		chunks[i] = logsChunk{text: line + "\n"}
 	}
-	return nil
+	return chunks, nil
 }
 
 // noLog is the error for a name with neither a log nor an agent: it

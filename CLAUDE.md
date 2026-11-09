@@ -316,8 +316,8 @@ agent resume helper          # an ended agent, on its last session
 ```
 
 A reboot (or a killed tmux server) ends every agent: `ended (gone)`.
-`resume` starts one again on its last session, in the directory it ran
-in, keeping its name, backend, parent (its helpers stay its helpers), its
+`resume` (or `resume name@host`, for another host's) starts one again on
+its last session, in the directory it ran in, keeping its name, backend, parent (its helpers stay its helpers), its
 own state keys and `_result`, and delivers messages held for it. Claude
 and agy agents only, and not an adopted one (its tmux session is a
 person's: start the CLI there yourself). Inside an agent, only your own
@@ -467,17 +467,18 @@ agent approve helper@hub --expect Bash
 agent spawn helper@hub --backend claude --cwd /srv/project tasks/build.md
 ```
 
-`status`, `capture`, `send`, `wait`, `events`, `approve`, `deny`, `keys`,
-and `spawn` take `name@host` (`spawn` also takes `--host hub`). Host names
+`status`, `capture`, `logs`, `send`, `wait`, `events`, `approve`, `deny`,
+`keys`, `spawn` and `resume` take `name@host` (`spawn` also takes `--host
+hub`). Host names
 match ignoring case for this host and the peers it trusts (a hub trusts
 every peer): `@il-air-m2` reaches `IL-Air-M2`. A host known only through the
 hub is reached by its exact name; a "no bus answering" error names the
 hosts this one knows. Not across hosts: `state` (ask the agent to send what
-you need, or `capture`), `logs` (use `capture`), `queue` (use `send`),
-`cleanup` (clean up on that host).
+you need, or `capture`), `queue` (use `send`), `cleanup` (clean up on that
+host).
 The other host's bus serves only its `--remote-ops` (default
-`list,status,capture,send,respond,friction`), so `keys` and `spawn` to another host
-are refused unless it lists them. "no bus answering for host X" means that
+`list,status,capture,send,respond,friction,logs`), so `keys`, `spawn` and
+`resume` to another host are refused unless it lists them. "no bus answering for host X" means that
 host's bus is down, not linked, or doesn't serve that op.
 
 A remote spawn's `--cwd` and task file are paths on that host (`--cwd`
@@ -491,6 +492,21 @@ give peers a shell. Spawned by agent `lead` on `laptop`, its
 parent there is `lead@laptop`, and it replies with `agent send
 lead@laptop`; spawned by a person, it has no parent. Spawn prints the agent as
 `name@host` with its status, so `agent wait helper@hub` follows it.
+
+```bash
+agent logs helper@hub --lines 20     # what logs prints there, same flags
+agent resume helper@hub              # that host's own resume; needs resume in its --remote-ops
+```
+
+`logs name@host` returns what `agent logs` prints on that host, cut to fit
+a bus message (512 KB; the newest events are kept, and stderr says how
+much was left out). `resume name@host` runs that host's resume, so its
+refusals are that host's (not claude or agy, no session, not ended,
+adopted); like `spawn`, it starts a process as that host's user, so it is
+off for peers unless the host lists it, and a peer may pass
+`--skip-permissions` and `--trust-workspace`. Inside an agent, the other
+host lets you resume only your own helpers there (`lead@laptop`'s).
+`--attach` for another host's agent isn't supported yet.
 
 ### Setting up the bus
 
