@@ -14,8 +14,10 @@ The Go types are in `internal/transcript/events.go`; the Session is
 
 ## Commands
 
-- `agent sessions [--json] [--harness h] [--workgroup|--local] [--dirs]`: every agent session on the
-  host, newest first. That includes workgroup agents (spawned by gomuxai, with a name, parent
+- `agent sessions [--json] [--all|--limit N] [--since when] [--project p] [--harness h]
+  [--workgroup|--local] [--dirs]`: the agent sessions on the host, newest first: the newest 25
+  in the table, and with `--json` every one unless `--limit` says how many (each session with
+  its subagents; `agent help sessions` has the filters' rules). That includes workgroup agents (spawned by gomuxai, with a name, parent
   and status) and local transcripts that no workgroup owns (a plain Claude Code, agy or Kimi
   session). Both kinds have the same fields; `workgroup` says which one a session is.
   `--json` prints an array of Sessions. `--dirs` prints the directories it scans instead

@@ -140,16 +140,34 @@ type Report struct {
 //   - a subagent: ended (finished) if it recorded finishing, (gone) if agy
 //     says it isn't open, (parent) if its parent session ended; else unknown.
 func Resolve(sessions []Session, agents []Agent, live Live) []Session {
-	if live.Now.IsZero() {
-		live.Now = time.Now()
-	}
+	j := join(sessions, agents)
+	j.status(j.sessions, live)
+	sortSessions(j.sessions)
+	return j.sessions
+}
+
+// joined is sessions joined to the workgroup agents: the transcripts the
+// agents name added, and which run owns each transcript.
+type joined struct {
+	sessions []Session
+	// owner maps a transcript's path (pathKey) to the run it belongs to.
+	owner map[string]*Agent
+}
+
+// join adds to sessions the transcripts agents name that sessions lack
+// (outside the scanned dirs; as stubs, stubAt) and live agents with no
+// transcript yet, and works out which run owns each transcript. It reads
+// no transcript: what it needs is each one's path and last write. It
+// changes agents (a live agent's current transcript, where only its
+// session id named it), which owner points into.
+func join(sessions []Session, agents []Agent) joined {
 	// Paths are compared resolved, so a symlinked ~/.claude (or two
 	// spellings of one dir) is one session, not an owned and a local one.
 	byPath := map[string]int{}
-	for i, s := range sessions {
-		byPath[canonical(s.Path)] = i
+	for i := range sessions {
+		byPath[pathKey(&sessions[i])] = i
 	}
-	// Every transcript an agent names is read first, so the join below
+	// Every transcript an agent names is listed first, so the join below
 	// knows each one's last write wherever it lives.
 	for i := range agents {
 		for _, p := range append(slices.Clone(agents[i].History), agents[i].Transcript) {
@@ -157,7 +175,7 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 			if _, ok := byPath[key]; ok || p == "" {
 				continue
 			}
-			if s, ok := Probe(p); ok {
+			if s, ok := stubAt(p); ok {
 				byPath[key] = len(sessions)
 				sessions = append(sessions, s)
 			}
@@ -180,7 +198,7 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 		for j := range sessions {
 			if s := &sessions[j]; s.SessionID == a.SessionID && s.Harness == a.Backend && s.ParentSession == nil {
 				a.Transcript = s.Path
-				owner[canonical(s.Path)] = a
+				owner[pathKey(s)] = a
 				break
 			}
 		}
@@ -206,13 +224,24 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 		}
 		sessions = append(sessions, s)
 	}
+	return joined{sessions: sessions, owner: owner}
+}
 
+// status sets the workgroup and status of sessions, which it fills first
+// should any be a stub. A subagent's follow its parent's, when its parent
+// is among sessions.
+func (j joined) status(sessions []Session, live Live) {
+	if live.Now.IsZero() {
+		live.Now = time.Now()
+	}
+	owner := j.owner
 	// Main sessions first, then each subagent once its parent is done: a
 	// subagent's status and workgroup follow its parent's, at any depth.
 	byID := map[string]*Session{}
 	done := make([]bool, len(sessions))
 	for i := range sessions {
 		s := &sessions[i]
+		s.fill()
 		if s.ParentSession != nil {
 			continue
 		}
@@ -220,7 +249,7 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 		if s.Path == "" && s.Workgroup != nil {
 			continue
 		}
-		if a := owner[canonical(s.Path)]; a != nil {
+		if a := owner[pathKey(s)]; a != nil {
 			s.Workgroup = workgroupOf(a)
 			ownedStatus(s, a, live)
 		} else {
@@ -246,7 +275,7 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 			if parent == nil && waitForParent && hasSession(sessions, done, key) {
 				continue
 			}
-			if a := owner[canonical(s.Path)]; a != nil {
+			if a := owner[pathKey(s)]; a != nil {
 				s.Workgroup = workgroupOf(a)
 			} else if parent != nil {
 				s.Workgroup = parent.Workgroup
@@ -256,8 +285,6 @@ func Resolve(sessions []Session, agents []Agent, live Live) []Session {
 			done[i], progress, waitForParent = true, true, true
 		}
 	}
-	sortSessions(sessions)
-	return sessions
 }
 
 // hasSession reports whether a session not yet done has the harness and id
@@ -269,6 +296,14 @@ func hasSession(sessions []Session, done []bool, key string) bool {
 		}
 	}
 	return false
+}
+
+// pathKey is the key s's transcript is joined on: its path, canonical.
+func pathKey(s *Session) string {
+	if s.key != "" {
+		return s.key
+	}
+	return canonical(s.Path)
 }
 
 // canonical is the key a path is joined on: with symlinks resolved, or

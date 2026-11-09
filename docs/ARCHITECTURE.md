@@ -1245,7 +1245,9 @@ transcript growth.
 ## Sessions
 
 `agent sessions` (`internal/cli/sessions.go`, `internal/discovery`) lists
-every agent session on the host: workgroup agents' and the ones a person
+the agent sessions on the host, the newest 25 by default (`--all`,
+`--limit`, `--since`, `--project`, `--harness`, `--workgroup`, `--local`;
+`agent help sessions` has the rules): workgroup agents' and the ones a person
 ran, in one shape, the Session of [`docs/EVENTS.md`](EVENTS.md). It only
 reads, and runs no backend CLI: for Claude it reads Claude Code's session
 registry and the global hook's `session_reports`.
@@ -1298,12 +1300,40 @@ store and those its tmux sessions point at), each with its name's
 last transcript it is; one only the history names, to that name's newest
 run created before the file's last write. A subagent's session belongs to
 its parent session's agent, at any depth. Every transcript an agent names
-is read first, wherever it lives, so the history rule knows its last write.
+is listed first (stat only), wherever it lives, so the history rule knows
+its last write.
 Paths and stores are compared with symlinks resolved, so a symlinked
 `~/.claude` lists a session once. A live agent whose current session no
 hook has named a transcript for (one adopted from its pane) owns the
 session the scan found under its `_session_id`. A live agent with no
 transcript yet is listed with an empty `path` and its backend as `harness`.
+
+**Cost: list, pick, then read** (`discovery.Index`). `NewIndex` lists
+every session from directory listings and stat alone: id, harness, path,
+size and mtime, and a subagent's parent where its path says (Claude's
+`<id>/subagents/`, Kimi's `agents/<agent>/`). agy conversations are read in
+full there, since what they say is in agy's small index files, never the
+transcript. The workgroup join needs only paths and mtimes, so it runs on
+the listing too. `Select` then picks groups (a session and the subagents
+under it, ordered by the top session's mtime; a live agent's session with
+no transcript yet counts as now) that match every filter (harness,
+`--since` by mtime, workgroup or local by the join, project), keeps the
+newest `Limit`, and counts the rest; `Resolve` reads just the picked
+sessions and the sessions above any subagent among them, and sets their
+status. A project filter needs a Claude session's cwd, which only its
+transcript has, but Claude Code names the project folder for the cwd the
+session started in with every character but a letter or digit made `-`: a
+session whose folder lacks one of the filter's letter-and-digit runs
+can't match and isn't read (a folder that isn't such a slug, or is 200
+characters or more, is read). The rest are read to decide, so the count
+left out stays exact. `agent transcript`, `resume` and `spawn --resume`
+find a session by path (`Lookup`) or by id or its start in the listing's
+file names, then read it and its ancestors; `spawn --continue`
+(`Index.Continue`) reads the Claude sessions whose folder could be the
+directory's, newest first, until one ran there. On monolith1 (2076
+sessions, 1.6 GB, warm cache) the default table went from 0.52s to 0.045s,
+a lookup by id from 0.52s to 0.03s, and `--json` (every session, all read)
+stays 0.5s with identical output.
 
 **Status** (`discovery.Resolve`); every `ended` carries its end reason:
 - a live agent's current session: its last report, reconciled with the
