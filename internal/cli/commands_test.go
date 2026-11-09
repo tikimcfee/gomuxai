@@ -90,7 +90,7 @@ func TestFlagDefaults(t *testing.T) {
 		{keysCmd, "no-enter", "false"},
 		{waitCmd, "timeout", "0s"},
 		{waitCmd, "interval", "0s"},
-		{busStartCmd, "remote-ops", "[list,status,capture,send,respond,friction]"},
+		{busStartCmd, "remote-ops", "[list,status,capture,send,respond,friction,logs]"},
 	}
 	for _, tt := range tests {
 		f := tt.cmd.Flags().Lookup(tt.flag)

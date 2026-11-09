@@ -16,7 +16,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
-	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
@@ -58,11 +57,14 @@ trusts a peer by installing the peer's public bundle. Nothing secret is copied.
   agent bus start                         # other hosts
 
 Peers may only call the ops in --remote-ops on this host (default: list,
-status, capture, send, respond, friction). keys and spawn stay local-only unless
-listed: spawn lets every linked peer start agents here (agent spawn
-name@<this host>), which amounts to letting them run commands as this
-user (spawn an agent, then approve its prompts); list it only for peers
-you'd give a shell. E.g. --remote-ops list,status,capture,send,respond,friction,spawn.
+status, capture, send, respond, friction, logs). keys, spawn and resume
+stay local-only unless listed: spawn lets every linked peer start agents
+here (agent spawn name@<this host>), and resume lets them start an ended
+agent again (agent resume name@<this host>), which amounts to letting them
+run commands
+as this user (start an agent, then approve its prompts); list them only
+for peers you'd give a shell. E.g. --remote-ops
+list,status,capture,send,respond,friction,logs,spawn,resume.
 
 Only reaching other hosts needs a bus: everything on one host works without.`,
 	Example: `  agent bus status
@@ -258,7 +260,7 @@ func runBus(cmd *cobra.Command, args []string) error {
 
 	// Local callers may use every op; peers are limited to --remote-ops by
 	// the link permissions in natsbus.serverOptions.
-	stopRPC, err := natsbus.ServeRPC(nc, cfg.Host, service.NewRPCHandler(agentService), natsbus.AllOps)
+	stopRPC, err := natsbus.ServeRPC(nc, cfg.Host, busHandler(agentService), natsbus.AllOps)
 	if err != nil {
 		return err
 	}

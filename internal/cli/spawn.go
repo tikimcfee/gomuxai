@@ -90,7 +90,7 @@ pass it again to status, wait, and watch for that agent.
 On another host: name@host (or --host) starts the agent on that host
 through the agent bus, as status, send and wait reach it there. That host's
 bus must allow it: spawn is off for other hosts unless its --remote-ops lists
-it (agent bus start --remote-ops list,status,capture,send,respond,friction,spawn).
+it (agent bus start --remote-ops list,status,capture,send,respond,friction,logs,spawn).
 Paths are that host's: --cwd must be absolute there, and without it the
 agent starts in the home directory of the user its bus runs as; a task file
 is a path there, relative to --cwd. --task is read from this host's tasks
@@ -363,12 +363,8 @@ func runRemoteSpawn(ref natsbus.AgentRef, rest []string) error {
 	return nil
 }
 
-// remoteSpawnReadiness is spawnReadiness for an agent on another host,
-// where logs don't reach.
+// remoteSpawnReadiness is spawnReadiness for an agent on another host.
 func remoteSpawnReadiness(ref natsbus.AgentRef, status service.AgentStatus) string {
-	if status == service.AgentStatusEnded {
-		return fmt.Sprintf("Its session has already ended: agent capture %s shows its screen.", ref)
-	}
 	return spawnReadiness(ref.String(), status)
 }
 

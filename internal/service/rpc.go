@@ -16,14 +16,46 @@ import (
 // rpcHandler serves bus RPC ops through an AgentService.
 type rpcHandler struct {
 	s *AgentService
+	x RPCExtras
 }
 
 var _ natsbus.RPCHandler = rpcHandler{}
 
+// RPCExtras serves the ops whose logic lives in the CLI rather than the
+// service: what agent logs prints, and agent resume (which finds the
+// session to continue). The bus's own process supplies them; a nil one
+// refuses its op.
+type RPCExtras struct {
+	Logs   func(ctx context.Context, req natsbus.LogsRequest) (*natsbus.LogsResponse, error)
+	Resume func(ctx context.Context, req natsbus.ResumeRequest) (*natsbus.ResumeResponse, error)
+}
+
 // NewRPCHandler returns a natsbus.RPCHandler that runs each op on s, the
-// same way the CLI does for a local agent.
+// same way the CLI does for a local agent. It serves no logs or resume:
+// NewRPCHandlerWith does.
 func NewRPCHandler(s *AgentService) natsbus.RPCHandler {
 	return rpcHandler{s: s}
+}
+
+// NewRPCHandlerWith is NewRPCHandler, serving logs and resume through x.
+func NewRPCHandlerWith(s *AgentService, x RPCExtras) natsbus.RPCHandler {
+	return rpcHandler{s: s, x: x}
+}
+
+func (h rpcHandler) Logs(ctx context.Context, req natsbus.LogsRequest) (*natsbus.LogsResponse, error) {
+	if h.x.Logs == nil {
+		return nil, fmt.Errorf("this host's bus doesn't serve %s", natsbus.OpLogs)
+	}
+	resp, err := h.x.Logs(ctx, req)
+	return resp, remoteErr(err)
+}
+
+func (h rpcHandler) Resume(ctx context.Context, req natsbus.ResumeRequest) (*natsbus.ResumeResponse, error) {
+	if h.x.Resume == nil {
+		return nil, fmt.Errorf("this host's bus doesn't serve %s", natsbus.OpResume)
+	}
+	resp, err := h.x.Resume(ctx, req)
+	return resp, remoteErr(err)
 }
 
 func (h rpcHandler) List(ctx context.Context) (*natsbus.ListResponse, error) {

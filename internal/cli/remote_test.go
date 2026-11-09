@@ -119,7 +119,7 @@ func serveAsH1With(t *testing.T, ops []string) *int {
 func serveAs(t *testing.T, host string, svc *service.AgentService, ops []string) *int {
 	t.Helper()
 	nc := natstest.Start(t)
-	stop, err := natsbus.ServeRPC(nc, host, service.NewRPCHandler(svc), ops)
+	stop, err := natsbus.ServeRPC(nc, host, busHandler(svc), ops)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,13 +147,19 @@ func stdout(t *testing.T, fn func() error) (string, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Read while fn runs: a pipe holds only so much (64 KB on macOS), and
+	// fn would block writing more.
+	read := make(chan []byte)
+	go func() {
+		out, _ := io.ReadAll(r)
+		read <- out
+	}()
 	old := os.Stdout
 	os.Stdout = w
 	runErr := fn()
 	w.Close()
 	os.Stdout = old
-	out, _ := io.ReadAll(r)
-	return string(out), runErr
+	return string(<-read), runErr
 }
 
 func TestParseTarget(t *testing.T) {

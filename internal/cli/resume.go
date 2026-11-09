@@ -1,11 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"slices"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
@@ -39,9 +40,20 @@ Inside an agent (AGENT_NAME set), you can resume only your own helpers and
 theirs.
 
 To continue a session that no agent owns (one you ran in a terminal, or a
-cleaned-up agent's), use agent spawn <name> --resume <session>.`,
+cleaned-up agent's), use agent spawn <name> --resume <session>.
+
+agent resume name@host resumes an agent on another host through the agent
+bus: that host runs its own resume, so the refusals are its own (not
+claude or agy, no session, not ended, adopted). Its bus must list resume
+in --remote-ops: resume is off for other hosts by default, since it starts
+a process as that host's user. Inside an agent, the other host lets you
+resume only your own helpers there. --skip-permissions and
+--trust-workspace are refused for another host's agent, as for agent spawn
+name@host: run agent resume on that host for those. --attach isn't
+supported for another host's agent yet.`,
 	Example: `  agent resume lead
-  agent resume lead --attach`,
+  agent resume lead --attach
+  agent resume lead@hub`,
 	Args: cobra.ExactArgs(1),
 	RunE: runResume,
 }
@@ -56,65 +68,93 @@ func init() {
 }
 
 func runResume(cmd *cobra.Command, args []string) error {
-	ctx := getContext()
-	name := args[0]
-	agent, err := agentService.Agent(ctx, name)
+	ref, remote, err := parseTarget(args[0])
 	if err != nil {
 		return err
 	}
-	if caller := nonInteractiveCallerAgent(); caller != "" {
+	if remote {
+		return runRemoteResume(ref)
+	}
+	ctx := getContext()
+	resp, err := resumeAgent(ctx, ref.Name, nonInteractiveCallerAgent(), resumeSkipPermissions, resumeTrustWorkspace)
+	if err != nil {
+		return err
+	}
+	printResumed(ref.Name, resp)
+	if resumeAttach {
+		return attachSession(resp.Session)
+	}
+	return nil
+}
+
+// printResumed says what a resume did, for the agent named name (name@host
+// for another host's).
+func printResumed(name string, resp *natsbus.ResumeResponse) {
+	fmt.Printf("Resumed agent %s (session %s, backend %s) on session %s, in %s.\n",
+		name, resp.Session, resp.Backend, resp.SessionID, resp.Cwd)
+	if resp.Held > 0 {
+		fmt.Printf("%d held message(s) go to it once it is at its prompt.\n", resp.Held)
+	}
+	if resp.Status != "" {
+		fmt.Println(spawnReadiness(name, service.AgentStatus(resp.Status)))
+	}
+}
+
+// resumeAgent resumes the agent name on this host, as agent resume does,
+// for agent resume and the bus's resume op. caller is the agent asking:
+// "" for a person, a name here, or name@host for another host's agent,
+// which may resume only its own helpers and theirs.
+func resumeAgent(ctx context.Context, name, caller string, skipPermissions, trustWorkspace bool) (*natsbus.ResumeResponse, error) {
+	agent, err := agentService.Agent(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if caller != "" {
 		list, err := agentService.List(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !slices.Contains(newTeams(list).ancestors(name), caller) {
 			by := "a person"
 			if agent.SpawnedBy != "" {
 				by = fmt.Sprintf("%q", agent.SpawnedBy)
 			}
-			return fmt.Errorf("can't resume %s: it was spawned by %s, not by you (%q) or your helpers", name, by, caller)
+			return nil, fmt.Errorf("can't resume %s: it was spawned by %s, not by you (%q) or your helpers", name, by, caller)
 		}
 	}
 
 	if agent.Adopted {
 		// Its tmux session is the person's: nothing is typed or created.
-		return agentService.AdoptedResumeError(agent)
+		return nil, agentService.AdoptedResumeError(agent)
 	}
 
 	t, err := resolveTranscript(ctx, name)
 	if err != nil {
-		return fmt.Errorf("finding agent %s's last session: %w", name, err)
+		return nil, fmt.Errorf("finding agent %s's last session: %w", name, err)
 	}
 	s := t.session
 	if err := checkResumable(s, agent.Backend); err != nil {
-		return err
-	}
-	// The agent starts where the session ran: its tmux session opens in
-	// this directory, and the CLI finds the session from there.
-	if err := os.Chdir(s.Cwd); err != nil {
-		return fmt.Errorf("entering %s, where session %s ran: %w", s.Cwd, s.SessionID, err)
+		return nil, err
 	}
 
+	// The agent starts where the session ran: its tmux session opens in
+	// that directory, and the CLI finds the session from there.
 	resumed, err := agentService.Resume(ctx, service.ResumeOptions{
 		Name:            name,
 		SessionID:       s.SessionID,
-		SkipPermissions: resumeSkipPermissions,
-		TrustWorkspace:  resumeTrustWorkspace,
+		Cwd:             s.Cwd,
+		SkipPermissions: skipPermissions,
+		TrustWorkspace:  trustWorkspace,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	fmt.Printf("Resumed agent %s (session %s, backend %s) on session %s, in %s.\n",
-		resumed.Name, resumed.SessionName, resumed.Backend, s.SessionID, s.Cwd)
-	if n := agentService.HeldCount(ctx, name); n > 0 {
-		fmt.Printf("%d held message(s) go to it once it is at its prompt.\n", n)
+	resp := &natsbus.ResumeResponse{
+		Name: resumed.Name, Session: resumed.SessionName, Backend: resumed.Backend,
+		SessionID: s.SessionID, Cwd: s.Cwd, Held: agentService.HeldCount(ctx, name),
 	}
 	if info, err := agentService.StatusInfo(ctx, name); err == nil {
-		fmt.Println(spawnReadiness(name, info.Status))
+		resp.Status, resp.EndReason = string(info.Status), string(info.EndReason)
 	}
-	if resumeAttach {
-		return attachSession(resumed.SessionName)
-	}
-	return nil
+	return resp, nil
 }
