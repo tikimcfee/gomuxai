@@ -619,11 +619,11 @@ func TestStopPipePane(t *testing.T) {
 	}
 }
 
-// TestClear tests terminal clearing. Its scrollback check exercises friction
-// #5: Clear types 'clear' and runs clear-history at once, so when the shell
-// runs clear after that, tmux's scroll-on-clear pushes the old screen back
-// into the scrollback. That race is Clear's, not the test's: when it shows,
-// the test says so and skips, unless GOMUXAI_KNOWN_BUGS=1.
+// TestClear tests that Clear empties both the visible pane and the
+// scrollback, at once and without typing into the pane (friction #5: typing
+// "clear" raced the shell, and scroll-on-clear kept the old screen). The
+// marker is printed past the pane's height, so some of it is in the
+// scrollback before Clear runs.
 func TestClear(t *testing.T) {
 	requireTmux(t)
 
@@ -633,30 +633,40 @@ func TestClear(t *testing.T) {
 	}
 	sessionName := newShell(t, client)
 
-	typeLine(t, client, sessionName, "echo clear-$((40+2))-marker")
-	waitLine(t, client, sessionName, "clear-42-marker")
-
-	// Clear
-	err = client.Clear(sessionName)
+	// cat keeps the shell from printing its prompt after the marker, which
+	// could land after Clear, so the pane is quiet once the last line shows.
+	typeLine(t, client, sessionName, "for i in $(seq 1 60); do echo clear-$((40+2))-marker-$i; done; cat")
+	waitLine(t, client, sessionName, "clear-42-marker-60")
+	before, err := client.Capture(sessionName, 200)
 	if err != nil {
+		t.Fatalf("capturing before clear: %v", err)
+	}
+	if countLine(before, "clear-42-marker-1") != 1 {
+		t.Fatalf("expected the first marker line in the scrollback before clearing:\n%s", before)
+	}
+
+	if err := client.Clear(sessionName); err != nil {
 		t.Fatalf("clearing: %v", err)
 	}
 
-	// The shell runs the clear: the marker leaves the visible pane.
-	waitPane(t, client, sessionName, 0, "the marker gone from the visible pane", func(screen string) bool {
-		return countLine(screen, "clear-42-marker") == 0
-	})
-
-	// Check that marker is gone from scrollback
-	output, err := client.Capture(sessionName, 50)
+	// No waiting: Clear is done when it returns.
+	output, err := client.Capture(sessionName, 200)
 	if err != nil {
 		t.Fatalf("capturing after clear: %v", err)
 	}
-	if countLine(output, "clear-42-marker") != 0 {
-		if os.Getenv("GOMUXAI_KNOWN_BUGS") != "1" {
-			t.Skip("known bug, friction #5 (set GOMUXAI_KNOWN_BUGS=1 to fail on it): the shell ran clear after clear-history, and scroll-on-clear kept the marker")
-		}
-		t.Errorf("expected marker to be cleared from scrollback (friction #5):\n%s", output)
+	if strings.TrimSpace(output) != "" {
+		t.Fatalf("expected an empty pane and scrollback after clear, got:\n%s", output)
+	}
+
+	// Nothing was typed into the pane, and its program still works: cat's
+	// next line lands on the clean pane (the terminal's echo, then cat's
+	// copy), with nothing from before.
+	typeLine(t, client, sessionName, "after-clear")
+	output = waitPane(t, client, sessionName, 200, "cat echoing the line", func(screen string) bool {
+		return countLine(screen, "after-clear") == 2
+	})
+	if strings.TrimSpace(output) != "after-clear\nafter-clear" {
+		t.Errorf("expected only the new line after clear, got:\n%s", output)
 	}
 }
 

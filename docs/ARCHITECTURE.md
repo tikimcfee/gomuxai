@@ -88,6 +88,13 @@ find pane: %9"). Session targets are exact (`=name`): tmux otherwise falls
 back to a prefix match, so `agent-a` could reach `agent-ab`. Every
 session-level operation targets the session's first pane by id.
 
+`clear` types nothing: `send-keys -R` resets the pane's terminal (blank
+screen, cursor home), and `clear-history`, in the same tmux command, then
+drops the scrollback, which includes the old screen, since `scroll-on-clear`
+(on by default) moves it there. Typing `clear` into the shell raced
+`clear-history` and could leave the old screen behind; it also reached an
+agent's CLI as a message.
+
 `capture` reads plain text (`capture-pane -p`); `capture --raw` and
 `TmuxOps.CaptureStyled` add `-e`, which keeps the SGR escape codes (colors,
 bold, dim). tmux re-encodes the screen, so neither carries the program's
@@ -1705,8 +1712,7 @@ make lint          # golangci-lint
   a logged decision, a later line on the pane). The few `time.Sleep`s left
   in tests say why they aren't waits.
 - **Opt-ins.** `GOMUXAI_KNOWN_BUGS=1` runs tests for known open bugs (the
-  unsigned-replies one, and friction #5's `tmux.Client.Clear` race, which
-  `TestClear` otherwise skips when it shows).
+  unsigned-replies one).
   `GOMUX_REAL_TRANSCRIPTS=<path>[:<path>...]` parses real transcripts on
   your machine as a smoke test.
 
