@@ -284,6 +284,18 @@ verify the name; it is the caller's claim, like a `[from name@host]` tag.
 It must carry a host: the bus refuses a bare `spawned_by`, which would make
 the new agent a helper of the serving host's agent of that name.
 
+`cleanup --ended` picks the names itself, from every agent's
+`StatusInfo` (the resolved status, so an agent whose tmux session is gone
+counts though its last report said idle), all read before anything is
+removed. The same rules then apply, with one difference: where named
+cleanup refuses a helper whose own helpers would be left behind, `--ended`
+skips it, since those helpers haven't ended and aren't its to remove. A
+person gets every ended agent, with a note naming the helpers that stay.
+Ended agents outside the caller's tree are counted, not listed. `--dry-run`
+stops after the choice, printing each agent's end, what `Cleanup` would do
+to its session (kill it, leave an adopted one running, or nothing if it's
+gone) and `StatusInfo.Held`.
+
 `AgentService.Cleanup` types the backend's exit command (`/exit`) into an
 idle agent and waits 1.5s, so the CLI exits cleanly and its hooks record it.
 Then it stops pipe-pane, kills the session, deletes the agent's messages

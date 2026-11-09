@@ -301,13 +301,24 @@ turn; denying a subagent's ends only that call.
 ```bash
 agent cleanup helper
 agent cleanup lead-build lead-build-test   # a helper's helpers are named along with it
+agent cleanup --ended --dry-run            # every ended agent here, and why; changes nothing
+agent cleanup --ended
 ```
 
 Cleanup asks each idle agent to exit, kills its session, and deletes its
 record, queued messages, state, and files. Its logs stay. Read what you need
 from state first. It prints one line per name and exits 1 if any wasn't
 cleaned up. Inside an agent, you can clean up only your own helpers and
-theirs, never yourself. It never removes an agent you didn't name.
+theirs, never yourself. Given names, it never removes an agent you didn't
+name.
+
+`--ended` names them for you: every agent on this host whose status (as
+`agent status` resolves it) is ended, that you may clean up. An ended
+agent's helpers that are still running stay: for a person it says so, and
+inside an agent it skips the ended one too, since only a person could reach
+its helpers once it's gone. An adopted agent's tmux session stays running.
+It ends with a total; `--dry-run` lists each agent, how it ended, what
+happens to its session, and how many held messages go with it.
 
 ### After a reboot: resume
 
