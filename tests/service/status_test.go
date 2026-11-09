@@ -500,11 +500,10 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	}
 
 	// No dialog: send goes through. Send reads the visible screen, which
-	// the shell's clear empties (friction #5 is about the scrollback).
-	env.tmux.Clear(session)
-	waitPane(t, env, session, "the dialog cleared off the screen", func(screen string) bool {
-		return !strings.Contains(screen, "trust this folder")
-	})
+	// Clear empties before it returns.
+	if err := env.tmux.Clear(session); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := env.service.Send(ctx, "worker", "echo ok", service.SendOptions{}); err != nil {
 		t.Errorf("send with no dialog: %v", err)
 	}
