@@ -470,7 +470,7 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 			Status:    AgentStatusEnded,
 			EndReason: backend.EndGone,
 			Source:    StatusSourceNative,
-			Detail:    fmt.Sprintf("its tmux session %s is gone (a reboot, or the tmux server was killed); agent resume %s continues its session", agent.SessionName, agent.Name),
+			Detail:    fmt.Sprintf("its tmux session %s is gone (a reboot, or the tmux server was killed); agent resume %s continues its session, agent resume --all every one that ended so", agent.SessionName, agent.Name),
 		}
 		if reported != nil {
 			info.Event, info.UpdatedAt = reported.Event, reported.UpdatedAt
