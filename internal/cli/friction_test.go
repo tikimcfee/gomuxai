@@ -71,6 +71,10 @@ func mustGetwd(t *testing.T) string {
 }
 
 func TestSummarySimilarity(t *testing.T) {
+	// The CLI scores summaries with cobra's help command on rootCmd, added
+	// when it first runs; add it here too, so the result doesn't depend on
+	// whether an earlier test in this process ran a command (friction #11).
+	rootCmd.InitDefaultHelpCmd()
 	tests := []struct {
 		a, b string
 		same bool
