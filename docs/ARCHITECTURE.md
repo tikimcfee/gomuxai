@@ -1858,8 +1858,10 @@ make lint          # golangci-lint
   `tmuxtest.Run` from its `TestMain`: it makes a short socket directory
   (`gmx*` under `$TMPDIR`, or `/tmp` if that's too long for a socket path),
   unsets `TMUX` and `TMUX_PANE`, points `TMUX_TMPDIR` at it for the whole
-  process, so every tmux the code and its children run uses that server, and
-  after the tests kills that server by its socket (`tmux -S`, with `TMUX`
+  process, so every tmux the code and its children run uses that server,
+  starts it with `exit-empty off` so it stays up with no sessions, as the
+  shared server always has some (a test killing its only session otherwise
+  raced the server's exit), and after the tests kills that server by its socket (`tmux -S`, with `TMUX`
   left out) and removes the directory. Why: tests sharing the real server
   collided on fixed session names when two runs overlapped (friction #9),
   and inside an agent's pane `$TMUX` names the real server *ahead of*

@@ -59,7 +59,31 @@ func Run(m *testing.M) int {
 		}
 	}
 	defer killServer(dir)
+	if err := startServer(); err != nil {
+		fmt.Fprintln(os.Stderr, "tmuxtest:", err)
+		return 1
+	}
 	return m.Run()
+}
+
+// startServer starts the private server and keeps it running with no
+// sessions (exit-empty off), for the whole binary. Its tests often hold the
+// server's only session, and tmux otherwise exits when the last session
+// goes: a test that killed its session then raced the server's shutdown,
+// and the next tmux call could still see the dying server (a killed
+// session's pane read as idle, not gone). The shared server never emptied,
+// so tests written against it assume a server that stays up. An option
+// rather than a keepalive session leaves no session for a test to list,
+// count, or sweep. Without tmux it does nothing: the tests skip.
+func startServer() error {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return nil
+	}
+	out, err := exec.Command("tmux", "start-server", ";", "set-option", "-g", "exit-empty", "off").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("starting the private tmux server: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // Require fails t unless this process runs tmux on its private server
