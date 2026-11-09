@@ -13,6 +13,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/tikimcfee/gomuxai/internal/backend"
+	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
@@ -471,5 +472,58 @@ func TestQueueTargets(t *testing.T) {
 	}
 	if len(pending) != 2 {
 		t.Errorf("pending messages = %d, want 2 (one per local target)", len(pending))
+	}
+}
+
+// The bus's list carries what export shows for the serving host's agents,
+// with resumable worked out there by resume's rules.
+func TestRemoteListFields(t *testing.T) {
+	setupCLI(t)
+	serveAsH1(t)
+	ctx := context.Background()
+	if err := store.CreateAgent(ctx, &storage.Agent{Name: "done", SessionName: "rpc-cli-done", Backend: "claude",
+		Cwd: "/srv/w", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := agentService.Report(ctx, "done", service.StatusReport{Status: service.AgentStatusEnded, EndReason: backend.EndQuit,
+		SessionID: "5f0c", Transcript: "/home/u/.claude/projects/-srv-w/5f0c.jsonl"}); err != nil {
+		t.Fatal(err)
+	}
+
+	agents, err := listAgents("h1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]natsbus.AgentInfo{}
+	for _, a := range agents {
+		got[a.Name] = a
+	}
+	w := got["worker"]
+	if w.Attached == nil || !*w.Attached || w.Resumable == nil || *w.Resumable || w.Detail != "permission: Bash: ls" {
+		t.Errorf("worker = %+v, want attached, not resumable (waiting), its detail", w)
+	}
+	d := got["done"]
+	if d.Attached == nil || *d.Attached || d.Resumable == nil || !*d.Resumable || d.SessionID != "5f0c" || d.Cwd != "/srv/w" ||
+		d.Status != "ended" || d.EndReason != "quit" {
+		t.Errorf("done = %+v, want detached, resumable, its session id and cwd, ended (quit)", d)
+	}
+}
+
+// ResumeRefusal (what resume says) and types.Resumable (what list and
+// export say) are the same rules.
+func TestResumeRulesAgree(t *testing.T) {
+	setupCLI(t)
+	for _, backendName := range []string{"claude", "agy", "aider"} {
+		for _, adopted := range []bool{false, true} {
+			for _, session := range []string{"", "5f0c"} {
+				for _, status := range []service.AgentStatus{service.AgentStatusEnded, service.AgentStatusIdle} {
+					a := &storage.Agent{Name: "x", SessionName: "rpc-cli-x", Backend: backendName, Adopted: adopted}
+					refused := agentService.ResumeRefusal(a, status, session) != nil
+					if ok := types.Resumable(backendName, adopted, session, status == service.AgentStatusEnded); ok == refused {
+						t.Errorf("%s adopted=%v session=%q %s: Resumable %v, but ResumeRefusal refused=%v", backendName, adopted, session, status, ok, refused)
+					}
+				}
+			}
+		}
 	}
 }

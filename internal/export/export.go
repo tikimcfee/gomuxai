@@ -43,10 +43,15 @@ type Agent struct {
 	CreatedAt time.Time `json:"created_at"`
 	EndedAt   time.Time `json:"ended_at,omitzero"` // when cleanup removed it
 	Live      bool      `json:"live"`              // it has a record (not cleaned up)
-	// Attached reports whether its tmux session exists; absent for other
-	// hosts, where it can't be checked.
-	Attached *bool  `json:"attached,omitempty"`
-	Status   string `json:"status,omitempty"`
+	// Attached reports whether its tmux session exists; absent for
+	// another host that predates sending it (unknown).
+	Attached *bool `json:"attached,omitempty"`
+	// Resumable says whether agent resume would continue it, by its own
+	// host's rules (types.Resumable); absent for another host that
+	// predates sending it (unknown). A departed agent is never resumable:
+	// resume needs its record.
+	Resumable *bool  `json:"resumable,omitempty"`
+	Status    string `json:"status,omitempty"`
 	// EndReason says how its session ended, with a status of ended (see
 	// agent statuses).
 	EndReason  string    `json:"end_reason,omitempty"`
@@ -62,6 +67,8 @@ type Agent struct {
 	// exists on this host.
 	TranscriptSize  int64     `json:"transcript_size,omitempty"`
 	TranscriptMtime time.Time `json:"transcript_mtime,omitzero"`
+
+	adopted bool // registered with agent adopt, which resume refuses
 }
 
 // Store is a data dir export reads.
@@ -340,6 +347,7 @@ func (t *Tree) PollSessions(ctx context.Context) []any {
 			attached := t.sessions[a.Session]
 			if a.Attached == nil || *a.Attached != attached {
 				a.Attached = &attached
+				setResumable(a)
 				lines = append(lines, AgentLine{Type: LineChanged, Store: s.dir, At: now, Reason: ReasonSession, Agent: *a})
 			}
 			size, mtime := a.TranscriptSize, a.TranscriptMtime
@@ -419,9 +427,13 @@ func (t *Tree) apply(ctx context.Context, s *store, ev *storage.AgentEvent) (any
 		}
 		a := t.fromRun(s, run)
 		a.Live = true
+		if rec, err := s.db.GetAgent(ctx, a.Name); err == nil && rec != nil {
+			a.adopted = rec.Adopted
+		}
 		t.refreshSessions() // the session was created just before the record
 		attached := t.sessions[a.Session]
 		a.Attached = &attached
+		setResumable(&a)
 		s.live[a.Name] = &a
 		line.Type, line.Agent = LineSpawned, a
 	case storage.AgentStatus:
@@ -451,6 +463,7 @@ func (t *Tree) apply(ctx context.Context, s *store, ev *storage.AgentEvent) (any
 			a.Dialect = dialect(a.Backend, a.Transcript)
 		}
 		statTranscript(a)
+		setResumable(a)
 		line.Type, line.Reason, line.Agent = LineChanged, ReasonStatus, *a
 	case storage.AgentRemoved:
 		run, err := s.db.GetRun(ctx, ev.Run)
@@ -500,7 +513,7 @@ func (t *Tree) read(ctx context.Context, s *store) error {
 	}
 	for _, rec := range tree.Agents {
 		a := Agent{Name: rec.Name, Host: t.d.Host, Kind: KindTmux, Parent: rec.SpawnedBy, Backend: rec.Backend,
-			Session: rec.SessionName, Store: s.dir, Cwd: rec.Cwd, CreatedAt: rec.CreatedAt.UTC(), Live: true}
+			Session: rec.SessionName, Store: s.dir, Cwd: rec.Cwd, CreatedAt: rec.CreatedAt.UTC(), Live: true, adopted: rec.Adopted}
 		if run := tree.Runs[rec.Name]; run != nil {
 			a.Run = run.ID
 			if a.Cwd == "" {
@@ -527,6 +540,7 @@ func (t *Tree) read(ctx context.Context, s *store) error {
 		a.SessionID, a.Transcript = value("_session_id"), value("_transcript")
 		a.Dialect = dialect(a.Backend, a.Transcript)
 		statTranscript(&a)
+		setResumable(&a)
 		s.live[a.Name] = &a
 	}
 	for _, run := range tree.Ended {
@@ -559,7 +573,24 @@ func (t *Tree) fromRun(s *store, run *storage.Run) Agent {
 	a.SessionID = transcript.SessionIDFromPath(a.Transcript)
 	a.Dialect = dialect(a.Backend, a.Transcript)
 	statTranscript(&a)
+	setResumable(&a)
 	return a
+}
+
+// setResumable works out whether agent resume would continue a, with
+// resume's rules (types.Resumable) applied to what export knows: the last
+// report, not the resolved status, except that a live agent whose tmux
+// session is gone has ended (agent status says ended (gone)). A departed
+// agent has no record left to resume.
+func setResumable(a *Agent) {
+	sessionID := a.SessionID
+	if sessionID == "" {
+		sessionID = transcript.SessionIDFromPath(a.Transcript)
+	}
+	gone := a.Attached != nil && !*a.Attached
+	ended := a.Status == types.StatusEnded.String() || gone
+	r := a.Live && a.EndedAt.IsZero() && types.Resumable(a.Backend, a.adopted, sessionID, ended)
+	a.Resumable = &r
 }
 
 // refreshSessions re-lists the tmux sessions. A failure (no tmux server)
@@ -640,8 +671,10 @@ func (t *Tree) readHost(ctx context.Context, host string) {
 	t.setHostErr(host, "")
 	agents := make([]Agent, 0, len(infos))
 	for _, in := range infos {
+		// Fields an older host doesn't send stay absent: unknown.
 		agents = append(agents, Agent{Name: in.Name, Host: host, Kind: KindTmux, Parent: in.SpawnedBy, Backend: in.Backend,
-			Session: in.Session, CreatedAt: in.CreatedAt.UTC(), Live: true, Status: in.Status})
+			Session: in.Session, Cwd: in.Cwd, CreatedAt: in.CreatedAt.UTC(), Live: true, Attached: in.Attached, Resumable: in.Resumable,
+			Status: in.Status, EndReason: in.EndReason, Detail: in.Detail, SessionID: in.SessionID, adopted: in.Adopted})
 	}
 	sortAgents(agents)
 	t.remote[host] = agents
@@ -688,10 +721,15 @@ func sortAgents(agents []Agent) {
 
 func sameAgents(a, b []Agent) bool {
 	return slices.EqualFunc(a, b, func(x, y Agent) bool {
-		xa, ya := x.Attached, y.Attached
-		x.Attached, y.Attached = nil, nil
-		return x == y && (xa == nil) == (ya == nil) && (xa == nil || *xa == *ya)
+		xa, ya, xr, yr := x.Attached, y.Attached, x.Resumable, y.Resumable
+		x.Attached, y.Attached, x.Resumable, y.Resumable = nil, nil, nil, nil
+		return x == y && sameBool(xa, ya) && sameBool(xr, yr)
 	})
+}
+
+// sameBool compares two optional bools: absent equals only absent.
+func sameBool(x, y *bool) bool {
+	return (x == nil) == (y == nil) && (x == nil || *x == *y)
 }
 
 // statTranscript fills in the transcript file's size and time, or clears

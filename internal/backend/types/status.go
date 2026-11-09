@@ -158,3 +158,19 @@ type PaneSession struct {
 	Status Status // what the CLI's own record says
 	Detail string // that status in words
 }
+
+// Resumable reports whether agent resume would continue an agent: one
+// gomuxai started (not adopted), on a claude or agy backend, with a
+// session to continue, whose session has ended. service.Resume refuses the
+// rest with the reason; export and the bus's list carry this answer, so a
+// display offers resume only where it would work.
+func Resumable(backend string, adopted bool, sessionID string, ended bool) bool {
+	return !adopted && ResumableBackend(backend) && sessionID != "" && ended
+}
+
+// ResumableBackend reports whether agent resume continues backend's
+// sessions: claude and agy name their sessions, so the CLI can be told
+// which to continue.
+func ResumableBackend(backend string) bool {
+	return backend == "claude" || backend == "agy"
+}

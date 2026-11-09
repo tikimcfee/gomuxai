@@ -3,6 +3,7 @@ package export
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"maps"
 	"os"
@@ -419,5 +420,130 @@ func TestHosts(t *testing.T) {
 	lines := tr.PollHosts(context.Background())
 	if got := summary(lines); !slices.Equal(got, []string{"host:hub"}) || lines[0].(HostLine).Host.Error != "no bus" {
 		t.Errorf("host unreachable: %+v, want a host line with the error", lines)
+	}
+}
+
+// Resumable applies resume's rules to what export knows: a claude or agy
+// agent, not adopted, with a session, ended (by its report, or because its
+// tmux session is gone), and still recorded.
+func TestResumable(t *testing.T) {
+	f := newFixture(t)
+	transcript := "/home/user/.claude/projects/-w/11111111-2222-3333-4444-555555555555.jsonl"
+	create := func(name, backend string, adopted bool) {
+		t.Helper()
+		f.sessions = append(f.sessions, "agent-"+name)
+		if err := f.w.CreateAgent(context.Background(), &storage.Agent{Name: name, SessionName: "agent-" + name,
+			Backend: backend, Adopted: adopted, Cwd: "/w", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create("quit", "claude", false)
+	f.report("quit", "ended", "", transcript)
+	create("gone", "claude", false)
+	f.report("gone", "idle", "", transcript)
+	f.sessions = slices.DeleteFunc(f.sessions, func(s string) bool { return s == "agent-gone" })
+	create("busy", "claude", false)
+	f.report("busy", "processing", "", transcript)
+	create("nosession", "claude", false)
+	f.report("nosession", "ended", "", "")
+	create("aider", "aider", false)
+	f.report("aider", "ended", "", transcript)
+	create("adopted", "claude", true)
+	f.report("adopted", "ended", "", transcript)
+	create("departed", "claude", false)
+	f.report("departed", "ended", "", transcript)
+	f.cleanup("departed")
+
+	tr := f.tree(true)
+	snap, err := tr.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, a := range snap.Agents {
+		if a.Resumable == nil {
+			t.Errorf("%s: resumable absent, want it set for a local agent", a.Name)
+			continue
+		}
+		got[a.Name] = *a.Resumable
+	}
+	want := map[string]bool{"quit": true, "gone": true, "busy": false, "nosession": false, "aider": false, "adopted": false, "departed": false}
+	if !maps.Equal(got, want) {
+		t.Errorf("resumable = %v, want %v", got, want)
+	}
+
+	// Following: a report that ends it, and its tmux session going away,
+	// each make it resumable in the changed line.
+	f.report("busy", "ended", "", transcript)
+	lines := poll(t, tr)
+	if len(lines) != 1 || !*lines[0].(AgentLine).Agent.Resumable {
+		t.Errorf("busy ended: %+v, want one changed line, resumable", lines)
+	}
+	create("live", "agy", false)
+	poll(t, tr)
+	f.report("live", "idle", "", "/home/user/.gemini/antigravity-cli/brain/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/.system_generated/logs/transcript_full.jsonl")
+	if lines := poll(t, tr); len(lines) != 1 || *lines[0].(AgentLine).Agent.Resumable {
+		t.Errorf("live idle: %+v, want one changed line, not resumable", lines)
+	}
+	f.sessions = slices.DeleteFunc(f.sessions, func(s string) bool { return s == "agent-live" })
+	var session *AgentLine
+	for _, l := range tr.PollSessions(context.Background()) {
+		if l, ok := l.(AgentLine); ok && l.Agent.Name == "live" && l.Reason == ReasonSession {
+			session = &l
+		}
+	}
+	if session == nil || !*session.Agent.Resumable {
+		t.Errorf("live's session gone: %+v, want a session line, resumable", session)
+	}
+}
+
+// Another host's agents carry what its list sends. A host that predates
+// those fields sends none, and they stay absent (unknown), not false.
+func TestHosts_Fields(t *testing.T) {
+	f := newFixture(t)
+	d := f.deps()
+	yes, no := true, false
+	created := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	d.ListHost = func(_ context.Context, host string) ([]natsbus.AgentInfo, error) {
+		if host == "old" {
+			return []natsbus.AgentInfo{{Name: "far", Backend: "claude", Session: "agent-far", Status: "ended", CreatedAt: created}}, nil
+		}
+		return []natsbus.AgentInfo{{Name: "far", Backend: "claude", Session: "agent-far", Status: "ended", EndReason: "gone",
+			Detail: "its tmux session is gone", SessionID: "5f0c", Cwd: "/srv/w", Attached: &no, Resumable: &yes, CreatedAt: created}}, nil
+	}
+	tr := New(d, []string{f.dir}, []string{"new", "old"}, false)
+	defer tr.Close()
+	snap, err := tr.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Agents) != 2 {
+		t.Fatalf("agents = %+v, want far on new and old", snap.Agents)
+	}
+	byHost := map[string]Agent{}
+	for _, a := range snap.Agents {
+		byHost[a.Host] = a
+	}
+	n := byHost["new"]
+	if n.EndReason != "gone" || n.Detail == "" || n.SessionID != "5f0c" || n.Cwd != "/srv/w" ||
+		n.Attached == nil || *n.Attached || n.Resumable == nil || !*n.Resumable {
+		t.Errorf("new host's agent = %+v, want its end reason, detail, session id, cwd, detached, resumable", n)
+	}
+	raw, err := json.Marshal(byHost["old"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"attached", "resumable", "end_reason", "session_id", "cwd", "detail"} {
+		if v, ok := fields[k]; ok {
+			t.Errorf("old host's agent has %s = %v, want it absent (unknown)", k, v)
+		}
+	}
+
+	if lines := tr.PollHosts(context.Background()); len(lines) != 0 {
+		t.Errorf("unchanged hosts: %v, want no lines", summary(lines))
 	}
 }

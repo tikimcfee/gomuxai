@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
+	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
+	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
 // rpcHandler serves bus RPC ops through an AgentService.
@@ -31,22 +33,38 @@ func (h rpcHandler) List(ctx context.Context) (*natsbus.ListResponse, error) {
 	}
 	resp := &natsbus.ListResponse{Agents: make([]natsbus.AgentInfo, 0, len(agents))}
 	for _, a := range agents {
-		status, reason := AgentStatusUnknown, backend.EndReason("")
-		if info, err := h.s.StatusInfo(ctx, a.Name); err == nil {
-			status, reason = info.Status, info.EndReason
-		}
-		resp.Agents = append(resp.Agents, natsbus.AgentInfo{
-			Name:      a.Name,
-			Session:   a.SessionName,
-			Backend:   a.Backend,
-			SpawnedBy: a.SpawnedBy,
-			Adopted:   a.Adopted,
-			CreatedAt: a.CreatedAt,
-			Status:    string(status),
-			EndReason: string(reason),
-		})
+		resp.Agents = append(resp.Agents, h.s.agentInfo(ctx, a))
 	}
 	return resp, nil
+}
+
+// agentInfo describes an agent as the bus's list serves it: its resolved
+// status, and what export shows for a local agent.
+func (s *AgentService) agentInfo(ctx context.Context, a *storage.Agent) natsbus.AgentInfo {
+	status, reason, detail := AgentStatusUnknown, backend.EndReason(""), ""
+	if info, err := s.StatusInfo(ctx, a.Name); err == nil {
+		status, reason, detail = info.Status, info.EndReason, info.Detail
+	}
+	sessionID := s.LastSessionID(ctx, a.Name)
+	in := natsbus.AgentInfo{
+		Name:      a.Name,
+		Session:   a.SessionName,
+		Backend:   a.Backend,
+		SpawnedBy: a.SpawnedBy,
+		Adopted:   a.Adopted,
+		CreatedAt: a.CreatedAt,
+		Status:    string(status),
+		EndReason: string(reason),
+		Detail:    detail,
+		SessionID: sessionID,
+		Cwd:       a.Cwd,
+	}
+	if exists, err := s.tmux.SessionExists(a.SessionName); err == nil {
+		in.Attached = &exists
+	}
+	resumable := types.Resumable(a.Backend, a.Adopted, sessionID, status == AgentStatusEnded)
+	in.Resumable = &resumable
+	return in
 }
 
 func (h rpcHandler) Status(ctx context.Context, req natsbus.StatusRequest) (*natsbus.StatusResponse, error) {

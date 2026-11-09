@@ -61,7 +61,9 @@ func (c *RPCClient) List(ctx context.Context, host string) ([]AgentInfo, error) 
 	}
 	for i := range resp.Agents {
 		a := &resp.Agents[i]
-		a.Name, a.Session, a.Backend = clean(a.Name), clean(a.Session), clean(a.Backend)
+		for _, f := range []*string{&a.Name, &a.Session, &a.Backend, &a.SpawnedBy, &a.Status, &a.EndReason, &a.Detail, &a.SessionID, &a.Cwd} {
+			*f = clean(*f)
+		}
 	}
 	return resp.Agents, nil
 }

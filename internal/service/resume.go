@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/storage"
+	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
 // ResumeOptions holds options for resuming an ended agent.
@@ -38,18 +40,12 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 	if agent.Adopted {
 		return nil, s.AdoptedResumeError(agent)
 	}
-	if agent.Backend != "claude" && agent.Backend != "agy" {
-		return nil, fmt.Errorf("agent %s runs %s: resume continues claude and agy sessions", agent.Name, agent.Backend)
-	}
-	if opts.SessionID == "" {
-		return nil, fmt.Errorf("no session to resume agent %s on", agent.Name)
-	}
 	info, _, err := s.resolveStatus(ctx, agent.Name)
 	if err != nil {
 		return nil, err
 	}
-	if info.Status != AgentStatusEnded {
-		return nil, fmt.Errorf("agent %s is %s, not ended: only an ended agent can be resumed (agent status %s -v)", agent.Name, info.Status, agent.Name)
+	if err := s.ResumeRefusal(agent, info.Status, opts.SessionID); err != nil {
+		return nil, err
 	}
 
 	// A spawned CLI that quit leaves its pane behind, running a bare shell.
@@ -84,6 +80,35 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 		_ = s.startDeliverer(agent.Name)
 	}
 	return resumed, nil
+}
+
+// ResumeRefusal says why resume refuses agent, given its resolved status
+// and the session it would continue; nil when it can be resumed. It holds
+// types.Resumable's rules, with a reason for each.
+func (s *AgentService) ResumeRefusal(agent *storage.Agent, status AgentStatus, sessionID string) error {
+	switch {
+	case agent.Adopted:
+		return s.AdoptedResumeError(agent)
+	case !types.ResumableBackend(agent.Backend):
+		return fmt.Errorf("agent %s runs %s: resume continues claude and agy sessions", agent.Name, agent.Backend)
+	case sessionID == "":
+		return fmt.Errorf("no session to resume agent %s on: its CLI never named one (agent logs %s --terminal shows what it did)", agent.Name, agent.Name)
+	case status != AgentStatusEnded:
+		return fmt.Errorf("agent %s is %s, not ended: only an ended agent can be resumed (agent status %s -v)", agent.Name, status, agent.Name)
+	}
+	return nil
+}
+
+// LastSessionID is the session resume would continue the agent on, as far
+// as its records say: the one its newest transcript names, else its
+// _session_id. Empty when it has none.
+func (s *AgentService) LastSessionID(ctx context.Context, name string) string {
+	if refs := s.Transcripts(ctx, name); len(refs) > 0 {
+		if id := transcript.SessionIDFromPath(refs[len(refs)-1].Path); id != "" {
+			return id
+		}
+	}
+	return s.stateValue(ctx, name, StateKeySessionID)
 }
 
 // AdoptedResumeError is why an adopted agent can't be resumed: its tmux

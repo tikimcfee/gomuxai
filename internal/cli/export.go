@@ -49,10 +49,15 @@ through the PATH of each agent-* tmux session no store records, and reads
 them read-only; --store adds one. Sessions it still can't match are listed
 as unrecorded.
 
+Each agent says whether "agent resume" would continue it (resumable): a
+claude or agy agent, not adopted, with a session, that has ended.
+
 --all adds departed agents (cleaned up), with when they ended. --hosts adds
-other hosts' agents through the bus ("all" for every trusted peer), with
-fewer fields: no store, cwd, or transcript. Following re-lists them every
-30s.
+other hosts' agents through the bus ("all" for every trusted peer): no
+store or transcript, and the status, detail, session id, cwd, attached and
+resumable that host works out. A host whose agent predates them leaves
+them out, and absent means unknown (not false). Following re-lists them
+every 30s.
 
 Export only reads, and records one row in the command log per run however
 long it follows.`,
