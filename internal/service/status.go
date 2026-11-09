@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
+	"github.com/tikimcfee/gomuxai/internal/claudereg"
 	"github.com/tikimcfee/gomuxai/internal/discovery"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
@@ -502,6 +504,12 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 		return info, reported, nil
 	}
 
+	if s.followMovedSession(ctx, agent) {
+		if reported, err = s.reportedStatus(ctx, name); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	native := s.nativeStatus(ctx, agent)
 	nativeErr = native.Err
 	if (native.Queried && !native.Listed) || (agent.Adopted && agent.Backend == "shell") {
@@ -757,6 +765,59 @@ func (s *AgentService) adoptPaneSession(ctx context.Context, agent *storage.Agen
 		return nil, fmt.Errorf("recording the session its pane runs: %w", err)
 	}
 	return &StatusInfo{Status: r.Status, Source: StatusSourceNative, Event: r.Event, Detail: r.Detail, UpdatedAt: time.Now()}, nil
+}
+
+// EventSessionMoved is the event of the report that moves an agent onto
+// the session its CLI carried its conversation into (followMovedSession).
+const EventSessionMoved = "SessionMoved"
+
+// followMovedSession moves the agent onto the session Claude Code carried
+// its conversation into, when it has: Claude Code 2.1.319 can hand an
+// interactive session over to a background session its daemon runs, under
+// the agent's own CLI, with an id of its own (claudereg.Continues). The
+// agent's transcript then says which (continued-in), and its pane runs that
+// session. Hooks from it reach the agent from then on (FindHookSession), but
+// the agent's record still names the old session, whose registry entry keeps
+// its last status, so status would read that until the new session's next
+// hook. It reports true if it moved the agent.
+func (s *AgentService) followMovedSession(ctx context.Context, agent *storage.Agent) bool {
+	provider, err := s.provider(agent)
+	if err != nil {
+		return false
+	}
+	pp, ok := provider.(backend.PaneSessionProvider) // Claude's
+	if !ok {
+		return false
+	}
+	transcript := s.stateValue(ctx, agent.Name, StateKeyTranscript)
+	if transcript == "" {
+		return false
+	}
+	next := claudereg.ContinuedIn(transcript)
+	if next == "" || next == s.stateValue(ctx, agent.Name, StateKeySessionID) {
+		return false
+	}
+	panePID, err := s.panePID(agent.SessionName)
+	if err != nil || panePID == 0 {
+		return false
+	}
+	ps, found, err := pp.PaneSession(ctx, panePID)
+	if err != nil || !found || ps.ID != next {
+		return false // the pane doesn't run it: not this agent's to follow
+	}
+	path := filepath.Join(filepath.Dir(transcript), next+".jsonl")
+	r := StatusReport{
+		Status:     fromBackendStatus(ps.Status),
+		Event:      EventSessionMoved,
+		Detail:     fmt.Sprintf("Claude Code moved its conversation into background session %s (pid %d), which its pane shows", next, ps.PID),
+		SessionID:  next,
+		Transcript: path,
+	}
+	if err := s.Report(ctx, agent.Name, r); err != nil {
+		return false
+	}
+	_ = s.recordTranscript(agent.Name, agent.Backend, path)
+	return true
 }
 
 type agentBackendUpdater interface {

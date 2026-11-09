@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -369,5 +370,73 @@ func TestStatusInfo_UnknownRegistryValue(t *testing.T) {
 	}
 	if info.Status != service.AgentStatusIdle || info.Source != service.StatusSourceReport || !strings.Contains(info.NativeErr, `"compacting"`) {
 		t.Errorf("got %s/%s, native %q", info.Status, info.Source, info.NativeErr)
+	}
+}
+
+// Repro (monolith1, Claude Code 2.1.319): Claude moved an agent's
+// conversation into a background session its daemon runs under the agent's
+// CLI. The old session's registry entry kept "busy", its transcript ended
+// with continued-in, and status said processing until someone noticed.
+// Status follows the move to the session the pane now runs, keeping the
+// agent's reply.
+func TestStatusInfo_FollowsASessionClaudeMoved(t *testing.T) {
+	env := setupTestEnv(t)
+	defer env.cleanup()
+	env.cfg.AgentBinary = "/bin/agent"
+	ctx := context.Background()
+	fake := spawnFake(t, env, "worker")
+	old := fake.sessionID
+
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, old+".jsonl")
+	if err := os.WriteFile(oldPath, []byte(`{"type":"user","sessionId":"`+old+`"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusProcessing, Event: "PostToolUse", Result: "", Transcript: oldPath, SessionID: old})
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusIdle, Event: "Stop", Result: "the reply"})
+	env.service.Report(ctx, "worker", service.StatusReport{Status: service.AgentStatusProcessing, Event: "PostToolUse"})
+	fake.nativeFound, fake.native = true, backend.StatusProcessing // the old entry, frozen at busy
+
+	// Not moved yet: the pane's session is the one on record.
+	fake.paneSession = &backend.PaneSession{ID: old, PID: 830233, Status: backend.StatusProcessing}
+	if info, _ := env.service.StatusInfo(ctx, "worker"); info.Status != service.AgentStatusProcessing || info.Event == service.EventSessionMoved {
+		t.Fatalf("before the move: %s/%s", info.Status, info.Event)
+	}
+
+	// The move: the transcript says so, and the pane runs the new session.
+	f, err := os.OpenFile(oldPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"type":"continued-in","sessionId":"` + old + `","continuedInSessionId":"moved"}` + "\n")
+	f.Close()
+	// A continued-in the pane doesn't run (another process took it) isn't followed.
+	if info, _ := env.service.StatusInfo(ctx, "worker"); info.Event == service.EventSessionMoved {
+		t.Fatalf("followed a session its pane doesn't run: %s", info.Detail)
+	}
+	fake.paneSession = &backend.PaneSession{ID: "moved", PID: 1776758, Status: backend.StatusIdle, Detail: "at its prompt"}
+	fake.sessionID = "moved" // the registry lists the new session, idle
+	fake.native = backend.StatusIdle
+
+	info, err := env.service.StatusInfo(ctx, "worker")
+	if err != nil {
+		t.Fatalf("StatusInfo: %v", err)
+	}
+	if info.Status != service.AgentStatusIdle || info.Source != service.StatusSourceNative {
+		t.Fatalf("after the move: %s/%s (%s), want idle/native", info.Status, info.Source, info.Detail)
+	}
+	for key, want := range map[string]string{
+		service.StateKeySessionID:  "moved",
+		service.StateKeyTranscript: filepath.Join(dir, "moved.jsonl"),
+		service.StateKeyResult:     "the reply", // the same conversation: its reply stands
+		service.StateKeyEvent:      service.EventSessionMoved,
+	} {
+		if e, _ := env.store.GetState(ctx, "worker", key); e == nil || e.Value != want {
+			t.Errorf("%s = %+v, want %q", key, e, want)
+		}
+	}
+	// Followed once: the next check finds the session on record running.
+	if info, _ := env.service.StatusInfo(ctx, "worker"); info.Status != service.AgentStatusIdle {
+		t.Errorf("second check: %s", info.Status)
 	}
 }

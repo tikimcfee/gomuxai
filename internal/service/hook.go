@@ -60,9 +60,18 @@ func (s *AgentService) FindHookSession(ctx context.Context, self int, sessionID,
 	}
 	// Any running process with a registry entry above that CLI, below the
 	// pane, is another CLI: the one whose session this one started inside.
-	otherCLI := func(pid int) (bool, error) {
+	// Unless this CLI carries on that one's session: Claude Code moved the
+	// conversation into a background session its daemon (a child of that
+	// CLI) runs, and the pane's agent goes on in it (claudereg.Continues).
+	otherCLI := func(cli, pid int) (bool, error) {
 		e, found, err := claudereg.ReadPID(dir, pid, claudereg.System{})
-		return found && (e.Verdict == claudereg.Live || e.Verdict == claudereg.Unproven), err
+		if err != nil || !found || (e.Verdict != claudereg.Live && e.Verdict != claudereg.Unproven) {
+			return false, err
+		}
+		if args, ok := util.ProcArgs(cli); ok && claudereg.Continues(args, e.SessionID, sessionID) {
+			return false, nil
+		}
+		return true, nil
 	}
 	panes := func() (map[int]string, map[string]string, error) {
 		panes, err := s.tmux.PanePIDs()
@@ -92,10 +101,10 @@ func (s *AgentService) FindHookSession(ctx context.Context, self int, sessionID,
 // that ran it (the nearest process ownCLI accepts) and the agent whose pane
 // holds that CLI as its own session: walking on up, the first process that
 // is a pane (panes: pane pid -> tmux session; agents: tmux session -> agent),
-// unless another CLI (otherCLI) comes first, which makes this one a CLI
-// started from inside that one's session. A CLI whose pane is gone (its
+// unless another CLI (otherCLI, given the CLI that ran the hook) comes
+// first, which makes this one a CLI started from inside that one's session. A CLI whose pane is gone (its
 // parent died, as when cleanup kills a session) reaches no pane: no agent.
-func placeHook(chain []int, ownCLI, otherCLI func(pid int) (bool, error), panes func() (map[int]string, map[string]string, error)) (HookSession, error) {
+func placeHook(chain []int, ownCLI func(pid int) (bool, error), otherCLI func(cli, pid int) (bool, error), panes func() (map[int]string, map[string]string, error)) (HookSession, error) {
 	at := -1
 	for i, pid := range chain {
 		ok, err := ownCLI(pid)
@@ -120,7 +129,7 @@ func placeHook(chain []int, ownCLI, otherCLI func(pid int) (bool, error), panes 
 			hs.Owner = agentOf[session]
 			break
 		}
-		if ok, err := otherCLI(pid); err != nil || ok {
+		if ok, err := otherCLI(hs.CLIPID, pid); err != nil || ok {
 			return hs, err
 		}
 	}

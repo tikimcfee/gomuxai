@@ -925,6 +925,43 @@ started inside the session is deeper, so it is never taken for the pane's
 own. Two at the same depth (two CLIs side by side under one shell) are an
 error naming both, unless one was updated last.
 
+### Sessions Claude moves into the background
+
+Claude Code (seen in 2.1.319) can hand an interactive session over to a
+background session that its daemon runs: `claude daemon run`, a child of
+the interactive CLI, starts `claude bg-pty-host`, which runs a new CLI
+(registry `"kind": "bg"`) with `--session-id <new> --fork-session --resume
+<old transcript>`. The old transcript gains a `{"type":"continued-in",
+"continuedInSessionId":"<new>"}` line. The pane's CLI goes on drawing the
+conversation, and takes what is typed into it, but every hook now runs in
+the new process, under the new id, while the old process's registry entry
+keeps the old id and its last status (`busy`, say) for good.
+
+`claudereg.Continues` recognizes the move from both records: a command
+line whose `--resume` names the old session's transcript (a path ending
+in `<old id>.jsonl`), which ends saying it continued in the new session.
+A person's `claude --resume <id> --fork-session` elsewhere starts a
+separate conversation and writes no `continued-in`, and a background job
+the agent starts isn't launched resuming its session, so neither counts.
+Three places follow a move:
+
+- **The hook** (`placeHook`): the old CLI sits between the new one and the
+  pane, which would otherwise make the new one "a CLI started from inside
+  the session". When the new CLI continues that CLI's session, the walk
+  goes on to the pane, and the agent owns the new session's reports.
+- **`PaneSession`** (Claude's): after `UnderPane` finds the pane's CLI,
+  `Snapshot.Continuation` follows its moves to the live CLI carrying the
+  conversation on, so pane adoption never moves an agent back onto the
+  frozen old session.
+- **Status** (`followMovedSession`): before asking native status, a Claude
+  agent whose `_transcript` ends saying it continued in another session
+  that its pane runs (per `PaneSession`) is moved onto it, with a
+  `SessionMoved` report: `_session_id` and `_transcript` (the new
+  session's file beside the old) change, and `_result` stays, since it is
+  the same conversation. Without it, status would read the old entry until
+  the new session's next hook. Reading the transcript's last 64 KB for the
+  line is the cost every status check of a Claude agent pays.
+
 ### Pane adoption
 
 A person can quit an agent's Claude and start another in the same pane, or
@@ -1087,7 +1124,8 @@ reads the payload and places itself (`FindHookSession`, `placeHook`):
    session is an agent's. Another CLI on the way first (any running
    process with a registry entry, proven or not) means this CLI was started
    from inside that one's session (a `claude -p` a tool ran), so no agent
-   owns it. A CLI whose pane is gone (cleanup killed the session) reaches
+   owns it, unless this CLI carries on that one's session (Claude moved it
+   into the background; see "Sessions Claude moves into the background"). A CLI whose pane is gone (cleanup killed the session) reaches
    no pane, so no agent.
 
 Then `HandleClaudeHook`:
