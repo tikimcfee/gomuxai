@@ -262,11 +262,11 @@ func TestClaudeParseHookEvent_KeepsPermissionInputWhole(t *testing.T) {
 // Code's user settings, so the launch command carries none.
 func TestClaudeLaunchCommandWithSession(t *testing.T) {
 	cmd := namedagents.NewClaudeBackend().LaunchCommandWithSession("11111111-2222-3333-4444-555555555555")
-	if cmd != "claude --session-id '11111111-2222-3333-4444-555555555555'" {
+	if cmd != "claude"+claudeSettingsFlag+" --session-id '11111111-2222-3333-4444-555555555555'" {
 		t.Fatalf("launch command: %s", cmd)
 	}
 	cmd = namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{SkipPermissions: true}).LaunchCommandWithSession("sid")
-	if !strings.HasPrefix(cmd, "claude --dangerously-skip-permissions --session-id ") {
+	if !strings.HasPrefix(cmd, "claude --dangerously-skip-permissions"+claudeSettingsFlag+" --session-id ") {
 		t.Errorf("unexpected launch command: %s", cmd)
 	}
 }
@@ -276,7 +276,7 @@ func TestClaudeLaunchCommandWithSession(t *testing.T) {
 func TestClaudeLaunchCommandWithSession_Resume(t *testing.T) {
 	provider := namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{Resume: "3f34adff-9ebe-405a-aac0-8f69e8fd85f5"})
 	cmd := provider.LaunchCommandWithSession("spawn-id")
-	if cmd != "claude --resume '3f34adff-9ebe-405a-aac0-8f69e8fd85f5'" {
+	if cmd != "claude"+claudeSettingsFlag+" --resume '3f34adff-9ebe-405a-aac0-8f69e8fd85f5'" {
 		t.Errorf("a resumed session takes no --session-id: %s", cmd)
 	}
 }

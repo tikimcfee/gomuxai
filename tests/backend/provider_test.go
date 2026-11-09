@@ -48,19 +48,23 @@ func TestStatusString(t *testing.T) {
 	}
 }
 
+// claudeSettingsFlag is what every Claude launch command carries: the
+// settings that keep startup and between-turn dialogs from coming up.
+const claudeSettingsFlag = " --settings '" + namedagents.ClaudeSpawnSettings + "'"
+
 // TestClaudeConfigSkipPermissions tests that skip-permissions config works.
 func TestClaudeConfigSkipPermissions(t *testing.T) {
 	// Default - no flag
 	defaultBackend := namedagents.NewClaudeBackend()
-	if cmd := defaultBackend.LaunchCommand(); cmd != "claude" {
-		t.Errorf("Default LaunchCommand() = %q, want %q", cmd, "claude")
+	if cmd := defaultBackend.LaunchCommand(); cmd != "claude"+claudeSettingsFlag {
+		t.Errorf("Default LaunchCommand() = %q, want %q", cmd, "claude"+claudeSettingsFlag)
 	}
 
 	// With skip permissions
 	skipBackend := namedagents.NewClaudeBackendWithConfig(namedagents.ClaudeConfig{
 		SkipPermissions: true,
 	})
-	expected := "claude --dangerously-skip-permissions"
+	expected := "claude --dangerously-skip-permissions" + claudeSettingsFlag
 	if cmd := skipBackend.LaunchCommand(); cmd != expected {
 		t.Errorf("SkipPermissions LaunchCommand() = %q, want %q", cmd, expected)
 	}
@@ -75,8 +79,8 @@ func TestRegistryCreateProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProvider() error = %v", err)
 	}
-	if cmd := p1.LaunchCommand(); cmd != "claude" {
-		t.Errorf("LaunchCommand() = %q, want %q", cmd, "claude")
+	if cmd := p1.LaunchCommand(); cmd != "claude"+claudeSettingsFlag {
+		t.Errorf("LaunchCommand() = %q, want %q", cmd, "claude"+claudeSettingsFlag)
 	}
 
 	// Create with skip permissions
@@ -86,7 +90,7 @@ func TestRegistryCreateProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProvider() error = %v", err)
 	}
-	expected := "claude --dangerously-skip-permissions"
+	expected := "claude --dangerously-skip-permissions" + claudeSettingsFlag
 	if cmd := p2.LaunchCommand(); cmd != expected {
 		t.Errorf("LaunchCommand() = %q, want %q", cmd, expected)
 	}
