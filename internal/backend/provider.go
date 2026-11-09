@@ -100,6 +100,26 @@ type HookDeliverer interface {
 	DeliveryPoint() string
 }
 
+// PromptHandover is implemented by hook backends whose CLI takes typed text
+// that is long or spans several lines as a paste, and shows it to the model
+// as pasted material rather than as the prompt itself, while a hook that
+// runs when a prompt is submitted can hand text to the model with it. A
+// message the CLI would take as a paste is then typed as one short line, and
+// that hook hands over its whole text (see service/handover.go).
+type PromptHandover interface {
+	// TypedAsPaste reports whether the CLI takes text, typed in at once,
+	// as a paste.
+	TypedAsPaste(text string) bool
+
+	// SubmittedPrompt returns the prompt r's event submitted, when r is
+	// the hook that can hand over text with it (Claude's UserPromptSubmit).
+	SubmittedPrompt(r HookReport) (prompt string, ok bool)
+
+	// HandoverOutput is what that hook prints to hand text to the model
+	// with the prompt.
+	HandoverOutput(text string) []byte
+}
+
 // HookAllower is implemented by hook backends whose hook can approve a
 // shell command before it runs (HookReport.Command), skipping the
 // permission prompt.

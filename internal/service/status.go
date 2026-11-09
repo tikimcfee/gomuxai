@@ -381,7 +381,13 @@ func (s *AgentService) reportHook(ctx context.Context, name, spawnID, event stri
 	} else if hr.DeliveryOnly {
 		return nil, nil
 	} else {
-		out, err = approval, s.Report(ctx, name, r)
+		out = approval
+		if deliver {
+			if h := s.handoverOutput(ctx, name, provider, hr); h != nil {
+				out = h
+			}
+		}
+		err = s.Report(ctx, name, r)
 	}
 	if err != nil || hr.Transcript == "" {
 		return out, err

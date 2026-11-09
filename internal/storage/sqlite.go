@@ -348,6 +348,41 @@ func (s *SQLiteStorage) ClaimMessage(ctx context.Context, id int64) (bool, error
 	return n == 1, err
 }
 
+// ClaimHandover marks receiverID's handover message id delivered and
+// returns it, or nil if no such message awaits handover: of two callers,
+// only one gets it.
+func (s *SQLiteStorage) ClaimHandover(ctx context.Context, receiverID string, id int64) (*Message, error) {
+	msg, err := queryOne(ctx, s.db, scanMessage, `
+		UPDATE messages SET status = 'delivered'
+		WHERE id = ? AND receiver_id = ? AND status = 'handover'
+		RETURNING `+messageColumns, id, receiverID)
+	if err != nil {
+		return nil, fmt.Errorf("claiming message %d: %w", id, err)
+	}
+	return msg, nil
+}
+
+// FailHandover marks handover message id failed, reporting whether this
+// call did: false if it was handed over first.
+func (s *SQLiteStorage) FailHandover(ctx context.Context, id int64) (bool, error) {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE messages SET status = 'failed' WHERE id = ? AND status = 'handover'`, id)
+	if err != nil {
+		return false, fmt.Errorf("failing message %d: %w", id, err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+// GetMessageStatus returns message id's status.
+func (s *SQLiteStorage) GetMessageStatus(ctx context.Context, id int64) (MessageStatus, error) {
+	var status MessageStatus
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM messages WHERE id = ?`, id).Scan(&status); err != nil {
+		return "", fmt.Errorf("reading message %d: %w", id, err)
+	}
+	return status, nil
+}
+
 // ClaimPendingMessages marks every pending message for receiverID
 // delivered and returns them, oldest first. If update is non-nil, the state
 // change it returns for them is applied in the same transaction. The claim
