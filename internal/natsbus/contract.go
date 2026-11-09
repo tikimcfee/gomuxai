@@ -151,6 +151,24 @@ type AgentInfo struct {
 	Status string `json:"status,omitempty"`
 	// EndReason says how its session ended, with a status of ended.
 	EndReason string `json:"end_reason,omitempty"`
+
+	// What agent export shows for the serving host's own agents. Hosts
+	// that predate them leave them out: an absent field means unknown,
+	// which Attached and Resumable keep apart from false (nil).
+	//
+	// Detail is the resolved status's detail, as StatusResponse.Detail.
+	Detail string `json:"detail,omitempty"`
+	// SessionID is the CLI session the agent runs, or last ran: the one
+	// agent resume would continue.
+	SessionID string `json:"session_id,omitempty"`
+	// Cwd is the directory it was spawned in, on the serving host.
+	Cwd string `json:"cwd,omitempty"`
+	// Attached says whether its tmux session exists.
+	Attached *bool `json:"attached,omitempty"`
+	// Resumable says whether agent resume would continue it, by the
+	// serving host's own rules (types.Resumable): a claude or agy agent
+	// gomuxai started, not adopted, with a session, that has ended.
+	Resumable *bool `json:"resumable,omitempty"`
 }
 
 type StatusRequest struct {

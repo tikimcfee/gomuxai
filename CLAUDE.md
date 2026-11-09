@@ -409,7 +409,10 @@ the resolved status `agent status` shows. It also reads the stores of other
 `./bin/agent`), read-only. To coordinate, use `wait` and `_result`; export
 is for programs that draw or log the tree. `docs/ARCHITECTURE.md` ("Export")
 has the JSON shapes. A departed agent's `session_id` is the one its
-transcript's path names.
+transcript's path names. `resumable` says whether `agent resume` would
+continue an agent (claude or agy, not adopted, with a session, ended);
+with `--hosts`, the other host works it out, and the field is absent
+(unknown) from a host on an older `agent`.
 
 ### Sessions: every agent session on the host
 
@@ -600,8 +603,10 @@ Known gaps; `agent friction list` has the rest.
   the next hook. A store written by an `agent` built before export has no
   events: `--follow` re-reads it when it changes, so its spawns and
   cleanups arrive as a whole-store update, not as events.
-- `export --hosts` lists other hosts through `list` only: no store, cwd,
-  or transcript for them, and `--follow` re-lists them every 30s.
+- `export --hosts` lists other hosts through `list` only: no store or
+  transcript for them, and `--follow` re-lists them every 30s. A host on an
+  older `agent` sends no `detail`, `session_id`, `cwd`, `attached` or
+  `resumable`: absent means unknown.
 
 ## Custom Backends
 

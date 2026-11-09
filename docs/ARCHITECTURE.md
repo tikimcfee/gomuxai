@@ -1095,10 +1095,24 @@ read from the database's tables, which aren't an interface.
   data_version`, re-reads it when that moved, and sends a `changed` line
   (no `id`) per agent that changed, or a whole `store` line when agents
   came or went, since nothing says whether they were spawned or cleaned up. Sessions still unmatched are listed as `unrecorded`.
-- **Other hosts** (`--hosts all|h1,h2`) come from the bus's `list` op, so
-  they have no store, cwd, transcript, or `attached`, and their status is
-  the remote host's resolved status. `--follow` lists them again every 30s
-  and sends a `host` line when one changed. No bus protocol was added.
+- **Other hosts** (`--hosts all|h1,h2`) come from the bus's `list` op:
+  the host's resolved status and its `end_reason` and `detail`, and
+  `session_id`, `cwd`, `attached` and `resumable` as that host works them
+  out; no `store` or transcript fields. A host that predates those fields
+  (before `list` carried them) leaves them out, and **absent means
+  unknown**: `attached` and `resumable` are then missing, not `false`.
+  `--follow` lists them again every 30s and sends a `host` line when one
+  changed.
+- **Resumable** is whether `agent resume` would continue the agent, by
+  resume's own rules (`types.Resumable`, which `service.ResumeRefusal`
+  gives the reasons for): a claude or agy agent gomuxai started (not
+  adopted), with a session id, that has ended, and still has a record. For
+  this host's agents export applies them to what it knows: the last report
+  says `ended`, or the tmux session is gone (where `agent status` says
+  `ended (gone)`); the session id is `_session_id`, else the transcript
+  path's. Another host's comes from its `list`, which uses the resolved
+  status and the newest transcript's session id. A departed agent is never
+  resumable.
 
 ### The stream
 
@@ -1112,7 +1126,7 @@ runs of one name apart. Every agent object has the same fields:
 ```json
 {"name":"lead-t1","host":"laptop","kind":"tmux","run":12,"parent":"lead","backend":"claude",
  "session":"agent-lead-t1","store":"/home/user/gomuxai/bin/.gomuxai","cwd":"/home/user/gomuxai",
- "created_at":"2026-10-24T14:00:00.5Z","live":true,"attached":true,
+ "created_at":"2026-10-24T14:00:00.5Z","live":true,"attached":true,"resumable":false,
  "status":"waiting","event":"PermissionRequest","detail":"permission: Bash: rm -rf build","tool":"Bash",
  "tool_input":"{\"command\":\"rm -rf build\"}","status_at":"2026-10-24T14:01:02.25Z",
  "session_id":"5f0c…","transcript":"/home/user/.claude/projects/-home-user-gomuxai/5f0c….jsonl",
@@ -1121,7 +1135,12 @@ runs of one name apart. Every agent object has the same fields:
 
 `kind` is `tmux` for every agent so far (room for CLI sessions that agent
 didn't start). Absent fields are empty: `parent` for a person's agent,
-`ended_at` while live, `store` and `attached` for another host's agents.
+`ended_at` while live, `store` and the transcript fields for another
+host's agents. For another host that predates them, absent means unknown:
+`attached`, `resumable`, `end_reason`, `detail`, `session_id` and `cwd`
+are then left out, and `attached` and `resumable` are never `false` for
+"don't know". This host's agents always carry `attached` and
+`resumable`.
 `end_reason` is set beside `"status":"ended"`. A departed agent (`live:
 false`, `ended_at` set) keeps its last report's event and detail, and its
 status is `ended (closed)`, unless that report had already ended it with a
@@ -1353,7 +1372,7 @@ modes in your terminal.
 
 | Op | Request → reply | CLI | Remote by default |
 |---|---|---|---|
-| `list` | `ListRequest` → `ListResponse` (agents with status and parent) | `list --host H` | yes |
+| `list` | `ListRequest` → `ListResponse` (agents: `name`, `session`, `backend`, `spawned_by`, `adopted`, `created_at`, resolved `status`, `end_reason`, `detail`, `session_id`, `cwd`, `attached`, `resumable`; older hosts send no `detail` onward) | `list --host H`, `export --hosts` | yes |
 | `status` | `StatusRequest` → `StatusResponse` (mirrors `StatusInfo`) | `status`, `wait` | yes |
 | `capture` | `CaptureRequest` → `CaptureResponse` | `capture` | yes |
 | `send` | `SendRequest` (`now`) → `SendResponse` (status, held, typed); none from older hosts | `send` | yes |
