@@ -63,7 +63,7 @@ func (h rpcHandler) List(ctx context.Context) (*natsbus.ListResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp := &natsbus.ListResponse{Agents: make([]natsbus.AgentInfo, 0, len(agents))}
+	resp := &natsbus.ListResponse{Agents: make([]natsbus.AgentInfo, 0, len(agents)), AgentBinary: h.s.cfg.AgentBinary}
 	for _, a := range agents {
 		resp.Agents = append(resp.Agents, h.s.agentInfo(ctx, a))
 	}

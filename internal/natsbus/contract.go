@@ -139,6 +139,24 @@ type ListRequest struct{}
 
 type ListResponse struct {
 	Agents []AgentInfo `json:"agents"`
+	// AgentBinary is the absolute path of the serving host's agent binary,
+	// the one its bus runs: what agent attach name@host runs there over
+	// ssh. Empty from hosts that predate it.
+	AgentBinary string `json:"agent_binary,omitempty"`
+}
+
+// binaryPathPattern is what an advertised agent binary's path may hold: it
+// goes into a command line another host's shell runs (over ssh), so only
+// characters no shell treats specially, though it is quoted too.
+var binaryPathPattern = regexp.MustCompile(`^/[A-Za-z0-9._+,@%=/-]*$`)
+
+// ValidateAgentBinary reports whether path, from another host's list
+// reply, is safe to run there: an absolute path of plain characters.
+func ValidateAgentBinary(path string) error {
+	if !binaryPathPattern.MatchString(path) {
+		return fmt.Errorf("its agent binary's path %q isn't an absolute path of letters, digits and ._+,@%%=/-", path)
+	}
+	return nil
 }
 
 type AgentInfo struct {

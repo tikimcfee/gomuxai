@@ -413,9 +413,13 @@ func TestRPCClient_SanitizesRemoteText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agents, err := client.List(ctx, "h1")
+	listed, err := client.ListHost(ctx, "h1")
 	if err != nil {
 		t.Fatal(err)
+	}
+	agents := listed.Agents
+	if listed.AgentBinary != st.Detail || natsbus.ValidateAgentBinary(listed.AgentBinary) == nil {
+		t.Errorf("agent binary %q: want it sanitized, and refused to run", listed.AgentBinary)
 	}
 	for name, f := range map[string]string{
 		"logs output": logs.Output, "logs hint": logs.Hint,
@@ -450,7 +454,7 @@ type evilHandler struct{ text string }
 
 func (h evilHandler) List(context.Context) (*natsbus.ListResponse, error) {
 	t := h.text
-	return &natsbus.ListResponse{Agents: []natsbus.AgentInfo{{Name: t, Detail: t, Cwd: t, SessionID: t, SpawnedBy: t, EndReason: t}}}, nil
+	return &natsbus.ListResponse{Agents: []natsbus.AgentInfo{{Name: t, Detail: t, Cwd: t, SessionID: t, SpawnedBy: t, EndReason: t}}, AgentBinary: t}, nil
 }
 func (h evilHandler) Status(context.Context, natsbus.StatusRequest) (*natsbus.StatusResponse, error) {
 	return &natsbus.StatusResponse{Status: "idle", Detail: h.text}, nil

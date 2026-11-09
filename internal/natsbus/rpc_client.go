@@ -55,17 +55,29 @@ func NewRPCClient(nc *nats.Conn, timeout time.Duration) *RPCClient {
 
 // List returns the agents on host.
 func (c *RPCClient) List(ctx context.Context, host string) ([]AgentInfo, error) {
+	resp, err := c.ListHost(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Agents, nil
+}
+
+// ListHost returns host's list reply: its agents, and the path of its
+// agent binary (empty from a host that predates it), which a caller about
+// to run it checks with ValidateAgentBinary.
+func (c *RPCClient) ListHost(ctx context.Context, host string) (*ListResponse, error) {
 	var resp ListResponse
 	if err := c.call(ctx, host, OpList, ListRequest{}, &resp); err != nil {
 		return nil, err
 	}
+	resp.AgentBinary = clean(resp.AgentBinary)
 	for i := range resp.Agents {
 		a := &resp.Agents[i]
 		for _, f := range []*string{&a.Name, &a.Session, &a.Backend, &a.SpawnedBy, &a.Status, &a.EndReason, &a.Detail, &a.SessionID, &a.Cwd} {
 			*f = clean(*f)
 		}
 	}
-	return resp.Agents, nil
+	return &resp, nil
 }
 
 // Status returns the status of a remote agent.

@@ -49,11 +49,16 @@ in --remote-ops: resume is off for other hosts by default, since it starts
 a process as that host's user. Inside an agent, the other host lets you
 resume only your own helpers there. --skip-permissions and
 --trust-workspace are refused for another host's agent, as for agent spawn
-name@host: run agent resume on that host for those. --attach isn't
-supported for another host's agent yet.`,
+name@host: run agent resume on that host for those.
+
+agent resume name@host --attach runs ssh to that host instead, and its own
+agent resume <name> --attach there, as agent attach name@host does (see
+agent help attach): as you on that host, not through its resume op, and
+it needs ssh to work from here.`,
 	Example: `  agent resume lead
   agent resume lead --attach
-  agent resume lead@hub`,
+  agent resume lead@hub
+  agent resume lead@hub --attach`,
 	Args: cobra.ExactArgs(1),
 	RunE: runResume,
 }

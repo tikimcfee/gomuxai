@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -426,6 +428,18 @@ type busStatusOut struct {
 	LinkedPeers int      `json:"linked_peers"`
 	Trusted     []string `json:"trusted"`
 	RemoteOps   []string `json:"remote_ops"`
+	// SSH is where agent attach name@host runs ssh to, per trusted peer
+	// (agent bus ssh): its set destination, or its name.
+	SSH map[string]string `json:"ssh"`
+}
+
+// sshByPeer is each trusted peer's ssh destination, for bus status.
+func sshByPeer() map[string]string {
+	out := map[string]string{}
+	for _, h := range trustedHosts() {
+		out[h] = sshDestFor(h)
+	}
+	return out
 }
 
 // busSetUp reports whether this host has a bus identity ("agent bus init").
@@ -437,7 +451,7 @@ func busSetUp() bool {
 func busStatus(cmd *cobra.Command, args []string) error {
 	info, err := queryBus(2 * time.Second)
 	if busStatusJSON {
-		out := busStatusOut{Host: cfg.Host, SetUp: busSetUp(), Trusted: []string{}, RemoteOps: []string{}}
+		out := busStatusOut{Host: cfg.Host, SetUp: busSetUp(), Trusted: []string{}, RemoteOps: []string{}, SSH: sshByPeer()}
 		if errors.Is(err, natsbus.ErrNoBus) {
 			return printJSON(out)
 		}
@@ -469,5 +483,12 @@ func busStatus(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  linked peers: %d; trusted: %s\n", info.LinkedPeers, strings.Join(info.Trusted, ", "))
 	fmt.Printf("  remote ops allowed: %s\n", strings.Join(info.RemoteOps, ", "))
+	if ssh := sshByPeer(); len(ssh) > 0 {
+		var dests []string
+		for _, h := range slices.Sorted(maps.Keys(ssh)) {
+			dests = append(dests, h+" → "+ssh[h])
+		}
+		fmt.Printf("  attach over ssh (agent bus ssh): %s\n", strings.Join(dests, ", "))
+	}
 	return nil
 }

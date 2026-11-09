@@ -63,7 +63,7 @@ const lazyDelay = 200 * time.Millisecond
 
 func (f *fakeRPC) List(ctx context.Context) (*natsbus.ListResponse, error) {
 	f.record(natsbus.ListRequest{})
-	return &natsbus.ListResponse{Agents: []natsbus.AgentInfo{{Name: "worker", Session: "agent-worker", Backend: "claude"}}}, nil
+	return &natsbus.ListResponse{Agents: []natsbus.AgentInfo{{Name: "worker", Session: "agent-worker", Backend: "claude"}}, AgentBinary: "/opt/gomux/agent"}, nil
 }
 
 func (f *fakeRPC) Status(ctx context.Context, req natsbus.StatusRequest) (*natsbus.StatusResponse, error) {
@@ -160,6 +160,11 @@ func TestRPC_AllOpsRoundTrip(t *testing.T) {
 	agents, err := client.List(ctx, "h1")
 	if err != nil || len(agents) != 1 || agents[0].Name != "worker" || agents[0].Session != "agent-worker" {
 		t.Errorf("List = %+v, %v", agents, err)
+	}
+
+	listed, err := client.ListHost(ctx, "h1")
+	if err != nil || listed.AgentBinary != "/opt/gomux/agent" || len(listed.Agents) != 1 {
+		t.Errorf("ListHost = %+v, %v", listed, err)
 	}
 
 	st, err := client.Status(ctx, worker)
