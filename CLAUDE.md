@@ -88,7 +88,9 @@ failed and what to try. Most read commands take `--json`.
   Claude agent until it is there), which finds its agent from the running
   processes, and Claude Code's session registry (`~/.claude/sessions/`, each
   entry proven by pid and start time) says which session an agent's pane
-  runs, including one a person started there by hand. agy's hooks are wired
+  runs, including one a person started there by hand, and one Claude Code
+  moved into a background session of its own (the agent goes on in it,
+  event `SessionMoved`). agy's hooks are wired
   at spawn. `waiting` means blocked on a person, e.g. a permission prompt,
   the CLI's workspace trust prompt (Claude or agy in a folder it hasn't
   trusted, which runs no hook: read off its screen, tool `trust`, detail
