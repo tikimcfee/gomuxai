@@ -339,6 +339,8 @@ happens to its session, and how many held messages go with it.
 
 ```bash
 agent resume helper          # an ended agent, on its last session
+agent resume --all --dry-run # after a reboot: what --all would resume and skip, and why
+agent resume --all           # every agent the reboot ended, parents before their helpers
 ```
 
 A reboot (or a killed tmux server) ends every agent: `ended (gone)`.
@@ -350,6 +352,19 @@ person's: start the CLI there yourself). Inside an agent, only your own
 helpers. To continue
 a session no agent owns, `agent spawn <name> --resume <session>`, or
 `--continue` for the most recent one in the directory.
+
+`--all` resumes every agent here whose status is `ended (gone)` and that
+can be resumed: what a reboot or a killed tmux server leaves. An agent
+that ended any other way (`quit`, `finished`, `closed`, `replaced`,
+`parent`) was ended on purpose, so `--all` lists it as skipped and leaves
+it (name it to resume it), and so with a gone one it can't resume (aider,
+adopted, no session), saying why. Parents come back before their helpers,
+one depth of the tree at a time, a few at once within it. It prints one
+line per ended agent (`resumed`, `skipped`, `failed`) in a stable order,
+then a total, and exits 1 if any resume failed. Inside an agent it covers
+only your helpers and theirs. `--skip-permissions` and `--trust-workspace`
+apply to each; `--attach` is refused, and so is a name: `--all` is this
+host's, so run it on the other host for that host's agents.
 
 ## Coordination Patterns
 
@@ -642,6 +657,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `unknown` (non-hook backends) | `capture` to look; coordinate on state or messages instead. |
 | `error` | The last turn failed (e.g. rate limit); it takes input again. `capture` or `logs` shows why. |
 | `ended (...)` | The reason says how (`agent statuses`); `agent resume <name>` continues its session (claude, agy); `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
+| Every agent `ended (gone)` after a reboot | `agent resume --all --dry-run`, then `agent resume --all`: it resumes each one the reboot ended, parents first, and leaves the ones ended on purpose. |
 | `wait` timed out | `status -v` and `capture`: still working, stuck, or missed the turn? |
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
 | A key fails: "a read-only client is attached" | Detach the client it names (`tmux detach-client -t /dev/pts/N`); watch with `agent capture` instead of `tmux attach -r`. |
