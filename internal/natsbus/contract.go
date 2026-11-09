@@ -219,6 +219,9 @@ type StatusResponse struct {
 	// Held is how many messages wait for the agent (see service.Send);
 	// zero from hosts that predate it.
 	Held int `json:"held,omitempty"`
+	// Model is the model spawn --model started the agent on; absent for
+	// the CLI's default, and from hosts that predate it.
+	Model string `json:"model,omitempty"`
 }
 
 type CaptureRequest struct {
@@ -298,6 +301,11 @@ type SpawnRequest struct {
 	// spawned it. The serving host can't verify it, as with a message's
 	// [from ...] tag.
 	SpawnedBy string `json:"spawned_by,omitempty"`
+	// Model is the model the CLI runs on (--model), or empty for its
+	// default. The serving host checks it reads as a model name and
+	// shell-quotes it. A host that predates it ignores it, and its
+	// response then has no Model.
+	Model string `json:"model,omitempty"`
 }
 
 // SpawnResponse describes the agent a spawn started, as a local spawn
@@ -309,6 +317,7 @@ type SpawnResponse struct {
 	SpawnedBy string `json:"spawned_by,omitempty"`
 	Cwd       string `json:"cwd"`
 	TaskFile  string `json:"task_file,omitempty"` // as resolved against Cwd
+	Model     string `json:"model,omitempty"`     // the model it runs on, as requested
 	// Status is the agent's resolved status right after it started, and
 	// Detail what it is doing or asking (e.g. "trust: <folder>").
 	Status    string `json:"status"`

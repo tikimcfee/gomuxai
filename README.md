@@ -362,7 +362,7 @@ add` found a similar entry.
 | A Claude agent's status never changes, or held messages never arrive | Its CLI started before `agent hooks install`, or the hook is failing | `agent hooks status` shows the last errors; restart the agent's CLI to load the hook |
 | A tmux session `agent-NAME` with no agent record | Leftover session | `agent session kill agent-NAME` |
 | Status `unknown` | aider and custom backends have no hooks; the screen matched no pattern | `agent capture NAME`; adjust the backend's patterns |
-| A long message arrives in Claude as pasted content | Claude treats long typed input as a paste, i.e. data | Keep instructions short, or write them to a file and send its path (a message held for a busy agent arrives whole) |
+| A long message arrives in Claude as pasted content | Claude takes typed input over 800 characters, or with 3+ line breaks, as a paste, i.e. material. `send` hands such a message over by hook instead, but only to a Claude CLI the hook reaches | `agent hooks status`; restart the agent's CLI (`agent resume`) so it runs the hook |
 | `send` says the message is still in the input box after 3 Enters; `status` shows `unsent:` | Claude took each Enter as a newline or ignored it. `send` waits for the box to show the text before pressing Enter, and presses again while it stays (see ARCHITECTURE, "Submitting a typed message") | Don't send it again: `agent capture NAME` shows it, `agent key agent-NAME Enter` submits it |
 
 Known gaps are listed in [`CLAUDE.md`](CLAUDE.md); open requests are in

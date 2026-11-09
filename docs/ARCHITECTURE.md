@@ -129,6 +129,49 @@ last, so a 1066-byte message arrived as its last 44 bytes (friction #36,
 message can't end its paste early: `ESC [201~` in it is dropped. Shell
 command lines (spawn's launch) and keys still go through `send-keys`.
 
+**Long messages to Claude: handed over by hook.** Claude Code (2.1.319,
+measured) takes input that arrives at once as a paste when it is over 800
+characters (UTF-16 units) or has 3 or more line breaks, bracketed or not,
+and `send-keys` typing too: its box shows `[Pasted text #N +M lines]`, and
+the prompt the model gets is `\n\n<pasted_content id="…">\n<text>\n</pasted_content id="…">\n`,
+which its harness tells it to treat as material, not as the user's request.
+So `typeMessage` (`internal/service/handover.go`) sends a message the
+backend says it would take as a paste (`PromptHandover.TypedAsPaste`:
+over 640 characters, a margin, or 3+ line breaks) differently, when the
+agent's hook reaches its CLI (`holdsMessages`):
+
+1. It stores the message as a `messages` row with status `handover`, and
+   types one short line in its place, through `typeText` and its submit
+   check: the message's first line, cut at 160 characters, then `[gomuxai
+   message #<id>, 10.4 KB, 130 lines: the whole message follows as hook
+   context]`.
+2. The prompt runs Claude's `UserPromptSubmit` hook, whose payload carries
+   the prompt (`HookReport.PromptText`). `handoverOutput` finds the token,
+   claims that row for this agent (`ClaimHandover`: `handover` →
+   `delivered`, so it goes out once and only to its addressee), and prints
+   `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"gomuxai message #<id>, whole:\n\n<text>"}}`.
+   The transcript records a `hook_additional_context` attachment, and the
+   model gets a `UserPromptSubmit hook additional context: ...` block beside
+   the prompt. Claude passes up to 10,000 characters inline; a longer one it
+   saves under the session's `tool-results/` and passes as
+   `<persisted-output>` with a 2 KB preview and the path, which the model
+   reads. The hook runs for a prompt typed mid-turn too (Claude takes it in
+   at a tool boundary), so `--now` works the same.
+3. `typeHandover` waits up to 3 `SubmitWait`s (9s) for the row to leave
+   `handover`. If the hook never took it, it marks the row `failed` (a late
+   hook then hands over nothing) and returns `HandoverError`: the agent got
+   only the line. `typeHeld` doesn't hold such messages again, or the
+   deliverer would type the line over and over. A line that wasn't
+   submitted (`UnsubmittedError`) or couldn't be checked keeps its row:
+   whoever submits it gets the message.
+
+Spawn's first message (`typeFirstMessage`) goes the same way, once the
+hook has reported the session (up to 15s). The turn starts and ends as for
+any typed message, so `wait --next` and `_result` cover the reply, and over
+the bus the receiving host does all of it. agy needs none of this: it
+records a long multi-line typed message as the request itself
+(`<USER_REQUEST>...` in its transcript).
+
 The cost is that input is typed, not delivered: a message is "sent" once its
 keys are in the terminal, whether or not the CLI read it, and anything typed
 at a dialog answers the dialog. `Send` and the watcher guard against that
@@ -184,6 +227,8 @@ applies each one it finds:
 | `InstructionsProvider`: the briefing | `--append-system-prompt-file instructions.md` | `AGENTS.md` in the `--add-dir` directory | — |
 | `CommandAllower`: pre-allowed commands | `--allowedTools 'Bash(agent status:*)' ...` | — | — |
 | `PromptFlagProvider`: first message on the command line | — | `-i '<task>'` | — |
+| `PromptHandover`: a long message typed as a short line, its text handed over by `UserPromptSubmit` | yes | — | — |
+| `ModelChooser`: `spawn --model` | `--model '<model>'` | `--model '<model>'`, ahead of the exit wrapper | `--model '<model>'` |
 | `TrustPrompter`: reads and answers the trust prompt | moves to "Yes, I trust this folder" first (the default is "No, exit") | Enter ("Yes" is the default) | — |
 | `NativeStatusProvider` | Claude Code's session registry | — | — |
 | `PaneSessionProvider`: the session a pane runs | the registry, placed by the process tree | — | — |
@@ -350,7 +395,8 @@ The service then:
    a new run (a `spawned` event). The record is updated, not deleted:
    deleting it would cascade to the agent's state.
 4. Deletes the reserved keys that described the ended run, keeping
-   `_result` and `_transcript`; the agent's own keys stay. The launch then
+   `_result`, `_transcript` and `_model` (the model `spawn --model` chose,
+   which the relaunch passes again); the agent's own keys stay. The launch then
    writes a new `_spawn_id` and `_session_id`.
 5. Starts a deliverer if messages were held for it: they never went out
    while it was ended.
@@ -412,8 +458,14 @@ from an agent (`AGENT_NAME` set) is prefixed `[from <name>@<host>] `, and
 one without `AGENT_NAME` `[from a person on <host>] `, or `[from a Claude
 session on <host>] ` when the environment shows an AI CLI (`AI_AGENT`'s tool
 name, the part before its first `_`, or `CLAUDECODE=1`; `unrecordedSender`).
-Those name no agent to reply to, and their slash commands stay unmarked, or
-they would no longer be ones (`markSender`). Before
+Those name no agent to reply to. A slash command stays unmarked from any
+sender, or it would no longer be one (`markSender`): `service.IsSlashCommand`
+takes `/name` followed by a space or the end (`/model opus`,
+`/plugin:skill args`), and not a path (`/tmp/out.txt is ready`, which has a
+second slash first). Who sent it is then only in the sending host's command
+log (`agent history`). Claude's `/model` also saves the model as the
+default for every new session in the user's settings, so `spawn --model`
+is how to run one agent on another model. Before
 typing, `checkCanSend` refuses an `ended` agent (the text would run in the
 shell left behind), a `waiting` agent, and any agent with a permission or
 trust dialog on screen (the Enter would answer it; at Claude's trust
@@ -822,6 +874,7 @@ session, changes nothing, and status goes on as above.
 | `_result` | Claude's last reply (`Stop`'s `last_assistant_message`); written only when set or cleared |
 | `_session_id` | the CLI's session id; spawn sets it, hooks update it (`/clear`, `/resume`, agy's conversation id), and pane adoption sets the session the pane runs |
 | `_spawn_id` | agy only: the spawn's uuid, set once by spawn (a Claude agent spawned with per-spawn hooks, before the global hook, has one too) |
+| `_model` | the model `spawn --model` started the agent on; resume keeps it and relaunches on it; unset for the CLI's default |
 | `_hooked_session` | Claude: the session the global hook last reported for the agent's main session; while it equals `_session_id`, the agent holds messages |
 | `_turn_at` | when the last turn started: written with a report that is `processing` and clears `_result` (Claude `UserPromptSubmit`, agy's first `PreInvocation`) |
 | `_sent_at` | when a message was last typed in; written by `send` (and queued deliveries and spawn's first message), not by `Report` |
@@ -1552,7 +1605,7 @@ modes in your terminal.
 | `send` | `SendRequest` (`now`) → `SendResponse` (status, held, typed); none from older hosts | `send` | yes |
 | `respond` | `RespondRequest` (`approve`, `approve_always`, `deny`, `force`, `expect_tool`) → none | `approve`, `deny` | yes |
 | `keys` | `KeysRequest` (text, then a key) → none | `keys name@host` | no |
-| `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `spawned_by`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
+| `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `spawned_by`, `model`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `model`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
 | `logs` | `LogsRequest` (`agent`, `lines`, `full`, `json`, `terminal`) → `LogsResponse` (`output`: what `agent logs` prints there, `hint`: its stderr hint, `truncated`: bytes left out) | `logs name@host` | yes |
 | `resume` | `ResumeRequest` (`agent`, `resumed_by`) → `ResumeResponse` (`name`, `session`, `backend`, `session_id`, `cwd`, `held`, `status`, `end_reason`) | `resume name@host` | no |
 | `friction` | `FrictionRequest` (`action`: `get` `ids`; `link`/`unlink`/`resolve` `id`, with `from` (required), `by`, `note`; resolve's `uid` and `status`; resolve closes only an entry linked to `from`) → `FrictionResponse` (`entries` with their `links` and `requested`, `missing`, `resolved`) | `friction show`/`list`/`links`/`link`/`unlink`/`resolve` | yes |
@@ -1595,7 +1648,10 @@ absolute (empty: the home directory of the user the bus runs as), and a relative
 `--attach`, `--backend-config`, `--skip-permissions` and
 `--trust-workspace` for a remote spawn before sending; `SpawnRequest` has
 no field for `--skip-permissions`, `--trust-workspace` or `--resume`, so a
-peer can't ask for them either. (Confirming a trust prompt is saved in the
+peer can't ask for them either. `model` is checked against
+`service.ValidateModel` on both sides and shell-quoted on the launch line;
+a host that predates it ignores it and replies with no `model`, and the
+caller says the agent runs on its CLI's default. (Confirming a trust prompt is saved in the
 host user's CLI config and would outlast the agent.) So `cwd` must be a
 directory the CLI already trusts there, or a person there confirms the
 prompt. A `spawned_by` naming the serving host itself (in any case) is
@@ -1781,7 +1837,7 @@ One SQLite database, `.gomuxai/gomuxai.db`, through `modernc.org/sqlite`
 | `runs` | `id`, `name`, `parent`, `backend`, `session`, `cwd`, `created_at`, `ended_at`, `status`, `transcript`, `end_reason` | one per spawn; cleanup sets `ended_at` and the last status, transcript and end reason; indexed on `(name, id)` |
 | `agent_events` | `id`, `at`, `kind`, `agent`, `run`, `status`, `event`, `detail`, `tool`, `tool_input`, `session_id`, `transcript`, `end_reason` | `spawned`/`status`/`removed`, for `export --follow`; the newest 20000 are kept |
 | `session_reports` | `session_id` PK, `harness`, `status`, `end_reason`, `event`, `detail`, `transcript`, `at` | the global hook's last report for every Claude session it heard (a subagent's under `agent-<id>`), for `agent sessions`; a write older than the stored one is dropped; never pruned |
-| `messages` | `id`, `sender_id`, `receiver_id`, `content`, `status`, `created_at` | held and queued messages: `pending`/`delivered`/`failed`; indexed on `(receiver_id, status)`; claimed with `UPDATE ... WHERE status = 'pending'` |
+| `messages` | `id`, `sender_id`, `receiver_id`, `content`, `status`, `created_at` | held and queued messages: `pending`/`delivered`/`failed`, and `handover` for a long message typed as a short line whose `UserPromptSubmit` hook hands it over; indexed on `(receiver_id, status)`; claimed with `UPDATE ... WHERE status = 'pending'` (or `'handover'`, by id and receiver) |
 | `tasks` | `name` PK, `content`, `source_file`, `created_at` | independent of agents |
 | `state` | `agent_name`, `key`, `value`, `updated_at`; PK `(agent_name, key)` | FK to `agents` with `ON DELETE CASCADE`: state needs an agent record |
 | `command_log` | `id`, `started_at`, `duration_ms`, `host`, `agent`, `parent`, `cwd`, `args` (JSON), `exit_code`, `error`, `build` | `agent history`; indexed on `(agent, id)` |
@@ -2018,8 +2074,10 @@ make lint          # golangci-lint
   the last.
 - `_result` is Claude-only; agy agents' replies are only in their
   transcripts.
-- Long messages typed into a Claude TUI arrive whole, as pasted content
-  (held messages arrive as hook output).
+- A message over 10,000 characters that a hook hands Claude (a long typed
+  one, or held ones) reaches the model as a file Claude saved, with a 2 KB
+  preview: it reads the rest itself. A long message to a Claude CLI no hook
+  reaches is typed whole and arrives as pasted content.
 - A held message extends the turn it's delivered at the end of, so
   `_result` and `wait --next` cover its reply too.
 - The input line is read off the screen: a Claude or agy redesign of it

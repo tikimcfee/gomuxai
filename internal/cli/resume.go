@@ -27,7 +27,8 @@ var resumeCmd = &cobra.Command{
 	Long: `Resume starts an agent whose session has ended again, on that same
 session: after a reboot, a killed tmux server, or a CLI that quit. It keeps
 the agent's name, backend and parent (so its helpers stay its helpers),
-its own state keys and its last _result, and delivers the messages held
+the model spawn --model started it on, its own state keys and its last
+_result, and delivers the messages held
 for it when it ended. It starts in the directory the session ran in.
 
 Only an ended claude or agy agent can be resumed ("agent list" shows

@@ -27,6 +27,14 @@ type Storage interface {
 	// them in the same transaction (update may be nil).
 	ClaimPendingMessages(ctx context.Context, receiverID string, update func(claimed []*Message) StateUpdate) ([]*Message, error)
 	DeleteMessagesByAgent(ctx context.Context, agentName string) error
+	// ClaimHandover marks receiverID's handover message id delivered and
+	// returns it; nil if there is no such message awaiting handover.
+	ClaimHandover(ctx context.Context, receiverID string, id int64) (*Message, error)
+	// FailHandover marks handover message id failed, reporting whether this
+	// call did: false if it was already handed over.
+	FailHandover(ctx context.Context, id int64) (bool, error)
+	// GetMessageStatus returns message id's status.
+	GetMessageStatus(ctx context.Context, id int64) (MessageStatus, error)
 
 	// Task operations (standalone task repository)
 	SetTask(ctx context.Context, task *Task) error

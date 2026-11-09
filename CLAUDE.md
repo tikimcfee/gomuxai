@@ -148,8 +148,10 @@ which answers it at launch (trusting a folder enables its own hooks and
 settings, so only for folders you trust). The agent
 starts in the directory you run spawn from (`--cwd DIR` picks another),
 with that project's permission settings; `--skip-permissions` bypasses
-them (use with caution). Inside an agent, name helpers
-`<yourname>-<role>`.
+them (use with caution). `--model <model>` runs the CLI on that model
+(claude, agy and aider take one; other backends refuse it), over the bus
+too; `agent resume` relaunches on it, and `status -v` shows it. Inside an
+agent, name helpers `<yourname>-<role>`.
 
 `--resume <session>` makes the new agent continue a Claude or agy session
 that has ended, in the directory it ran in; `-c`/`--continue` picks the
@@ -213,12 +215,22 @@ Messages from an agent start with `[from name@host]`, so the recipient knows
 where to reply. Messages from anyone without `AGENT_NAME` start with
 `[from a person on host]`, or `[from a Claude session on host]` from an AI
 CLI a person started (it sets `AI_AGENT` or `CLAUDECODE=1`). Neither has an
-agent record, so the recipient answers in its reply. A slash command like
-`/compact` is left unmarked.
+agent record, so the recipient answers in its reply. A slash command
+(`/compact`, `/model claude-fable-5-1`) is left unmarked whoever sends it,
+so the CLI runs it (`agent history` still records who sent it). A message
+starting with a path (`/tmp/out.txt is ready`) isn't a command. Claude's
+`/model` also saves the model as the default for every new session in the
+user's settings: to run one helper on another model, `spawn --model`.
 
-Keep typed messages short: a long one arrives in Claude whole, but as a
-pasted block, which Claude may treat as data rather than instructions. Put
-long instructions in a file and send its path.
+Claude takes a typed message over 800 characters, or with 3 or more line
+breaks, as a paste, and shows the model pasted text as material rather than
+as the request. So `send` types such a message to a Claude agent whose hook
+reaches it as one short line (its first line and `[gomuxai message #N,
+...]`), and the hook that prompt runs (`UserPromptSubmit`) hands the model
+the whole message with it: up to 10,000 characters inline, beyond that as a
+file Claude saves, with a preview. It works mid-turn (`--now`), over the
+bus, and for spawn's first message; `wait --next` and `_result` cover the
+reply as usual. agy takes long typed messages as the request, unchanged.
 
 `agent queue helper "..."` delivers a message when the agent is idle. For a
 Claude agent it does what `send` does. For other backends it needs `agent
@@ -345,8 +357,8 @@ agent resume --all           # every agent the reboot ended, parents before thei
 
 A reboot (or a killed tmux server) ends every agent: `ended (gone)`.
 `resume` (or `resume name@host`, for another host's) starts one again on
-its last session, in the directory it ran in, keeping its name, backend, parent (its helpers stay its helpers), its
-own state keys and `_result`, and delivers messages held for it. Claude
+its last session, in the directory it ran in, keeping its name, backend, parent (its helpers stay its helpers),
+the model it was spawned on, its own state keys and `_result`, and delivers messages held for it. Claude
 and agy agents only, and not an adopted one (its tmux session is a
 person's: start the CLI there yourself). Inside an agent, only your own
 helpers. To continue
@@ -688,8 +700,11 @@ Known gaps; `agent friction list` has the rest.
   pass the file again to `status`, `wait`, and `watch` for that agent.
 - Reusing a parent's name gives the new agent the old one's helpers.
 - `capture` reads agents only, not raw `agent session new` sessions.
-- Long messages typed into Claude arrive as pasted content (held ones
-  arrive as plain text).
+- A message over 10,000 characters that a hook hands Claude (a long typed
+  one, or held ones) reaches the model as a file Claude saved, with a 2 KB
+  preview and its path: the model reads the rest itself.
+- A long message to a Claude CLI no hook reaches (started without `agent
+  hooks install`) is typed whole, and arrives as pasted content.
 - A message held for a Claude or agy agent extends the turn it lands in:
   `wait --next` and `_result` then cover the reply to the held message
   too. The reply that came before it is in `agent logs`.

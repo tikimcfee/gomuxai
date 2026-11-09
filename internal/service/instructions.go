@@ -63,8 +63,8 @@ prompt when each is one plain command: not through a shell variable
 
 Messages from other agents start with "[from NAME@HOST]". The sender can't see
 your terminal: to answer, send your reply back with `+"`agent send NAME@HOST \"...\"`"+`.
-Keep messages short and self-contained, and reply once per message unless asked
-for more, so agents don't talk past each other. Never report another agent's
+Keep messages self-contained and to the point, and reply once per message unless
+asked for more, so agents don't talk past each other. Never report another agent's
 answer before its message has actually arrived; wait for it (or use agent wait).
 A message starting with "[from a person on HOST]" or
 "[from a Claude session on HOST]" came from someone with no agent record (a

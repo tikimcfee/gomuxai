@@ -24,9 +24,10 @@ type ResumeOptions struct {
 }
 
 // keptOnResume are the reserved state keys a resume keeps: the last turn's
-// reply, and the transcript of the session it continues. The rest describe
+// reply, the transcript of the session it continues, and the model it was
+// spawned on. The rest describe
 // the run that ended (its status, prompts, spawn id) and would only mislead.
-var keptOnResume = map[string]bool{StateKeyResult: true, StateKeyTranscript: true}
+var keptOnResume = map[string]bool{StateKeyResult: true, StateKeyTranscript: true, StateKeyModel: true}
 
 // Resume relaunches an ended agent on its session, under its own record:
 // the same name, backend and parent, so its helpers stay its helpers, its
@@ -69,6 +70,7 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 		Name:            agent.Name,
 		Backend:         agent.Backend,
 		SpawnedBy:       agent.SpawnedBy,
+		Model:           s.stateValue(ctx, agent.Name, StateKeyModel),
 		SkipPermissions: opts.SkipPermissions,
 		TrustWorkspace:  opts.TrustWorkspace,
 		Resume:          opts.SessionID,
