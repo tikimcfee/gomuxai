@@ -15,7 +15,10 @@ type ResumeOptions struct {
 	Name string
 	// SessionID is the session the agent continues: its last one (Claude's
 	// session id, agy's conversation id).
-	SessionID       string
+	SessionID string
+	// Cwd is the directory the session ran in, where the agent starts;
+	// "" for this process's working directory.
+	Cwd             string
 	SkipPermissions bool // Pass --dangerously-skip-permissions to Claude / Agy
 	TrustWorkspace  bool // Confirm the CLI's workspace trust prompt on launch
 }
@@ -27,8 +30,8 @@ var keptOnResume = map[string]bool{StateKeyResult: true, StateKeyTranscript: tru
 
 // Resume relaunches an ended agent on its session, under its own record:
 // the same name, backend and parent, so its helpers stay its helpers, its
-// own state keys stay, and messages held for it are delivered. It runs
-// from the current directory (the CLI enters the session's first). Only an
+// own state keys stay, and messages held for it are delivered. It starts
+// in opts.Cwd, where the session ran. Only an
 // ended claude or agy agent that gomuxai started can be resumed: an adopted
 // one runs in the person's own tmux session (AdoptedResumeError). A failed
 // resume leaves it ended.
@@ -69,6 +72,7 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 		SkipPermissions: opts.SkipPermissions,
 		TrustWorkspace:  opts.TrustWorkspace,
 		Resume:          opts.SessionID,
+		Cwd:             opts.Cwd,
 		replacing:       agent,
 	})
 	if err != nil {

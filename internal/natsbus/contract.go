@@ -29,8 +29,8 @@ import (
 const SubjectRoot = "gomux"
 
 // RPC operations a bus serves. Each host's config allowlists which ones
-// remote callers may use; OpKeys and OpSpawn are off for remote callers by
-// default.
+// remote callers may use; OpKeys, OpSpawn and OpResume are off for remote
+// callers by default.
 const (
 	OpList    = "list"    // ListRequest -> ListResponse
 	OpStatus  = "status"  // StatusRequest -> StatusResponse
@@ -39,16 +39,18 @@ const (
 	OpRespond = "respond" // RespondRequest -> (no data): approve / deny
 	OpKeys    = "keys"    // KeysRequest -> (no data): raw keys, local-only by default
 	OpSpawn   = "spawn"   // SpawnRequest -> SpawnResponse: starts an agent, local-only by default
+	OpLogs    = "logs"    // LogsRequest -> LogsResponse: what agent logs prints
+	OpResume  = "resume"  // ResumeRequest -> ResumeResponse: starts an ended agent again, local-only by default
 	// OpFriction reads, links and resolves the host's friction entries, for
 	// entries linked across hosts: FrictionRequest -> FrictionResponse.
 	OpFriction = "friction"
 )
 
 // AllOps lists every RPC op a bus serves to local clients.
-var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys, OpSpawn, OpFriction}
+var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys, OpSpawn, OpFriction, OpLogs, OpResume}
 
 // DefaultRemoteOps are the ops a bus serves to other hosts unless configured otherwise.
-var DefaultRemoteOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpFriction}
+var DefaultRemoteOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpFriction, OpLogs}
 
 // namePattern matches host and agent names. Both become subject tokens, so
 // they must not contain '.', '*', '>' or whitespace. Agent names are already
@@ -290,6 +292,57 @@ type SpawnResponse struct {
 	Cwd       string `json:"cwd"`
 	TaskFile  string `json:"task_file,omitempty"` // as resolved against Cwd
 	// Status is the agent's resolved status right after it started.
+	Status    string `json:"status"`
+	EndReason string `json:"end_reason,omitempty"`
+}
+
+// LogsRequest asks for what agent logs prints for an agent on the serving
+// host, with the same flags.
+type LogsRequest struct {
+	Agent    string `json:"agent"`
+	Lines    int    `json:"lines"`
+	Full     bool   `json:"full,omitempty"`
+	JSON     bool   `json:"json,omitempty"`
+	Terminal bool   `json:"terminal,omitempty"`
+}
+
+// MaxLogsReply bounds a LogsResponse as encoded, well under the bus's
+// 1 MB message limit.
+const MaxLogsReply = 512 << 10
+
+// LogsResponse is what agent logs printed there. Output is stdout as is
+// (the client strips terminal controls); Hint is what it said on stderr.
+type LogsResponse struct {
+	Output string `json:"output"`
+	Hint   string `json:"hint,omitempty"`
+	// Truncated is how many bytes of Output's start (whole events, or
+	// whole lines) were left out to fit MaxLogsReply; 0 when none were.
+	Truncated int `json:"truncated,omitempty"`
+}
+
+// ResumeRequest starts an ended agent on the serving host again (agent
+// resume name@host), with resume's own flags. It runs the host's own
+// resume, so the refusals are resume's (not claude or agy, no session, not
+// ended, adopted).
+type ResumeRequest struct {
+	Agent           string `json:"agent"`
+	SkipPermissions bool   `json:"skip_permissions,omitempty"`
+	TrustWorkspace  bool   `json:"trust_workspace,omitempty"`
+	// ResumedBy is the calling agent as "name@host", empty for a person.
+	// As on this host, an agent may resume only its own helpers and
+	// theirs; like a message's [from ...] tag, it can't be verified.
+	ResumedBy string `json:"resumed_by,omitempty"`
+}
+
+// ResumeResponse describes the agent a resume started, as a local resume
+// prints it.
+type ResumeResponse struct {
+	Name      string `json:"name"`
+	Session   string `json:"session"`
+	Backend   string `json:"backend"`
+	SessionID string `json:"session_id"` // the CLI session it continues
+	Cwd       string `json:"cwd"`
+	Held      int    `json:"held,omitempty"` // messages held for it, delivered once it's at its prompt
 	Status    string `json:"status"`
 	EndReason string `json:"end_reason,omitempty"`
 }

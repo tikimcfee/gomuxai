@@ -291,9 +291,12 @@ and the transcripts list stay.
 
 `agent resume <name>` (`AgentService.Resume`, `internal/service/resume.go`)
 starts an ended claude or agy agent again on its last session, under its
-own record. The CLI finds that session as `agent transcript <name>` does,
-checks it can be continued (`checkResumable`, as `spawn --resume`), and
-enters the directory it ran in. The service then:
+own record. The CLI (`resumeAgent`, which the bus's `resume` op runs too)
+finds that session as `agent transcript <name>` does, checks it can be
+continued (`checkResumable`, as `spawn --resume`), and passes the
+directory it ran in as `ResumeOptions.Cwd`, where the tmux session starts.
+It doesn't `chdir`: the bus serves requests concurrently in one process.
+The service then:
 
 1. Refuses an adopted agent (`AdoptedResumeError`), and refuses unless
    the agent's resolved status is `ended`; then kills a leftover tmux
@@ -1354,8 +1357,9 @@ than one. On the hub, each peer's leaf connection gets (`peerPermissions`):
 Each leaf also refuses, as `DenyImports`, requests for its own ops not in
 its `--remote-ops` and anything under its own `local.>`. The bus serves
 local clients every op; peers get `--remote-ops` (default `list,status,
-capture,send,respond,friction`; `keys` and `spawn` are local-only unless listed,
-since `keys` types anything and `spawn` starts a process on the host).
+capture,send,respond,friction,logs`; `keys`, `spawn` and `resume` are
+local-only unless listed, since `keys` types anything and `spawn` and
+`resume` start a process on the host). `logs` only reads, like `capture`.
 `friction` is on by default: what it lets a peer do (read entries, link
 them, resolve a linked one) is far less than `send` already does.
 
@@ -1379,9 +1383,36 @@ modes in your terminal.
 | `respond` | `RespondRequest` (`approve`, `approve_always`, `deny`, `force`, `expect_tool`) → none | `approve`, `deny` | yes |
 | `keys` | `KeysRequest` (text, then a key) → none | `keys name@host` | no |
 | `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `spawned_by`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
+| `logs` | `LogsRequest` (`agent`, `lines`, `full`, `json`, `terminal`) → `LogsResponse` (`output`: what `agent logs` prints there, `hint`: its stderr hint, `truncated`: bytes left out) | `logs name@host` | yes |
+| `resume` | `ResumeRequest` (`agent`, `skip_permissions`, `trust_workspace`, `resumed_by`) → `ResumeResponse` (`name`, `session`, `backend`, `session_id`, `cwd`, `held`, `status`, `end_reason`) | `resume name@host` | no |
 | `friction` | `FrictionRequest` (`action`: `get` `ids`; `link`/`unlink`/`resolve` `id`, with `from` (required), `by`, `note`; resolve's `uid` and `status`; resolve closes only an entry linked to `from`) → `FrictionResponse` (`entries` with their `links` and `requested`, `missing`, `resolved`) | `friction show`/`list`/`links`/`link`/`unlink`/`resolve` | yes |
 
-`natsbus/ops_test.go` keeps `AllOps` and the server's op table in step. The
+`natsbus/ops_test.go` keeps `AllOps` and the server's op table in step.
+`logs` and `resume` run logic that lives in the CLI (`agent logs`'s
+rendering, and `resumeAgent`, which finds the session to continue), so the
+service's handler takes them as `service.RPCExtras`; `agent bus start`
+serves `cli.busHandler`, which supplies both. A handler without them
+refuses those two ops.
+
+`logs` replies with what `agent logs` prints on the serving host, built as
+chunks (an event, or with `--full` its lines; a JSON line; a session's
+separator or session line; a terminal log line) so a reply over
+`MaxLogsReply` (512 KB, encoded; the bus's message limit is 1 MB) drops
+whole chunks from the start, puts back the session line or separator the
+first kept chunk belongs to, and reports `truncated`. A single text chunk
+too big alone keeps its end; a JSON line too big alone is left out, since
+half a line isn't JSON. The client strips terminal controls from `output`
+and `hint` as from `capture`, and says on stderr when the reply was cut.
+
+`resume` runs the serving host's own `resumeAgent`, so a refusal is that
+host's resume's (adopted, not claude or agy, no session, not ended), and
+an agent not found is not found there. `resumed_by` is the caller as
+`name@host`: as on that host, an agent may resume only its own helpers
+(the parent chain must contain it); a bare name, or one naming the serving
+host, is refused. Unlike `spawn`, the request carries `skip_permissions`
+and `trust_workspace`, which `resume` takes locally: a host that lists
+`resume` already lets peers start processes as its user. The client waits
+up to `SpawnTimeout`, as for spawn. The
 remote side runs the same service code as a local call (`Send` holds a
 message for a busy Claude agent and refuses to type into dialogs;
 `RespondPermission` still checks the screen), and the CLI

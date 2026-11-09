@@ -234,6 +234,29 @@ func TestBus_SpawnIsLocalOnlyByDefault(t *testing.T) {
 	}
 }
 
+// Resume starts a process as the serving host's user, so like spawn it is
+// local-only unless a host lists it; logs only reads, so like capture it
+// is served by default.
+func TestBus_ResumeLocalOnlyLogsServedByDefault(t *testing.T) {
+	_, _, hubConn, leafConn := linkedPair(t, nil, append(slices.Clone(natsbus.DefaultRemoteOps), natsbus.OpResume))
+	serve(t, hubConn, "hub")
+	serve(t, leafConn, "leaf")
+	settleLink(t, hubConn, leafConn)
+
+	if got, err := requestOnce(leafConn, "hub", natsbus.OpResume); err == nil {
+		t.Errorf("leaf ran resume on hub, which doesn't allow it: %q", got)
+	}
+	if got, err := request(hubConn, "leaf", natsbus.OpResume); err != nil || got != "ran gomux.leaf.rpc.resume" {
+		t.Errorf("leaf allows resume remotely: %q, %v", got, err)
+	}
+	if got, err := request(hubConn, "hub", natsbus.OpResume); err != nil {
+		t.Errorf("local resume on hub: %q, %v", got, err)
+	}
+	if got, err := request(leafConn, "hub", natsbus.OpLogs); err != nil || got != "ran gomux.hub.rpc.logs" {
+		t.Errorf("leaf ran logs on hub: %q, %v", got, err)
+	}
+}
+
 // A host that lists spawn serves it to peers; one that doesn't still refuses.
 func TestBus_SpawnServedWhenAHostAllowsIt(t *testing.T) {
 	_, _, hubConn, leafConn := linkedPair(t,

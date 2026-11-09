@@ -13,7 +13,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 )
 
-var allOps = []string{natsbus.OpList, natsbus.OpStatus, natsbus.OpCapture, natsbus.OpSend, natsbus.OpRespond, natsbus.OpKeys, natsbus.OpSpawn, natsbus.OpFriction}
+var allOps = []string{natsbus.OpList, natsbus.OpStatus, natsbus.OpCapture, natsbus.OpSend, natsbus.OpRespond, natsbus.OpKeys, natsbus.OpSpawn, natsbus.OpFriction, natsbus.OpLogs, natsbus.OpResume}
 
 // fakeRPC records requests and answers with canned data. An agent named
 // "ghost" doesn't exist; "slow" blocks until the request is canceled;
@@ -119,6 +119,23 @@ func (f *fakeRPC) Friction(ctx context.Context, req natsbus.FrictionRequest) (*n
 	}, nil
 }
 
+func (f *fakeRPC) Logs(ctx context.Context, req natsbus.LogsRequest) (*natsbus.LogsResponse, error) {
+	f.record(req)
+	if err := f.check(ctx, req.Agent); err != nil {
+		return nil, err
+	}
+	return &natsbus.LogsResponse{Output: "12:04:31 say    \x1b]0;evil\x07hi\n", Hint: "printing \x1b[2Jterminal log", Truncated: 3}, nil
+}
+
+func (f *fakeRPC) Resume(ctx context.Context, req natsbus.ResumeRequest) (*natsbus.ResumeResponse, error) {
+	f.record(req)
+	if err := f.check(ctx, req.Agent); err != nil {
+		return nil, err
+	}
+	return &natsbus.ResumeResponse{Name: req.Agent, Session: "agent-" + req.Agent, Backend: "claude",
+		SessionID: "5f0c", Cwd: "/srv/project", Held: 2, Status: "idle"}, nil
+}
+
 // serveFake serves a fakeRPC as host "h1" and returns a client on a second
 // connection to the same server.
 func serveFake(t *testing.T, ops []string, timeout time.Duration) (*fakeRPC, *natsbus.RPCClient, func()) {
@@ -199,6 +216,23 @@ func TestRPC_AllOpsRoundTrip(t *testing.T) {
 		t.Errorf("Spawn = %+v", spawned)
 	}
 
+	logs, err := client.Logs(ctx, worker, natsbus.LogsRequest{Agent: "ignored", Lines: 5, Full: true})
+	if err != nil || logs.Output != "12:04:31 say    ]0;evilhi\n" || logs.Hint != "printing [2Jterminal log" || logs.Truncated != 3 {
+		t.Errorf("Logs = %+v, %v (want terminal controls stripped)", logs, err)
+	}
+	if got := fake.last(); got != (natsbus.LogsRequest{Agent: "worker", Lines: 5, Full: true}) {
+		t.Errorf("logs request = %+v", got)
+	}
+
+	resumed, err := client.Resume(ctx, worker, natsbus.ResumeRequest{Agent: "ignored", SkipPermissions: true, ResumedBy: "lead@laptop"})
+	if err != nil || *resumed != (natsbus.ResumeResponse{Name: "worker", Session: "agent-worker", Backend: "claude",
+		SessionID: "5f0c", Cwd: "/srv/project", Held: 2, Status: "idle"}) {
+		t.Errorf("Resume = %+v, %v", resumed, err)
+	}
+	if got := fake.last(); got != (natsbus.ResumeRequest{Agent: "worker", SkipPermissions: true, ResumedBy: "lead@laptop"}) {
+		t.Errorf("resume request = %+v", got)
+	}
+
 	fr, err := client.Friction(ctx, "h1", natsbus.FrictionRequest{Action: natsbus.FrictionResolve, ID: 34, Status: "resolved",
 		From: &natsbus.FrictionEntry{Host: "laptop", ID: 4}})
 	if err != nil || !fr.Resolved || len(fr.Entries) != 1 || fr.Entries[0].Links[0] != (natsbus.FrictionRef{Host: "laptop", ID: 4, UID: "laptop-4"}) ||
@@ -234,6 +268,22 @@ func TestRPC_SpawnedByNeedsAHost(t *testing.T) {
 		if got, ok := fake.last().(natsbus.SpawnRequest); !ok || got.SpawnedBy != by {
 			t.Errorf("spawned_by %q: request = %+v", by, fake.last())
 		}
+	}
+}
+
+// Logs asks for at least one line, and resume's resumed_by, like spawn's
+// spawned_by, is empty or name@host.
+func TestRPC_LogsAndResumeRequestsChecked(t *testing.T) {
+	fake, client, _ := serveFake(t, allOps, 0)
+	ctx := context.Background()
+	if _, err := client.Logs(ctx, worker, natsbus.LogsRequest{}); err == nil || !strings.Contains(err.Error(), "at least 1") {
+		t.Errorf("logs with no lines: err = %v", err)
+	}
+	if _, err := client.Resume(ctx, worker, natsbus.ResumeRequest{ResumedBy: "lead"}); err == nil || !strings.Contains(err.Error(), "names no host") {
+		t.Errorf("resumed_by lead: err = %v", err)
+	}
+	if got := fake.last(); got != nil {
+		t.Errorf("handler ran for a refused request: %+v", got)
 	}
 }
 
