@@ -167,7 +167,9 @@ are in `exploration/tmux-tui-connector-ideation.md`.
    agent) rather than typed: Claude's dialog drops a paste, and an Enter
    that reached it would pick its highlighted "No, exit". Approving the
    prompt starts the deliverer, which types it once the CLI is at its
-   prompt.
+   prompt. Another dialog on screen (`DialogReader`, see [Dialogs no hook
+   reports](#dialogs-no-hook-reports)) holds it the same way, and spawn
+   starts the deliverer at once (`holdFirstMessage`).
 
 For a built-in backend, any failure after the session exists kills it and
 deletes the record and the agent dir.
@@ -195,6 +197,7 @@ applies each one it finds:
 | `SubmitChecker`: a typed message's Enter can arrive as a newline, so typing checks it submitted | yes | — | — |
 | `TurnEndReader`: a turn that ended with no hook | — (native status) | the footer under the input box | — |
 | `QuestionPrompter`: a question dialog with no hook | — (`PermissionRequest`) | `ask_question`'s `Question 1/N:` | — |
+| `DialogReader`: any other dialog with no hook (offers, notices, pickers), and its keys | a footer of key hints under a border, at the bottom or right above the input box; Enter / Escape | — | — |
 
 Notes on each:
 
@@ -220,6 +223,18 @@ Notes on each:
     because agy runs hooks with the bundle dir as cwd.
 
   Each hook has a 10s timeout.
+- **Claude's launch command** carries `--settings
+  '{"skillOverrides":{"auto-mode-setup":"off"}}'` (`ClaudeSpawnSettings`),
+  layered over the person's settings for that session only (hooks and the
+  rest still come from theirs). It turns off `/auto-mode-setup` in the
+  agent's session, and with it the offer Claude Code (v2.1.319) shows when
+  a turn ends in auto mode once a person has had 5 classifier denials and
+  5 startups ("Teach auto mode about your environment?", default "Yes").
+  The offer fires no hook and the registry says `idle`, so a message
+  typed then went into it, and its Enter started the setup wizard, which
+  scans shell history and other repos (friction #29). Claude skips the
+  offer when the command is off (`skillOverrides["auto-mode-setup"] ===
+  "off"`, read in its eligibility check).
 - **agy's launch command** is prefixed with
   `env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY`: with those set (a tmux
   server started over SSH passes them on) agy skips the OS keyring and comes
@@ -417,6 +432,7 @@ to it are typed, not held for a `Stop` that would never hand them over.
 |---|---|
 | `idle`, `error`, `unknown` | `typeHeld`: claims any messages still held, and types them and this one as one prompt, oldest first (after the dialog check) |
 | `processing`, `waiting` | `hold`: stores a `pending` row in `messages`, records `_sent_at`, re-checks (below), and starts a deliverer |
+| `waiting` at a dialog no hook reports (tool `dialog`) | `hold` too, `HeldUntil` saying the dialog: no turn runs, so only the deliverer types it, once the dialog is gone |
 | `ended` | refuses |
 
 Slash commands are never held: a hook can only hand over text. Who
@@ -530,6 +546,16 @@ through `typeMessage` (`internal/service/submit.go`):
    `_unsubmitted` and returns `UnsubmittedError`, which says not to send the
    message again and that `agent key <session> Enter` submits it.
 
+If the box never shows the text in step 1, something else took the keys:
+a dialog that came up after the sender's screen check (see [Dialogs no
+hook reports](#dialogs-no-hook-reports)), whose highlighted option the
+Enter would pick. If the screen shows one, no Enter is pressed and it
+returns `DialogTookError` (naming the dialog and how to close it;
+`typeHeld` holds the messages again). If it shows none, it presses Enter
+as above, but if the box still never showed the message it doesn't call it
+sent: `Unchecked` says `its input box never showed the message`, as for a
+box it couldn't read (below).
+
 It presses no further Enter once the box is off screen (a dialog may have
 replaced it) or shows anything other than what was typed (a person typing).
 A box it can't read before typing (not on screen, or the capture failed)
@@ -582,7 +608,7 @@ means live in one place, `types.Statuses` and `types.EndReasons`
 |---|---|
 | `idle` | at its prompt, its turn over: a message can be typed in (a background shell it started may still run) |
 | `processing` | a turn is running (or a turn ended leaving background work, whose completion starts the next turn) |
-| `waiting` | stopped on something only a person can answer: a permission prompt, a question, or the CLI's workspace trust prompt |
+| `waiting` | stopped on something only a person can answer: a permission prompt, a question, the CLI's workspace trust prompt, or another dialog of its own |
 | `error` | its last turn failed (an API error, a rate limit); it is at its prompt |
 | `ended` | no CLI runs the session any more; the end reason says how it ended |
 | `unknown` | nothing reliable says yet (a CLI still starting, or a harness with no status of its own) |
@@ -709,10 +735,67 @@ The rules between native and report are one function,
   idle counts, so an unknown screen (a menu, a redesign) stays
   `processing`.
 
+Last, **a dialog no hook reports** (`dialogStatus`, below) turns `idle`,
+`error`, `unknown`, or a `waiting` with nothing to say on what into
+`waiting` at that dialog.
+
 `StatusInfo` also returns the last report as recorded (`ReportedStatus`,
 `ReportedAt`), which `wait --next` uses to spot a whole turn between checks,
 and the times of the last send and turn start (`SentAt`, `TurnAt`), which it
 uses to spot a whole turn before the wait.
+
+### Dialogs no hook reports
+
+Claude Code shows dialogs of its own that fire no hook: offers and notices
+when a turn ends or at startup (v2.1.319's auto-mode offer, "Teach auto
+mode about your environment?"; a fullscreen-renderer offer; an auto-mode
+nudge), and pickers a person opens (`/model`). While one is up, typed keys
+go to it, and Enter picks its highlighted option. Its session registry says
+`idle` for an offer and `waiting` (no detail) for a picker or wizard drawn
+in the input box's place, so before this status said `idle`, and `send`
+typed into it: the text was lost, its Enter accepted the offer, and `send`
+reported `Sent (it was idle)` (friction #29). Spawn prevents the auto-mode
+offer (see Claude's launch command, above); the rest are read off the
+screen.
+
+`ClaudeBackend.Dialog` (`backend/namedagents/claude_dialog.go`) reads one
+generically, from how Claude draws every dialog: a border (a rule of `─`,
+or a line of `▔` for a picker), the title on the next line, the body and
+options (the highlighted one marked `❯`), and a footer of key hints joined
+by ` · ` (`Enter to confirm · Esc to cancel`, `←/→ to change · Enter to
+continue · Esc to cancel`). The footer is looked for where one can sit:
+the screen's last non-blank line (a dialog under the input box, as the
+classic renderer draws the offer, or in its place), and the last non-blank
+line above the input box (the fullscreen renderer draws the offer above
+it). Every segment must be a key hint (`<key> to <action>`), one for Enter
+or Esc, none `to interrupt`: a running turn's footer (`⏵⏵ auto mode on
+(shift+tab to cycle) · esc to interrupt`) and the idle status line aren't.
+The border must be within 40 lines above the footer, with a title under
+it, so a reply quoting a footer doesn't count. `tests/backend/testdata`
+holds real captures of the offer in both renderers, a busy and an idle
+screen.
+
+`dialogStatus` (`service/dialog.go`) reads the screen when the resolved
+status would otherwise be `idle`, `error` or `unknown`, or `waiting` with no
+tool and no pending prompt. Permission, question and trust prompts are
+left to their own handling (`dialogIn` checks them first). A dialog makes
+the status `waiting`, source `scrape`, tool `dialog`, detail `dialog:
+<title>; Enter picks: <highlighted option>`. Then:
+
+- `send` to an agent that holds messages holds the message (`HeldUntil`
+  `its dialog is gone and it has been at its prompt for 10s`) and starts
+  the deliverer, which types it once status is `idle` again. Nothing hooks
+  the dialog's end, so the deliverer is the only way it goes out (or a
+  later `send` to the idle agent).
+- `send` to one that doesn't refuses (`checkCanSend`), and so does every
+  typing path's screen check (`checkScreen`), naming the dialog, what
+  Enter would pick, and how to get past it.
+- spawn holds the first message (`holdFirstMessage`).
+- `approve` presses Enter (the highlighted option), `deny` Escape (closes
+  it; the offer takes it for "Not now"), both only while that dialog is on
+  screen (`respondDialog`); `--expect dialog` names it, `approve --always`
+  is refused. Nothing is recorded: the screen says what happens next.
+  `agent key <session> <key>` answers it otherwise.
 
 ### Claude Code's session registry
 
@@ -984,6 +1067,12 @@ message, approve starts the deliverer. The other way round, the
 permission-prompt path refuses when its pre-keypress capture shows a trust
 dialog, so a status that described a permission prompt never sends `1` or
 Escape into one.
+
+A **dialog no hook reports** (status tool `dialog`) is answered by
+`respondDialog`: right before the keypress the screen must show a dialog
+with the title status described. Approve presses Enter, deny Escape
+(`DialogReader.DialogKey`); `--always` is refused. If messages are held,
+it starts the deliverer.
 
 ## Results and transcripts
 
