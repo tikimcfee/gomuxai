@@ -109,3 +109,30 @@ func TestSpawnRejectsMissingOrDirectoryTaskFile(t *testing.T) {
 		t.Errorf("--task + positional arg err = %v, want cannot specify both", err)
 	}
 }
+
+// Spawn left a Claude agent at its trust prompt saying only "Its status is
+// unknown so far" (friction #4): it names the prompt now, and what answers it.
+func TestSpawnReadinessNamesTheTrustPrompt(t *testing.T) {
+	waiting := service.AgentStatusWaiting
+	tests := []struct {
+		name, backend string
+		status        service.AgentStatus
+		detail        string
+		r             readiness
+		want          string
+	}{
+		{"claude", "claude", waiting, "trust: /srv/p", readiness{},
+			"It is waiting at Claude's workspace trust prompt for /srv/p: agent approve w trusts it, or respawn with --trust-workspace."},
+		{"with a task", "claude", waiting, "trust: /srv/p", readiness{task: true},
+			"It is waiting at Claude's workspace trust prompt for /srv/p: agent approve w trusts it, or respawn with --trust-workspace. Its task waits until the folder is trusted."},
+		{"agy on another host", "agy", waiting, "trust: /srv/p", readiness{remote: true},
+			"It is waiting at agy's workspace trust prompt for /srv/p: agent approve w trusts it."},
+		{"a permission prompt", "claude", waiting, "permission: Bash: ls", readiness{},
+			"It is already waiting on a prompt: agent status w -v shows it."},
+	}
+	for _, tt := range tests {
+		if got := spawnReadiness("w", tt.backend, tt.status, tt.detail, tt.r); got != tt.want {
+			t.Errorf("%s:\n got %q\nwant %q", tt.name, got, tt.want)
+		}
+	}
+}

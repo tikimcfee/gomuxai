@@ -226,8 +226,16 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	// Send initial message if it was not already passed on the launch command line
 	if !promptInLaunch && initMsg != "" {
 		s.markSent(ctx, opts.Name)
-		if err := s.pasteLine(sessionName, initMsg); err != nil {
-			return abort(fmt.Errorf("sending init message: %w", err))
+		// At a trust prompt, the message would be lost (Claude's ignores a
+		// paste) or its Enter answer the prompt: hold it for approve.
+		held, err := s.holdForTrustPrompt(ctx, opts, agent, initMsg)
+		if err != nil {
+			return abort(err)
+		}
+		if !held {
+			if err := s.pasteLine(sessionName, initMsg); err != nil {
+				return abort(fmt.Errorf("sending init message: %w", err))
+			}
 		}
 	}
 
@@ -571,6 +579,9 @@ func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (
 			if info.Detail != "" {
 				prompt = fmt.Sprintf("a prompt (%s)", OneLine(info.Detail))
 			}
+			if info.IsTrustPrompt() {
+				return status, trustPromptSendErr(agent)
+			}
 			if strings.HasPrefix(info.Detail, "question: ") {
 				return status, fmt.Errorf("agent %s is waiting on %s, where the message's Enter would pick an answer: %s (a person can send anyway with --force)",
 					agent.Name, prompt, answerQuestionHint(agent))
@@ -582,6 +593,13 @@ func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (
 		}
 	}
 	return status, s.checkScreen(agent)
+}
+
+// trustPromptSendErr is the error for typing into an agent at its CLI's
+// workspace trust prompt.
+func trustPromptSendErr(agent *storage.Agent) error {
+	return fmt.Errorf("agent %s is at %s's workspace trust prompt, where the message's Enter would answer it: agent approve %s trusts the folder, agent deny %s declines it (its CLI exits), or clean it up and respawn with --trust-workspace",
+		agent.Name, TrustBackendName(agent.Backend), agent.Name, agent.Name)
 }
 
 // answerQuestionHint says how to answer the question dialog agent shows.
@@ -614,9 +632,10 @@ func (s *AgentService) checkScreen(agent *storage.Agent) error {
 		return fmt.Errorf("agent %s has a question for the user on screen, where the message's Enter would pick an answer: %s (a person can send anyway with --force)",
 			agent.Name, answerQuestionHint(agent))
 	}
-	if tp, ok := provider.(backend.TrustPrompter); ok && tp.TrustKeys(screen) != nil {
-		return fmt.Errorf("agent %s is at a workspace trust prompt, where the message's Enter would answer it: answer it in its session (%s), or clean it up and respawn with --trust-workspace",
-			agent.Name, agent.SessionName)
+	if tp, ok := provider.(backend.TrustPrompter); ok {
+		if _, on := tp.TrustPrompt(screen); on {
+			return trustPromptSendErr(agent)
+		}
 	}
 	return nil
 }
