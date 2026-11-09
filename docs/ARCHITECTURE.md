@@ -329,9 +329,13 @@ and the transcripts list stay.
 `agent resume <name>` (`AgentService.Resume`, `internal/service/resume.go`)
 starts an ended claude or agy agent again on its last session, under its
 own record. The CLI (`resumeAgent`, which the bus's `resume` op runs too)
-finds that session as `agent transcript <name>` does, checks it can be
-continued (`checkResumable`, as `spawn --resume`), and passes the
-directory it ran in as `ResumeOptions.Cwd`, where the tmux session starts.
+finds that session as `agent transcript <name>` does (`resumeSession`),
+checks it can be continued (`checkResumable`, as `spawn --resume`), and
+passes the directory it ran in as `ResumeOptions.Cwd`, where the tmux
+session starts. A session that recorded no directory takes the agent
+record's `cwd` (where its tmux session started): agy ties a conversation
+to its workspace in `history.jsonl` only in some lines (its prompts' carry
+no conversation id), so a conversation can have none recorded yet.
 It doesn't `chdir`: the bus serves requests concurrently in one process.
 The service then:
 
@@ -363,6 +367,27 @@ and `spawn --continue` (or `--resume`) it in a session of gomuxai's own.
 The CLI refuses before it looks for the session or enters its directory.
 `Spawn` therefore never runs in an existing session: Adopt records the
 agent itself (`storeAgent` with `existingSession`).
+
+`agent resume --all` (`runResumeAll`, `internal/cli/resume_all.go`) reads
+every agent's resolved status first, so each is judged as things stood
+before any resume. It picks the ones `ended (gone)` for which
+`ResumeRefusal` has no objection (claude or agy, not adopted, a session
+from `LastSessionID`); every other ended agent is listed as skipped, with
+its end reason (ended on purpose) or the refusal. Inside an agent only its
+descendants count (`teams.ancestors`), as for `resume <name>`. The picked
+agents are sorted by depth in the agent tree, then name, and resumed one
+depth at a time, so a helper comes back to a running parent: within a
+depth up to `resumeAllParallel` (4) run at once, each through
+`resumeAgent`, with launches `resumeAllSpacing` (500ms) apart. Each
+resume spends most of its time in `startup_delay` waiting for its CLI, so
+overlapping them saves most of that, while the spacing keeps CLIs from
+starting in the same instant (Claude Code rewrites its shared
+`~/.claude.json` as it starts). Resumes share nothing but the store
+(SQLite, with a busy timeout) and the tmux server, and resume never
+`chdir`s. Lines print in the sorted order as each finishes, so output is
+stable however the resumes interleave. `--dry-run` runs `resumeSession`
+(the session lookup and `checkResumable`) for each pick and starts
+nothing.
 
 ### Continue: picking the session
 
