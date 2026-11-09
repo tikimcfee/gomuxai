@@ -1366,8 +1366,10 @@ All under `gomux.` (`natsbus/contract.go`):
 | `_INBOX.<host>.>` | replies to `<host>`'s requests; each host has its own prefix |
 
 Host and agent names share one pattern, `^[A-Za-z0-9][A-Za-z0-9_-]*$`, so
-they can't contain `.`, `*`, `>`, or spaces. The host name is `$AGENT_HOST`,
-else the name in the bus identity's `host` file (`.gomuxai/bus/host`), else
+they can't contain `.`, `*`, `>`, or spaces. The host name is `$AGENT_HOST`
+(or the app config's `host`; either naming one of the identity's former
+names, in `host.previous`, means its current one), else the name in the
+bus identity's `host` file (`.gomuxai/bus/host`), else
 the machine's name with unsafe characters replaced: macOS's LocalHostName
 (`scutil --get LocalHostName`), since its kernel hostname follows DHCP and
 reverse DNS, and the short hostname elsewhere.
@@ -1380,10 +1382,11 @@ reverse DNS, and the short hostname elsewhere.
 | File | What | Mode |
 |---|---|---|
 | `host` | the host name the identity is bound to | 0644 |
+| `host.previous` | names it had before `agent bus rename`, oldest first | 0644 |
 | `host.nk` | nkey seed the host signs leaf links with | 0600 |
 | `local.nk` | nkey seed local CLIs and hooks authenticate with | 0600 |
 | `tls.key`, `tls.crt` | self-signed certificate | 0600, 0644 |
-| `peers/<host>.json` | one trusted peer bundle each | |
+| `peers/<host>.json` | one trusted peer bundle each (with `aka`, its former names) | |
 | `<host>.pub.json` | this host's public bundle, to copy to peers | 0644 |
 
 A public bundle is `{host, nkey, cert_sha256, url?}`: the public nkey, the
@@ -1394,6 +1397,52 @@ it). `init` refuses to replace an existing identity, `LoadIdentity` refuses
 secret files readable by group or others, and an identity loaded under a
 different host name is refused (it would sign as a host the peers don't
 know).
+
+**Trust changes** (`cli/bus_identity.go`). nats-server's config reload
+refuses any change to the leafnode block, which holds the pinned
+certificates (hub) and the remote (leaf), so a trust change applies on a
+restart. `agent bus restart` stops the `gomux-bus` session and starts it
+with what the running bus reports on its status subject (`listen`,
+`client_port`, `remote_ops`; for a bus that predates the first two, its
+leaf address and client URL's port). `untrust` and `trust --renames`
+restart a running bus themselves (`--no-restart` leaves it); a plain
+`trust` says to.
+
+- **`untrust <host>`** (`UntrustPeer`) removes the peer's bundle and its
+  `ssh.json` entry; friction links and `spawned_by` naming it stay. One
+  side is enough to cut the link: the hub no longer pins the peer, or the
+  leaf no longer dials the hub.
+- **`rename <new>`** (`RenameIdentity`) keeps `host.nk`, `local.nk` and
+  `tls.key`. Neither the nkey nor the pin (the SPKI hash) names the host,
+  so peers' pins still match, and a peer can check that the renamed host
+  is the same machine. `tls.crt` is signed again with the same key under
+  the new name, the old name is added to `host.previous`, and `host` is
+  written last (each file written aside and renamed over), so a crash
+  leaves the old name in force. `<new>.pub.json` replaces `<old>.pub.json`
+  (its url from `--url`, else the old bundle's). A running bus is stopped
+  first and started again as the new name; one run in the foreground is
+  refused before anything changes. The new name may not be a trusted
+  peer's, current or former.
+- **`trust <bundle> --renames <old>`** (`RenamePeer`) refuses a bundle
+  without old's nkey and pin, then installs it with `aka` (old, plus old's
+  own former names) in place of old's bundle, rewrites the store's
+  references (`RenameHost`: agents' `spawned_by` and runs' `parent` of
+  the form `name@old`, and friction links' `peer_host`) and the `ssh.json`
+  entry. A plain `trust` of a bundle carrying another trusted peer's nkey
+  or pin is refused (`SameKeysError`, pointing at `--renames`): the hub
+  would refuse two users with one nkey, and two hosts can't be one
+  machine. A bundle's own `aka` is never taken; only `--renames` sets it,
+  and a plain re-trust of the same host keeps it.
+
+Former names stay aliases: `canonicalHost` maps a name in `host.previous`
+to this host and a name in a peer's `aka` to that peer, so `name@<old>`
+in held messages and briefings still reaches it, and config maps a former
+`AGENT_HOST` (set in agents spawned before the rename) to the current
+name. Until the hub re-trusts a renamed leaf, the leaf links (same keys)
+but the hub's permissions for it are still the old name's, so requests to
+`name@<new>` and its events don't cross. Hosts that reach the renamed one
+only through the hub hold no bundle for it and keep their references to
+the old name.
 
 Every connection is TLS 1.3, pinned by key:
 

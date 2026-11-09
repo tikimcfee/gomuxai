@@ -478,7 +478,8 @@ sent. `agent logs` is the same events for a person.
 ## Other Hosts
 
 Each machine has a host name on the bus: `AGENT_HOST` if set, else the
-name its bus identity was created with, else the machine's name (on macOS
+name its bus identity has (`agent bus rename` changes it; a former name in
+`AGENT_HOST` means the current one), else the machine's name (on macOS
 its LocalHostName, which the network doesn't change; elsewhere the short
 hostname). Address an agent on another
 host as `name@host`:
@@ -567,7 +568,36 @@ agent bus start                                 # every other machine
 agent bus status                                # running? which peers are linked?
 ```
 
-The bus runs in tmux session `gomux-bus`. Restart it after `trust`.
+The bus runs in tmux session `gomux-bus`. `agent bus restart` restarts it
+with the settings it runs with (`--listen`, `--client-port`,
+`--remote-ops`); run it after `trust`. nats-server can't reload trust, so
+every trust change applies on a restart.
+
+Dropping a peer, or renaming a host:
+
+```bash
+agent bus untrust old-laptop      # removes its bundle and ssh destination, restarts the bus
+                                  # (--no-restart: later, with agent bus restart)
+agent bus rename studio           # this host is now "studio": same keys, the certificate
+                                  # signed again under the new name, bus restarted as studio
+# copy the printed studio.pub.json to each peer, then on each:
+agent bus trust studio.pub.json --renames IL-Air-M2
+```
+
+Untrusting on one side cuts the link (untrust prints what the other side
+runs to drop it too); untrusting the hub leaves this host reaching no
+other host. A rename keeps the keys, so `trust --renames` checks the new
+bundle has the old name's key and pin before replacing it, rewrites that
+host's references to the old name (its agents' `spawned_by`, friction
+links, the `bus ssh` destination), and restarts the bus. A plain `trust`
+of a bundle with a trusted peer's keys is refused and points at
+`--renames`. Until the hub has re-trusted a renamed leaf, the leaf links
+but requests to `name@<new>` don't reach it. Former names stay aliases on
+both sides (`bus/host.previous` here, the peer bundle's `aka` there):
+`AGENT_HOST=<old>` in agents spawned before the rename means the new name,
+and `name@<old>` (in held messages, briefings) reaches the host. Hosts
+that only reach the renamed one through the hub keep their references to
+the old name.
 
 Trust: links use TLS 1.3 with each side's certificate pinned, and each host
 authenticates with its own key; no secrets are shared. The hub routes all

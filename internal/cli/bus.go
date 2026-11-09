@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"os"
 	"os/signal"
@@ -68,9 +67,21 @@ as this user (start an agent, then approve its prompts); list them only
 for peers you'd give a shell. E.g. --remote-ops
 list,status,capture,send,respond,friction,logs,spawn,resume.
 
+Changing trust:
+
+  agent bus untrust <peer>       # drop a peer; restarts the bus
+  agent bus rename <new-name>    # rename this host, keeping its keys,
+                                 # and print what each peer runs:
+  agent bus trust <new>.pub.json --renames <old>
+  agent bus restart              # apply a trust, with the same settings
+
+nats-server can't reload trust, so a change applies when the bus restarts.
+
 Only reaching other hosts needs a bus: everything on one host works without.`,
 	Example: `  agent bus status
-  agent bus init && agent bus start`,
+  agent bus init && agent bus start
+  agent bus untrust old-laptop
+  agent bus rename studio`,
 	RunE: runGroup,
 }
 
@@ -123,40 +134,22 @@ var busExportCmd = &cobra.Command{
 var busTrustCmd = &cobra.Command{
 	Use:   "trust <bundle.json | ->",
 	Short: "Trust a peer host's public bundle",
-	Long: `Trust installs a peer's public bundle (from its "agent bus init" or
-"agent bus export"). Check the key and pin it prints against the peer's own
-output before relying on the link. Restart the bus to apply.`,
+	Long: `Trust installs a peer's public bundle (from its "agent bus init",
+"agent bus export" or "agent bus rename"). Check the key and pin it prints
+against the peer's own output before relying on the link. Re-trusting a
+host replaces its bundle. Restart the bus to apply: agent bus restart.
+
+A peer renamed with "agent bus rename" keeps its keys: trust its new
+bundle with --renames <old name>. That checks the bundle has the old
+name's key and certificate pin, replaces the old bundle, rewrites this
+host's references to the old name (its agents' spawned_by, friction
+links, its ssh destination), keeps the old name as an alias, and restarts
+the bus (--no-restart skips that).`,
 	Example: `  agent bus trust hub.pub.json
-  agent bus trust - < hub.pub.json`,
+  agent bus trust - < hub.pub.json
+  agent bus trust new-name.pub.json --renames old-name`,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		var data []byte
-		var err error
-		if args[0] == "-" {
-			data, err = io.ReadAll(os.Stdin)
-		} else {
-			data, err = os.ReadFile(args[0])
-		}
-		if err != nil {
-			return err
-		}
-		var b natsbus.PeerBundle
-		if err := json.Unmarshal(data, &b); err != nil {
-			return fmt.Errorf("reading bundle: %w", err)
-		}
-		if b.Host == cfg.Host {
-			return fmt.Errorf("bundle is for this host (%q), not a peer", b.Host)
-		}
-		if err := natsbus.TrustPeer(cfg.BusDir(), b); err != nil {
-			return err
-		}
-		fmt.Printf("Trusted %q: key %s, certificate pin %s\n", b.Host, b.NKey, b.CertSHA)
-		if b.URL != "" {
-			fmt.Printf("This host will link to it at %s (unless it is the hub).\n", b.URL)
-		}
-		fmt.Println("Restart the bus to apply: agent bus stop && agent bus start ...")
-		return nil
-	},
+	RunE: runBusTrust,
 }
 
 var busRunCmd = &cobra.Command{
@@ -207,6 +200,7 @@ func init() {
 	}
 	busStatusCmd.Flags().BoolVar(&busStatusJSON, "json", false, "Print the bus status as JSON")
 	busCmd.AddCommand(busInitCmd, busExportCmd, busTrustCmd, busRunCmd, busStartCmd, busStopCmd, busStatusCmd)
+	initBusIdentityCmds()
 }
 
 // writeBundle saves this host's public bundle next to its identity.
@@ -236,6 +230,11 @@ type busInfo struct {
 	LinkedPeers int      `json:"linked_peers"`
 	Trusted     []string `json:"trusted"`
 	RemoteOps   []string `json:"remote_ops"`
+	// Listen and ClientPort are the --listen and --client-port it runs
+	// with, so agent bus restart can start it again the same way. A bus
+	// built before them sends neither (see runningBusSettings).
+	Listen     string `json:"listen,omitempty"`
+	ClientPort int    `json:"client_port,omitempty"`
 }
 
 func runBus(cmd *cobra.Command, args []string) error {
@@ -277,6 +276,7 @@ func runBus(cmd *cobra.Command, args []string) error {
 		data, _ := json.Marshal(busInfo{
 			Host: cfg.Host, ClientURL: d.ClientURL(), LeafAddr: d.LeafAddr(),
 			LinkedPeers: d.LinkedPeers(), Trusted: trusted, RemoteOps: busRemoteOps,
+			Listen: busListen, ClientPort: busClientPort,
 		})
 		m.Respond(data)
 	})
@@ -307,8 +307,19 @@ func startBus(cmd *cobra.Command, args []string) error {
 		if err := checkOwnBusSession(); err != nil {
 			return err
 		}
-		return fmt.Errorf("the bus is already running in tmux session %s (agent bus status shows it; agent bus stop first to restart it)", busSession)
+		return fmt.Errorf("the bus is already running in tmux session %s (agent bus status shows it; agent bus restart restarts it)", busSession)
 	}
+	if err := startBusSession(); err != nil {
+		return err
+	}
+	fmt.Printf("Bus started in tmux session %q\n", busSession)
+	return busStatus(cmd, args)
+}
+
+// startBusSession starts the bus in its tmux session with the --listen,
+// --client-port and --remote-ops in busListen, busClientPort and
+// busRemoteOps, and waits for it to answer.
+func startBusSession() error {
 	if _, err := natsbus.LoadIdentity(cfg.BusDir(), cfg.Host); err != nil {
 		return err
 	}
@@ -339,7 +350,7 @@ func startBus(cmd *cobra.Command, args []string) error {
 		nc, err := busConnect()
 		if err == nil {
 			nc.Close()
-			break
+			return nil
 		}
 		if time.Now().After(deadline) {
 			out, _ := tmuxClient.Capture(busSession, 20)
@@ -347,8 +358,6 @@ func startBus(cmd *cobra.Command, args []string) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	fmt.Printf("Bus started in tmux session %q\n", busSession)
-	return busStatus(cmd, args)
 }
 
 // checkOwnBusSession fails if this data dir's bus isn't running while the
@@ -383,7 +392,17 @@ func stopBus(cmd *cobra.Command, args []string) error {
 	if err := checkOwnBusSession(); err != nil {
 		return err
 	}
-	// Interrupt first so the bus shuts down cleanly and removes its URL file.
+	if err := stopBusSession(); err != nil {
+		return err
+	}
+	fmt.Println("Bus stopped")
+	return nil
+}
+
+// stopBusSession stops the bus running in its tmux session: interrupted
+// first, so it shuts down cleanly and removes its URL file, then the
+// session is killed.
+func stopBusSession() error {
 	tmuxClient.SendSpecialKey(busSession, "c-c")
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -392,11 +411,7 @@ func stopBus(cmd *cobra.Command, args []string) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if err := tmuxClient.KillSession(busSession); err != nil {
-		return err
-	}
-	fmt.Println("Bus stopped")
-	return nil
+	return tmuxClient.KillSession(busSession)
 }
 
 // queryBus asks this host's bus for its status, waiting up to timeout for
@@ -431,6 +446,9 @@ type busStatusOut struct {
 	// SSH is where agent attach name@host runs ssh to, per trusted peer
 	// (agent bus ssh): its set destination, or its name.
 	SSH map[string]string `json:"ssh"`
+	// Formerly lists this host's names before agent bus rename, oldest
+	// first; they still reach it.
+	Formerly []string `json:"formerly,omitempty"`
 }
 
 // sshByPeer is each trusted peer's ssh destination, for bus status.
@@ -451,7 +469,8 @@ func busSetUp() bool {
 func busStatus(cmd *cobra.Command, args []string) error {
 	info, err := queryBus(2 * time.Second)
 	if busStatusJSON {
-		out := busStatusOut{Host: cfg.Host, SetUp: busSetUp(), Trusted: []string{}, RemoteOps: []string{}, SSH: sshByPeer()}
+		out := busStatusOut{Host: cfg.Host, SetUp: busSetUp(), Trusted: []string{}, RemoteOps: []string{}, SSH: sshByPeer(),
+			Formerly: natsbus.PreviousHosts(cfg.BusDir())}
 		if errors.Is(err, natsbus.ErrNoBus) {
 			return printJSON(out)
 		}
@@ -478,6 +497,9 @@ func busStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("%s: bus running (clients on %s)\n", info.Host, info.ClientURL)
+	if prev := natsbus.PreviousHosts(cfg.BusDir()); len(prev) > 0 {
+		fmt.Printf("  formerly: %s (agent bus rename)\n", strings.Join(prev, ", "))
+	}
 	if info.LeafAddr != "" {
 		fmt.Printf("  hub, accepting peer links on %s\n", info.LeafAddr)
 	}
