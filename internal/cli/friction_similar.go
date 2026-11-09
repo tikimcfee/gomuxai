@@ -71,12 +71,18 @@ func summarySimilarity(a, b map[string]bool) float64 {
 	return 2 * float64(shared) / float64(len(a)+len(b))
 }
 
-// commandWords returns the words that name a top-level agent command.
+// commandWords returns the words that name a top-level agent command. The
+// commands are the agent's own (commandGroups), not rootCmd.Commands():
+// cobra adds its help command to rootCmd when the CLI first runs, and "help"
+// in a summary is about some command's help, so "help for wait" and "help
+// for send" would share a command and look alike.
 func commandWords(words map[string]bool) map[string]bool {
 	out := make(map[string]bool)
-	for _, c := range rootCmd.Commands() {
-		if words[c.Name()] {
-			out[c.Name()] = true
+	for _, g := range commandGroups {
+		for _, c := range g.cmds {
+			if words[c.Name()] {
+				out[c.Name()] = true
+			}
 		}
 	}
 	return out
