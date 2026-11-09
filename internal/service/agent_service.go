@@ -553,7 +553,7 @@ func (s *AgentService) Send(ctx context.Context, name string, message string, op
 		return SendResult{Status: AgentStatusUnknown}, err
 	}
 	// A hook can only hand over text, which wouldn't run a slash command.
-	if !opts.Now && !strings.HasPrefix(message, "/") && s.holdsMessages(ctx, agent) {
+	if !opts.Now && !IsSlashCommand(message) && s.holdsMessages(ctx, agent) {
 		return s.sendHeld(ctx, agent, message, opts.From)
 	}
 	status, err := s.checkCanSend(ctx, agent)

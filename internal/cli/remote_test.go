@@ -397,7 +397,8 @@ func TestHostNamesMatchIgnoringCase(t *testing.T) {
 }
 
 // Messages an agent sends carry its address so the recipient can reply;
-// a person's say so, except slash commands, which a prefix would break.
+// a person's say so. Slash commands stay unmarked from anyone, since a
+// prefix would break them.
 func TestFromAgent(t *testing.T) {
 	old := cfg
 	t.Cleanup(func() { cfg = old })
@@ -432,6 +433,15 @@ func TestFromAgent(t *testing.T) {
 	t.Setenv("AGENT_NAME", "lead")
 	if got := fromAgent("hi"); got != "[from lead@h1] hi" {
 		t.Errorf("agent message = %q", got)
+	}
+	for _, cmd := range []string{"/model claude-fable-5-1", "/compact", "/plugin:skill some args"} {
+		if got := fromAgent(cmd); got != cmd {
+			t.Errorf("agent's slash command %q changed: %q", cmd, got)
+		}
+	}
+	// A path isn't a slash command: it's a message like any other.
+	if got := fromAgent("/tmp/out.txt is ready"); got != "[from lead@h1] /tmp/out.txt is ready" {
+		t.Errorf("agent's message starting with a path = %q", got)
 	}
 }
 
