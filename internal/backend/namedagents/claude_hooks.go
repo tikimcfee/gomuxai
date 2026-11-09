@@ -395,14 +395,23 @@ func (b *ClaudeBackend) AllowCommands(launchCmd string, prefixes []string) strin
 	return launchCmd + " --allowedTools " + strings.Join(rules, " ")
 }
 
-// TrustKeys accepts Claude's folder trust dialog. Its highlighted option is
-// "No, exit", so a bare Enter would quit: move to "Yes" first if needed.
+// claudeTrust is Claude's folder trust dialog. Its highlighted option is
+// "No, exit", so a bare Enter would quit.
+var claudeTrust = trustDialog{question: "Quick safety check", marker: "❯", footer: "Enter to confirm", below: 1}
+
+// TrustPrompt reads Claude's folder trust dialog off the screen.
+func (b *ClaudeBackend) TrustPrompt(screen string) (string, bool) {
+	folder, _, ok := claudeTrust.read(screen)
+	return folder, ok
+}
+
+// TrustKeys accepts Claude's folder trust dialog, moving to "Yes" first if
+// "No, exit" is highlighted.
 func (b *ClaudeBackend) TrustKeys(screen string) []string {
-	if !strings.Contains(screen, "Yes, I trust this folder") || !strings.Contains(screen, "No, exit") {
-		return nil
-	}
-	if strings.Contains(screen, "❯ Yes, I trust this folder") {
-		return []string{"Enter"}
-	}
-	return []string{"Down", "Enter"}
+	return claudeTrust.keys(screen, true)
+}
+
+// DeclineTrustKeys picks "No, exit" at Claude's folder trust dialog.
+func (b *ClaudeBackend) DeclineTrustKeys(screen string) []string {
+	return claudeTrust.keys(screen, false)
 }

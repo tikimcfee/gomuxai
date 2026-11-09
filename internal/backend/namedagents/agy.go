@@ -65,12 +65,23 @@ func (b *AgyBackend) LaunchCommand() string {
 	return cmd
 }
 
-// TrustKeys accepts agy's workspace trust prompt, whose default is "Yes".
+// agyTrust is agy's workspace trust prompt, whose default is "Yes".
+var agyTrust = trustDialog{question: "Do you trust the contents of this project?", marker: ">", yesFirst: true, footer: "Navigate", below: 2}
+
+// TrustPrompt reads agy's workspace trust prompt off the screen.
+func (b *AgyBackend) TrustPrompt(screen string) (string, bool) {
+	folder, _, ok := agyTrust.read(screen)
+	return folder, ok
+}
+
+// TrustKeys accepts agy's workspace trust prompt.
 func (b *AgyBackend) TrustKeys(screen string) []string {
-	if strings.Contains(screen, "Do you trust the contents of this project?") {
-		return []string{"Enter"}
-	}
-	return nil
+	return agyTrust.keys(screen, true)
+}
+
+// DeclineTrustKeys picks "No, exit" at agy's workspace trust prompt.
+func (b *AgyBackend) DeclineTrustKeys(screen string) []string {
+	return agyTrust.keys(screen, false)
 }
 
 // WithInstructions delivers the briefing as AGENTS.md in a directory passed
