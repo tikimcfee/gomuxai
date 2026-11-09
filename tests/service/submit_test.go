@@ -49,6 +49,14 @@ type claudeTerminal struct {
 	pastes    int
 	pasted    map[string]string // a paste's placeholder: what was pasted
 
+	// offer is a dialog drawn above the input box, as Claude's fullscreen
+	// renderer draws its auto-mode offer after a turn: it takes every key,
+	// Enter picks its highlighted "Yes", Escape closes it. offerOnRead
+	// brings it up as typed text arrives (it came up after send looked).
+	offer, offerOnRead bool
+	offerAnswers       []string // what the offer was answered with
+	deafType           bool     // typed text goes nowhere, and no dialog shows
+
 	// onSubmit, if set, is Claude's UserPromptSubmit hook: it runs for
 	// each submitted prompt, outside the lock, and returns the hook's
 	// output; context collects each prompt's additionalContext.
@@ -118,10 +126,17 @@ func (c *claudeTerminal) PasteText(_ string, text string) error {
 }
 
 func (c *claudeTerminal) SendSpecialKey(_ string, key string) error {
+	c.mu.Lock()
+	if key == "Escape" && c.offer {
+		c.offer = false
+		c.offerAnswers = append(c.offerAnswers, "Esc")
+		c.mu.Unlock()
+		return nil
+	}
 	if key != "Enter" {
+		c.mu.Unlock()
 		return fmt.Errorf("unexpected key %q", key)
 	}
-	c.mu.Lock()
 	c.enters++
 	c.unread += "\r"
 	c.read()
@@ -156,6 +171,22 @@ func (c *claudeTerminal) read() {
 	}
 	chunk := c.unread
 	c.unread = ""
+	if c.offerOnRead && strings.Trim(chunk, "\r") != "" {
+		c.offer, c.offerOnRead = true, false
+	}
+	if c.offer {
+		if strings.Contains(chunk, "\r") {
+			c.offer = false
+			c.offerAnswers = append(c.offerAnswers, "Yes")
+		}
+		return // what was typed went to the offer
+	}
+	if c.deafType {
+		chunk = strings.Repeat("\r", strings.Count(chunk, "\r"))
+		if chunk == "" {
+			return
+		}
+	}
 	if strings.Trim(chunk, "\r") == "" {
 		for range chunk {
 			c.enter()
@@ -223,6 +254,11 @@ func (c *claudeTerminal) screen() string {
 	}
 	rule := "\x1b[38;5;244m" + strings.Repeat("─", 60)
 	lines := []string{"● ok", "", rule}
+	if c.offer {
+		lines = append(lines, "  Teach auto mode about your environment?", "",
+			"  ❯ 1. Yes", "    2. Not now", "    3. Don't show again", "",
+			"  Enter to confirm · Esc to cancel", rule)
+	}
 	for i, l := range append(c.box, "")[:max(len(c.box), 1)] {
 		if i == 0 {
 			l = "\x1b[39m❯ " + l

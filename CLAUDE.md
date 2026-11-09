@@ -90,9 +90,13 @@ failed and what to try. Most read commands take `--json`.
   entry proven by pid and start time) says which session an agent's pane
   runs, including one a person started there by hand. agy's hooks are wired
   at spawn. `waiting` means blocked on a person, e.g. a permission prompt,
-  or the CLI's workspace trust prompt (Claude or agy in a folder it hasn't
+  the CLI's workspace trust prompt (Claude or agy in a folder it hasn't
   trusted, which runs no hook: read off its screen, tool `trust`, detail
-  `trust: <folder>`).
+  `trust: <folder>`), or another dialog Claude shows on its own, at startup
+  or when a turn ends, that no hook reports (an offer, a notice, a picker:
+  read off its screen, tool `dialog`, detail `dialog: <title>; Enter
+  picks: <option>`). Keys typed then go to the dialog, so `send` holds
+  messages until it is gone.
   `error` means the last turn failed (a rate limit, say) and the agent takes
   input again. `ended` comes with an end reason (`quit`, `gone`, `replaced`,
   `finished`, `parent`, `closed`), shown as `ended (quit)`. What agy's hooks don't
@@ -145,7 +149,11 @@ the CLI hasn't trusted, it says the agent is waiting at its workspace trust
 prompt: `agent approve <name>` trusts the folder (a Claude agent's first
 message waits for that, then goes in), or respawn with `--trust-workspace`,
 which answers it at launch (trusting a folder enables its own hooks and
-settings, so only for folders you trust). The agent
+settings, so only for folders you trust). A Claude agent is launched
+with `--settings '{"skillOverrides":{"auto-mode-setup":"off"}}'` (its
+session only): that turns off `/auto-mode-setup` there, and with it the
+"Teach auto mode about your environment?" offer, which comes up when a
+turn ends and would take the next message's keys. The agent
 starts in the directory you run spawn from (`--cwd DIR` picks another),
 with that project's permission settings; `--skip-permissions` bypasses
 them (use with caution). `--model <model>` runs the CLI on that model
@@ -315,6 +323,14 @@ detail `trust: <folder>`): `approve` picks "Yes, I trust this folder" (for
 good, so no `--always`) and the CLI starts; `deny` picks "No, exit", the CLI
 exits, and the agent is `ended (quit)`. Approve only folders you'd let it
 work in: trusting one also enables its own hooks and settings.
+
+So is a dialog Claude shows on its own (`status -v`: tool `dialog`, detail
+`dialog: <title>; Enter picks: <option>`): `deny` presses Escape, which
+closes it (an offer takes that for "not now"; no turn is cancelled), and
+`approve` presses Enter, picking the option the detail names. `--expect
+dialog` names it; `agent key agent-<name> <key>` answers it otherwise.
+Messages held meanwhile go in once it is gone and the agent has been at
+its prompt for 10s.
 
 Claude can queue several prompts (parallel tool calls, or a subagent's, which
 can still be asking after the main turn ends). `status -v` describes the one
@@ -665,7 +681,8 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 
 | Symptom | What to do |
 |---------|------------|
-| `waiting` | `status -v` shows the prompt; approve, deny, or ask the person. Tool `trust` is the CLI's workspace trust prompt: approve trusts the folder. |
+| `waiting` | `status -v` shows the prompt; approve, deny, or ask the person. Tool `trust` is the CLI's workspace trust prompt: approve trusts the folder. Tool `dialog` is a dialog Claude showed on its own (an offer, a notice): `deny` closes it, and held messages go in. |
+| `send` says a dialog took the message, or `Typed into X without checking ...: its input box never showed the message` | A dialog came up as it typed (or the screen isn't one agent reads): `status -v` and `capture` show it; `deny` closes a dialog, then send again. |
 | `unknown` (non-hook backends) | `capture` to look; coordinate on state or messages instead. |
 | `error` | The last turn failed (e.g. rate limit); it takes input again. `capture` or `logs` shows why. |
 | `ended (...)` | The reason says how (`agent statuses`); `agent resume <name>` continues its session (claude, agy); `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
@@ -720,6 +737,11 @@ Known gaps; `agent friction list` has the rest.
   a question shows as `processing` (a send is still held). A turn counts as
   interrupted only once its last hook is 3s old. `export` shows such a turn
   as `processing`, its last report.
+- Claude's own dialogs (tool `dialog`) are read off its screen, by their
+  footer of key hints (`Enter to confirm · Esc to cancel`) under a border.
+  A dialog drawn without one reads as `idle` (send then says its input box
+  never showed the message, rather than "Sent"), and `export` shows the
+  last report. Only the auto-mode offer is prevented at spawn.
 - A message held for agy in the few milliseconds between its last
   PostInvocation and its Stop is typed by the deliverer, 10s later.
 - Messages held for an agent that exits are never delivered (`status -v`

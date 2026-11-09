@@ -183,7 +183,9 @@ func printSent(name string, res service.SendResult) {
 			until = "its turn ends" // a host that predates HeldUntil
 		}
 		fmt.Printf("Held for %s until %s%s (%s).\n", name, until, behind, found)
-		if res.Status == service.AgentStatusWaiting {
+		if _, ok := service.DialogTitle(res.Status, res.Detail); ok {
+			hint("agent deny %s closes the dialog (Esc); agent approve %s picks its highlighted option (Enter)", name, name)
+		} else if res.Status == service.AgentStatusWaiting {
 			hint("its turn goes on once the prompt is answered: agent status %s -v shows it", name)
 		}
 	case res.Typed > 1:

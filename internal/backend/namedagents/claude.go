@@ -33,11 +33,20 @@ func (b *ClaudeBackend) Name() string {
 	return "claude"
 }
 
+// ClaudeSpawnSettings are the settings every Claude agent is launched with
+// (--settings, layered over the person's own for that session only). They
+// turn off /auto-mode-setup, whose offer ("Teach auto mode about your
+// environment?") comes up when a turn ends in auto mode, fires no hook, and
+// takes the keys of the next message typed in: its Enter starts the setup
+// wizard, which reads the person's shell history and other repos.
+const ClaudeSpawnSettings = `{"skillOverrides":{"auto-mode-setup":"off"}}`
+
 func (b *ClaudeBackend) LaunchCommand() string {
 	cmd := "claude"
 	if b.config.SkipPermissions {
 		cmd += " --dangerously-skip-permissions"
 	}
+	cmd += " --settings " + util.ShellQuote(ClaudeSpawnSettings)
 	if b.config.Resume != "" {
 		cmd += " --resume " + util.ShellQuote(b.config.Resume)
 	}

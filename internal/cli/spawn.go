@@ -66,6 +66,13 @@ into the prompt, and goes in once the CLI is at its prompt.
 --trust-workspace answers the prompt at launch instead (trusting a folder
 also enables its own hooks and settings, so only for folders you trust).
 
+A Claude agent is launched with --settings '{"skillOverrides":
+{"auto-mode-setup":"off"}}', for its session only: that turns off
+/auto-mode-setup there, whose offer comes up when a turn ends in auto mode
+and would take the keys of the next message. Another dialog Claude shows
+on its own (at startup or between turns) makes the agent waiting, tool
+"dialog"; its first message is held until the dialog is gone.
+
 --resume continues a Claude or agy session that already exists, as this
 agent, instead of starting a new one: a session you ran in a terminal joins
 the workgroup, and agent send reaches it from then on. It takes what agent
@@ -529,6 +536,14 @@ func spawnReadiness(name, backendName string, status service.AgentStatus, detail
 		line += "."
 		if r.task {
 			line += " Its task waits until the folder is trusted."
+		}
+		return line
+	}
+	if title, ok := service.DialogTitle(status, detail); ok {
+		line := fmt.Sprintf("It is waiting at a dialog of %s's (%s): agent deny %s closes it, agent approve %s picks its highlighted option.",
+			service.TrustBackendName(backendName), service.OneLine(title), name, name)
+		if r.task {
+			line += " Its task is held until the dialog is gone."
 		}
 		return line
 	}
