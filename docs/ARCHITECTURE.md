@@ -153,7 +153,14 @@ are in `exploration/tmux-tui-connector-ideation.md`.
 6. Waits `StartupDelay` (2s), confirms the workspace trust prompt if
    `--trust-workspace`, and types the first message unless it went on the
    command line. The first message is the `--task` content, or the backend's
-   "read this task file" line for a task file.
+   "read this task file" line for a task file. Where the CLI's input box
+   can be read (Claude), spawn first waits for it, or a dialog in its
+   place, as `send` does (`awaitInputBox`). If the trust prompt is up
+   instead, the first message is held (a pending message, as for a busy
+   agent) rather than typed: Claude's dialog drops a paste, and an Enter
+   that reached it would pick its highlighted "No, exit". Approving the
+   prompt starts the deliverer, which types it once the CLI is at its
+   prompt.
 
 For a built-in backend, any failure after the session exists kills it and
 deletes the record and the agent dir.
@@ -170,7 +177,7 @@ applies each one it finds:
 | `InstructionsProvider`: the briefing | `--append-system-prompt-file instructions.md` | `AGENTS.md` in the `--add-dir` directory | — |
 | `CommandAllower`: pre-allowed commands | `--allowedTools 'Bash(agent status:*)' ...` | — | — |
 | `PromptFlagProvider`: first message on the command line | — | `-i '<task>'` | — |
-| `TrustPrompter`: answers the trust prompt | moves to "Yes, I trust this folder" first (the default is "No, exit") | Enter | — |
+| `TrustPrompter`: reads and answers the trust prompt | moves to "Yes, I trust this folder" first (the default is "No, exit") | Enter ("Yes" is the default) | — |
 | `NativeStatusProvider` | Claude Code's session registry | — | — |
 | `PaneSessionProvider`: the session a pane runs | the registry, placed by the process tree | — | — |
 | `PermissionResponder` | yes | yes | — |
@@ -251,9 +258,20 @@ Notes on each:
   `deny` rule still wins over it. The decision is made before the status
   report is recorded, so a failed report doesn't lose it; an unknown agent
   or stale spawn id gets nothing.
-- **Trust prompts** are answered only with `--trust-workspace`, since
-  trusting a repo also enables its own hooks and settings. Spawn polls the
-  screen up to 8 times, 500ms apart, and goes on if no prompt shows.
+- **Trust prompts** are answered at spawn only with `--trust-workspace`,
+  since trusting a repo also enables its own hooks and settings. Spawn polls
+  the screen up to 8 times, 500ms apart, and goes on if no prompt shows.
+  Without it, the agent is `waiting` at the prompt (see [Resolution](#resolution-native-report-scrape)),
+  spawn says so, and `agent approve` answers it. Both CLIs draw the same
+  dialog (`namedagents/trust.go`): an `Accessing workspace:` header over
+  the folder (wrapped at the screen's width), a question (Claude's `Quick
+  safety check`, agy's `Do you trust the contents of this project?`), and
+  the options `No, exit` and `Yes, I trust this folder` among the last six
+  non-blank lines, the highlighted one marked (`❯` Claude, `>` agy). All of
+  that must be there, options at the bottom, so text quoting the dialog
+  higher up (a transcript, a file) isn't taken for it. The keys move from
+  the highlighted option to the wanted one (Claude lists No first, agy Yes
+  first); with neither marked, there are no keys rather than a guess.
 - **Custom JSON backends** (`--backend-config`) have no provider: their
   launch command is typed as is, with no launch script, hooks, briefing, or
   dialog handling. The registry knows them only from the file, so it must be
@@ -351,7 +369,8 @@ Those name no agent to reply to, and their slash commands stay unmarked, or
 they would no longer be ones (`markSender`). Before
 typing, `checkCanSend` refuses an `ended` agent (the text would run in the
 shell left behind), a `waiting` agent, and any agent with a permission or
-trust dialog on screen (the Enter would answer it). `--force` skips the
+trust dialog on screen (the Enter would answer it; at Claude's trust
+prompt it would pick "No, exit"). `--force` skips the
 checks, and only works for a person at a terminal: it is refused when
 `AGENT_NAME` is set or stdin isn't a TTY. Right before typing,
 `SendUnchecked` records `_sent_at` (spawn does too, for the first message),
@@ -541,7 +560,7 @@ means live in one place, `types.Statuses` and `types.EndReasons`
 |---|---|
 | `idle` | at its prompt, its turn over: a message can be typed in (a background shell it started may still run) |
 | `processing` | a turn is running (or a turn ended leaving background work, whose completion starts the next turn) |
-| `waiting` | stopped on something only a person can answer: a permission prompt or a question |
+| `waiting` | stopped on something only a person can answer: a permission prompt, a question, or the CLI's workspace trust prompt |
 | `error` | its last turn failed (an API error, a rate limit); it is at its prompt |
 | `ended` | no CLI runs the session any more; the end reason says how it ended |
 | `unknown` | nothing reliable says yet (a CLI still starting, or a harness with no status of its own) |
@@ -585,7 +604,22 @@ from three sources, most authoritative first:
 
 Before any of these, an agent whose tmux session doesn't exist is `ended
 (gone)` whatever its last report said (an `ended` report stands, with its
-reason): no session, no CLI. A reboot or a killed tmux server ends every
+reason): no session, no CLI.
+
+Next, the **workspace trust prompt** (`trustPromptStatus`). A Claude or agy
+CLI started in a folder it hasn't trusted asks first, and until it is
+answered it runs no hooks (Claude's global ones included) and Claude's
+registry doesn't list the session, so the sources above would say
+`unknown`. While nothing has reported (or the last report is approve or
+deny answering it, in case the keys didn't take), status reads the screen
+with the backend's `TrustPrompter`: the prompt makes it `waiting`, source
+`scrape`, tool `trust`, detail `trust: <folder>` (the agent's directory if
+the folder scrolled off). So `wait --for waiting`, `wait --any` and
+`--follow` report it like a permission prompt, `send` refuses to type into
+it, and `approve`/`deny` answer it (below). Approving records
+`processing`/`trusted` (detail `trusted <folder>; its CLI is starting`):
+for 30s after it (`trustStartGrace`) a session Claude's registry doesn't
+list yet is starting, not `ended (gone)`. A reboot or a killed tmux server ends every
 agent at once and fires no hook, and a backend with no native session list
 (agy) would otherwise show its last report, `idle`, forever.
 
@@ -734,7 +768,7 @@ session, changes nothing, and status goes on as above.
 |---|---|
 | `_status` | `idle`, `processing`, `waiting`, `error`, `ended` (or `unknown`) |
 | `_end_reason` | with `ended`: how the session ended (`quit`, `gone`, ...); empty otherwise, since every report writes it |
-| `_event` | the hook event, `report` for `agent report`, `approved`/`denied`, `delivered` (a Stop handed over held messages), `adopted` (its pane runs another session) |
+| `_event` | the hook event, `report` for `agent report`, `approved`/`denied`, `trusted`/`trust-declined` (approve/deny at a trust prompt), `delivered` (a Stop handed over held messages), `adopted` (its pane runs another session) |
 | `_detail` | one line of context, e.g. `Bash: go test ./...` or `permission: ...` |
 | `_tool` | the tool the event concerns |
 | `_tool_input` | the full JSON input of a call that may need permission (≤64 KiB); always written, so it never outlives its call |
@@ -915,6 +949,19 @@ answered pending prompt, so the next one is described while the approved
 call runs. Deny drops the rest of that agent's batch too (Escape cancels
 it), and denying a subagent's call records `processing`: only that call
 ends, and the turn goes on.
+
+A **workspace trust prompt** (status tool `trust`, which `--expect trust`
+names) is answered by `respondTrust` instead: right before the keypress it
+captures the screen, requires the trust dialog there, and reads which
+option is highlighted from that same capture. Approve picks "Yes, I trust
+this folder" and records `processing`/`trusted`; deny picks "No, exit",
+the CLI exits, and it records `ended (quit)`/`trust-declined`. `approve
+--always` is refused (trusting a folder is already for good), and so is a
+prompt with neither option highlighted. If spawn held the agent's first
+message, approve starts the deliverer. The other way round, the
+permission-prompt path refuses when its pre-keypress capture shows a trust
+dialog, so a status that described a permission prompt never sends `1` or
+Escape into one.
 
 ## Results and transcripts
 
