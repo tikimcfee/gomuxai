@@ -321,13 +321,13 @@ type LogsResponse struct {
 }
 
 // ResumeRequest starts an ended agent on the serving host again (agent
-// resume name@host), with resume's own flags. It runs the host's own
-// resume, so the refusals are resume's (not claude or agy, no session, not
-// ended, adopted).
+// resume name@host). It runs the host's own resume, so the refusals are
+// resume's (not claude or agy, no session, not ended, adopted). Like
+// SpawnRequest, it has no field for --skip-permissions or
+// --trust-workspace: a peer can't start a process on another host with
+// its permission checks bypassed.
 type ResumeRequest struct {
-	Agent           string `json:"agent"`
-	SkipPermissions bool   `json:"skip_permissions,omitempty"`
-	TrustWorkspace  bool   `json:"trust_workspace,omitempty"`
+	Agent string `json:"agent"`
 	// ResumedBy is the calling agent as "name@host", empty for a person.
 	// As on this host, an agent may resume only its own helpers and
 	// theirs; like a message's [from ...] tag, it can't be verified.

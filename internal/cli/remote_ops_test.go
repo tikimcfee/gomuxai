@@ -244,3 +244,24 @@ func TestRemoteLogsJSONLinesWhole(t *testing.T) {
 		}
 	}
 }
+
+// As for a remote spawn, --skip-permissions and --trust-workspace are
+// refused for another host's agent before anything is sent: a peer never
+// starts a process with its permission checks bypassed.
+func TestRemoteResume_RefusesPermissionFlags(t *testing.T) {
+	setupCLI(t)
+	forbidBus(t)
+	t.Cleanup(func() { resumeSkipPermissions, resumeTrustWorkspace = false, false })
+	for _, f := range []struct {
+		flag string
+		set  *bool
+	}{{"--skip-permissions", &resumeSkipPermissions}, {"--trust-workspace", &resumeTrustWorkspace}} {
+		resumeSkipPermissions, resumeTrustWorkspace = false, false
+		*f.set = true
+		err := runResume(resumeCmd, []string{"worker@h1"})
+		want := f.flag + " works only for an agent on this host: to resume worker with it, run agent resume on h1"
+		if err == nil || err.Error() != want {
+			t.Errorf("%s: err = %v, want %s", f.flag, err, want)
+		}
+	}
+}

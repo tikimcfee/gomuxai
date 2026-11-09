@@ -148,7 +148,7 @@ func serveResume(ctx context.Context, req natsbus.ResumeRequest) (*natsbus.Resum
 	if ref, err := natsbus.ParseAgentRef(req.ResumedBy); err == nil && strings.EqualFold(ref.Host, cfg.Host) {
 		return nil, fmt.Errorf("resumed_by %s names an agent on this host (%s), but the resume came over the bus", req.ResumedBy, cfg.Host)
 	}
-	return resumeAgent(ctx, req.Agent, req.ResumedBy, req.SkipPermissions, req.TrustWorkspace)
+	return resumeAgent(ctx, req.Agent, req.ResumedBy, false, false)
 }
 
 // runRemoteResume resumes ref.Name on ref.Host through the agent bus.
@@ -156,7 +156,18 @@ func runRemoteResume(ref natsbus.AgentRef) error {
 	if resumeAttach {
 		return fmt.Errorf("--attach for an agent on another host isn't supported yet: agent resume %s, then attach to it on %s", ref, ref.Host)
 	}
-	req := natsbus.ResumeRequest{SkipPermissions: resumeSkipPermissions, TrustWorkspace: resumeTrustWorkspace}
+	for _, f := range []struct {
+		set  bool
+		flag string
+	}{
+		{resumeSkipPermissions, "--skip-permissions"},
+		{resumeTrustWorkspace, "--trust-workspace"},
+	} {
+		if f.set {
+			return fmt.Errorf("%s works only for an agent on this host: to resume %s with it, run agent resume on %s", f.flag, ref.Name, ref.Host)
+		}
+	}
+	var req natsbus.ResumeRequest
 	if me := nonInteractiveCallerAgent(); me != "" {
 		req.ResumedBy = natsbus.AgentRef{Name: me, Host: cfg.Host}.String()
 	}

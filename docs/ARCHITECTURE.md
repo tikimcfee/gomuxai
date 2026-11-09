@@ -1384,7 +1384,7 @@ modes in your terminal.
 | `keys` | `KeysRequest` (text, then a key) → none | `keys name@host` | no |
 | `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `spawned_by`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
 | `logs` | `LogsRequest` (`agent`, `lines`, `full`, `json`, `terminal`) → `LogsResponse` (`output`: what `agent logs` prints there, `hint`: its stderr hint, `truncated`: bytes left out) | `logs name@host` | yes |
-| `resume` | `ResumeRequest` (`agent`, `skip_permissions`, `trust_workspace`, `resumed_by`) → `ResumeResponse` (`name`, `session`, `backend`, `session_id`, `cwd`, `held`, `status`, `end_reason`) | `resume name@host` | no |
+| `resume` | `ResumeRequest` (`agent`, `resumed_by`) → `ResumeResponse` (`name`, `session`, `backend`, `session_id`, `cwd`, `held`, `status`, `end_reason`) | `resume name@host` | no |
 | `friction` | `FrictionRequest` (`action`: `get` `ids`; `link`/`unlink`/`resolve` `id`, with `from` (required), `by`, `note`; resolve's `uid` and `status`; resolve closes only an entry linked to `from`) → `FrictionResponse` (`entries` with their `links` and `requested`, `missing`, `resolved`) | `friction show`/`list`/`links`/`link`/`unlink`/`resolve` | yes |
 
 `natsbus/ops_test.go` keeps `AllOps` and the server's op table in step.
@@ -1409,10 +1409,11 @@ host's resume's (adopted, not claude or agy, no session, not ended), and
 an agent not found is not found there. `resumed_by` is the caller as
 `name@host`: as on that host, an agent may resume only its own helpers
 (the parent chain must contain it); a bare name, or one naming the serving
-host, is refused. Unlike `spawn`, the request carries `skip_permissions`
-and `trust_workspace`, which `resume` takes locally: a host that lists
-`resume` already lets peers start processes as its user. The client waits
-up to `SpawnTimeout`, as for spawn. The
+host, is refused. As for `spawn`, the caller refuses `--skip-permissions`
+and `--trust-workspace` for another host's agent before sending, and
+`ResumeRequest` has no field for them: a peer never starts a process on
+another host with its permission checks bypassed. The client waits up to
+`SpawnTimeout`, as for spawn. The
 remote side runs the same service code as a local call (`Send` holds a
 message for a busy Claude agent and refuses to type into dialogs;
 `RespondPermission` still checks the screen), and the CLI
