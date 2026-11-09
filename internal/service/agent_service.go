@@ -171,6 +171,9 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	// against it as soon as the CLI starts.
 	agent, err := s.storeAgent(ctx, opts, sessionName)
 	if err != nil {
+		// The session was made for this spawn; it goes with it (a ctx
+		// canceled mid-spawn, say, fails here as well as later).
+		s.tmux.KillSession(sessionName)
 		return nil, err
 	}
 	abort := func(err error) (*storage.Agent, error) {

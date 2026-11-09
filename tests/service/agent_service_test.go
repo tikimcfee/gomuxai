@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -743,17 +744,17 @@ func TestSpawn_ContextCancellation(t *testing.T) {
 		t.Fatal("expected error due to context cancellation")
 	}
 
-	// Should get context deadline exceeded or cancelled
-	if err != context.DeadlineExceeded && err != context.Canceled {
+	// The deadline can land in any step (under load, an early one that
+	// wraps it, such as storing the agent), so match it with errors.Is.
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context error, got: %v", err)
 	}
 
-	// Session should have been cleaned up
-	sessionName := env.cfg.SessionPrefix + opts.Name
-	exists, _ := env.tmux.SessionExists(sessionName)
-	if exists {
-		t.Error("session should be cleaned up after context cancellation")
-		// Clean it up manually
-		env.tmux.KillSession(sessionName)
-	}
+	// Whichever step it hit, the session doesn't outlive the failed spawn.
+	sessionName := env.cfg.SessionName(opts.Name)
+	defer env.tmux.KillSession(sessionName)
+	await.Until(t, "the failed spawn's session to be gone", func() (string, bool) {
+		exists, err := env.tmux.SessionExists(sessionName)
+		return fmt.Sprintf("exists=%v err=%v", exists, err), err == nil && !exists
+	})
 }
