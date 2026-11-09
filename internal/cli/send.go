@@ -50,8 +50,13 @@ A message sent by an agent (AGENT_NAME set) starts with "[from name@host]",
 so the recipient knows where to reply. One sent without AGENT_NAME starts
 with "[from a person on host]", or "[from a Claude session on host]" from an
 AI CLI a person started (AI_AGENT or CLAUDECODE=1 set): neither has an agent
-record to reply to. A slash command like "/compact" is left unmarked, and
-never held: a hook can't run it, so it is typed in now.
+record to reply to. A slash command ("/compact", "/model claude-fable-5-1")
+is left unmarked whoever sends it, so the CLI runs it (agent history
+still records who sent it), and is never held: a hook can't run it, so it
+is typed in now. A path ("/tmp/out.txt is ready") isn't a slash command.
+Claude's /model also saves the model as the default for every new session
+in the user's settings; to run one agent on another model, spawn it with
+--model.
 
 "Sent" means the message was typed into the agent's terminal, not that the
 agent has read it: right after a send, the agent still looks idle until it
@@ -70,11 +75,20 @@ without checking, and says so; status shows it as unchecked until a turn
 starts.
 
 A message is typed as a bracketed paste when the CLI asks for one (Claude
-does), so a long one arrives whole however the terminal splits it. In
-Claude it arrives as a pasted block, which Claude may treat as data rather
-than as instructions: keep instructions short, or put them in a file and
-send its path. A held message arrives whole, however long (agy gets one over
-64 KB in labeled parts, since it cuts longer ones).`,
+does), so it arrives whole however the terminal splits it. Claude takes a
+typed message over 800 characters, or with 3 or more line breaks, as a
+paste, which it gives the model as pasted material rather than as the
+request. So such a message to a Claude agent whose hook reaches it is typed
+as one short line instead (its first line, cut short, and "[gomuxai message
+#N, ...]"), and the hook the prompt runs (UserPromptSubmit) hands the model
+the whole message with it, as it does held messages. Up to 10,000
+characters, the model gets it inline; beyond that, Claude saves it to a file
+and gives the model a preview and the file's path. If the hook doesn't take
+it within 3 SubmitWaits (9s), send says the agent got only the line. agy
+takes long typed messages as the request itself, and gets them typed whole.
+A held message arrives whole, however long (agy gets one over 64 KB in
+labeled parts, since it cuts longer ones; Claude, one over 10,000 characters
+as a file, as above).`,
 	Example: `  agent send researcher "analyze the codebase structure"
   agent send builder "run the tests" && agent wait builder --for idle,waiting --next
   agent send builder --now "stop: the tests are already fixed"
@@ -208,14 +222,15 @@ func fromAgent(message string) string {
 // the recipient knows who to reply to. A sender without an agent record
 // (sender "") has no address to reply to with agent send, so the tag only
 // says what it is: "[from a person on host]", or "[from a Claude session on
-// host]" for an AI CLI a person started (see unrecordedSender). Their slash
-// commands ("/compact") stay unmarked, since a prefix would turn them into
-// plain messages.
+// host]" for an AI CLI a person started (see unrecordedSender). A slash
+// command ("/compact", "/model claude-fable-5-1") stays unmarked, whoever
+// sends it, since a prefix would turn it into a plain message; the command
+// log (agent history) still records who sent it.
 func markSender(sender, message string) string {
-	if sender == "" {
-		if strings.HasPrefix(message, "/") {
-			return message
-		}
+	switch {
+	case service.IsSlashCommand(message):
+		return message
+	case sender == "":
 		return fmt.Sprintf("[from %s on %s] %s", unrecordedSender(), cfg.Host, message)
 	}
 	return fmt.Sprintf("[from %s@%s] %s", sender, cfg.Host, message)

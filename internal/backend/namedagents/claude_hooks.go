@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/claudereg"
@@ -67,6 +68,7 @@ type claudeHookPayload struct {
 	Event                string          `json:"hook_event_name"`
 	SessionID            string          `json:"session_id"`
 	TranscriptPath       string          `json:"transcript_path"`
+	Prompt               string          `json:"prompt"`
 	Cwd                  string          `json:"cwd"`
 	Source               string          `json:"source"`
 	ToolName             string          `json:"tool_name"`
@@ -126,6 +128,7 @@ func (b *ClaudeBackend) ParseHookEvent(event string, payload []byte) (types.Hook
 	case "UserPromptSubmit":
 		r.Status = types.StatusProcessing
 		r.Detail = "prompt received"
+		r.PromptText = p.Prompt
 		r.ClearResult = true
 		r.Prompt = types.PromptsMainEnded
 	case "PreToolUse":
@@ -224,6 +227,49 @@ func (b *ClaudeBackend) DeliveryOutput(messages []string) []byte {
 		"hookSpecificOutput": map[string]string{
 			"hookEventName":     "Stop",
 			"additionalContext": head + "\n\n" + strings.Join(messages, "\n\n"),
+		},
+	})
+	return out
+}
+
+// Claude Code (2.1.319, measured) takes text that arrives at once as a
+// paste, bracketed or not, when it is longer than 800 characters (UTF-16
+// code units, as JavaScript counts) or has 3 or more line breaks: its input
+// box shows "[Pasted text #N +M lines]", and the prompt the model gets
+// wraps the text in <pasted_content> tags, which it is told to take as
+// material rather than as the request. claudePasteChars leaves a margin
+// below the 800.
+const (
+	claudePasteChars  = 640
+	claudePasteBreaks = 3
+)
+
+// TypedAsPaste: see claudePasteChars.
+func (b *ClaudeBackend) TypedAsPaste(text string) bool {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	if strings.Count(text, "\n")+strings.Count(text, "\r") >= claudePasteBreaks {
+		return true
+	}
+	return len(utf16.Encode([]rune(text))) > claudePasteChars
+}
+
+// SubmittedPrompt: UserPromptSubmit runs before the model sees the prompt,
+// for a prompt typed at the input box and for one typed mid-turn (Claude
+// takes that in at its next tool boundary), and its additionalContext
+// reaches the model with the prompt.
+func (b *ClaudeBackend) SubmittedPrompt(r types.HookReport) (string, bool) {
+	return r.PromptText, r.Event == "UserPromptSubmit" && r.Agent == ""
+}
+
+// HandoverOutput hands text over as UserPromptSubmit's additionalContext,
+// which the model gets as "UserPromptSubmit hook additional context: ...":
+// whole up to 10,000 characters; beyond that, Claude Code saves it to a
+// file and gives the model a 2 KB preview and the file's path to read.
+func (b *ClaudeBackend) HandoverOutput(text string) []byte {
+	out, _ := json.Marshal(map[string]any{
+		"hookSpecificOutput": map[string]string{
+			"hookEventName":     "UserPromptSubmit",
+			"additionalContext": text,
 		},
 	})
 	return out

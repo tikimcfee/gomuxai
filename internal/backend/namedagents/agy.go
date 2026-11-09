@@ -554,3 +554,8 @@ func splitText(s string, max int) []string {
 	}
 	return append(parts, s)
 }
+
+// WithModel runs agy on model (--model).
+func (b *AgyBackend) WithModel(launchCmd, model string) string {
+	return b.insertBeforeExit(launchCmd, " --model "+util.ShellQuote(model))
+}

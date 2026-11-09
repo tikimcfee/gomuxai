@@ -19,6 +19,8 @@ var (
 	_ backend.HookDeliverer        = (*namedagents.ClaudeBackend)(nil)
 	_ backend.InputReader          = (*namedagents.ClaudeBackend)(nil)
 	_ backend.SubmitChecker        = (*namedagents.ClaudeBackend)(nil)
+	_ backend.ModelChooser         = (*namedagents.ClaudeBackend)(nil)
+	_ backend.PromptHandover       = (*namedagents.ClaudeBackend)(nil)
 
 	_ backend.HookProvider         = (*namedagents.AgyBackend)(nil)
 	_ backend.SpawnHooker          = (*namedagents.AgyBackend)(nil)
@@ -30,4 +32,7 @@ var (
 	_ backend.InputReader          = (*namedagents.AgyBackend)(nil)
 	_ backend.TurnEndReader        = (*namedagents.AgyBackend)(nil)
 	_ backend.QuestionPrompter     = (*namedagents.AgyBackend)(nil)
+	_ backend.ModelChooser         = (*namedagents.AgyBackend)(nil)
+
+	_ backend.ModelChooser = (*namedagents.AiderBackend)(nil)
 )

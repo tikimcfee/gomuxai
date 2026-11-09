@@ -49,6 +49,9 @@ const (
 	// a send and ended before the wait began.
 	StateKeySentAt = "_sent_at"
 	StateKeyTurnAt = "_turn_at"
+	// StateKeyModel is the model spawn --model started the agent on; resume
+	// relaunches on it. Unset for the CLI's default.
+	StateKeyModel = "_model"
 )
 
 // Status sources, from most to least authoritative.
@@ -133,6 +136,10 @@ type StatusInfo struct {
 	// Held is how many messages wait for the agent: held for the end of its
 	// turn (see Send), or queued for agent watch.
 	Held int
+
+	// Model is the model spawn --model started the agent on; "" for the
+	// CLI's default.
+	Model string
 
 	// NativeErr says why the backend CLI's own status couldn't be read,
 	// when that is why another source answered.
@@ -374,7 +381,13 @@ func (s *AgentService) reportHook(ctx context.Context, name, spawnID, event stri
 	} else if hr.DeliveryOnly {
 		return nil, nil
 	} else {
-		out, err = approval, s.Report(ctx, name, r)
+		out = approval
+		if deliver {
+			if h := s.handoverOutput(ctx, name, provider, hr); h != nil {
+				out = h
+			}
+		}
+		err = s.Report(ctx, name, r)
 	}
 	if err != nil || hr.Transcript == "" {
 		return out, err
@@ -414,6 +427,7 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 		return nil, err
 	}
 	info.Held = s.HeldCount(ctx, name)
+	info.Model = s.stateValue(ctx, name, StateKeyModel)
 	if reported != nil {
 		info.ReportedStatus, info.ReportedAt = reported.Status, reported.UpdatedAt
 		info.SentAt, info.TurnAt = reported.SentAt, reported.TurnAt

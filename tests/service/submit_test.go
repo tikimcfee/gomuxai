@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -47,6 +48,48 @@ type claudeTerminal struct {
 	submitted []string
 	pastes    int
 	pasted    map[string]string // a paste's placeholder: what was pasted
+
+	// onSubmit, if set, is Claude's UserPromptSubmit hook: it runs for
+	// each submitted prompt, outside the lock, and returns the hook's
+	// output; context collects each prompt's additionalContext.
+	onSubmit func(prompt string) []byte
+	hooks    []string // submitted prompts whose hook hasn't run yet
+	context  []string
+}
+
+// runHooks runs the UserPromptSubmit hook for each prompt submitted since
+// it last ran. Callers hold no lock.
+func (c *claudeTerminal) runHooks() {
+	c.mu.Lock()
+	prompts := c.hooks
+	c.hooks = nil
+	c.mu.Unlock()
+	for _, p := range prompts {
+		var out struct {
+			HookSpecificOutput struct {
+				AdditionalContext string `json:"additionalContext"`
+			} `json:"hookSpecificOutput"`
+		}
+		_ = json.Unmarshal(c.onSubmit(p), &out)
+		c.mu.Lock()
+		c.context = append(c.context, out.HookSpecificOutput.AdditionalContext)
+		c.mu.Unlock()
+	}
+}
+
+// got is what the model got for each submitted prompt: the prompt, then
+// the hook's additional context, if any.
+func (c *claudeTerminal) got() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	got := make([]string, len(c.submitted))
+	for i, p := range c.submitted {
+		got[i] = p
+		if i < len(c.context) && c.context[i] != "" {
+			got[i] += "\n" + c.context[i]
+		}
+	}
+	return got
 }
 
 // ptyQueue is how much of what is written to a macOS pty its reader gets
@@ -79,14 +122,16 @@ func (c *claudeTerminal) SendSpecialKey(_ string, key string) error {
 		return fmt.Errorf("unexpected key %q", key)
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.enters++
 	c.unread += "\r"
 	c.read()
+	c.mu.Unlock()
+	c.runHooks()
 	return nil
 }
 
 func (c *claudeTerminal) CaptureStyled(string, int) (string, error) {
+	defer c.runHooks()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.starting > 0 {
@@ -162,6 +207,9 @@ func (c *claudeTerminal) enter() {
 			prompt = strings.ReplaceAll(prompt, placeholder, text)
 		}
 		c.submitted = append(c.submitted, strings.TrimRight(prompt, "\n"))
+		if c.onSubmit != nil {
+			c.hooks = append(c.hooks, c.submitted[len(c.submitted)-1])
+		}
 		c.box = nil
 	}
 }
@@ -302,6 +350,7 @@ func TestSubmit_LongMessageOverTheBusArrivesWhole(t *testing.T) {
 			t.Fatal(err)
 		}
 		svc.SetDelivererStarter(func(string) error { return nil })
+		term.onSubmit = promptSubmitHook(t, svc, "s1")
 		nc := natstest.Start(t)
 		stop, err := natsbus.ServeRPC(nc, "h1", service.NewRPCHandler(svc), natsbus.DefaultRemoteOps)
 		if err != nil {
@@ -314,8 +363,10 @@ func TestSubmit_LongMessageOverTheBusArrivesWhole(t *testing.T) {
 		if err != nil || resp == nil || resp.Typed != 1 {
 			t.Fatalf("%s: SendMessage = %+v, %v; want it typed", tt.name, resp, err)
 		}
-		if _, submitted, _ := term.state(); len(submitted) != 1 || submitted[0] != msg {
-			t.Errorf("%s: Claude got %q; want the whole message", tt.name, submitted)
+		// Its hook reaches it, so the message goes as a short line, its
+		// whole text handed over by the hook (see handover_test.go).
+		if got := term.got(); len(got) != 1 || !strings.HasSuffix(got[0], "\n\n"+msg) {
+			t.Errorf("%s: Claude got %q; want the whole message", tt.name, got)
 		}
 	}
 }

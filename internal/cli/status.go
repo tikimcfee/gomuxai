@@ -117,6 +117,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			Detail:    info.Detail,
 			Tool:      info.Tool,
 			Held:      info.Held,
+			Model:     info.Model,
 		}
 		if json.Valid([]byte(info.ToolInput)) {
 			out.ToolInput = json.RawMessage(info.ToolInput)
@@ -137,6 +138,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if statusVerbose {
 		fmt.Printf("  means:  %s\n", wrapIndented(statusMeaning(info), statusWrapWidth, statusIndent))
 		fmt.Printf("  source: %s\n", info.Source)
+		if info.Model != "" {
+			fmt.Printf("  model:  %s\n", info.Model)
+		}
 		if info.NativeErr != "" {
 			fmt.Printf("  native: unread: %s\n", wrapIndented(info.NativeErr, statusWrapWidth, statusIndent))
 		}
@@ -251,6 +255,9 @@ type statusJSONOut struct {
 	// Held is how many messages wait for the agent: held for the end of
 	// its turn, or queued for agent watch.
 	Held int `json:"held,omitempty"`
+	// Model is the model spawn --model started it on; absent for the
+	// CLI's default.
+	Model string `json:"model,omitempty"`
 	// UnsubmittedAt is when a message was typed into the agent's input box
 	// that Enter failed to submit, if it still sits there.
 	UnsubmittedAt *time.Time `json:"unsubmitted_at,omitempty"`
@@ -334,5 +341,6 @@ func remoteStatus(ref natsbus.AgentRef) (*service.StatusInfo, error) {
 		ToolInput: resp.ToolInput,
 		UpdatedAt: resp.UpdatedAt,
 		Held:      resp.Held,
+		Model:     resp.Model,
 	}, nil
 }
