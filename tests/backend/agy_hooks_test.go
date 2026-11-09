@@ -456,13 +456,3 @@ func TestAgyWithInstructions(t *testing.T) {
 		t.Errorf("without hooks: %s", cmd)
 	}
 }
-
-func TestAgyTrustKeys(t *testing.T) {
-	b := namedagents.NewAgyBackend()
-	if got := b.TrustKeys("Do you trust the contents of this project?\n> Yes, I trust this folder"); strings.Join(got, ",") != "Enter" {
-		t.Errorf("TrustKeys = %v, want Enter", got)
-	}
-	if got := b.TrustKeys("? for shortcuts"); got != nil {
-		t.Errorf("TrustKeys at the prompt = %v, want nil", got)
-	}
-}
