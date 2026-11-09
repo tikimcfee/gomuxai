@@ -17,9 +17,9 @@ import (
 // sessions/ maps each session to its workDir too. Kimi has no file that
 // says a session is open.
 
-// scanKimi lists the sessions, main agents and subagents, under a sessions
-// dir.
-func scanKimi(dir string) []Session {
+// listKimi lists the sessions, main agents and subagents, under a sessions
+// dir, unread (stubs), each with the cwd session_index.jsonl gives it.
+func listKimi(dir string) []Session {
 	workspaces, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -42,11 +42,12 @@ func scanKimi(dir string) []Session {
 				if !a.IsDir() || err != nil || info.IsDir() || info.Size() == 0 {
 					continue
 				}
-				s := probeKimi(wire, info)
-				if s.Cwd == "" {
-					s.Cwd = index[strings.TrimPrefix(sd.Name(), "session_")]
-					s.Project = transcript.ProjectOf(s.Cwd)
+				s := stub(HarnessKimi, wire, info)
+				if a.Name() != "main" {
+					s.ParentSession = &ParentSession{SessionID: strings.TrimPrefix(sd.Name(), "session_")}
 				}
+				s.Cwd = index[strings.TrimPrefix(sd.Name(), "session_")]
+				s.Project = transcript.ProjectOf(s.Cwd)
 				out = append(out, s)
 			}
 		}

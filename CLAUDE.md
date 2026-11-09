@@ -443,16 +443,32 @@ with `--hosts`, the other host works it out, and the field is absent
 ### Sessions: every agent session on the host
 
 ```bash
-agent sessions                        # one line each: when, harness, project, status, workgroup, title
+agent sessions                        # the newest 25: when, harness, project, status, workgroup, title
+agent sessions --all                  # every one (--limit N: the newest N)
+agent sessions --since 2h --project . # written in the last 2h, run in this directory or inside it
+agent sessions --project gomuxai      # PROJECT contains "gomuxai", ignoring case
 agent sessions --workgroup            # only sessions a workgroup agent owns (--local: only the others)
-agent sessions --harness claude --json   # docs/EVENTS.md's Session shape
+agent sessions --harness claude --json   # docs/EVENTS.md's Session shape; every match, unless --limit
 ```
 
 `sessions` lists the transcripts Claude Code, agy and Kimi Code keep,
 whether `agent spawn` started the session or a person ran the CLI: same
 fields for both, with `workgroup` naming the owning agent (name, parent,
 store, host) or null. Subagent sessions are listed too, with
-`parent_session`. Status for a session no workgroup owns comes from the
+`parent_session`, and go with the session that started it: the limit and
+the filters pick a session and its subagents together. The table stops at
+the newest 25, and a hint says how many older ones it left out; `--json`
+is never cut unless `--limit` says so. `--since` takes a duration back
+from now (`30m`, `2h`, `3d`, `1w`) or a local date and time;
+`--project` a directory (it has a slash, or is `.`, `..` or `~`: that
+directory or one inside it) or else text the PROJECT column contains. It
+sorts by the files' last writes from directory listings and reads only
+the transcripts it shows, so it stays quick with thousands. `agent
+resume`, `spawn --resume <id>` and `spawn --continue` read only the
+session they pick, found by its path, its id in the file names, or (for
+`--continue`) the project folder named for the directory.
+
+Status for a session no workgroup owns comes from the
 harness: Claude Code's session registry and what the global hook heard
 (`ended (quit)` once it heard the session end) for Claude, agy's presence lock (running
 shows `unknown`), and for Kimi the transcript's age; `agent help sessions`

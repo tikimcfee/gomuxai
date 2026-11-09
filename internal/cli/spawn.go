@@ -402,19 +402,23 @@ func continueSession(ctx context.Context, dir string, harnesses ...string) (disc
 			return discovery.Session{}, fmt.Errorf("--continue continues a claude or agy session: backend %s keeps no sessions to continue", h)
 		}
 	}
-	sessions, err := resolveSessions(ctx, discovery.Scan(sessionDirs()))
+	index, err := sessionIndex(ctx)
 	if err != nil {
 		return discovery.Session{}, err
 	}
 	var pick discovery.Session
 	for _, h := range harnesses {
-		if s, ok := discovery.Continue(sessions, h, dir); ok && (pick.SessionID == "" || s.Mtime.After(pick.Mtime)) {
+		if s, ok := index.Continue(h, dir); ok && (pick.SessionID == "" || s.Mtime.After(pick.Mtime)) {
 			pick = s
 		}
 	}
 	which := strings.Join(harnesses, " or ")
 	if pick.SessionID == "" {
 		return discovery.Session{}, fmt.Errorf("no %s session to continue in %s (agent sessions lists the ones there are; --resume <id> names one)", which, dir)
+	}
+	resolved := index.Resolve([]discovery.Session{pick}, liveFor(ctx, pick.Harness))
+	if i := sessionAt(resolved, pick.Path); i >= 0 {
+		pick = resolved[i]
 	}
 	if err := checkResumable(pick, pick.Harness); err != nil {
 		return discovery.Session{}, fmt.Errorf("--continue picks %s, the most recent %s session in %s, but %w", pick.SessionID, which, dir, err)
