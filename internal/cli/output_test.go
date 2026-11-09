@@ -321,14 +321,14 @@ func TestWaitHintsWhenAgentWaits(t *testing.T) {
 	// The agent answers once wait has seen it waiting and said so.
 	live := &syncBuffer{}
 	hintOut = io.MultiWriter(hints, live)
-	whenPrinted(t, live, "hint: worker is waiting on a person (a permission prompt, a question, or a workspace trust prompt), so it won't be idle until someone answers: agent status worker -v shows what it's asking (--for idle,waiting returns on prompts)", func() {
+	whenPrinted(t, live, "hint: worker is waiting on a person (a permission prompt, a question, a workspace trust prompt, or a dialog of its CLI's own), so it won't be idle until someone answers: agent status worker -v shows what it's asking (--for idle,waiting returns on prompts)", func() {
 		agentService.Report(context.Background(), "worker", service.StatusReport{Status: service.AgentStatusIdle})
 	})
 	out, err := stdout(t, func() error { return runWait(waitCmd, []string{"worker"}) })
 	if err != nil || out != "worker: idle\n" {
 		t.Fatalf("wait = %q, %v", out, err)
 	}
-	want := "hint: worker is waiting on a person (a permission prompt, a question, or a workspace trust prompt), so it won't be idle until someone answers: agent status worker -v shows what it's asking (--for idle,waiting returns on prompts)\n"
+	want := "hint: worker is waiting on a person (a permission prompt, a question, a workspace trust prompt, or a dialog of its CLI's own), so it won't be idle until someone answers: agent status worker -v shows what it's asking (--for idle,waiting returns on prompts)\n"
 	if hints.String() != want {
 		t.Errorf("hints = %q, want %q", hints.String(), want)
 	}

@@ -179,6 +179,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		hint("its backend doesn't report status and its screen matched no known prompt: agent capture %s shows the screen", name)
 	case info.IsTrustPrompt():
 		hint("agent approve %s trusts the folder; agent deny %s declines it, and its CLI exits", name, name)
+	case info.IsDialog():
+		hint("a dialog of its CLI's own, which takes what is typed: agent deny %s closes it (Esc); agent approve %s picks its highlighted option (Enter); agent capture %s shows it", name, name, name)
 	case info.Status == service.AgentStatusWaiting && !statusVerbose:
 		hint("agent status %s -v shows what it's waiting on", name)
 	}
@@ -213,6 +215,8 @@ func heldLine(name string, remote bool, info *service.StatusInfo) string {
 		line = "  held:   " + n
 	case info.IsTrustPrompt():
 		line = "  held:   " + n + ", typed in once the folder is trusted (agent approve " + name + ") and it is at its prompt"
+	case info.IsDialog():
+		line = "  held:   " + n + ", typed in once the dialog is gone (agent deny " + name + " closes it) and it has been at its prompt for 10s"
 	case agentService.HoldsMessages(getContext(), name) && (info.Status == service.AgentStatusIdle || info.Status == service.AgentStatusError):
 		// The turn ended without its Stop hook: Esc, a deny, a failure.
 		if why := agentService.InputBlocked(getContext(), name); why != "" {

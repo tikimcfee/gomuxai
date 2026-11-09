@@ -168,12 +168,19 @@ func (s *AgentService) respondTrust(ctx context.Context, agent *storage.Agent, i
 	return info, nil
 }
 
-// holdForTrustPrompt holds a just-spawned agent's first message if its CLI
-// shows its trust prompt, where typing it would be lost (or its Enter
-// answer the prompt). Approving the prompt delivers it. It reports whether
-// the message was held.
-func (s *AgentService) holdForTrustPrompt(ctx context.Context, opts SpawnOptions, agent *storage.Agent, message string) (bool, error) {
-	if _, ok := s.trustPrompter(agent); !ok {
+// holdFirstMessage holds a just-spawned agent's first message if its CLI
+// shows its trust prompt or another dialog (see dialog.go), where typing it
+// would be lost (or its Enter answer the dialog). Approving the trust
+// prompt delivers it; past another dialog, the deliverer types it once the
+// agent is at its prompt. It reports whether the message was held.
+func (s *AgentService) holdFirstMessage(ctx context.Context, opts SpawnOptions, agent *storage.Agent, message string) (bool, error) {
+	provider, err := s.provider(agent)
+	if err != nil {
+		return false, nil
+	}
+	_, trusts := provider.(backend.TrustPrompter)
+	_, dialogs := provider.(backend.DialogReader)
+	if !trusts && !dialogs {
 		return false, nil
 	}
 	if sc, ok := s.submitChecker(agent); ok {
@@ -188,7 +195,9 @@ func (s *AgentService) holdForTrustPrompt(ctx context.Context, opts SpawnOptions
 			}
 		}
 	}
-	if _, ok := s.trustPromptOnScreen(agent); !ok {
+	_, trust := s.trustPromptOnScreen(agent)
+	_, dialog := s.dialogOnScreen(agent)
+	if !trust && !dialog {
 		return false, nil
 	}
 	from := opts.SpawnedBy
@@ -198,6 +207,9 @@ func (s *AgentService) holdForTrustPrompt(ctx context.Context, opts SpawnOptions
 	msg := &storage.Message{SenderID: from, ReceiverID: agent.Name, Content: message, Status: storage.MessageStatusPending, CreatedAt: time.Now()}
 	if err := s.storage.CreateMessage(ctx, msg); err != nil {
 		return false, fmt.Errorf("holding the first message: %w", err)
+	}
+	if dialog {
+		_ = s.startDeliverer(agent.Name) // best effort: a send or agent deliver types it too
 	}
 	return true, nil
 }

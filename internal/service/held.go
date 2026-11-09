@@ -141,13 +141,22 @@ func turnOver(reported *StatusInfo) bool {
 // any messages still held.
 func (s *AgentService) sendHeld(ctx context.Context, agent *storage.Agent, message, from string) (SendResult, error) {
 	res := SendResult{Status: AgentStatusUnknown}
+	dialog := false
 	if info, err := s.StatusInfo(ctx, agent.Name); err == nil {
-		res.Status, res.Detail = info.Status, info.Detail
+		res.Status, res.Detail, dialog = info.Status, info.Detail, info.IsDialog()
 	}
-	switch res.Status {
-	case AgentStatusEnded:
+	switch {
+	case res.Status == AgentStatusEnded:
 		return res, exitedErr(agent)
-	case AgentStatusProcessing, AgentStatusWaiting:
+	case dialog:
+		// No turn runs, so no hook will deliver it: the deliverer types
+		// it once the dialog is gone.
+		res, err := s.hold(ctx, agent, res, message, from)
+		if res.Held {
+			res.HeldUntil = heldUntilDialog
+		}
+		return res, err
+	case res.Status == AgentStatusProcessing, res.Status == AgentStatusWaiting:
 		// Waiting too: a held message never goes near the dialog, and once
 		// the prompt is answered, the turn's end delivers it.
 		return s.hold(ctx, agent, res, message, from)
@@ -209,6 +218,10 @@ func (s *AgentService) hold(ctx context.Context, agent *storage.Agent, res SendR
 	_ = s.startDeliverer(agent.Name) // best effort: the turn's hook delivers either way
 	return res, nil
 }
+
+// heldUntilDialog is when a message held for an agent at a dialog (see
+// dialog.go) is delivered.
+const heldUntilDialog = "its dialog is gone and it has been at its prompt for 10s"
 
 // maxHeldCount bounds how many held messages are counted.
 const maxHeldCount = 1000

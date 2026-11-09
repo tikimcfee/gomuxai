@@ -36,7 +36,7 @@ func (s Status) String() string {
 var Statuses = []Meaning{
 	{"idle", "at its prompt, its turn over, nothing it started still running: a message can be typed in"},
 	{"processing", "a turn is running (or a turn ended leaving background work, whose completion starts the next turn)"},
-	{"waiting", "stopped on something only a person can answer: a permission prompt, a question, or the CLI's workspace trust prompt"},
+	{"waiting", "stopped on something only a person can answer: a permission prompt, a question, the CLI's workspace trust prompt, or another dialog of its own"},
 	{"error", "its last turn failed (an API error, a rate limit); it is at its prompt"},
 	{"ended", "no CLI runs the session any more; the end reason says how it ended"},
 	{"unknown", "nothing reliable says yet (a CLI still starting, or a harness with no status of its own)"},
@@ -150,6 +150,13 @@ const (
 	PermissionApproveAlways
 	PermissionDeny
 )
+
+// Dialog is a dialog a CLI shows that no hook reports, as read off its
+// screen.
+type Dialog struct {
+	Title       string // its first line, e.g. "Teach auto mode about your environment?"
+	Highlighted string // the option Enter picks, e.g. "1. Yes"; "" if none shows
+}
 
 // PaneSession is a backend session found running in an agent's pane.
 type PaneSession struct {

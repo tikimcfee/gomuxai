@@ -295,7 +295,7 @@ func (w *waiter) current(ref natsbus.AgentRef) func(context.Context) (natsbus.Ob
 		obs, err := check(ctx)
 		if err == nil && obs.Status == string(service.AgentStatusWaiting) {
 			w.mu.Lock()
-			hint("%s is waiting on a person (a permission prompt, a question, or a workspace trust prompt), so it won't be %s until someone answers: agent status %s -v shows what it's asking (--for %s,waiting returns on prompts)",
+			hint("%s is waiting on a person (a permission prompt, a question, a workspace trust prompt, or a dialog of its CLI's own), so it won't be %s until someone answers: agent status %s -v shows what it's asking (--for %s,waiting returns on prompts)",
 				ref, strings.Join(w.statuses, " or "), ref, strings.Join(w.statuses, ","))
 			w.mu.Unlock()
 		}
