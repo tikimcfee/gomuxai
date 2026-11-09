@@ -82,6 +82,14 @@ func noServer(err error) bool {
 	return tmuxSays(err, "no server running", "error connecting")
 }
 
+// notFound reports whether err is tmux saying the session or pane it was
+// given doesn't exist, or that no server runs to hold it. A server with no
+// sessions at all (one kept up with exit-empty off) says "no current
+// target" rather than "can't find session".
+func notFound(err error) bool {
+	return noServer(err) || tmuxSays(err, "can't find session", "can't find pane", "no current target")
+}
+
 // readOnlyClient is a client attached with tmux attach -r.
 type readOnlyClient struct {
 	Name    string // its tty, which tmux detach-client -t takes

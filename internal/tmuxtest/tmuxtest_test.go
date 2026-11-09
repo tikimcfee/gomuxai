@@ -46,6 +46,41 @@ func TestRun_SessionsAreOnThePrivateServer(t *testing.T) {
 	}
 }
 
+// Killing the server's only session leaves the server running, as the
+// shared one always is: tests that kill a session never race its shutdown.
+func TestRun_ServerOutlivesItsLastSession(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+	Require(t)
+	c, err := tmux.NewClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CreateSession("tmuxtest-last", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.KillSession("tmuxtest-last"); err != nil {
+		t.Fatal(err)
+	}
+	// An empty server answers has-session with "no current target", not
+	// "can't find session": still a session that doesn't exist.
+	if exists, err := c.SessionExists("tmuxtest-last"); err != nil || exists {
+		t.Errorf("SessionExists after killing the last session = %v, %v; want false, nil", exists, err)
+	}
+	sessions, err := c.ListSessions()
+	if err != nil {
+		t.Fatalf("listing sessions after killing the last one: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("sessions = %+v, want none (and no keepalive session)", sessions)
+	}
+	if out, err := exec.Command("tmux", "show-options", "-g", "exit-empty").CombinedOutput(); err != nil ||
+		strings.TrimSpace(string(out)) != "exit-empty off" {
+		t.Errorf("server after its last session: %q, %v; want it running with exit-empty off", out, err)
+	}
+}
+
 // Require fails a test that would run tmux off its private server.
 func TestRequire_FailsOffPrivateServer(t *testing.T) {
 	t.Setenv(tmux.TestServerEnv, "")

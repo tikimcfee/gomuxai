@@ -145,13 +145,13 @@ func (c *Client) KillSession(name string) error {
 }
 
 // SessionExists checks if a session exists. With no tmux server running,
-// none does.
+// or one with no sessions, none does.
 func (c *Client) SessionExists(name string) (bool, error) {
 	_, err := run("has-session", "-t", exact(name))
 	switch {
 	case err == nil:
 		return true, nil
-	case noServer(err) || tmuxSays(err, "can't find session"):
+	case notFound(err):
 		return false, nil
 	}
 	return false, fmt.Errorf("checking session %q: %w", name, err)
@@ -471,7 +471,7 @@ func (c *Client) SessionOfPane(pane string) (string, error) {
 	}
 	out, err := run("display-message", "-p", "-t", pane, "#{session_name}")
 	if err != nil {
-		if noServer(err) || tmuxSays(err, "can't find pane") || tmuxSays(err, "can't find session") {
+		if notFound(err) {
 			return "", nil
 		}
 		return "", fmt.Errorf("finding session for pane %q: %w", pane, err)
