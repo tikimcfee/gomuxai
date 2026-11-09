@@ -129,6 +129,9 @@ func TestSpawnReadinessNamesTheTrustPrompt(t *testing.T) {
 			"It is waiting at agy's workspace trust prompt for /srv/p: agent approve w trusts it."},
 		{"a permission prompt", "claude", waiting, "permission: Bash: ls", readiness{},
 			"It is already waiting on a prompt: agent status w -v shows it."},
+		// A dialog Claude shows on its own (friction #29).
+		{"a dialog, with a task", "claude", waiting, "dialog: Teach auto mode about your environment?; Enter picks: 1. Yes", readiness{task: true},
+			"It is waiting at a dialog of Claude's (Teach auto mode about your environment?): agent deny w closes it, agent approve w picks its highlighted option. Its task is held until the dialog is gone."},
 	}
 	for _, tt := range tests {
 		if got := spawnReadiness("w", tt.backend, tt.status, tt.detail, tt.r); got != tt.want {

@@ -28,6 +28,13 @@ import (
 //     returns an UnsubmittedError, so the sender, status, and the next send
 //     say so.
 //
+// If the box never shows the text, something else took the keys: a dialog
+// (see dialog.go) that came up since the sender checked the screen. Then no
+// Enter is pressed, which would pick the dialog's highlighted option, and
+// it returns a DialogTookError. If the screen shows no dialog it presses
+// Enter as above, but says the message wasn't seen (StateKeyUnchecked)
+// rather than that it was sent.
+//
 // It presses no more Enters once the box is off screen (a dialog may have
 // taken its place) or shows anything else (a person typing). Each wait is
 // bounded by the config's SubmitWait; 0 turns all this off.
@@ -83,6 +90,19 @@ type UnsubmittedError struct {
 func (e *UnsubmittedError) Error() string {
 	return fmt.Sprintf("the message was typed into %s's input box, but it is still there after %d Enters: don't send it again; agent capture %s shows it, and agent key %s Enter submits it",
 		e.Agent, e.Enters, e.Agent, e.Session)
+}
+
+// DialogTookError is the error for a message typed into an agent whose
+// input box never showed it because a dialog came up and took the keys:
+// Enter wasn't pressed, so the dialog is unanswered.
+type DialogTookError struct {
+	Agent  *storage.Agent
+	Dialog backend.Dialog
+}
+
+func (e *DialogTookError) Error() string {
+	return fmt.Sprintf("the message was typed into %s, but a dialog came up (%s) and took it, so Enter wasn't pressed: %s",
+		e.Agent.Name, OneLine(e.Dialog.Title), dialogHint(e.Agent))
 }
 
 // submitChecker returns the agent's backend as a SubmitChecker, if it is
@@ -151,6 +171,13 @@ func (s *AgentService) typeText(ctx context.Context, agent *storage.Agent, text 
 	if err != nil {
 		return "", err
 	}
+	if !seen {
+		// The box didn't take the text: a dialog that came up since the
+		// check before typing may have, and Enter would answer it.
+		if d, on := s.dialogOnScreen(agent); on {
+			return "", &DialogTookError{Agent: agent, Dialog: d}
+		}
+	}
 	for enters := 1; ; enters++ {
 		if err := s.tmux.SendSpecialKey(agent.SessionName, "Enter"); err != nil {
 			return "", err
@@ -158,11 +185,19 @@ func (s *AgentService) typeText(ctx context.Context, agent *storage.Agent, text 
 		var sits bool
 		typed, seen, sits, err = s.awaitSubmit(ctx, agent, sc, before, typed, seen)
 		if err != nil || !sits {
-			if err == nil {
-				_ = s.storage.DeleteStateKey(ctx, agent.Name, StateKeyUnsubmitted)
-				_ = s.storage.DeleteStateKey(ctx, agent.Name, StateKeyUnchecked)
+			if err != nil {
+				return "", err
 			}
-			return "", err
+			_ = s.storage.DeleteStateKey(ctx, agent.Name, StateKeyUnsubmitted)
+			if !seen {
+				// Something else took the text, or the box is drawn in a
+				// way agent doesn't read: say so rather than "Sent".
+				why := "its input box never showed the message (a dialog, or a screen agent doesn't recognize, may have taken it)"
+				_ = s.setState(ctx, agent.Name, StateKeyUnchecked, why)
+				return why, nil
+			}
+			_ = s.storage.DeleteStateKey(ctx, agent.Name, StateKeyUnchecked)
+			return "", nil
 		}
 		if enters == submitEnters {
 			_ = s.setState(ctx, agent.Name, StateKeyUnsubmitted, typed)

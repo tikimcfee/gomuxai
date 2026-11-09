@@ -15,6 +15,7 @@ var (
 	_ backend.PermissionResponder  = (*namedagents.ClaudeBackend)(nil)
 	_ backend.InstructionsProvider = (*namedagents.ClaudeBackend)(nil)
 	_ backend.TrustPrompter        = (*namedagents.ClaudeBackend)(nil)
+	_ backend.DialogReader         = (*namedagents.ClaudeBackend)(nil)
 	_ backend.CommandAllower       = (*namedagents.ClaudeBackend)(nil)
 	_ backend.HookDeliverer        = (*namedagents.ClaudeBackend)(nil)
 	_ backend.InputReader          = (*namedagents.ClaudeBackend)(nil)

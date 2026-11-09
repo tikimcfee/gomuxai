@@ -32,6 +32,7 @@ const (
 type HookReport = types.HookReport
 type EndReason = types.EndReason
 type PaneSession = types.PaneSession
+type Dialog = types.Dialog
 type PermissionResponse = types.PermissionResponse
 type PromptChange = types.PromptChange
 
@@ -207,6 +208,21 @@ type TrustPrompter interface {
 type ModelChooser interface {
 	// WithModel returns launchCmd changed to run on model.
 	WithModel(launchCmd, model string) string
+}
+
+// DialogReader is implemented by backends whose CLI can show a dialog that
+// no hook reports and its session status doesn't tell from idle: Claude's
+// offers, notices and setup wizards, which come up at startup or after a
+// turn. While one is up, typed keys go to it, and Enter picks its
+// highlighted option.
+type DialogReader interface {
+	// Dialog reports whether such a dialog is on screen (the visible pane,
+	// ANSI-stripped). Permission, question and trust prompts count too:
+	// callers check for those first.
+	Dialog(screen string) (Dialog, bool)
+	// DialogKey returns the key that answers it: approve picks the
+	// highlighted option, deny closes it.
+	DialogKey(resp PermissionResponse) (string, error)
 }
 
 // PromptFlagProvider is implemented by backends whose CLI can accept the
