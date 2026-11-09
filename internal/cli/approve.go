@@ -35,10 +35,17 @@ At the CLI's workspace trust prompt (Claude or agy in a folder it hasn't
 trusted; status shows tool "trust", detail "trust: <folder>"), approve
 picks "Yes, I trust this folder", which trusts it for good (so there is no
 --always), and the CLI starts. --expect trust names that prompt. A message
-spawn held while the prompt was up goes in once the CLI is at its prompt.`,
+spawn held while the prompt was up goes in once the CLI is at its prompt.
+
+At a dialog Claude shows on its own (an offer or notice at startup or
+after a turn; status shows tool "dialog", detail "dialog: <title>; Enter
+picks: <option>"), approve presses Enter, picking the option the detail
+names. --expect dialog names it. Held messages go in once the dialog is
+gone and the agent has been at its prompt for 10s.`,
 	Example: `  agent status helper -v && agent approve helper --expect Bash
   agent approve helper --always   # Claude's "yes, don't ask again" option
   agent approve helper --expect trust   # trust the folder at its trust prompt
+  agent approve helper --expect dialog  # pick a dialog's highlighted option
   agent approve helper@hub --expect Bash`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -61,10 +68,16 @@ screen (override with --force): for Claude the deny key is Escape, which
 would cancel the turn if the prompt was answered in the meantime.
 
 At the CLI's workspace trust prompt, deny picks "No, exit": the CLI exits,
-and the agent is ended (quit).`,
+and the agent is ended (quit).
+
+At a dialog Claude shows on its own (status shows tool "dialog"), deny
+presses Escape, which closes it (an offer takes it for "not now"); no turn
+is cancelled. Held messages go in once the agent has been at its prompt
+for 10s.`,
 	Example: `  agent deny helper
   agent deny helper --expect Bash
   agent deny helper --expect trust   # decline its workspace trust prompt
+  agent deny helper --expect dialog  # close a dialog Claude showed on its own
   agent deny helper@hub`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -106,7 +119,7 @@ func respondPermission(name string, resp backend.PermissionResponse, verb string
 		line += fmt.Sprintf(" (%s)", service.OneLine(info.Detail))
 	}
 	fmt.Println(line + ".")
-	if resp == backend.PermissionDeny && !remote && !info.IsTrustPrompt() {
+	if resp == backend.PermissionDeny && !remote && !info.IsTrustPrompt() && !info.IsDialog() {
 		if a, err := agentService.Agent(getContext(), ref.Name); err == nil && a.Backend == "claude" {
 			hint("denying cancels Claude's turn: tell it what to do instead with agent send %s \"...\"", name)
 		}

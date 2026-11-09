@@ -229,9 +229,9 @@ func (s *AgentService) spawnWithProvider(ctx context.Context, opts SpawnOptions,
 	// Send initial message if it was not already passed on the launch command line
 	if !promptInLaunch && initMsg != "" {
 		s.markSent(ctx, opts.Name)
-		// At a trust prompt, the message would be lost (Claude's ignores a
-		// paste) or its Enter answer the prompt: hold it for approve.
-		held, err := s.holdForTrustPrompt(ctx, opts, agent, initMsg)
+		// At a trust prompt or another dialog, the message would be lost
+		// (Claude's ignore a paste) or its Enter answer it: hold it.
+		held, err := s.holdFirstMessage(ctx, opts, agent, initMsg)
 		if err != nil {
 			return abort(err)
 		}
@@ -569,9 +569,8 @@ func (s *AgentService) Send(ctx context.Context, name string, message string, op
 	return res, nil
 }
 
-// checkCanSend fails if the agent's session has ended, is waiting on a prompt, or
-// shows a permission or trust dialog on screen. It returns the agent's
-// status.
+// checkCanSend fails if the agent's session has ended, is waiting on a
+// prompt, or shows a dialog on screen. It returns the agent's status.
 func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (AgentStatus, error) {
 	status := AgentStatusUnknown
 	if info, err := s.StatusInfo(ctx, agent.Name); err == nil {
@@ -584,6 +583,9 @@ func (s *AgentService) checkCanSend(ctx context.Context, agent *storage.Agent) (
 			}
 			if info.IsTrustPrompt() {
 				return status, trustPromptSendErr(agent)
+			}
+			if info.IsDialog() {
+				return status, dialogSendErr(agent, dialogFromDetail(info.Detail))
 			}
 			if strings.HasPrefix(info.Detail, "question: ") {
 				return status, fmt.Errorf("agent %s is waiting on %s, where the message's Enter would pick an answer: %s (a person can send anyway with --force)",
@@ -616,8 +618,8 @@ func exitedErr(agent *storage.Agent) error {
 		agent.Name, agent.Name, agent.Name)
 }
 
-// checkScreen fails if the agent shows a permission or trust dialog on
-// screen, where a message's Enter would answer it.
+// checkScreen fails if the agent shows a permission, question, trust or
+// other dialog on screen, where a message's Enter would answer it.
 func (s *AgentService) checkScreen(agent *storage.Agent) error {
 	provider, err := s.provider(agent)
 	if err != nil {
@@ -638,6 +640,11 @@ func (s *AgentService) checkScreen(agent *storage.Agent) error {
 	if tp, ok := provider.(backend.TrustPrompter); ok {
 		if _, on := tp.TrustPrompt(screen); on {
 			return trustPromptSendErr(agent)
+		}
+	}
+	if dr, ok := provider.(backend.DialogReader); ok {
+		if d, on := dr.Dialog(screen); on {
+			return dialogSendErr(agent, d)
 		}
 	}
 	return nil

@@ -435,6 +435,12 @@ func (s *AgentService) StatusInfo(ctx context.Context, name string) (*StatusInfo
 			info.UpdatedAt = time.Unix(0, nanos)
 		}
 	}
+	// A dialog no hook reports (see dialog.go) leaves the CLI looking idle.
+	if agent, err := s.getAgent(ctx, name); err == nil {
+		if dialog, ok := s.dialogStatus(agent, info); ok {
+			info = dialog
+		}
+	}
 	return info, nil
 }
 
@@ -886,6 +892,9 @@ func (s *AgentService) RespondPermission(ctx context.Context, name string, resp 
 	}
 	if info.IsTrustPrompt() {
 		return s.respondTrust(ctx, agent, info, resp)
+	}
+	if info.IsDialog() {
+		return s.respondDialog(ctx, agent, info, resp)
 	}
 
 	provider, err := s.provider(agent)
