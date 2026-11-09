@@ -29,6 +29,11 @@ func (f *fakeAgyBackend) LaunchCommandWithHooks(reportCmd, sessionID string) str
 	return "true"
 }
 
+func (f *fakeAgyBackend) WithModel(launchCmd, model string) string {
+	f.launchedCmd = f.AgyBackend.WithModel(f.launchedCmd, model)
+	return "true"
+}
+
 func (f *fakeAgyBackend) AppendPromptFlag(launchCmd, prompt string) string {
 	f.launchedCmd = f.AgyBackend.AppendPromptFlag(f.launchedCmd, prompt)
 	return "true"

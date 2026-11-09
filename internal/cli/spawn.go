@@ -26,6 +26,7 @@ var (
 	spawnAttach          bool
 	spawnHost            string
 	spawnCwd             string
+	spawnModel           string
 )
 
 var spawnCmd = &cobra.Command{
@@ -88,6 +89,13 @@ Subagents' sessions are never picked. Spawn says which session it picked
 --resume does with that id: a session still running is refused. It needs
 --backend claude or agy, and doesn't go with --resume.
 
+--model runs the CLI on that model (its --model flag): claude ("opus",
+"claude-fable-5-1"), agy ("gemini-3.8-flash-high"; agy models lists them)
+and aider take one; other backends refuse it. The agent remembers it:
+agent resume relaunches it on the same model, and agent status -v shows it.
+A model switched inside the session (Claude's /model, which agent send
+types in as a command) lasts for that run only.
+
 --attach opens the new agent's tmux session in this terminal once it
 starts, as agent attach does (Ctrl-b d detaches; the agent keeps running).
 
@@ -118,6 +126,7 @@ clean the agent up on its host.`,
   agent spawn helper --backend aider
   agent spawn auto-worker --backend claude --skip-permissions
   agent spawn reviewer --backend agy --trust-workspace
+  agent spawn quick --backend claude --model claude-fable-5-1
   agent spawn lead --backend claude --resume 3f34adff --attach
   agent spawn lead --backend claude --continue
   agent spawn builder@hub --backend claude --cwd /srv/repo tasks/build.md
@@ -143,6 +152,8 @@ func init() {
 		"Start the agent on this host, through the agent bus (same as name@host)")
 	spawnCmd.Flags().StringVar(&spawnCwd, "cwd", "",
 		"Directory the agent starts in (on another host: an absolute path there)")
+	spawnCmd.Flags().StringVar(&spawnModel, "model", "",
+		"Model the CLI runs on, passed as its --model (claude, agy, aider); resume keeps it")
 }
 
 func runSpawn(cmd *cobra.Command, args []string) error {
@@ -239,6 +250,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		SpawnedBy:       nonInteractiveCallerAgent(),
 		Resume:          resume,
 		Cwd:             cwd,
+		Model:           spawnModel,
 	}
 
 	agent, err := agentService.Spawn(getContext(), opts)
@@ -254,6 +266,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		where = "in " + cwd
 	}
 	fmt.Print(spawnSummary(agent, where, spawnTask, taskFile, resume))
+	if spawnModel != "" {
+		fmt.Printf("It runs on model %s.\n", spawnModel)
+	}
 	if info, err := agentService.StatusInfo(getContext(), name); err == nil {
 		fmt.Println(spawnReadiness(name, agent.Backend, info.Status, info.Detail, readiness{task: spawnTask != "" || taskFile != ""}))
 	}
@@ -334,9 +349,16 @@ func runRemoteSpawn(ref natsbus.AgentRef, rest []string) error {
 	if spawnCwd != "" && !strings.HasPrefix(spawnCwd, "/") {
 		return fmt.Errorf("--cwd %s: give an absolute path on %s (a relative one would be relative to wherever its bus runs)", spawnCwd, ref.Host)
 	}
+	if spawnModel != "" {
+		// Checked here too, so a bad name fails before it crosses the bus.
+		if err := service.ValidateModel(spawnModel); err != nil {
+			return err
+		}
+	}
 	req := natsbus.SpawnRequest{
 		Backend: cfg.Backend,
 		Cwd:     spawnCwd,
+		Model:   spawnModel,
 	}
 	if me := nonInteractiveCallerAgent(); me != "" {
 		req.SpawnedBy = natsbus.AgentRef{Name: me, Host: cfg.Host}.String()
@@ -369,6 +391,13 @@ func runRemoteSpawn(ref natsbus.AgentRef, rest []string) error {
 
 	agent := &storage.Agent{Name: ref.String(), SessionName: resp.Session, Backend: resp.Backend, SpawnedBy: resp.SpawnedBy}
 	fmt.Print(spawnSummary(agent, fmt.Sprintf("on %s in %s", ref.Host, resp.Cwd), spawnTask, resp.TaskFile, ""))
+	switch {
+	case resp.Model != "":
+		fmt.Printf("It runs on model %s.\n", resp.Model)
+	case spawnModel != "":
+		// A host that predates --model ignores it.
+		fmt.Printf("%s didn't take --model (its agent predates it): %s runs on its CLI's default model.\n", ref.Host, ref)
+	}
 	fmt.Println(remoteSpawnReadiness(ref, resp, spawnTask != "" || resp.TaskFile != ""))
 	return nil
 }

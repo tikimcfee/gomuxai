@@ -184,6 +184,7 @@ applies each one it finds:
 | `InstructionsProvider`: the briefing | `--append-system-prompt-file instructions.md` | `AGENTS.md` in the `--add-dir` directory | — |
 | `CommandAllower`: pre-allowed commands | `--allowedTools 'Bash(agent status:*)' ...` | — | — |
 | `PromptFlagProvider`: first message on the command line | — | `-i '<task>'` | — |
+| `ModelChooser`: `spawn --model` | `--model '<model>'` | `--model '<model>'`, ahead of the exit wrapper | `--model '<model>'` |
 | `TrustPrompter`: reads and answers the trust prompt | moves to "Yes, I trust this folder" first (the default is "No, exit") | Enter ("Yes" is the default) | — |
 | `NativeStatusProvider` | Claude Code's session registry | — | — |
 | `PaneSessionProvider`: the session a pane runs | the registry, placed by the process tree | — | — |
@@ -346,7 +347,8 @@ The service then:
    a new run (a `spawned` event). The record is updated, not deleted:
    deleting it would cascade to the agent's state.
 4. Deletes the reserved keys that described the ended run, keeping
-   `_result` and `_transcript`; the agent's own keys stay. The launch then
+   `_result`, `_transcript` and `_model` (the model `spawn --model` chose,
+   which the relaunch passes again); the agent's own keys stay. The launch then
    writes a new `_spawn_id` and `_session_id`.
 5. Starts a deliverer if messages were held for it: they never went out
    while it was ended.
@@ -387,8 +389,12 @@ from an agent (`AGENT_NAME` set) is prefixed `[from <name>@<host>] `, and
 one without `AGENT_NAME` `[from a person on <host>] `, or `[from a Claude
 session on <host>] ` when the environment shows an AI CLI (`AI_AGENT`'s tool
 name, the part before its first `_`, or `CLAUDECODE=1`; `unrecordedSender`).
-Those name no agent to reply to, and their slash commands stay unmarked, or
-they would no longer be ones (`markSender`). Before
+Those name no agent to reply to. A slash command stays unmarked from any
+sender, or it would no longer be one (`markSender`): `service.IsSlashCommand`
+takes `/name` followed by a space or the end (`/model opus`,
+`/plugin:skill args`), and not a path (`/tmp/out.txt is ready`, which has a
+second slash first). Who sent it is then only in the sending host's command
+log (`agent history`). Before
 typing, `checkCanSend` refuses an `ended` agent (the text would run in the
 shell left behind), a `waiting` agent, and any agent with a permission or
 trust dialog on screen (the Enter would answer it; at Claude's trust
@@ -797,6 +803,7 @@ session, changes nothing, and status goes on as above.
 | `_result` | Claude's last reply (`Stop`'s `last_assistant_message`); written only when set or cleared |
 | `_session_id` | the CLI's session id; spawn sets it, hooks update it (`/clear`, `/resume`, agy's conversation id), and pane adoption sets the session the pane runs |
 | `_spawn_id` | agy only: the spawn's uuid, set once by spawn (a Claude agent spawned with per-spawn hooks, before the global hook, has one too) |
+| `_model` | the model `spawn --model` started the agent on; resume keeps it and relaunches on it; unset for the CLI's default |
 | `_hooked_session` | Claude: the session the global hook last reported for the agent's main session; while it equals `_session_id`, the agent holds messages |
 | `_turn_at` | when the last turn started: written with a report that is `processing` and clears `_result` (Claude `UserPromptSubmit`, agy's first `PreInvocation`) |
 | `_sent_at` | when a message was last typed in; written by `send` (and queued deliveries and spawn's first message), not by `Report` |
@@ -1497,7 +1504,7 @@ modes in your terminal.
 | `send` | `SendRequest` (`now`) → `SendResponse` (status, held, typed); none from older hosts | `send` | yes |
 | `respond` | `RespondRequest` (`approve`, `approve_always`, `deny`, `force`, `expect_tool`) → none | `approve`, `deny` | yes |
 | `keys` | `KeysRequest` (text, then a key) → none | `keys name@host` | no |
-| `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `spawned_by`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
+| `spawn` | `SpawnRequest` (`agent`, `backend`, `cwd`, `task_file`, `task_content`, `spawned_by`, `model`) → `SpawnResponse` (`name`, `session`, `backend`, `spawned_by`, `cwd`, `task_file`, `model`, `status`, `end_reason`) | `spawn name@host`, `spawn --host H` | no |
 | `logs` | `LogsRequest` (`agent`, `lines`, `full`, `json`, `terminal`) → `LogsResponse` (`output`: what `agent logs` prints there, `hint`: its stderr hint, `truncated`: bytes left out) | `logs name@host` | yes |
 | `resume` | `ResumeRequest` (`agent`, `resumed_by`) → `ResumeResponse` (`name`, `session`, `backend`, `session_id`, `cwd`, `held`, `status`, `end_reason`) | `resume name@host` | no |
 | `friction` | `FrictionRequest` (`action`: `get` `ids`; `link`/`unlink`/`resolve` `id`, with `from` (required), `by`, `note`; resolve's `uid` and `status`; resolve closes only an entry linked to `from`) → `FrictionResponse` (`entries` with their `links` and `requested`, `missing`, `resolved`) | `friction show`/`list`/`links`/`link`/`unlink`/`resolve` | yes |
@@ -1540,7 +1547,10 @@ absolute (empty: the home directory of the user the bus runs as), and a relative
 `--attach`, `--backend-config`, `--skip-permissions` and
 `--trust-workspace` for a remote spawn before sending; `SpawnRequest` has
 no field for `--skip-permissions`, `--trust-workspace` or `--resume`, so a
-peer can't ask for them either. (Confirming a trust prompt is saved in the
+peer can't ask for them either. `model` is checked against
+`service.ValidateModel` on both sides and shell-quoted on the launch line;
+a host that predates it ignores it and replies with no `model`, and the
+caller says the agent runs on its CLI's default. (Confirming a trust prompt is saved in the
 host user's CLI config and would outlast the agent.) So `cwd` must be a
 directory the CLI already trusts there, or a person there confirms the
 prompt. A `spawned_by` naming the serving host itself (in any case) is

@@ -30,4 +30,7 @@ var (
 	_ backend.InputReader          = (*namedagents.AgyBackend)(nil)
 	_ backend.TurnEndReader        = (*namedagents.AgyBackend)(nil)
 	_ backend.QuestionPrompter     = (*namedagents.AgyBackend)(nil)
+	_ backend.ModelChooser         = (*namedagents.AgyBackend)(nil)
+
+	_ backend.ModelChooser = (*namedagents.AiderBackend)(nil)
 )
