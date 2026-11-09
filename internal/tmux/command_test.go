@@ -11,7 +11,8 @@ import (
 
 // fakeTmux puts a tmux on PATH that logs its arguments, one call per line,
 // and acts like a server with a read-only client attached: send-keys is
-// refused, the rest succeeds. It returns the log's path.
+// refused, the rest succeeds. It returns the log's path. The fake is this
+// test's private server (CheckTestServer): no real tmux runs.
 func fakeTmux(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -34,6 +35,9 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv(TestServerEnv, dir)
 	return log
 }
 
@@ -59,6 +63,34 @@ func TestRun_ErrorCarriesTmuxMessage(t *testing.T) {
 	// With nothing on stderr, the exit status is all there is to say.
 	if _, err := run("silent"); err == nil || err.Error() != "tmux silent: exit status 1" {
 		t.Errorf("err = %v, want the exit status", err)
+	}
+}
+
+// A test binary that isn't on a private tmux server runs no tmux at all:
+// not the default server, and not the one $TMUX names.
+func TestRun_RefusedOffPrivateServer(t *testing.T) {
+	log := fakeTmux(t)
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"no private server", map[string]string{TestServerEnv: ""}, "without a private tmux server"},
+		{"TMUX set", map[string]string{"TMUX": "/tmp/tmux-501/default,190,7"}, "with $TMUX set"},
+		{"TMUX_TMPDIR moved", map[string]string{"TMUX_TMPDIR": "/tmp"}, `with TMUX_TMPDIR "/tmp"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if _, err := run("list-sessions"); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("run = %v, want a refusal saying %q", err, tc.want)
+			}
+		})
+	}
+	if b, err := os.ReadFile(log); !os.IsNotExist(err) {
+		t.Errorf("ran tmux despite refusing: %q (%v)", b, err)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/tmuxtest"
 )
 
 // hints collects what the commands of a test that called setupCLI print on
@@ -29,11 +30,17 @@ var hints *strings.Builder
 // setupCLI points the CLI's globals at a temp database holding one agent,
 // "worker", waiting on a Bash permission prompt, on host "local". The agent
 // has no tmux session: status comes from its report alone.
+//
+// Session names (rpc-cli-worker and the like) are fixed. They can't collide:
+// this binary has a tmux server of its own (TestMain), so another test run
+// never sees them, and its tests run one at a time, since they swap the
+// CLI's globals; each test kills its sessions when it ends.
 func setupCLI(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
+	tmuxtest.Require(t)
 	dir := t.TempDir()
 	testCfg := &config.Config{
 		DatabasePath:      filepath.Join(dir, "gomuxai.db"),

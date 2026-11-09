@@ -18,6 +18,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/tmuxtest"
 )
 
 // testEnv holds test environment resources.
@@ -45,6 +46,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available, skipping integration test")
 	}
+	tmuxtest.Require(t)
 
 	// Create temp database
 	tmpFile, err := os.CreateTemp("", "gomuxai-service-test-*.db")

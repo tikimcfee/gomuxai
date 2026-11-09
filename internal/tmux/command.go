@@ -41,6 +41,9 @@ func commandError(args []string, stderr string, err error) *Error {
 // run runs a tmux command and returns its stdout. Its error is an *Error
 // carrying tmux's stderr, which says what went wrong.
 func run(args ...string) (string, error) {
+	if err := CheckTestServer(); err != nil {
+		return "", commandError(args, "", err)
+	}
 	cmd := exec.Command("tmux", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
