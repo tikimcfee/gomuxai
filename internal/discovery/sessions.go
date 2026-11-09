@@ -49,6 +49,21 @@ type Session struct {
 	// meta.json finished, agy's SUBAGENT_STATE_*): finished, running or
 	// unrecorded.
 	state subState
+
+	// probed is set once the session's files have been read (fill): until
+	// then it is a stub, listed from a directory with only what its path
+	// and stat say (id, harness, path, size, mtime, a Claude or Kimi
+	// subagent's parent, a Kimi session's indexed cwd).
+	probed bool
+	// info is the transcript's stat, which fill reads it with.
+	info os.FileInfo
+	// key is the path with symlinks resolved (canonical), when the listing
+	// knew it without asking per file; "" to work it out.
+	key string
+	// folder is the name of the Claude project folder the transcript was
+	// listed in, a slug of the cwd its session started in (mayMatch); ""
+	// when it wasn't listed in one.
+	folder string
 }
 
 // Workgroup is the gomuxai agent that owns a session.
@@ -82,6 +97,18 @@ const (
 // about them. Workgroup and Status are left for Resolve. A directory that
 // doesn't exist adds nothing; a file that can't be read is left out.
 func Scan(dirs []Dir) []Session {
+	out := list(dirs)
+	for i := range out {
+		out[i].fill()
+	}
+	return out
+}
+
+// list lists the sessions in dirs, newest first, as stubs: from directory
+// listings and stat alone, reading no transcript (see Session.probed). agy
+// conversations are read in full, since what they say about themselves is
+// in small index files and never in the transcript.
+func list(dirs []Dir) []Session {
 	var out []Session
 	for _, d := range dirs {
 		if !isDir(d.Path) {
@@ -89,14 +116,66 @@ func Scan(dirs []Dir) []Session {
 		}
 		switch d.Harness {
 		case HarnessClaude:
-			out = append(out, scanClaude(d.Path)...)
+			out = append(out, listClaude(d.Path)...)
 		case HarnessAgy:
 			out = append(out, scanAgy(d.Path)...)
 		case HarnessKimi:
-			out = append(out, scanKimi(d.Path)...)
+			out = append(out, listKimi(d.Path)...)
 		}
 	}
 	return dedupe(out)
+}
+
+// stub is the session of the transcript at path, as its path and stat
+// name it, unread.
+func stub(harness, path string, info os.FileInfo) Session {
+	return Session{SessionID: transcript.SessionIDFromPath(path), Harness: harness, Path: path,
+		Size: info.Size(), Mtime: info.ModTime().UTC(), info: info}
+}
+
+// stubAt is the session of the transcript at path, wherever it is, as
+// cheaply as its harness allows: a Claude transcript unread (a subagent's
+// parent from its path), the others probed (Probe). ok is false if there is
+// no such file.
+func stubAt(path string) (Session, bool) {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return Session{}, false
+	}
+	switch HarnessOf(path) {
+	case HarnessKimi, HarnessAgy:
+		return Probe(path)
+	}
+	s := stub(HarnessClaude, path, info)
+	if parent := transcript.ClaudeSubagentSession(path); parent != "" {
+		s.ParentSession = &ParentSession{SessionID: filepath.Base(parent)}
+	}
+	return s, true
+}
+
+// fill reads a stub's transcript (and the files beside it) for the rest of
+// what it says about itself, as Scan would have. It is for a session
+// Resolve hasn't set the status of yet.
+func (s *Session) fill() {
+	if s.probed || s.info == nil {
+		return
+	}
+	var full Session
+	switch {
+	case s.Harness == HarnessKimi:
+		full = probeKimi(s.Path, s.info)
+		if full.Cwd == "" {
+			full.Cwd, full.Project = s.Cwd, s.Project
+		}
+	case s.Harness == HarnessAgy:
+		full, _ = Probe(s.Path)
+	case isClaudeSubagent(s.Path):
+		full = probeClaudeSubagent(s.Path, s.info)
+	default:
+		full = probeClaude(s.Path, s.info)
+	}
+	full.key, full.folder = s.key, s.folder
+	*s = full
 }
 
 // Probe reads the one transcript at path, as Scan would have, for a
@@ -157,7 +236,7 @@ func sortSessions(sessions []Session) {
 // the transcript package's Harvest functions filled).
 func fromMeta(harness, path string, info os.FileInfo, m transcript.Session) Session {
 	s := Session{SessionID: transcript.SessionIDFromPath(path), Harness: harness, Path: path, Size: info.Size(), Mtime: info.ModTime().UTC(),
-		Cwd: m.CWD, Project: m.Project, Title: m.Title, AgentName: m.AgentName,
+		probed: true, info: info, Cwd: m.CWD, Project: m.Project, Title: m.Title, AgentName: m.AgentName,
 		Model: m.Model, Version: m.Version, GitBranch: m.GitBranch, ContinuedIn: m.ContinuedIn}
 	if m.ParentSession != nil {
 		parent := *m.ParentSession

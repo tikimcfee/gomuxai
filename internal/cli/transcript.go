@@ -195,26 +195,29 @@ func resolveTranscript(ctx context.Context, arg string) (*transcriptTarget, erro
 	if err != nil {
 		return nil, err
 	}
-	scanned := discovery.Scan(sessionDirs())
-	if path != "" && sessionAt(scanned, path) < 0 {
-		if s, ok := discovery.Probe(path); ok {
-			scanned = append(scanned, s)
-		}
-	}
-	sessions, err := resolveSessions(ctx, scanned)
+	// The session is found by its path, or its id in the file names a
+	// listing gives; only it and the sessions above it are read.
+	index, err := sessionIndex(ctx)
 	if err != nil {
 		return nil, err
 	}
+	var found discovery.Session
+	listed := false
 	if path == "" {
-		s, err := sessionByID(sessions, arg)
-		if err != nil {
+		if found, err = sessionByID(index.Sessions(), arg); err != nil {
 			return nil, err
 		}
-		path = s.Path
+		path, listed = found.Path, true
+	} else {
+		found, listed = index.Lookup(path)
 	}
 	t := &transcriptTarget{path: path}
 	_, statErr := os.Stat(path)
 	missing := errors.Is(statErr, fs.ErrNotExist)
+	var sessions []discovery.Session
+	if listed {
+		sessions = index.Resolve([]discovery.Session{found}, liveFor(ctx, found.Harness))
+	}
 	if i := sessionAt(sessions, path); i >= 0 {
 		t.session = sessions[i]
 		t.above = sessionsAbove(sessions, t.session)
@@ -451,6 +454,26 @@ func transcriptGone(path string, err error) error {
 // sessionDirs are the directories agent sessions scans.
 func sessionDirs() []discovery.Dir {
 	return discovery.Dirs(discovery.Overrides{Claude: cfg.ClaudeProjectsDir, Agy: cfg.AgyBrainDir, Kimi: cfg.KimiSessionsDir})
+}
+
+// sessionIndex lists the sessions agent sessions would, joined to the
+// workgroup agents, reading no transcript yet.
+func sessionIndex(ctx context.Context) (*discovery.Index, error) {
+	agents, err := workgroupAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return discovery.NewIndex(sessionDirs(), agents), nil
+}
+
+// liveFor is what is running on this host, for resolving a session of
+// harness: it asks Claude Code only for a Claude session.
+func liveFor(ctx context.Context, harness string) discovery.Live {
+	live := discovery.Live{Now: time.Now()}
+	if harness == discovery.HarnessClaude {
+		live, _ = liveNow(ctx)
+	}
+	return live
 }
 
 // resolveSessions joins sessions to the workgroup agents and sets their
