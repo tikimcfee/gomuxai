@@ -2,9 +2,7 @@
 package tmux
 
 import (
-	"errors"
 	"fmt"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,8 +85,8 @@ type Client struct{}
 
 // NewClient creates a new tmux client.
 func NewClient() (*Client, error) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		return nil, errors.New("initializing tmux: tmux isn't installed (not found on PATH): install it and try again")
+	if _, err := Binary(); err != nil {
+		return nil, err
 	}
 	return &Client{}, nil
 }
