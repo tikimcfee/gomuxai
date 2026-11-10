@@ -44,7 +44,11 @@ func run(args ...string) (string, error) {
 	if err := CheckTestServer(); err != nil {
 		return "", commandError(args, "", err)
 	}
-	cmd := exec.Command("tmux", args...)
+	bin, err := Binary()
+	if err != nil {
+		return "", commandError(args, "", err)
+	}
+	cmd := exec.Command(bin, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

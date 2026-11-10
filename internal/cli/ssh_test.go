@@ -9,6 +9,7 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/storage"
+	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
 // execCall is what execInto would have replaced this process with.
@@ -17,8 +18,9 @@ type execCall struct {
 	argv []string
 }
 
-// stubExec records execs instead of making them, finds every program at
-// /usr/bin/<name>, and says stdin is a terminal. It returns the calls.
+// stubExec records execs instead of making them, finds every program named
+// without a path at /usr/bin/<name> (one with a path is itself, as for
+// exec.LookPath), and says stdin is a terminal. It returns the calls.
 func stubExec(t *testing.T) *[]execCall {
 	t.Helper()
 	calls := new([]execCall)
@@ -28,7 +30,12 @@ func stubExec(t *testing.T) *[]execCall {
 		*calls = append(*calls, execCall{path, slices.Clone(argv)})
 		return nil
 	}
-	lookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	lookPath = func(name string) (string, error) {
+		if strings.Contains(name, "/") {
+			return name, nil
+		}
+		return "/usr/bin/" + name, nil
+	}
 	attachTerminal = func() bool { return true }
 	return calls
 }
@@ -128,7 +135,13 @@ func TestAttachLocal_ExecsTmux(t *testing.T) {
 	if err := runAttach(attachCmd, []string{"worker"}); err != nil {
 		t.Fatal(err)
 	}
-	want := []execCall{{"/usr/bin/tmux", []string{"tmux", "attach-session", "-t", "=rpc-cli-worker"}}}
+	// The tmux it execs is the one internal/tmux runs: on PATH, or where
+	// a package manager put it.
+	bin, err := tmux.Binary()
+	if err != nil {
+		t.Skip(err)
+	}
+	want := []execCall{{bin, []string{"tmux", "attach-session", "-t", "=rpc-cli-worker"}}}
 	if !slices.EqualFunc(*calls, want, sameCall) {
 		t.Errorf("exec = %+v, want %+v", *calls, want)
 	}

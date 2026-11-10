@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
 var attachCmd = &cobra.Command{
@@ -57,7 +58,11 @@ func runAttach(cmd *cobra.Command, args []string) error {
 // attachSession hands this terminal to tmux, showing session, until the
 // person detaches: this process becomes tmux (execInto).
 func attachSession(session string) error {
-	if err := execInto("tmux", append([]string{"tmux"}, attachArgs(session, os.Getenv("TMUX") != "")...)); err != nil {
+	bin, err := tmux.Binary()
+	if err != nil {
+		return fmt.Errorf("attaching to tmux session %s: %w", session, err)
+	}
+	if err := execInto(bin, append([]string{"tmux"}, attachArgs(session, os.Getenv("TMUX") != "")...)); err != nil {
 		return fmt.Errorf("attaching to tmux session %s: %w", session, err)
 	}
 	return nil
