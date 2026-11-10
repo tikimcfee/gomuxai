@@ -47,10 +47,26 @@ macos:
 	@[ "$$(uname)" = Darwin ] || { echo "make macos runs on a Mac (it needs the system linker and codesign)"; exit 1; }
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=1 go build $(GOFLAGS) -ldflags "$(LDFLAGS) -linkmode=external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,$(MACOS_INFO_PLIST)" -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
-	@id="$(CODESIGN_IDENTITY)"; [ -n "$$id" ] || id=$$(security find-identity -v -p codesigning | awk 'NR==1{print $$2}'); \
-	[ -n "$$id" ] || { echo "no code-signing identity in the keychain (set CODESIGN_IDENTITY)"; exit 1; }; \
+	@# Only numbered lines are identities: with none valid, find-identity -v
+	@# prints "0 valid identities found". Without -v it also lists invalid
+	@# ones, with the reason (an expired certificate: CSSMERR_TP_CERT_EXPIRED).
+	@id="$(CODESIGN_IDENTITY)"; \
+	[ -n "$$id" ] || id=$$(security find-identity -v -p codesigning | awk '/^ *[0-9]+\)/{print $$2; exit}'); \
+	if [ -z "$$id" ]; then \
+		invalid=$$(security find-identity -p codesigning | grep -E '^ *[0-9]+\)' | sed -E 's/^ *[0-9]+\) [0-9A-F]+ //'); \
+		if echo "$$invalid" | grep -q CERT_EXPIRED; then \
+			echo "make macos: the code-signing certificate has expired:"; echo "$$invalid" | sed 's/^/  /'; \
+			echo "Renew it in Xcode (Settings > Accounts > your team > Manage Certificates > + > Apple Development), then run make macos again."; \
+		elif [ -n "$$invalid" ]; then \
+			echo "make macos: no valid code-signing identity; the keychain has these, which aren't:"; echo "$$invalid" | sed 's/^/  /'; \
+			echo "Fix or replace the certificate (Xcode > Settings > Accounts > Manage Certificates), or set CODESIGN_IDENTITY."; \
+		else \
+			echo "make macos: no code-signing identity in the keychain: create an Apple Development certificate in Xcode (Settings > Accounts), or set CODESIGN_IDENTITY."; \
+		fi; \
+		exit 1; \
+	fi; \
 	codesign --force --options runtime --sign "$$id" $(BUILD_DIR)/$(BINARY_NAME) || \
-	{ echo "codesign failed. Over SSH the login keychain is locked: run 'security unlock-keychain' first, or build in a terminal on the Mac."; exit 1; }
+	{ echo "make macos: codesign failed with identity $$id (its error is above). If it says the keychain is locked or the user interaction isn't allowed (it can be over SSH): security unlock-keychain, then run make macos again."; exit 1; }
 	codesign --verify --strict $(BUILD_DIR)/$(BINARY_NAME)
 	@codesign -dv $(BUILD_DIR)/$(BINARY_NAME) 2>&1 | grep -E '^(Identifier|TeamIdentifier|Info.plist)'
 	@echo "Built and signed $(BUILD_DIR)/$(BINARY_NAME)"
