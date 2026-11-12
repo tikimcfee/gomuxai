@@ -188,21 +188,36 @@ func runningBusSettings() (*busSettings, error) {
 	return s, nil
 }
 
-// restartBus stops the bus in its tmux session and starts it again with s.
-// A bus that runs elsewhere (agent bus run) isn't this command's to stop.
+// restartBus stops the bus in its tmux session and starts it again with s
+// in the same session, which never closes (see pauseBusSession). A bus that
+// runs elsewhere (agent bus run) isn't this command's to stop.
 func restartBus(s busSettings) error {
 	if err := checkBusInSession(); err != nil {
 		return err
 	}
-	if err := stopBusSession(); err != nil {
+	// Check it can start before stopping it.
+	if _, err := busRunCommandWith(s); err != nil {
+		return err
+	}
+	if err := pauseBusSession(); err != nil {
 		return err
 	}
 	return startBusWith(s)
 }
 
+// startBusWith starts the bus with s in its session, which pauseBusSession
+// left with a fresh shell.
 func startBusWith(s busSettings) error {
+	run, err := busRunCommandWith(s)
+	if err != nil {
+		return err
+	}
+	return runBusIn(run)
+}
+
+func busRunCommandWith(s busSettings) (string, error) {
 	busListen, busClientPort, busRemoteOps = s.Listen, s.ClientPort, s.RemoteOps
-	return startBusSession()
+	return busRunCommand()
 }
 
 // checkBusInSession fails unless this data dir's bus runs in tmux session
@@ -444,7 +459,7 @@ func runBusRename(cmd *cobra.Command, args []string) error {
 		if err := checkBusInSession(); err != nil {
 			return fmt.Errorf("rename stops and starts the bus: %w", err)
 		}
-		if err := stopBusSession(); err != nil {
+		if err := pauseBusSession(); err != nil {
 			return err
 		}
 	}

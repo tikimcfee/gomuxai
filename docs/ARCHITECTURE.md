@@ -1944,6 +1944,34 @@ On macOS, `warnLocalNetwork` prints a note at bus start when the bus runs
 in tmux without having been disclaimed and will dial a hub. Cross-compiled
 darwin builds (`make build-darwin`, `CGO_ENABLED=0`) have neither half.
 
+### Signing over ssh
+
+The login keychain is unlocked only in the GUI (Aqua) security session,
+and every process keeps the security session of the process that started
+it. A tmux pane is forked by the tmux *server*, so it has the session of
+whatever started the server, not of the client that asked for the pane.
+So a `make macos` sent over ssh into a tmux session signs when the server
+was started from a terminal on the Mac, and fails when the server was
+started over ssh: securityd logs `CSSMERR_CSP_NO_USER_INTERACTION` and
+codesign reports `errSecInternalComponent`, with a valid identity and the
+screen unlocked. `launchctl managername` prints `Aqua` in the GUI session
+and `Background` over ssh; `make macos` prints it when codesign fails.
+
+Two things keep a Mac's server in the GUI session:
+
+- A LaunchAgent in the `gui/<uid>` domain that runs `tmux -D`
+  (`LimitLoadToSessionType` Aqua, `KeepAlive`), loaded with `launchctl
+  bootstrap gui/<uid> <plist>` while no tmux server runs: launchd starts
+  the server at each login, in the GUI session, and `-D` turns
+  `exit-empty` off, so it stays up with no sessions. The cost: any process
+  running as the user can open a pane there and use the unlocked login
+  keychain, as from an open terminal tab.
+- `agent bus restart` and `bus rename` never close the bus's session
+  (`pauseBusSession`: Ctrl-C, then `respawn-pane -k` for a fresh shell,
+  and the new `bus run` typed in). Closing it, when it was the server's
+  last session, stopped the server, and the next tmux command started a
+  new one with its own (ssh) session.
+
 ### The gomux-bus session
 
 `agent bus start` runs `env AGENT_HOST=<host> <binary> bus run ...` in the
@@ -1954,7 +1982,7 @@ URL in its own data dir. So `start` and `stop` first check that this data
 dir's bus is the one answering (`checkOwnBusSession`), and otherwise leave
 the session alone: it likely belongs to another binary (e.g. a dev build in
 `bin/`). `stop` interrupts the bus so it removes `bus.url`, then kills the
-session.
+session; `restart` and `rename` keep it (see "Signing over ssh").
 
 ## Storage
 

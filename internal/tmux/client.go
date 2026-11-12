@@ -38,6 +38,12 @@ type TmuxOps interface {
 	// KillSession terminates a tmux session.
 	KillSession(name string) error
 
+	// RespawnPane kills whatever runs in the session's first pane and
+	// starts its default command (the shell) there again, keeping the
+	// session: unlike KillSession, the tmux server can't exit for lack of
+	// sessions.
+	RespawnPane(session string) error
+
 	// SessionExists checks if a session with the given name exists.
 	SessionExists(name string) (bool, error)
 
@@ -408,6 +414,18 @@ func (c *Client) Clear(session string) error {
 	}
 	if _, err := run("send-keys", "-R", "-t", target, ";", "clear-history", "-t", target); err != nil {
 		return fmt.Errorf("clearing pane: %w", err)
+	}
+	return nil
+}
+
+// RespawnPane implements TmuxOps.
+func (c *Client) RespawnPane(session string) error {
+	target, err := c.paneTarget(session)
+	if err != nil {
+		return err
+	}
+	if _, err := run("respawn-pane", "-k", "-t", target); err != nil {
+		return fmt.Errorf("respawning pane: %w", err)
 	}
 	return nil
 }

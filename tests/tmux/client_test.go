@@ -904,3 +904,45 @@ func panePipe(t *testing.T, sessionName string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// RespawnPane kills what runs in the pane and starts a fresh shell there,
+// keeping the session.
+func TestRespawnPane(t *testing.T) {
+	requireTmux(t)
+	client, err := tmux.NewClient()
+	if err != nil {
+		t.Fatalf("creating client: %v", err)
+	}
+	sessionName := uniqueSessionName(t)
+	defer cleanupSession(sessionName)
+	if err := client.CreateSession(sessionName, nil); err != nil {
+		t.Fatalf("creating session: %v", err)
+	}
+	before, err := client.FirstPane(sessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendKeys(sessionName, "sleep 300"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendSpecialKey(sessionName, "Enter"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := client.RespawnPane(sessionName); err != nil {
+		t.Fatalf("respawning: %v", err)
+	}
+	if exists, _ := client.SessionExists(sessionName); !exists {
+		t.Fatal("session gone after RespawnPane")
+	}
+	after, err := client.FirstPane(sessionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PID == before.PID {
+		t.Errorf("pane still runs pid %d, want a fresh shell", before.PID)
+	}
+	if err := client.RespawnPane(uniqueSessionName(t)); err == nil {
+		t.Error("RespawnPane of a missing session succeeded")
+	}
+}
