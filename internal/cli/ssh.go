@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
+	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
@@ -172,8 +173,20 @@ func sshAttach(ref natsbus.AgentRef, verb string, extra ...string) error {
 	if err != nil {
 		return fmt.Errorf("asking %s where its agent binary is: %w", ref.Host, err)
 	}
-	if !slices.ContainsFunc(resp.Agents, func(a natsbus.AgentInfo) bool { return a.Name == ref.Name }) {
+	i := slices.IndexFunc(resp.Agents, func(a natsbus.AgentInfo) bool { return a.Name == ref.Name })
+	if i < 0 {
 		return fmt.Errorf("agent %q not found on host %s (%s there: agent list --host %s)", ref.Name, ref.Host, plural(len(resp.Agents), "agent"), ref.Host)
+	}
+	// Attaching to an agent whose session is gone would only reach tmux's
+	// "can't find session" over there, after ssh. Resuming it is another
+	// matter: that starts the session first. (A host that predates
+	// Attached leaves it out, and ssh goes ahead as before.)
+	if a := resp.Agents[i]; verb == "attach" && a.Attached != nil && !*a.Attached {
+		reason := ""
+		if a.Status == string(service.AgentStatusEnded) {
+			reason = a.EndReason
+		}
+		return goneAttachError(ref.String(), a.Session, reason, a.Resumable != nil && *a.Resumable)
 	}
 	bin := resp.AgentBinary
 	if bin == "" {
