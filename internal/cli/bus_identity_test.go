@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 	"github.com/tikimcfee/gomuxai/internal/storage"
@@ -272,5 +274,96 @@ func TestBusRestart_Settings(t *testing.T) {
 	}
 	if !strings.Contains(out, "Bus restarted in tmux session") || !strings.Contains(out, "--listen 0.0.0.0:7422 --client-port 7499 --remote-ops list,send") {
 		t.Errorf("output:\n%s", out)
+	}
+}
+
+// setFlag sets a flag on cmd as if given on the command line, and puts it
+// back when the test ends: tests call the commands' RunE directly, and
+// cobra's flags (and their Changed marks) outlive a test.
+func setFlag(t *testing.T, cmd *cobra.Command, name, value string) {
+	t.Helper()
+	f := cmd.Flags().Lookup(name)
+	old := f.Value.String()
+	if sv, ok := f.Value.(pflag.SliceValue); ok {
+		oldSlice := sv.GetSlice()
+		t.Cleanup(func() { sv.Replace(oldSlice); f.Changed = false })
+	} else {
+		t.Cleanup(func() { f.Value.Set(old); f.Changed = false })
+	}
+	if err := cmd.Flags().Set(name, value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Restart saves the settings it restarts with; a flag changes just that
+// one; an op the bus doesn't know is refused before anything is stopped.
+func TestBusRestart_FlagsAndSaved(t *testing.T) {
+	restarts := setupBusIdentity(t)
+	runningBus(t, busInfo{Host: "local", ClientURL: "tls://127.0.0.1:7420", Listen: "0.0.0.0:7422", ClientPort: 7420, RemoteOps: []string{"list", "send"}})
+
+	if _, err := stdout(t, func() error { return runBusRestart(busRestartCmd, nil) }); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := loadBusSettings()
+	want := busSettings{Listen: "0.0.0.0:7422", ClientPort: 7420, RemoteOps: []string{"list", "send"}}
+	if err != nil || saved == nil || saved.String() != want.String() {
+		t.Errorf("saved %+v, %v; want %+v", saved, err, want)
+	}
+
+	setFlag(t, busRestartCmd, "remote-ops", "list,send,resume")
+	out, err := stdout(t, func() error { return runBusRestart(busRestartCmd, nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want.RemoteOps = []string{"list", "send", "resume"}
+	if got := (*restarts)[len(*restarts)-1]; got.String() != want.String() {
+		t.Errorf("restarted with %+v, want %+v (only the ops changed)", got, want)
+	}
+	if saved, _ := loadBusSettings(); saved == nil || saved.String() != want.String() {
+		t.Errorf("saved %+v, want %+v", saved, want)
+	}
+	if !strings.Contains(out, "settings saved for agent bus start") {
+		t.Errorf("output doesn't say the settings were saved:\n%s", out)
+	}
+
+	n := len(*restarts)
+	setFlag(t, busRestartCmd, "remote-ops", "list,sned")
+	if _, err := stdout(t, func() error { return runBusRestart(busRestartCmd, nil) }); err == nil || !strings.Contains(err.Error(), `unknown op "sned" in --remote-ops: the ops are list, status`) {
+		t.Errorf("restart with a typo: %v", err)
+	}
+	if len(*restarts) != n {
+		t.Error("restarted the bus with an op it doesn't know")
+	}
+}
+
+// Start uses the saved settings for the flags it isn't given, the
+// defaults when none were saved, and refuses a broken settings file.
+func TestBusStart_Settings(t *testing.T) {
+	setupBusIdentity(t)
+
+	s, from, err := startSettings(busStartCmd)
+	if err != nil || s.String() != (busSettings{ClientPort: natsbus.DefaultClientPort, RemoteOps: natsbus.DefaultRemoteOps}).String() || from != "" {
+		t.Errorf("no saved settings: %+v %q %v, want the defaults", s, from, err)
+	}
+
+	if err := saveBusSettings(busSettings{Listen: "0.0.0.0:7422", ClientPort: 7499, RemoteOps: []string{"list", "resume"}}); err != nil {
+		t.Fatal(err)
+	}
+	s, from, err = startSettings(busStartCmd)
+	if err != nil || s.String() != "--listen 0.0.0.0:7422 --client-port 7499 --remote-ops list,resume" || from != "; saved settings" {
+		t.Errorf("saved settings: %+v %q %v", s, from, err)
+	}
+
+	setFlag(t, busStartCmd, "client-port", "7500")
+	s, from, err = startSettings(busStartCmd)
+	if err != nil || s.String() != "--listen 0.0.0.0:7422 --client-port 7500 --remote-ops list,resume" || !strings.Contains(from, "with the flags given") {
+		t.Errorf("a flag over saved settings: %+v %q %v", s, from, err)
+	}
+
+	if err := os.WriteFile(busSettingsPath(), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := startSettings(busStartCmd); err == nil || !strings.Contains(err.Error(), "fix or delete it") {
+		t.Errorf("broken settings file: %v", err)
 	}
 }

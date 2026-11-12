@@ -164,8 +164,16 @@ var busRunCmd = &cobra.Command{
 var busStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the bus in the background (tmux session " + busSession + ")",
+	Long: `Start runs the bus in tmux session ` + busSession + `.
+
+It saves the --listen, --client-port and --remote-ops it starts with (in
+bus/settings.json), and a later start without them uses the saved ones: on
+the hub, agent bus start after a reboot listens for peers again, and peers
+may call the same ops. A flag given changes just that setting, and is
+saved. agent bus restart takes the same flags.`,
 	Example: `  agent bus start
-  agent bus start --listen 0.0.0.0:7422   # on the hub`,
+  agent bus start --listen 0.0.0.0:7422   # on the hub, once; saved after
+  agent bus start --remote-ops list,status,capture,send,respond,friction,logs,resume`,
 	Args: cobra.NoArgs,
 	RunE: startBus,
 }
@@ -309,11 +317,47 @@ func startBus(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("the bus is already running in tmux session %s (agent bus status shows it; agent bus restart restarts it)", busSession)
 	}
+	s, from, err := startSettings(cmd)
+	if err != nil {
+		return err
+	}
+	busListen, busClientPort, busRemoteOps = s.Listen, s.ClientPort, s.RemoteOps
 	if err := startBusSession(); err != nil {
 		return err
 	}
-	fmt.Printf("Bus started in tmux session %q\n", busSession)
+	if err := saveBusSettings(s); err != nil {
+		return fmt.Errorf("the bus started (%s), but saving its settings failed: %w", s, err)
+	}
+	fmt.Printf("Bus started in tmux session %q (%s%s)\n", busSession, s, from)
 	return busStatus(cmd, args)
+}
+
+// startSettings is what agent bus start runs with: the flags given, and
+// for the rest the saved settings, or the defaults if none were saved.
+// from says where they came from, for start's output.
+func startSettings(cmd *cobra.Command) (s busSettings, from string, err error) {
+	s = busSettings{Listen: busListen, ClientPort: busClientPort, RemoteOps: busRemoteOps}
+	saved, err := loadBusSettings()
+	if err != nil {
+		return s, "", err
+	}
+	f := cmd.Flags()
+	if saved != nil {
+		if !f.Changed("listen") {
+			s.Listen = saved.Listen
+		}
+		if !f.Changed("client-port") {
+			s.ClientPort = saved.ClientPort
+		}
+		if !f.Changed("remote-ops") {
+			s.RemoteOps = saved.RemoteOps
+		}
+		from = "; saved settings"
+		if f.Changed("listen") || f.Changed("client-port") || f.Changed("remote-ops") {
+			from = "; saved settings, with the flags given"
+		}
+	}
+	return s, from, checkBusSettings(s)
 }
 
 // startBusSession starts the bus in its tmux session with the --listen,

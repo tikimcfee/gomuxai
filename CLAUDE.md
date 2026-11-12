@@ -632,7 +632,11 @@ agent bus status                                # running? which peers are linke
 The bus runs in tmux session `gomux-bus`. `agent bus restart` restarts it
 with the settings it runs with (`--listen`, `--client-port`,
 `--remote-ops`); run it after `trust`. nats-server can't reload trust, so
-every trust change applies on a restart.
+every trust change applies on a restart. Give restart one of those flags
+to change just that setting (`--remote-ops` takes the whole list). `start`
+and `restart` save the settings (`bus/settings.json`), and a later `agent
+bus start` without flags uses them, so after a reboot the hub listens and
+peers may call the same ops as before.
 
 Dropping a peer, or renaming a host:
 
@@ -790,7 +794,8 @@ Everything lives in `.gomuxai/` next to the binary:
 ├── logs/             # <name>.log (terminal) and <name>.transcripts; survive cleanup
 ├── agents/<name>/    # launch.sh, instructions.md (the briefing), deliver.log
 │                     #   and deliver.lock (the held-message deliverer)
-├── bus/              # this host's keys and certificate, peers/, bus.log, ssh.json
+├── bus/              # this host's keys and certificate, peers/, bus.log, ssh.json,
+│                     #   settings.json (how agent bus start runs it)
 └── watch.lock        # held by each running watcher
 ```
 
