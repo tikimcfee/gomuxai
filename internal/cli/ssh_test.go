@@ -217,3 +217,49 @@ func TestValidateAgentBinary(t *testing.T) {
 		}
 	}
 }
+
+// Attach to an agent whose tmux session is gone (a reboot ended it) says
+// so, here or over ssh, instead of handing tmux a session it can't find;
+// resume --attach over ssh still runs, since it starts the session first.
+func TestAttach_SessionGone(t *testing.T) {
+	setupCLI(t)
+	serveAsH1(t)
+	calls := stubExec(t)
+	cfg.AgentBinary = "/opt/agent"
+	if err := tmuxClient.KillSession("rpc-cli-worker"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, target := range []string{"worker", "worker@h1"} {
+		err := runAttach(attachCmd, []string{target})
+		for _, want := range []string{target + " has ended (gone)", "its tmux session rpc-cli-worker is gone", "agent logs " + target} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("attach %s: %v, want it to say %q", target, err, want)
+			}
+		}
+	}
+	if len(*calls) != 0 {
+		t.Errorf("exec = %+v, want no tmux or ssh for a gone session", *calls)
+	}
+
+	resumeAttach = true
+	t.Cleanup(func() { resumeAttach = false })
+	if err := runResume(resumeCmd, []string{"worker@h1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 || (*calls)[0].path != "/usr/bin/ssh" {
+		t.Errorf("resume --attach exec = %+v, want ssh", *calls)
+	}
+}
+
+// An agent resume can continue gets the command that brings it back.
+func TestGoneAttachError_Resumable(t *testing.T) {
+	err := goneAttachError("bot@mac", "agent-bot", "gone", true)
+	want := "bot@mac has ended (gone): its tmux session agent-bot is gone, so there is nothing to attach to. agent resume bot@mac --attach starts it again on its last session and opens it"
+	if err.Error() != want {
+		t.Errorf("got  %q\nwant %q", err, want)
+	}
+	if err := goneAttachError("bot", "agent-bot", "", false); strings.Contains(err.Error(), "()") || !strings.Contains(err.Error(), "bot has ended: ") {
+		t.Errorf("no reason: %q", err)
+	}
+}
