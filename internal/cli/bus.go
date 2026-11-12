@@ -360,35 +360,49 @@ func startSettings(cmd *cobra.Command) (s busSettings, from string, err error) {
 	return s, from, checkBusSettings(s)
 }
 
-// startBusSession starts the bus in its tmux session with the --listen,
+// startBusSession starts the bus in a new tmux session with the --listen,
 // --client-port and --remote-ops in busListen, busClientPort and
 // busRemoteOps, and waits for it to answer.
 func startBusSession() error {
-	if _, err := natsbus.LoadIdentity(cfg.BusDir(), cfg.Host); err != nil {
+	run, err := busRunCommand()
+	if err != nil {
 		return err
 	}
-	if cfg.AgentBinary == "" {
-		return fmt.Errorf("can't locate the agent binary to run the bus")
+	if err := tmuxClient.CreateSession(busSession, nil); err != nil {
+		return err
 	}
+	return runBusIn(run)
+}
 
+// busRunCommand is the command line that runs the bus as busListen,
+// busClientPort and busRemoteOps say, checking first that it can.
+func busRunCommand() (string, error) {
+	if _, err := natsbus.LoadIdentity(cfg.BusDir(), cfg.Host); err != nil {
+		return "", err
+	}
+	if cfg.AgentBinary == "" {
+		return "", fmt.Errorf("can't locate the agent binary to run the bus")
+	}
 	// Pin the host, so the bus runs as the identity that started it even if
-	// AGENT_HOST isn't set in the new session's shell.
+	// AGENT_HOST isn't set in the session's shell.
 	run := []string{"env", "AGENT_HOST=" + util.ShellQuote(cfg.Host), util.ShellQuote(cfg.AgentBinary), "bus", "run",
 		"--client-port", fmt.Sprint(busClientPort),
 		"--remote-ops", util.ShellQuote(strings.Join(busRemoteOps, ","))}
 	if busListen != "" {
 		run = append(run, "--listen", util.ShellQuote(busListen))
 	}
-	if err := tmuxClient.CreateSession(busSession, nil); err != nil {
-		return err
-	}
-	if err := tmuxClient.SendKeys(busSession, strings.Join(run, " ")); err != nil {
+	return strings.Join(run, " "), nil
+}
+
+// runBusIn types run into the bus session's shell and waits for the bus
+// to answer.
+func runBusIn(run string) error {
+	if err := tmuxClient.SendKeys(busSession, run); err != nil {
 		return err
 	}
 	if err := tmuxClient.SendSpecialKey(busSession, "Enter"); err != nil {
 		return err
 	}
-
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		nc, err := busConnect()
@@ -443,10 +457,30 @@ func stopBus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// stopBusSession stops the bus running in its tmux session: interrupted
-// first, so it shuts down cleanly and removes its URL file, then the
-// session is killed.
+// stopBusSession stops the bus running in its tmux session and kills the
+// session (agent bus stop).
 func stopBusSession() error {
+	interruptBus()
+	return tmuxClient.KillSession(busSession)
+}
+
+// pauseBusSession stops the bus running in its tmux session and leaves the
+// session with a fresh shell, for runBusIn to start it again (restart,
+// rename). Killing the session instead could stop the tmux server, when it
+// was the last one, and the next tmux command would start a new server
+// with that command's login context: on macOS, one started over ssh can't
+// use the login keychain, so make macos run in it can't sign.
+func pauseBusSession() error {
+	interruptBus()
+	if err := tmuxClient.RespawnPane(busSession); err != nil {
+		return fmt.Errorf("the bus is stopped, but its tmux session %s couldn't get a fresh shell: %w", busSession, err)
+	}
+	return nil
+}
+
+// interruptBus interrupts the bus in its tmux session, so it shuts down
+// cleanly and removes its URL file, and waits for that (up to 3s).
+func interruptBus() {
 	tmuxClient.SendSpecialKey(busSession, "c-c")
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -455,7 +489,6 @@ func stopBusSession() error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return tmuxClient.KillSession(busSession)
 }
 
 // queryBus asks this host's bus for its status, waiting up to timeout for

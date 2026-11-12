@@ -65,8 +65,15 @@ macos:
 		fi; \
 		exit 1; \
 	fi; \
-	codesign --force --options runtime --sign "$$id" $(BUILD_DIR)/$(BINARY_NAME) || \
-	{ echo "make macos: codesign failed with identity $$id (its error is above). If it says the keychain is locked or the user interaction isn't allowed (it can be over SSH): security unlock-keychain, then run make macos again."; exit 1; }
+	codesign --force --options runtime --sign "$$id" $(BUILD_DIR)/$(BINARY_NAME) || { \
+		echo "make macos: codesign failed with identity $$id (its error is above)."; \
+		session=$$(launchctl managername 2>/dev/null); \
+		if [ "$$session" != Aqua ]; then \
+			echo "This shell isn't in the Mac's GUI login session (launchctl managername: $$session), and only there is the login keychain unlocked."; \
+			echo "Over ssh, or in a tmux server that was started over ssh, codesign can't use the key (errSecInternalComponent). Build in a terminal on the Mac,"; \
+			echo "or in a tmux server started from one or by a LaunchAgent (docs/ARCHITECTURE.md, macOS), or run security unlock-keychain in this shell first."; \
+		fi; \
+		exit 1; }
 	codesign --verify --strict $(BUILD_DIR)/$(BINARY_NAME)
 	@codesign -dv $(BUILD_DIR)/$(BINARY_NAME) 2>&1 | grep -E '^(Identifier|TeamIdentifier|Info.plist)'
 	@echo "Built and signed $(BUILD_DIR)/$(BINARY_NAME)"

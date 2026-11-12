@@ -57,6 +57,7 @@ type fakeTmux struct {
 func (f *fakeTmux) CreateSession(string, map[string]string) error           { return nil }
 func (f *fakeTmux) CreateSessionIn(string, string, map[string]string) error { return nil }
 func (f *fakeTmux) KillSession(string) error                                { return nil }
+func (f *fakeTmux) RespawnPane(string) error                                { return nil }
 func (f *fakeTmux) SessionExists(string) (bool, error)                      { return true, nil }
 func (f *fakeTmux) ListSessions() ([]tmux.Session, error)                   { return nil, nil }
 func (f *fakeTmux) SendSpecialKey(string, string) error                     { return nil }

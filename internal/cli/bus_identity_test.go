@@ -15,6 +15,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 	"github.com/tikimcfee/gomuxai/internal/storage"
+	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
 // setupBusIdentity gives the test CLI host ("local") a bus identity, with
@@ -365,5 +366,59 @@ func TestBusStart_Settings(t *testing.T) {
 	}
 	if _, _, err := startSettings(busStartCmd); err == nil || !strings.Contains(err.Error(), "fix or delete it") {
 		t.Errorf("broken settings file: %v", err)
+	}
+}
+
+// A restart keeps the bus's tmux session, so the tmux server can't exit for
+// lack of sessions: the pane gets a fresh shell, and the new bus run is
+// typed into it. (/bin/echo stands in for the agent binary: it prints the
+// command line instead of running a bus.)
+func TestRestartBus_KeepsSession(t *testing.T) {
+	setupBusIdentity(t)
+	runningBus(t, busInfo{Host: "local", ClientURL: "tls://127.0.0.1:7420", ClientPort: 7420, RemoteOps: []string{"list"}})
+	if err := tmuxClient.CreateSession(busSession, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tmuxClient.KillSession(busSession) })
+	before, err := tmuxClient.(*tmux.Client).FirstPane(busSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AgentBinary = "/bin/echo"
+
+	if err := restartBus(busSettings{ClientPort: 7499, RemoteOps: []string{"list", "resume"}}); err != nil {
+		t.Fatal(err)
+	}
+	if exists, _ := tmuxClient.SessionExists(busSession); !exists {
+		t.Fatal("restart closed the bus session")
+	}
+	after, err := tmuxClient.(*tmux.Client).FirstPane(busSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PID == before.PID {
+		t.Error("restart kept the old shell; want a fresh one")
+	}
+	want := "bus run --client-port 7499 --remote-ops list,resume"
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		out, _ := tmuxClient.Capture(busSession, 20)
+		if strings.Contains(out, want) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pane never ran %q:\n%s", want, out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// A setting the bus can't start with is refused before the bus stops.
+	shell, _ := tmuxClient.(*tmux.Client).FirstPane(busSession)
+	cfg.AgentBinary = ""
+	if err := restartBus(busSettings{ClientPort: 7499}); err == nil || !strings.Contains(err.Error(), "can't locate the agent binary") {
+		t.Errorf("restart without a binary: %v", err)
+	}
+	if now, _ := tmuxClient.(*tmux.Client).FirstPane(busSession); now.PID != shell.PID {
+		t.Error("restart stopped the bus before finding it couldn't start one")
 	}
 }

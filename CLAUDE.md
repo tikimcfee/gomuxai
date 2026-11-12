@@ -677,9 +677,15 @@ unless the binary holds its own Local Network permission. The link fails
 with `no route to host` in `.gomuxai/bus/bus.log`, with no alert. Build with
 `make macos` in a terminal on the Mac (it embeds an Info.plist and signs with
 an Apple Development or Developer ID identity; `CODESIGN_IDENTITY=...` picks
-one). Over SSH the keychain is locked: build in a GUI terminal, or run
-`security unlock-keychain` first. On the first `agent bus start`, allow
-"gomuxai" to find devices on the local network.
+one). Signing needs the login keychain, which is unlocked only in the
+Mac's GUI login session. A tmux window has the session of whoever started
+the tmux *server*, so over SSH, `make macos` signs only in a tmux server
+started from a terminal on the Mac (or by a LaunchAgent in the GUI
+domain: `docs/ARCHITECTURE.md`, "Signing over ssh"); one started over SSH
+can't (codesign: `errSecInternalComponent`), and `make macos` then says
+so. `agent bus restart` and `rename` keep the bus's tmux session, so they
+can't replace the server. On the first `agent bus start`, allow "gomuxai"
+to find devices on the local network.
 
 ## When Things Go Wrong
 

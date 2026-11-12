@@ -21,6 +21,7 @@ type nopTmux struct{}
 func (nopTmux) CreateSession(string, map[string]string) error           { return nil }
 func (nopTmux) CreateSessionIn(string, string, map[string]string) error { return nil }
 func (nopTmux) KillSession(string) error                                { return nil }
+func (nopTmux) RespawnPane(string) error                                { return nil }
 func (nopTmux) SessionExists(string) (bool, error)                      { return true, nil }
 func (nopTmux) ListSessions() ([]tmux.Session, error)                   { return nil, nil }
 func (nopTmux) SendKeys(string, string) error                           { return nil }
