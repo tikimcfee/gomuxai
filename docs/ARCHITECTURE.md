@@ -1639,7 +1639,12 @@ certificates (hub) and the remote (leaf), so a trust change applies on a
 restart. `agent bus restart` stops the `gomux-bus` session and starts it
 with what the running bus reports on its status subject (`listen`,
 `client_port`, `remote_ops`; for a bus that predates the first two, its
-leaf address and client URL's port). `untrust` and `trust --renames`
+leaf address and client URL's port), with any of `--listen`,
+`--client-port` and `--remote-ops` given replacing that setting. `start`
+and `restart` save what they ran with in `bus/settings.json`
+(`busSettings`), and `start` uses it for the flags it isn't given (the
+defaults if nothing was saved); both check the op names first, so a typo
+can't stop a bus that then fails to start. `untrust` and `trust --renames`
 restart a running bus themselves (`--no-restart` leaves it); a plain
 `trust` says to.
 

@@ -277,9 +277,10 @@ agent capture builder@hub
 Peers may call only the ops in `--remote-ops`; raw `keys` stays local.
 `spawn` and `resume` are off for peers by default too, since they start a
 process on the host. To let other machines start agents on the hub, add
-them there: `agent bus start --listen 0.0.0.0:7422 --remote-ops
+them there: `agent bus restart --remote-ops
 list,status,capture,send,respond,friction,logs,spawn,resume` (`remote ops
-allowed` then lists them). Then `agent spawn builder@hub --backend claude --cwd /home/me/project`
+allowed` then lists them). The bus saves its settings, so a later `agent
+bus start`, after a reboot say, runs with the same ops. Then `agent spawn builder@hub --backend claude --cwd /home/me/project`
 starts one on the hub; `--cwd` and a task file are paths on the hub.
 Listing `spawn` lets every linked peer run commands on the hub as the bus's
 user (spawn an agent, then approve its prompts), so do it only if you'd

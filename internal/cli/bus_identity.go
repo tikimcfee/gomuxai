@@ -74,13 +74,31 @@ var busRestartCmd = &cobra.Command{
 	Short: "Restart the background bus with the settings it runs with",
 	Long: `Restart stops the bus in tmux session ` + busSession + ` and starts it
 again with the --listen, --client-port and --remote-ops it was running
-with: what agent bus trust needs to apply.`,
-	Example: `  agent bus restart`,
-	Args:    cobra.NoArgs,
-	RunE:    runBusRestart,
+with: what agent bus trust needs to apply.
+
+Give any of those flags to change just that setting, e.g. --remote-ops
+with the whole list peers may call. The settings it restarts with are
+saved, as agent bus start saves them, so a later agent bus start (after a
+reboot, say) runs the same way.`,
+	Example: `  agent bus restart
+  agent bus restart --remote-ops list,status,capture,send,respond,friction,logs,resume`,
+	Args: cobra.NoArgs,
+	RunE: runBusRestart,
 }
 
+// The flags restart takes: their own variables, since bus run reads
+// busListen, busClientPort and busRemoteOps, and these have no defaults
+// (unset means "as it runs").
+var (
+	restartListen     string
+	restartClientPort int
+	restartRemoteOps  []string
+)
+
 func initBusIdentityCmds() {
+	busRestartCmd.Flags().StringVar(&restartListen, "listen", "", "Accept peer links on this address instead (\"\" stops accepting them)")
+	busRestartCmd.Flags().IntVar(&restartClientPort, "client-port", 0, "Local client port (127.0.0.1) instead")
+	busRestartCmd.Flags().StringSliceVar(&restartRemoteOps, "remote-ops", nil, "The ops peers may call on this host instead: the whole list")
 	busUntrustCmd.Flags().BoolVar(&busNoRestart, "no-restart", false, "Don't restart the bus; agent bus restart applies the change")
 	busTrustCmd.Flags().BoolVar(&busNoRestart, "no-restart", false, "With --renames: don't restart the bus")
 	busTrustCmd.Flags().StringVar(&busRenames, "renames", "", "The peer's former name: its bundle has the same keys under a new name (agent bus rename)")
@@ -88,11 +106,53 @@ func initBusIdentityCmds() {
 	busCmd.AddCommand(busUntrustCmd, busRenameCmd, busRestartCmd)
 }
 
-// busSettings is how a bus runs: what agent bus start was given.
+// busSettings is how a bus runs: what agent bus start was given. agent bus
+// start and restart save them (bus/settings.json), and start reuses them
+// for the flags it isn't given.
 type busSettings struct {
-	Listen     string
-	ClientPort int
-	RemoteOps  []string
+	Listen     string   `json:"listen,omitempty"`
+	ClientPort int      `json:"client_port"`
+	RemoteOps  []string `json:"remote_ops"`
+}
+
+func busSettingsPath() string { return filepath.Join(cfg.BusDir(), "settings.json") }
+
+// loadBusSettings reads the saved settings: nil if none were saved.
+func loadBusSettings() (*busSettings, error) {
+	data, err := os.ReadFile(busSettingsPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the bus's saved settings: %w", err)
+	}
+	var s busSettings
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, fmt.Errorf("reading the bus's saved settings in %s: %w (fix or delete it; agent bus start then saves new ones)", busSettingsPath(), err)
+	}
+	return &s, nil
+}
+
+func saveBusSettings(s busSettings) error {
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(busSettingsPath(), append(data, '\n'), 0o644)
+}
+
+// checkBusSettings refuses settings the bus would fail to start with,
+// before a restart stops the running one.
+func checkBusSettings(s busSettings) error {
+	for _, op := range s.RemoteOps {
+		if !slices.Contains(natsbus.AllOps, op) {
+			return fmt.Errorf("unknown op %q in --remote-ops: the ops are %s", op, strings.Join(natsbus.AllOps, ", "))
+		}
+	}
+	if s.ClientPort < -1 || s.ClientPort > 65535 {
+		return fmt.Errorf("--client-port %d isn't a port", s.ClientPort)
+	}
+	return nil
 }
 
 func (s busSettings) String() string {
@@ -167,12 +227,28 @@ func runBusRestart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if s == nil {
-		return fmt.Errorf("no bus is running on host %s, so there is nothing to restart: agent bus start (add --listen 0.0.0.0:7422 on the hub)", cfg.Host)
+		return fmt.Errorf("no bus is running on host %s, so there is nothing to restart: agent bus start (with the saved settings, if any; add --listen 0.0.0.0:7422 on the hub)", cfg.Host)
+	}
+	f := cmd.Flags()
+	if f.Changed("listen") {
+		s.Listen = restartListen
+	}
+	if f.Changed("client-port") {
+		s.ClientPort = restartClientPort
+	}
+	if f.Changed("remote-ops") {
+		s.RemoteOps = restartRemoteOps
+	}
+	if err := checkBusSettings(*s); err != nil {
+		return err
 	}
 	if err := restartBusFn(*s); err != nil {
 		return err
 	}
-	fmt.Printf("Bus restarted in tmux session %q (%s)\n", busSession, s)
+	if err := saveBusSettings(*s); err != nil {
+		return fmt.Errorf("the bus restarted (%s), but saving its settings failed: %w", s, err)
+	}
+	fmt.Printf("Bus restarted in tmux session %q (%s); settings saved for agent bus start\n", busSession, s)
 	return busStatus(cmd, args)
 }
 
