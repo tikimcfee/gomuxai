@@ -390,6 +390,9 @@ func TestRPCClient_SanitizesRemoteText(t *testing.T) {
 	if err := client.Send(ctx, ref, "x"); err == nil || strings.ContainsAny(err.Error(), "\x1b\x07") {
 		t.Errorf("remote error not sanitized: %v", err)
 	}
+	if d, err := client.Deliver(ctx, ref); err != nil || strings.ContainsAny(d.Status, "\x1b\x07\r\x00\u009b") {
+		t.Errorf("deliver status not sanitized: %+v %v", d, err)
+	}
 
 	spawned, err := client.Spawn(ctx, ref, natsbus.SpawnRequest{Backend: "claude"})
 	if err != nil {
@@ -467,6 +470,9 @@ func (h evilHandler) Send(context.Context, natsbus.SendRequest) (*natsbus.SendRe
 }
 func (h evilHandler) Respond(context.Context, natsbus.RespondRequest) error {
 	return nil
+}
+func (h evilHandler) Deliver(context.Context, natsbus.RespondRequest) (*natsbus.DeliverResponse, error) {
+	return &natsbus.DeliverResponse{Held: 1, Status: h.text}, nil
 }
 func (h evilHandler) Keys(context.Context, natsbus.KeysRequest) error { return nil }
 func (h evilHandler) Spawn(context.Context, natsbus.SpawnRequest) (*natsbus.SpawnResponse, error) {

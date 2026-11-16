@@ -36,7 +36,7 @@ const (
 	OpStatus  = "status"  // StatusRequest -> StatusResponse
 	OpCapture = "capture" // CaptureRequest -> CaptureResponse
 	OpSend    = "send"    // SendRequest -> (no data)
-	OpRespond = "respond" // RespondRequest -> (no data): approve / deny
+	OpRespond = "respond" // RespondRequest -> (no data): approve / deny; DeliverResponse: deliver
 	OpKeys    = "keys"    // KeysRequest -> (no data): raw keys, local-only by default
 	OpSpawn   = "spawn"   // SpawnRequest -> SpawnResponse: starts an agent, local-only by default
 	OpLogs    = "logs"    // LogsRequest -> LogsResponse: what agent logs prints
@@ -260,7 +260,11 @@ type SendResponse struct {
 	Unchecked string `json:"unchecked,omitempty"`
 }
 
-// RespondRequest answers a permission prompt (agent approve / deny).
+// RespondRequest answers a permission prompt (agent approve / deny), or
+// types the messages held for an agent (agent deliver name@host: Response
+// "deliver", whose reply is a DeliverResponse). Deliver goes with respond
+// because it answers for an agent in the same way: it types into it only
+// what was already sent to it, after the same checks as there.
 type RespondRequest struct {
 	Agent      string `json:"agent"`
 	Response   string `json:"response"` // one of the Response* values
@@ -273,7 +277,21 @@ const (
 	ResponseApprove       = "approve"
 	ResponseApproveAlways = "approve_always"
 	ResponseDeny          = "deny"
+	// ResponseDeliver types the agent's held messages now, if it is at
+	// its prompt with an empty input line (agent deliver). Hosts that
+	// predate it refuse it as an invalid permission response.
+	ResponseDeliver = "deliver"
 )
+
+// DeliverResponse says what the host did with the messages held for an
+// agent (RespondRequest with ResponseDeliver): none typed and none held
+// means nothing was held.
+type DeliverResponse struct {
+	Typed int `json:"typed"` // messages typed in now
+	Held  int `json:"held"`  // messages still held
+	// Status is what the agent was doing, when messages are still held.
+	Status string `json:"status,omitempty"`
+}
 
 type KeysRequest struct {
 	Agent string `json:"agent"`

@@ -267,3 +267,50 @@ func TestRemoteResume_RefusesPermissionFlags(t *testing.T) {
 		}
 	}
 }
+
+// agent deliver name@host goes over the bus, under the respond op: messages
+// are held on the agent's host, and a sender elsewhere had to ssh there to
+// type them in (friction #42).
+func TestRemoteDeliver(t *testing.T) {
+	setupCLI(t)
+	ctx := context.Background()
+	if err := tmuxClient.CreateSession("rpc-cli-dworker", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateAgent(ctx, &storage.Agent{Name: "dworker", SessionName: "rpc-cli-dworker", Backend: "claude", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { deliverWait = false })
+
+	// Not served: a host whose --remote-ops leave out respond.
+	serveAsH1With(t, []string{natsbus.OpList})
+	if err := runDeliver(deliverCmd, []string{"dworker@h1"}); err == nil || !strings.Contains(err.Error(), "respond") {
+		t.Errorf("respond not served: %v", err)
+	}
+
+	serveAsH1With(t, natsbus.DefaultRemoteOps)
+	out, err := stdout(t, func() error { return runDeliver(deliverCmd, []string{"dworker@h1"}) })
+	if err != nil || out != "Nothing is held for dworker@h1.\n" {
+		t.Errorf("nothing held: %q, %v", out, err)
+	}
+	if err := agentService.Report(ctx, "dworker", service.StatusReport{Status: service.AgentStatusProcessing, Event: "UserPromptSubmit"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateMessage(ctx, &storage.Message{SenderID: "lead", ReceiverID: "dworker", Content: "[from lead@local] hi", Status: storage.MessageStatusPending, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	out, err = stdout(t, func() error { return runDeliver(deliverCmd, []string{"dworker@h1"}) })
+	if err != nil || !strings.HasPrefix(out, "Still holding 1 message for dworker@h1 (it is processing)") {
+		t.Errorf("held for a busy agent: %q, %v", out, err)
+	}
+	// The same as here.
+	local, err := stdout(t, func() error { return runDeliver(deliverCmd, []string{"dworker"}) })
+	if err != nil || strings.Replace(out, "dworker@h1", "dworker", 1) != local {
+		t.Errorf("local deliver %q, %v; remote %q", local, err, out)
+	}
+	// --wait is the agent's host's own deliverer.
+	deliverWait = true
+	if err := runDeliver(deliverCmd, []string{"dworker@h1"}); err == nil || !strings.Contains(err.Error(), "runs on the agent's host") {
+		t.Errorf("--wait over the bus: %v", err)
+	}
+}

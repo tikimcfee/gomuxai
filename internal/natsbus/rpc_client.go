@@ -144,6 +144,24 @@ func (c *RPCClient) Respond(ctx context.Context, ref AgentRef, req RespondReques
 	return c.callAgent(ctx, ref, OpRespond, req, nil)
 }
 
+// DeliverTimeout bounds a deliver request: typing held messages into a
+// Claude agent waits for it to take each in.
+const DeliverTimeout = 30 * time.Second
+
+// Deliver types the messages held for a remote agent, if it is at its
+// prompt (agent deliver name@host). It waits up to DeliverTimeout, or the
+// client's timeout if that is longer.
+func (c *RPCClient) Deliver(ctx context.Context, ref AgentRef) (*DeliverResponse, error) {
+	long := *c
+	long.timeout = max(c.timeout, DeliverTimeout)
+	var resp DeliverResponse
+	if err := long.callAgent(ctx, ref, OpRespond, RespondRequest{Agent: ref.Name, Response: ResponseDeliver}, &resp); err != nil {
+		return nil, err
+	}
+	resp.Status = clean(resp.Status)
+	return &resp, nil
+}
+
 // Keys sends text and then key (either may be empty) to a remote agent's
 // terminal. Most buses don't serve this op to other hosts.
 func (c *RPCClient) Keys(ctx context.Context, ref AgentRef, text, key string) error {

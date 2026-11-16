@@ -95,6 +95,14 @@ func (f *fakeRPC) Respond(ctx context.Context, req natsbus.RespondRequest) error
 	return f.check(ctx, req.Agent)
 }
 
+func (f *fakeRPC) Deliver(ctx context.Context, req natsbus.RespondRequest) (*natsbus.DeliverResponse, error) {
+	f.record(req)
+	if err := f.check(ctx, req.Agent); err != nil {
+		return nil, err
+	}
+	return &natsbus.DeliverResponse{Typed: 2}, nil
+}
+
 func (f *fakeRPC) Keys(ctx context.Context, req natsbus.KeysRequest) error {
 	f.record(req)
 	return f.check(ctx, req.Agent)

@@ -19,6 +19,7 @@ type RPCHandler interface {
 	Capture(ctx context.Context, req CaptureRequest) (*CaptureResponse, error)
 	Send(ctx context.Context, req SendRequest) (*SendResponse, error)
 	Respond(ctx context.Context, req RespondRequest) error
+	Deliver(ctx context.Context, req RespondRequest) (*DeliverResponse, error)
 	Keys(ctx context.Context, req KeysRequest) error
 	Spawn(ctx context.Context, req SpawnRequest) (*SpawnResponse, error)
 	Friction(ctx context.Context, req FrictionRequest) (*FrictionResponse, error)
@@ -63,6 +64,9 @@ var rpcOps = map[string]opFunc{
 		var req RespondRequest
 		if err := decodeAgent(OpRespond, data, &req, &req.Agent); err != nil {
 			return nil, err
+		}
+		if req.Response == ResponseDeliver {
+			return h.Deliver(ctx, req)
 		}
 		return nil, h.Respond(ctx, req)
 	},
