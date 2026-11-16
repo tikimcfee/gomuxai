@@ -200,9 +200,13 @@ them in once the agent has sat at its prompt for 10s, and the next `send`
 that finds it at its prompt types them ahead of its own message. Neither
 types into a person's half-written input: while the agent's input line has
 text in it, messages wait (a `send` then says `Held for helper until its
-input line is empty`), and the 10s start once it's empty. `agent status
-helper -v` shows `held: N messages` and what they wait for, and `agent
-deliver helper` types them now if the agent is at its prompt.
+input line is empty`), and the 10s start once it's empty. Text a CLI draws
+faint there (dim or grey: a placeholder, agy's mode hint) isn't typed
+text. An input line that isn't on screen means something covers it (a
+dialog or notice; `agent capture` shows it), and messages wait for it to
+go. `agent status helper -v` shows `held: N messages` and what they wait
+for, and `agent deliver helper` types them now if the agent is at its
+prompt (`agent deliver helper@hub` asks that host over the bus).
 
 `send --now` types the message in at once even mid-turn (Claude takes it at
 its next tool boundary, agy queues it for its turn's end), to interrupt;
@@ -222,7 +226,10 @@ input box can't be read at all, `send` still types the message but says
 status` shows an `unchecked:` line until a turn starts.
 
 Messages from an agent start with `[from name@host]`, so the recipient knows
-where to reply. Messages from anyone without `AGENT_NAME` start with
+where to reply. The name is the agent the sending process runs under, as
+the processes show it (its pane, or the conversation a Claude background
+session carries on), not an inherited `AGENT_NAME`, which only counts
+where they show none. Messages from anyone else start with
 `[from a person on host]`, or `[from a Claude session on host]` from an AI
 CLI a person started (it sets `AI_AGENT` or `CLAUDECODE=1`). Neither has an
 agent record, so the recipient answers in its reply. A slash command
@@ -555,7 +562,7 @@ agent approve helper@hub --expect Bash
 agent spawn helper@hub --backend claude --cwd /srv/project tasks/build.md
 ```
 
-`status`, `capture`, `logs`, `send`, `wait`, `events`, `approve`, `deny`,
+`status`, `capture`, `logs`, `send`, `deliver`, `wait`, `events`, `approve`, `deny`,
 `keys`, `spawn`, `resume` and `attach` take `name@host` (`spawn` also takes
 `--host hub`). Host names
 match ignoring case for this host and the peers it trusts (a hub trusts
@@ -703,7 +710,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
 | A key fails: "a read-only client is attached" | Detach the client it names (`tmux detach-client -t /dev/pts/N`); watch with `agent capture` instead of `tmux attach -r`. |
 | Queued messages never arrive (not Claude) | Start `agent watch` (one per host is enough). |
-| A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's (or agy's step's) end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there); `agent deliver <name>` types it now if the agent is at its prompt. |
+| A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's (or agy's step's) end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there, or close what covers it: `agent capture`); `agent deliver <name>` (or `<name>@host`) types it now if the agent is at its prompt. |
 | `send` says the message is still in the input box; `status` shows `unsent:` | Enter didn't submit it: `agent key agent-<name> Enter` does. Don't send it again. |
 | Leftover tmux session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one; if it has ended, `agent resume <name>` continues it. |
@@ -741,7 +748,18 @@ Known gaps; `agent friction list` has the rest.
   agent has sat at its prompt with an empty input line for 10s. The input
   line is read off the screen, so a Claude or agy redesign of it would leave
   them waiting (`status -v` says `waiting for an empty input line (it isn't
-  on screen)`).
+  on screen: something covers it ...)`).
+- `/bg` sends a Claude agent's conversation to a background session and
+  exits the CLI in its pane (Claude Code 2.1.325: `backgrounded · <id>`),
+  so the agent reads `ended (quit)` and `send` refuses it, until `claude
+  attach <id>` runs in its pane. From then on the background session's
+  hooks reach the agent (its transcript records the move), wherever Claude
+  Code runs that session and whatever `AGENT_NAME` it inherited.
+- agy works in the first of its workspace folders by path, so an agy
+  agent's own dir (hooks, briefing) goes in through a symlink under the
+  temp dir (`~gomuxai-<uid>/agy/`) whose path sorts after the project; a
+  project under a path that sorts after the temp dirs (`/var/www`, say)
+  gets the agent's dir as is, and agy works there.
 - agy's interrupted turns and its permission and `ask_question` dialogs are
   read off its screen (the footer under its input box, the dialog's
   `Question 1/N:`). If an agy update redraws those, an interrupted agent
