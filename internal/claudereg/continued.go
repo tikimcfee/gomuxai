@@ -11,61 +11,29 @@ import (
 )
 
 // A Claude Code session can move to another process mid-conversation:
-// Claude Code 2.1.319 hands an interactive session over to a background
-// session its daemon runs ("kind": "bg"). The daemon is a child of the
-// interactive CLI, so the new process runs under the same pane, and the
-// pane's CLI goes on drawing the conversation, but the new process has a
-// session id of its own and runs every hook from then on, while the old
-// process's registry entry keeps the old id and its last status.
+// Claude Code (2.1.319 on) hands an interactive session over to a
+// background session its daemon runs ("kind": "bg"). The pane's CLI goes on
+// drawing the conversation, and takes what is typed into it, but the new
+// process has a session id of its own and runs every hook from then on,
+// while the old process's registry entry keeps the old id and its last
+// status.
 //
-// The move is recorded twice, and Continues checks both: the new process
-// is launched with --resume <the old session's transcript> (and
-// --fork-session --session-id <new>), and the old transcript gains a
-// {"type":"continued-in","continuedInSessionId":"<new>"} line. A
-// `claude --resume <id> --fork-session` a person runs elsewhere starts a
-// separate conversation, and writes no continued-in into the old one.
+// Where the new process runs says nothing about whose conversation it
+// carries: the daemon is one per user, a child of whichever CLI started it
+// first, and from 2.1.325 it hands a moved session to a spare host it
+// started ahead of time ("bg claimed-spare" in ~/.claude/daemon.log). So a
+// moved session can run under another agent's pane, with that agent's
+// environment (friction #48-#50). What does say it is the old transcript:
+// the move appends a {"type":"continued-in","continuedInSessionId":"<new>"}
+// line to it. A `claude --resume <id> --fork-session` a person runs starts
+// a separate conversation and writes no such line, so the line alone proves
+// the move, and Continuation follows it.
 
 // continuedTail is how much of the end of a transcript ContinuedIn reads
 // for the continued-in line: the move appends it, and the old process,
 // whose conversation has gone elsewhere, writes little after it. Status
 // reads it on every check of a Claude agent, so it is kept small.
 const continuedTail = 64 << 10
-
-// Continues reports whether the process launched with args carries on
-// session oldID as session newID: its --resume names oldID's transcript
-// (a path ending in <oldID>.jsonl), and that transcript records that it
-// continued in newID.
-func Continues(args []string, oldID, newID string) bool {
-	if oldID == "" || newID == "" || oldID == newID {
-		return false
-	}
-	path := resumedPath(args)
-	if path == "" || filepath.Base(path) != oldID+".jsonl" {
-		return false
-	}
-	return ContinuedIn(path) == newID
-}
-
-// resumedPath returns the transcript path a Claude Code command line
-// resumes (--resume <path> or --resume=<path>), or "" if it resumes none or
-// names a session by id.
-func resumedPath(args []string) string {
-	for i, a := range args {
-		v := ""
-		switch {
-		case a == "--resume" && i+1 < len(args):
-			v = args[i+1]
-		case strings.HasPrefix(a, "--resume="):
-			v = strings.TrimPrefix(a, "--resume=")
-		default:
-			continue
-		}
-		if strings.HasSuffix(v, ".jsonl") && filepath.IsAbs(v) {
-			return v
-		}
-	}
-	return ""
-}
 
 // ContinuedIn returns the session the transcript at path says it continued
 // in (its last continued-in line), or "" if it says none.
@@ -100,34 +68,66 @@ func ContinuedIn(path string) string {
 	return last
 }
 
-// Continuation returns the running CLI that carries on outer's session,
-// following moves one after another (see Continues): a proven-live entry
-// whose process descends from outer's, launched to continue its session.
-// args reads a process's command line. found is false when outer's session
-// hasn't moved.
-func (s *Snapshot) Continuation(t Tree, outer Proven, args func(pid int) ([]string, bool)) (e Proven, found bool) {
-	seen := map[int]bool{outer.PID: true}
-	for cur := outer; ; {
-		next, ok := s.continuedBy(t, cur, args, seen)
-		if !ok {
-			return e, found
-		}
-		e, found, cur = next, true, next
-		seen[next.PID] = true
+// FindTranscript returns the path of Claude Code's transcript for
+// sessionID (<config dir>/projects/<project>/<id>.jsonl, the config dir
+// being $CLAUDE_CONFIG_DIR, else ~/.claude), or "" if there is none.
+func FindTranscript(sessionID string) string {
+	dir, err := Dir()
+	if err != nil || sessionID == "" || strings.ContainsAny(sessionID, `/\*?[`) {
+		return ""
 	}
+	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(dir), "projects", "*", sessionID+".jsonl"))
+	if len(matches) == 0 {
+		return ""
+	}
+	return matches[0]
 }
 
-func (s *Snapshot) continuedBy(t Tree, outer Proven, args func(pid int) ([]string, bool), seen map[int]bool) (Proven, bool) {
+// maxMoves bounds how many moves Continuation follows.
+const maxMoves = 16
+
+// Continuation follows outer's conversation through the moves Claude Code
+// made (its transcript's continued-in line, then that session's, and so
+// on) to the session it goes on in now, wherever the process holding it
+// runs. transcriptOf finds a session's transcript (FindTranscript). moved
+// is false when outer's session hasn't moved. When it has, e is the
+// running entry that holds the last session, or, if no running process
+// holds it (the daemon retired the background session), an entry with only
+// its SessionID and the verdict Stale: the conversation is still that
+// session, which the pane's CLI starts again on its next input.
+func (s *Snapshot) Continuation(outer Proven, transcriptOf func(sessionID string) string) (e Proven, moved bool) {
+	seen := map[string]bool{outer.SessionID: true}
+	cur := outer.SessionID
+	for range maxMoves {
+		next := ContinuedIn(transcriptOf(cur))
+		if next == "" || seen[next] {
+			break
+		}
+		seen[next], cur, moved = true, next, true
+	}
+	if !moved {
+		return Proven{}, false
+	}
+	if h, ok := s.holder(cur); ok {
+		return h, true
+	}
+	return Proven{Entry: Entry{SessionID: cur}, Verdict: Stale}, true
+}
+
+// holder returns the running entry that holds session id: a background
+// session's own process first (a person may have resumed the same session
+// elsewhere too), then as Sessions picks.
+func (s *Snapshot) holder(id string) (Proven, bool) {
+	var best Proven
+	found := false
 	for _, e := range s.Entries {
-		if e.Verdict != Live || seen[e.PID] {
+		if e.SessionID != id || !running(e.Verdict) {
 			continue
 		}
-		if _, ok := t.Depth(e.PID, outer.PID); !ok {
-			continue
-		}
-		if a, ok := args(e.PID); ok && Continues(a, outer.SessionID, e.SessionID) {
-			return e, true
+		bg, bestBG := e.Kind == KindBackground, best.Kind == KindBackground
+		if !found || bg && !bestBG || bg == bestBG && newer(e, best) {
+			best, found = e, true
 		}
 	}
-	return Proven{}, false
+	return best, found
 }

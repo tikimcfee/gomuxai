@@ -24,39 +24,6 @@ const (
 	movedLine = `{"type":"continued-in","timestamp":"2026-11-09T03:14:51.363Z","sessionId":"old","continuedInSessionId":"new"}`
 )
 
-func TestContinues(t *testing.T) {
-	dir := t.TempDir()
-	path := writeTranscript(t, dir, "old", `{"type":"user","sessionId":"old"}`, costLine, movedLine)
-	bg := []string{"/v/2.1.319", "--session-id", "new", "--fork-session", "--resume", path, "--reply-on-resume"}
-	if !Continues(bg, "old", "new") {
-		t.Error("the background CLI that took the session over")
-	}
-	if !Continues([]string{"claude", "--resume=" + path}, "old", "new") {
-		t.Error("--resume=<path>")
-	}
-	for name, c := range map[string]struct {
-		args         []string
-		oldID, newID string
-	}{
-		"another new session":         {bg, "old", "other"},
-		"another old session":         {bg, "older", "new"},
-		"resumed by id, not path":     {[]string{"claude", "--resume", "old", "--fork-session"}, "old", "new"},
-		"no --resume":                 {[]string{"claude", "--session-id", "new"}, "old", "new"},
-		"the same session":            {bg, "new", "new"},
-		"a transcript that's missing": {[]string{"claude", "--resume", filepath.Join(dir, "gone.jsonl")}, "gone", "new"},
-	} {
-		if Continues(c.args, c.oldID, c.newID) {
-			t.Errorf("%s: continues", name)
-		}
-	}
-	// A person's `claude --resume <path> --fork-session` elsewhere: no
-	// continued-in in the old transcript.
-	forked := writeTranscript(t, dir, "kept", `{"type":"user","sessionId":"kept"}`, costLine)
-	if Continues([]string{"claude", "--fork-session", "--resume", forked}, "kept", "new") {
-		t.Error("a fork that left the old session as it was")
-	}
-}
-
 func TestContinuedIn(t *testing.T) {
 	dir := t.TempDir()
 	twice := writeTranscript(t, dir, "a", movedLine,
@@ -81,40 +48,66 @@ func TestContinuedIn(t *testing.T) {
 
 func TestContinuation(t *testing.T) {
 	dir := t.TempDir()
-	oldPath := writeTranscript(t, dir, "old", movedLine)
-	// pane 100 -> sh 101 -> claude 102 (old) -> daemon 103 -> pty host 104
-	// -> claude 105 (new); a background job 106 under the same daemon; a
-	// person's fork 200 elsewhere.
-	pt := tree{101: 100, 102: 101, 103: 102, 104: 103, 105: 104, 106: 104, 200: 1}
-	args := map[int][]string{
-		105: {"claude", "--session-id", "new", "--fork-session", "--resume", oldPath},
-		106: {"claude", "--session-id", "job", "-p", "run the job"},
-		200: {"claude", "--session-id", "new", "--fork-session", "--resume", oldPath},
-	}
-	argsOf := func(pid int) ([]string, bool) { a, ok := args[pid]; return a, ok }
+	writeTranscript(t, dir, "old", movedLine)
+	transcriptOf := func(id string) string { return filepath.Join(dir, id+".jsonl") }
 	outer := Proven{Entry: Entry{PID: 102, SessionID: "old"}, Verdict: Live}
+	// The background CLI holding the new session runs wherever the daemon
+	// put it: Claude Code 2.1.325 hands the move to a spare host it started
+	// under another agent's CLI (friction #48-#50), so nothing about its
+	// place in the process tree counts. A person who resumed the same
+	// session in a terminal (pid 200) doesn't take it from the bg process.
 	s := &Snapshot{Entries: []Proven{
 		outer,
-		{Entry: Entry{PID: 105, SessionID: "new", Kind: "bg"}, Verdict: Live},
-		{Entry: Entry{PID: 106, SessionID: "job", Kind: "bg"}, Verdict: Live},
-		{Entry: Entry{PID: 200, SessionID: "new"}, Verdict: Live},
+		{Entry: Entry{PID: 200, SessionID: "new", Kind: KindInteractive}, Verdict: Live},
+		{Entry: Entry{PID: 905, SessionID: "new", Kind: KindBackground}, Verdict: Live},
+		{Entry: Entry{PID: 106, SessionID: "job", Kind: KindBackground}, Verdict: Live},
 	}}
-	e, ok := s.Continuation(pt, outer, argsOf)
-	if !ok || e.PID != 105 {
-		t.Fatalf("got %+v %v, want pid 105", e, ok)
-	}
-	// Under the pane, UnderPane finds the old CLI, and the move leads on.
-	under, _, _ := s.UnderPane(pt, 100)
-	if e, ok := s.Continuation(pt, under, argsOf); !ok || e.SessionID != "new" {
-		t.Errorf("from the pane: %+v %v", e, ok)
+	e, ok := s.Continuation(outer, transcriptOf)
+	if !ok || e.PID != 905 {
+		t.Fatalf("got %+v %v, want pid 905", e, ok)
 	}
 	// Not moved: no continuation.
-	if _, ok := s.Continuation(pt, Proven{Entry: Entry{PID: 106, SessionID: "job"}, Verdict: Live}, argsOf); ok {
+	if _, ok := s.Continuation(Proven{Entry: Entry{PID: 106, SessionID: "job"}, Verdict: Live}, transcriptOf); ok {
 		t.Error("the job's session didn't move")
 	}
-	// A stale entry (the background CLI exited) isn't one.
+	// Moved twice: the conversation goes on in the last.
+	writeTranscript(t, dir, "new", `{"type":"continued-in","sessionId":"new","continuedInSessionId":"newer"}`)
+	s.Entries = append(s.Entries, Proven{Entry: Entry{PID: 907, SessionID: "newer", Kind: KindBackground}, Verdict: Live})
+	if e, ok := s.Continuation(outer, transcriptOf); !ok || e.PID != 907 {
+		t.Errorf("moved twice: %+v %v, want pid 907", e, ok)
+	}
+	// The daemon retired the background session: no process holds it, but
+	// the conversation is still that session, not the old one.
+	s.Entries = s.Entries[:4]
+	s.Entries[2].Verdict = Stale
 	s.Entries[1].Verdict = Stale
-	if _, ok := s.Continuation(pt, outer, argsOf); ok {
-		t.Error("an exited background CLI")
+	e, ok = s.Continuation(outer, transcriptOf)
+	if !ok || e.SessionID != "newer" || e.PID != 0 || e.Verdict != Stale {
+		t.Errorf("retired: %+v %v, want session newer, running nowhere", e, ok)
+	}
+	// A loop of continued-in lines ends.
+	writeTranscript(t, dir, "newer", `{"type":"continued-in","sessionId":"newer","continuedInSessionId":"old"}`)
+	if _, ok := s.Continuation(outer, transcriptOf); !ok {
+		t.Error("a loop")
+	}
+}
+
+// FindTranscript finds a session's file under the config dir's projects,
+// whatever its project folder.
+func TestFindTranscript(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	proj := filepath.Join(cfg, "projects", "-home-u-dev")
+	if err := os.MkdirAll(proj, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, proj, "abc-123", costLine)
+	if got := FindTranscript("abc-123"); got != path {
+		t.Errorf("got %q, want %q", got, path)
+	}
+	for _, id := range []string{"", "missing", "*", "../x"} {
+		if got := FindTranscript(id); got != "" {
+			t.Errorf("%q: %q", id, got)
+		}
 	}
 }

@@ -6,7 +6,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
@@ -40,16 +42,17 @@ func TestAdoptAndCleanupPreservesSession(t *testing.T) {
 		t.Fatalf("stored agent = %+v, %v", agent, err)
 	}
 
-	// When TMUX_PANE points at the adopted session's pane, callerAgent() resolves
-	// the adopted agent even without AGENT_NAME set.
+	// A process under the adopted session's pane is the adopted agent's,
+	// even without AGENT_NAME set.
 	pane, err := tmuxClient.(*tmux.Client).FirstPane(userSess)
 	if err != nil {
 		t.Fatalf("FirstPane: %v", err)
 	}
-	t.Setenv("TMUX_PANE", pane.ID)
+	leave := standUnder(t, pane.PID)
 	if got := callerAgent(); got != "my-adopted" {
 		t.Errorf("callerAgent() inside adopted pane = %q, want my-adopted", got)
 	}
+	leave()
 
 	// Cleaning up the adopted agent (from outside its pane) leaves its tmux session running.
 	t.Setenv("TMUX_PANE", "")
@@ -104,5 +107,53 @@ func TestResumeRefusesAdoptedAgent(t *testing.T) {
 	}
 	if exists, _ := tmuxClient.SessionExists(userSess); !exists {
 		t.Error("the person's tmux session is gone")
+	}
+}
+
+// standUnder makes this test's commands run, as far as callerAgent can
+// tell, in a process under pid (a pane's process, say), until leave is
+// called or the test ends.
+func standUnder(t *testing.T, pid int) (leave func()) {
+	t.Helper()
+	old := callerChain
+	callerChain = func() ([]int, error) { return []int{os.Getpid(), pid}, nil }
+	cachedCallerValid = false
+	leave = func() { callerChain, cachedCallerValid = old, false }
+	t.Cleanup(leave)
+	return leave
+}
+
+// AGENT_NAME is inherited by whatever an agent starts, so a process under
+// one agent's pane can carry another's (friction #48: a background session
+// Claude Code ran under another agent's pane signed its messages with that
+// agent's name). The sender is the agent the processes show; AGENT_NAME
+// counts only where they show none.
+func TestSenderIsTheAgentTheProcessesShow(t *testing.T) {
+	setupCLI(t)
+	ctx := context.Background()
+	session := cfg.SessionName("sender-probe")
+	if err := tmuxClient.CreateSession(session, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateAgent(ctx, &storage.Agent{Name: "sender-probe", SessionName: session, Backend: "claude", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	pane, err := tmuxClient.(*tmux.Client).FirstPane(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_NAME", "lead")
+	leave := standUnder(t, pane.PID)
+	if got := fromAgent("hi"); got != "[from sender-probe@local] hi" {
+		t.Errorf("under worker's pane with AGENT_NAME=lead: %q", got)
+	}
+	if got := senderID(); got != "sender-probe" {
+		t.Errorf("sender id %q, want sender-probe", got)
+	}
+	leave()
+	// Outside every agent's pane, AGENT_NAME still names the sender.
+	standUnder(t, 1)
+	if got := fromAgent("hi"); got != "[from lead@local] hi" {
+		t.Errorf("outside the panes: %q", got)
 	}
 }
