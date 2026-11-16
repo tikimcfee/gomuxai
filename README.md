@@ -29,7 +29,7 @@ want to run (`claude`, `agy`, `aider`) must be on your `PATH`.
 
 ```bash
 make build                     # builds bin/agent
-cp bin/agent ~/.local/bin/     # anywhere you like
+make install                  # over the agent on PATH, else ~/.local/bin (BINDIR=… to choose)
 ```
 
 All data lives next to the binary, in `.gomuxai/` (the database, logs,
