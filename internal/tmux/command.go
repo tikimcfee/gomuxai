@@ -41,6 +41,11 @@ func commandError(args []string, stderr string, err error) *Error {
 // run runs a tmux command and returns its stdout. Its error is an *Error
 // carrying tmux's stderr, which says what went wrong.
 func run(args ...string) (string, error) {
+	return runInput("", args...)
+}
+
+// runInput is run with stdin as the command's standard input.
+func runInput(stdin string, args ...string) (string, error) {
 	if err := CheckTestServer(); err != nil {
 		return "", commandError(args, "", err)
 	}
@@ -49,6 +54,9 @@ func run(args ...string) (string, error) {
 		return "", commandError(args, "", err)
 	}
 	cmd := exec.Command(bin, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -203,7 +211,8 @@ func isArrow(key string) bool {
 // bufferSeq makes paste buffer names unique within the process.
 var bufferSeq atomic.Uint64
 
-// paste types data into a pane through a paste buffer, byte for byte, as
+// paste types data into a pane through a paste buffer (loaded from stdin,
+// so of any size), byte for byte, as
 // send-keys -l does: -r keeps newlines as they are, -S keeps control
 // characters (tmux 3.5 and later turn them into ^C otherwise; earlier ones
 // don't, and don't know -S), and without -p there's no bracketed paste. tmux
@@ -223,7 +232,10 @@ func pasteBuffer(target, data string, bracketed bool) error {
 		return nil
 	}
 	buf := fmt.Sprintf("gomuxai-%d-%d-%d", os.Getpid(), time.Now().UnixNano(), bufferSeq.Add(1))
-	if _, err := run("set-buffer", "-b", buf, "--", data); err != nil {
+	// Loaded from stdin: set-buffer takes the data as an argument, which
+	// tmux sends the server as one message, and refuses past about 16 KB
+	// ("command too long", tmux 3.8), so a longer message failed to type.
+	if _, err := runInput(data, "load-buffer", "-b", buf, "-"); err != nil {
 		return err
 	}
 	flags := []string{"paste-buffer", "-d", "-r", "-S"}
