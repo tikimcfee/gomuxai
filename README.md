@@ -271,6 +271,7 @@ agent send builder@hub "run the tests"
 agent wait builder@hub --for idle,waiting --next --timeout 30m
 agent status builder@hub -v
 agent approve builder@hub --expect Bash
+agent deliver builder@hub            # type its held messages now, if it is at its prompt
 agent capture builder@hub
 ```
 
@@ -355,7 +356,7 @@ add` found a similar entry.
 | `no bus answering for host "X"` | X's bus is down, not linked to yours, or doesn't allow that op | `agent bus status` on both machines; check the firewall and the `--url` in the hub's bundle |
 | `agent bus status` says not running, though `gomux-bus` exists | The session name is shared by every data dir; another copy of `agent` owns it | Use that copy, or stop its bus first |
 | Queued messages never arrive (aider, agy, custom backends) | No `agent watch` is running (`queue` says so) | Run `agent watch` in a spare terminal, or `agent send` instead |
-| A held message hasn't arrived | The agent's turn (agy: its current step) is still running, or ended with no hook (Esc, Ctrl+C, deny) | `agent status NAME -v` shows `held:`; a deliverer types it 10s after the turn ends; `agent deliver NAME` types it now if the agent is at its prompt |
+| A held message hasn't arrived | The agent's turn (agy: its current step) is still running, or ended with no hook (Esc, Ctrl+C, deny), or something covers its input line (`it isn't on screen`) | `agent status NAME -v` shows `held:`; a deliverer types it 10s after the turn ends; `agent deliver NAME` (or `NAME@host`, over the bus) types it now if the agent is at its prompt; `agent capture NAME` shows what covers the input line |
 | Agent stays `waiting` | A permission prompt, or a question for the user | `agent status NAME -v`, then `approve`/`deny`; for a question (e.g. AskUserQuestion), `agent capture NAME` and answer with `agent keys` |
 | `send` refused | The agent's session has ended, or it is at a dialog (the Enter would answer it) and the message can't be held (`--now`, or not a Claude or agy agent) | Answer the dialog first; for an ended agent, `agent logs NAME`, then `agent cleanup NAME` |
 | Status `ended (...)` or the tmux session is gone | No CLI runs the agent's session any more: `quit` (it ended and said so), `gone` (it crashed or was killed, or the machine rebooted), ... (`agent statuses` lists them all) | `agent resume NAME` continues its session (claude and agy), `agent resume --all` every one a reboot ended (`--dry-run` first); `agent logs NAME` shows how it ended; `agent cleanup NAME` removes the record, `agent cleanup --ended` every ended one (`--dry-run` first) |
@@ -364,6 +365,7 @@ add` found a similar entry.
 | A tmux session `agent-NAME` with no agent record | Leftover session | `agent session kill agent-NAME` |
 | Status `unknown` | aider and custom backends have no hooks; the screen matched no pattern | `agent capture NAME`; adjust the backend's patterns |
 | A long message arrives in Claude as pasted content | Claude takes typed input over 800 characters, or with 3+ line breaks, as a paste, i.e. material. `send` hands such a message over by hook instead, but only to a Claude CLI the hook reaches | `agent hooks status`; restart the agent's CLI (`agent resume`) so it runs the hook |
+| `send` says it typed a short line in place of the message, but the hook didn't take the whole message | The hook doesn't reach the session the agent's conversation runs in now | `agent status NAME -v` (a session sent to the background with `/bg` is followed through its transcript; `agent hooks status` shows hook errors) |
 | `send` says the message is still in the input box after 3 Enters; `status` shows `unsent:` | Claude took each Enter as a newline or ignored it. `send` waits for the box to show the text before pressing Enter, and presses again while it stays (see ARCHITECTURE, "Submitting a typed message") | Don't send it again: `agent capture NAME` shows it, `agent key agent-NAME Enter` submits it |
 
 Known gaps are listed in [`CLAUDE.md`](CLAUDE.md); open requests are in
