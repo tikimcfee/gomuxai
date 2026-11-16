@@ -26,7 +26,7 @@ list-clients) printf '0 /dev/pts/3 main\n1 /dev/pts/9 agent x\n' ;;
 display-message) echo 1 ;;
 paste-buffer)
 	if [ -n "$FAKE_OLD_TMUX" ] && [ "$4" = -S ]; then echo "command paste-buffer: unknown flag -S" >&2; exit 1; fi ;;
-set-buffer) ;;
+load-buffer) printf ' -- %s\n' "$(cat)" >> "` + log + `" ;;
 silent) exit 1 ;;
 *) echo "unknown command: $1" >&2; exit 1 ;;
 esac
@@ -115,7 +115,7 @@ func TestSendKeys_PastesPastReadOnlyClient(t *testing.T) {
 	if !strings.Contains(got, "send-keys -l -t %7 -- -R hi\nthere\n") {
 		t.Errorf("send-keys not tried first; calls:\n%s", got)
 	}
-	if !strings.Contains(got, " -- -R hi\nthere\n") || !strings.Contains(got, "set-buffer -b gomuxai-") {
+	if !strings.Contains(got, " -- -R hi\nthere\n") || !strings.Contains(got, "load-buffer -b gomuxai-") {
 		t.Errorf("text not put in a buffer; calls:\n%s", got)
 	}
 	if !strings.Contains(got, "paste-buffer -d -r -S -b gomuxai-") || !strings.HasSuffix(got, " -t %7\n") {

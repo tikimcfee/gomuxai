@@ -74,8 +74,8 @@ type HandoverError struct {
 }
 
 func (e *HandoverError) Error() string {
-	return fmt.Sprintf("typed the first line of the message into %s (as gomuxai message #%d), but its hook didn't take the rest within %s, so it got only that line: agent logs %s shows what it got; send the message again",
-		e.Agent, e.ID, e.Wait, e.Agent)
+	return fmt.Sprintf("typed a short line into %s in place of the message (its first line, at most %d characters, and the token gomuxai message #%d), but its UserPromptSubmit hook didn't take the whole message within %s, so it got only that line: the hook isn't reaching its session (agent status %s -v; agent logs %s shows what it got)",
+		e.Agent, maxHandoverHead, e.ID, e.Wait, e.Agent, e.Agent)
 }
 
 // promptHandover returns the agent's backend as a PromptHandover when its

@@ -757,8 +757,10 @@ func TestPasteText_OnePasteWhenTheAppAsks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
-	// Long enough to be split; it can't end the paste early.
-	text := strings.Repeat("0123456789", 150) + "\x1b[201~" + strings.Repeat("abcdefghij", 150) + "\nlast line"
+	// Long enough to be split by the pty, and past what tmux's set-buffer
+	// takes as an argument (about 16 KB: a 30 KB message failed to type);
+	// it can't end the paste early.
+	text := strings.Repeat("0123456789", 3300) + "\x1b[201~" + strings.Repeat("abcdefghij", 3300) + "\nlast line"
 	want := strings.ReplaceAll(text, "\x1b[201~", "")
 
 	for _, tt := range []struct {
