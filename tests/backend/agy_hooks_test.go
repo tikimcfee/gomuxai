@@ -237,7 +237,7 @@ func TestAgyLaunchCommandWithHooks(t *testing.T) {
 
 	cmd := provider.LaunchCommandWithHooks(reportCmd, "11111111-2222-3333-4444-555555555555")
 	// agy must launch without SSH_* vars, or it ignores the saved login.
-	if !strings.HasPrefix(cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --add-dir ") {
+	if !strings.HasPrefix(cmd, `env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --settings '{"showFeedbackSurvey":false}' --add-dir `) {
 		t.Fatalf("unexpected launch command: %s", cmd)
 	}
 	wantExit := `; '/opt/my tools/it'\''s/agent' report ended --end-reason quit --as 'helper' --spawn-id '11111111-2222-3333-4444-555555555555' "agy exited with code $?"`
@@ -252,7 +252,7 @@ func TestAgyLaunchCommandWithHooks(t *testing.T) {
 		t.Fatalf("shell parsing launch command: %v", err)
 	}
 	args := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	if len(args) != 2 || args[0] != "--add-dir" || args[1] != agentDir {
+	if len(args) != 4 || args[0] != "--settings" || args[1] != `{"showFeedbackSurvey":false}` || args[2] != "--add-dir" || args[3] != agentDir {
 		t.Fatalf("unexpected args: %q", args)
 	}
 
@@ -328,7 +328,7 @@ func TestAgyLaunchCommandWithHooks_KeepsSkipPermissions(t *testing.T) {
 		AgentDir:        t.TempDir(),
 	})
 	cmd := provider.LaunchCommandWithHooks("agent report --hook", "sid")
-	if !strings.HasPrefix(cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --dangerously-skip-permissions --add-dir ") {
+	if !strings.HasPrefix(cmd, `env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --settings '{"showFeedbackSurvey":false}' --dangerously-skip-permissions --add-dir `) {
 		t.Errorf("unexpected launch command: %s", cmd)
 	}
 }
@@ -341,7 +341,7 @@ func TestAgyLaunchCommandWithHooks_Resume(t *testing.T) {
 		Resume:   "83d95154-d7a6-496b-a811-2496b2c39a84",
 	})
 	cmd := provider.LaunchCommandWithHooks("agent report --hook", "sid")
-	if !strings.HasPrefix(cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --conversation '83d95154-d7a6-496b-a811-2496b2c39a84' --add-dir ") {
+	if !strings.HasPrefix(cmd, `env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --settings '{"showFeedbackSurvey":false}' --conversation '83d95154-d7a6-496b-a811-2496b2c39a84' --add-dir `) {
 		t.Errorf("unexpected launch command: %s", cmd)
 	}
 	if !strings.Contains(cmd, "; agent report ended --end-reason quit") {
@@ -454,5 +454,57 @@ func TestAgyWithInstructions(t *testing.T) {
 	cmd = plain.WithInstructions(plain.LaunchCommand(), path)
 	if !strings.HasSuffix(cmd, " --add-dir '"+dir+"'") {
 		t.Errorf("without hooks: %s", cmd)
+	}
+}
+
+// agy sorts its workspace folders by path and works in the first: the
+// agent's dir, .gomuxai/agents/<name> beside the binary, sorted before the
+// project ("/home/u/.local/..." before "/home/u/dev/..."), so agy ran its
+// commands there (friction #46). The agent's dir goes in through a symlink
+// whose path sorts after the project.
+func TestAgyWorksInItsProject(t *testing.T) {
+	root := t.TempDir()
+	agentDir := filepath.Join(root, "a", ".gomuxai", "agents", "helper")
+	project := filepath.Join(root, "b", "project")
+	tmp := filepath.Join(root, "c")
+	for _, d := range []string{agentDir, project, tmp} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("TMPDIR", tmp)
+	provider := namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{AgentDir: agentDir, Cwd: project})
+	cmd := provider.LaunchCommandWithHooks("agent report --hook --as helper", "s")
+	brief := filepath.Join(agentDir, "instructions.md")
+	if err := os.WriteFile(brief, []byte("# briefing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = provider.WithInstructions(cmd, brief)
+	if n := strings.Count(cmd, "--add-dir"); n != 1 {
+		t.Fatalf("%d --add-dir in %s", n, cmd)
+	}
+	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.SplitN(strings.TrimPrefix(cmd, "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy "), ";", 2)[0]).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	added := args[len(args)-1]
+	if added <= project {
+		t.Errorf("added %s sorts before the project %s: agy would work there", added, project)
+	}
+	if target, err := os.Readlink(added); err != nil || target != agentDir {
+		t.Errorf("added %s -> %q, %v; want a link to %s", added, target, err, agentDir)
+	}
+	// The bundle is reachable through it.
+	if _, err := os.Stat(filepath.Join(added, ".agents", "hooks.json")); err != nil {
+		t.Error(err)
+	}
+	if _, err := os.Stat(filepath.Join(added, "AGENTS.md")); err != nil {
+		t.Error(err)
+	}
+	// A project that already sorts first keeps the agent's dir as it is.
+	early := namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{AgentDir: project, Cwd: agentDir})
+	if cmd := early.LaunchCommandWithHooks("agent report --hook --as helper", "s"); !strings.Contains(cmd, "--add-dir '"+project+"'") {
+		t.Errorf("no symlink needed: %s", cmd)
 	}
 }

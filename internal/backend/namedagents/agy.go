@@ -1,12 +1,15 @@
 package namedagents
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
@@ -23,6 +26,9 @@ type AgyConfig struct {
 	// the generated .agents/hooks.json bundle is written for --add-dir.
 	AgentDir string
 
+	// Cwd is the absolute directory agy runs in: the workspace it works in.
+	Cwd string
+
 	// Resume is the conversation id agy continues (--conversation), or "".
 	Resume string
 }
@@ -32,6 +38,9 @@ type AgyConfig struct {
 type AgyBackend struct {
 	config     AgyConfig
 	exitSuffix string
+	// addedDir is the path LaunchCommandWithHooks passed agy for the
+	// agent's dir (agyWorkspaceDir).
+	addedDir string
 }
 
 // NewAgyBackend creates a new Agy backend with default config.
@@ -54,8 +63,15 @@ func (b *AgyBackend) Name() string {
 // SSH connection inherits them, so spawned agents would too.
 const agyEnv = "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY "
 
+// agySettings are session-only settings (--settings, never saved): no
+// feedback survey. agy (1.5.x) shows one after a turn now and then ("How's
+// the CLI experience so far?"), in place of its input box, and keys typed
+// then answer it: messages to the agent waited behind it while its status
+// said idle (friction #44).
+const agySettings = `{"showFeedbackSurvey":false}`
+
 func (b *AgyBackend) LaunchCommand() string {
-	cmd := agyEnv + "agy"
+	cmd := agyEnv + "agy --settings " + util.ShellQuote(agySettings)
 	if b.config.SkipPermissions {
 		cmd += " --dangerously-skip-permissions"
 	}
@@ -98,7 +114,10 @@ func (b *AgyBackend) WithInstructions(launchCmd, path string) string {
 	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), data, 0600); err != nil {
 		return launchCmd
 	}
-	addDir := " --add-dir " + util.ShellQuote(dir)
+	if b.addedDir != "" && filepath.Clean(dir) == filepath.Clean(b.bundleDir("")) {
+		return launchCmd // LaunchCommandWithHooks added it
+	}
+	addDir := " --add-dir " + util.ShellQuote(b.workspaceDir(dir))
 	if strings.Contains(launchCmd, addDir) {
 		return launchCmd
 	}
@@ -164,7 +183,74 @@ func (b *AgyBackend) LaunchCommandWithHooks(reportCmd, sessionID string) string 
 		return b.LaunchCommand()
 	}
 	b.exitSuffix = "; " + agyExitReportCmd(reportCmd)
-	return fmt.Sprintf("%s --add-dir %s%s", b.LaunchCommand(), util.ShellQuote(bundleDir), b.exitSuffix)
+	b.addedDir = b.workspaceDir(bundleDir)
+	return fmt.Sprintf("%s --add-dir %s%s", b.LaunchCommand(), util.ShellQuote(b.addedDir), b.exitSuffix)
+}
+
+// workspaceDir returns the path to pass agy (--add-dir) for dir, a
+// directory of gomuxai's (the agent's: hooks bundle, briefing), so that
+// agy still works in the directory it runs in.
+//
+// agy (1.5.x) sorts its workspace folders, the directory it runs in and
+// each --add-dir, by path, and makes the first its "Command Working
+// Directory", where commands run and which the model takes for the
+// project. The agent's dir, .gomuxai/agents/<name> beside the binary
+// (~/.local/bin/.gomuxai/...), sorts before most projects ("/home/u/.local"
+// before "/home/u/dev"), so agy worked there instead (friction #46). agy
+// takes a path as given, symlinks unresolved, so a symlink to dir at a path
+// that sorts after Cwd leaves Cwd first: under the temp dirs, in a folder
+// named "~gomuxai-<uid>" ("~" sorts after the letters). If none of those
+// sorts after Cwd (a project under /var/www, say), or one can't be made,
+// dir itself is passed.
+func (b *AgyBackend) workspaceDir(dir string) string {
+	cwd := b.config.Cwd
+	if cwd == "" || !filepath.IsAbs(dir) {
+		return dir
+	}
+	if filepath.Clean(dir) > filepath.Clean(cwd) {
+		return dir
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(dir)))
+	name := filepath.Base(dir) + "-" + hex.EncodeToString(sum[:4])
+	for _, base := range []string{os.TempDir(), "/var/tmp"} {
+		home := filepath.Join(base, fmt.Sprintf("~gomuxai-%d", os.Getuid()), "agy")
+		link := filepath.Join(home, name)
+		if link <= filepath.Clean(cwd) {
+			continue
+		}
+		if err := ownDir(home); err != nil {
+			continue
+		}
+		if cur, err := os.Readlink(link); err == nil && cur == dir {
+			return link
+		}
+		_ = os.Remove(link)
+		if err := os.Symlink(dir, link); err == nil {
+			return link
+		}
+	}
+	return dir
+}
+
+// ownDir makes dir (and its parent) if missing, and checks the parent,
+// in a shared temp dir, is this user's own and private: another user's
+// would choose where the symlink points.
+func ownDir(dir string) error {
+	top := filepath.Dir(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for _, d := range []string{top, dir} {
+		info, err := os.Lstat(d)
+		if err != nil {
+			return err
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !info.IsDir() || !ok || int(st.Uid) != os.Getuid() || info.Mode().Perm()&0o022 != 0 {
+			return fmt.Errorf("%s isn't a directory of this user's own", d)
+		}
+	}
+	return nil
 }
 
 func agyExitReportCmd(reportCmd string) string {

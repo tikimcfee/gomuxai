@@ -264,7 +264,10 @@ func (s *AgentService) inputBlocked(ctx context.Context, agent *storage.Agent) s
 	}
 	switch text, found := ir.InputText(screen); {
 	case !found:
-		return "it isn't on screen"
+		// Something covers it: a dialog or notice no status reads (agy's
+		// feedback survey, say, friction #44), which keys typed now would
+		// answer.
+		return fmt.Sprintf("it isn't on screen: something covers it, which agent capture %s shows", agent.Name)
 	case s.unsubmitted(ctx, agent, text):
 		return fmt.Sprintf("a message typed into it wasn't submitted: agent key %s Enter submits it", agent.SessionName)
 	case text != "":
