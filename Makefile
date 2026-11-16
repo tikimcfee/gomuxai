@@ -94,11 +94,12 @@ clean:
 	rm -f coverage.out coverage.html
 
 # Install to GOPATH/bin
-# Install over the agent this machine actually runs: the one on PATH (its store, .gomuxai/, lives
-# beside it, so a second install location would also be a second, empty store), else ~/.local/bin.
-# BINDIR overrides. Copy beside it, then rename over it: the hooks run this binary on every event,
-# and a rename never shows them a half-written file. On a Mac, run `make macos` first (signing).
-BINDIR ?= $(patsubst %/,%,$(or $(dir $(shell command -v $(BINARY_NAME) 2>/dev/null)),$(HOME)/.local/bin/))
+# Install over the agent this machine actually runs: the one on PATH, through any symlink to the
+# real file (its store, .gomuxai/, lives beside the real file, so a second install location would
+# also be a second, empty store), else ~/.local/bin. BINDIR overrides. Copy beside it, then rename
+# over it: the hooks run this binary on every event, and a rename never shows them a half-written
+# file. On a Mac, run `make macos` first (signing).
+BINDIR ?= $(patsubst %/,%,$(or $(dir $(realpath $(shell command -v $(BINARY_NAME) 2>/dev/null))),$(HOME)/.local/bin/))
 install:
 	@[ "$$(uname)" != Darwin ] || [ -x $(BUILD_DIR)/$(BINARY_NAME) ] || { echo "on a Mac, run make macos first: it builds and signs $(BUILD_DIR)/$(BINARY_NAME)"; exit 1; }
 	@[ "$$(uname)" = Darwin ] || $(MAKE) --no-print-directory build
