@@ -490,6 +490,32 @@ func (s *AgentService) DeliverHeld(ctx context.Context, name string, opts Delive
 	}
 }
 
+// DeliverResult says what DeliverNow did.
+type DeliverResult struct {
+	Typed int // messages typed in
+	Held  int // messages still held
+	// Status is what the agent was doing, when messages are still held.
+	Status AgentStatus
+}
+
+// DeliverNow types the messages held for name if the agent is at its prompt
+// with an empty input line (agent deliver, here or from another host): one
+// check of DeliverHeld, and how many are still held, and why.
+func (s *AgentService) DeliverNow(ctx context.Context, name string) (DeliverResult, error) {
+	n, err := s.DeliverHeld(ctx, name, DeliverOptions{})
+	res := DeliverResult{Typed: n}
+	if err != nil {
+		return res, err
+	}
+	if res.Held = s.HeldCount(ctx, name); res.Held > 0 {
+		res.Status = AgentStatusUnknown
+		if info, err := s.StatusInfo(ctx, name); err == nil {
+			res.Status = info.Status
+		}
+	}
+	return res, nil
+}
+
 // SetDelivererStarter replaces how a deliverer is started (tests).
 func (s *AgentService) SetDelivererStarter(start func(name string) error) {
 	s.deliverer = start

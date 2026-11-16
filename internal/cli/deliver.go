@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
@@ -30,8 +32,14 @@ agent's session has ended or the agent is gone. One runs per agent at a time; it
 
 Without --wait, deliver checks once: it types the held messages now if the
 agent is at its prompt with an empty input line, and otherwise says why not. To type into a busy
-agent, use "agent send <name> --now".`,
+agent, use "agent send <name> --now".
+
+An agent on another host (name@host) goes over the bus, as send does: that
+host checks once and types them, if its bus serves the respond op (the
+default; it also answers approve and deny). --wait runs only on the
+agent's host.`,
 	Example: `  agent deliver helper
+  agent deliver helper@hub
   agent deliver --wait helper`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDeliver,
@@ -56,28 +64,34 @@ func runDeliver(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if remote {
-		return fmt.Errorf("messages are held per host, and %s is on %q: deliver runs on that host (agent send %s holds or types there)", ref, ref.Host, ref)
+		if deliverWait {
+			return fmt.Errorf("deliver --wait runs on the agent's host, where send starts it when it holds a message: agent deliver %s (without --wait) types %s's held messages now, over the bus", ref, ref.Name)
+		}
+		var resp *natsbus.DeliverResponse
+		err := callRemote(ref.Host, func(c *natsbus.RPCClient) error {
+			var err error
+			resp, err = c.Deliver(getContext(), ref)
+			return err
+		})
+		if err != nil {
+			if strings.Contains(err.Error(), "invalid permission response") {
+				return fmt.Errorf("%s's agent binary predates deliver over the bus (%w): run agent deliver %s on that host", ref.Host, err, ref.Name)
+			}
+			return err
+		}
+		printDelivered(ref.String(), service.DeliverResult{Typed: resp.Typed, Held: resp.Held, Status: service.AgentStatus(resp.Status)})
+		return nil
 	}
 	name := ref.Name
 	ctx := getContext()
 	if !deliverWait {
-		n, err := agentService.DeliverHeld(ctx, name, service.DeliverOptions{})
+		res, err := agentService.DeliverNow(ctx, name)
 		switch {
 		case errors.Is(err, service.ErrNothingHeld):
-			fmt.Printf("Nothing is held for %s.\n", name)
-			return nil
 		case err != nil:
 			return err
-		case n > 0:
-			fmt.Printf("Typed %s held for %s.\n", plural(n, "message"), name)
-			return nil
 		}
-		status := service.AgentStatusUnknown
-		if info, err := agentService.StatusInfo(ctx, name); err == nil {
-			status = info.Status
-		}
-		fmt.Printf("Still holding %s for %s (it is %s): the end of its turn delivers them.\n",
-			plural(agentService.HeldCount(ctx, name), "message"), name, status)
+		printDelivered(name, res)
 		return nil
 	}
 
@@ -102,6 +116,18 @@ func runDeliver(cmd *cobra.Command, args []string) error {
 		if agentService.HeldCount(ctx, name) == 0 {
 			return nil
 		}
+	}
+}
+
+// printDelivered says what agent deliver did for name.
+func printDelivered(name string, res service.DeliverResult) {
+	switch {
+	case res.Typed > 0:
+		fmt.Printf("Typed %s held for %s.\n", plural(res.Typed, "message"), name)
+	case res.Held == 0:
+		fmt.Printf("Nothing is held for %s.\n", name)
+	default:
+		fmt.Printf("Still holding %s for %s (it is %s): the end of its turn delivers them.\n", plural(res.Held, "message"), name, res.Status)
 	}
 }
 

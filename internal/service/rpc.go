@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -159,6 +160,19 @@ func (h rpcHandler) Respond(ctx context.Context, req natsbus.RespondRequest) err
 		ExpectTool: req.ExpectTool,
 	})
 	return remoteErr(err)
+}
+
+// Deliver types the messages held for an agent here, for another host's
+// agent deliver name@host: what agent deliver does here.
+func (h rpcHandler) Deliver(ctx context.Context, req natsbus.RespondRequest) (*natsbus.DeliverResponse, error) {
+	res, err := h.s.DeliverNow(ctx, req.Agent)
+	switch {
+	case errors.Is(err, ErrNothingHeld):
+		return &natsbus.DeliverResponse{}, nil
+	case err != nil:
+		return nil, remoteErr(err)
+	}
+	return &natsbus.DeliverResponse{Typed: res.Typed, Held: res.Held, Status: string(res.Status)}, nil
 }
 
 func (h rpcHandler) Keys(ctx context.Context, req natsbus.KeysRequest) error {
