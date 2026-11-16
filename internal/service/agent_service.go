@@ -142,9 +142,14 @@ func (s *AgentService) Spawn(ctx context.Context, opts SpawnOptions) (*storage.A
 
 	// A fresh provider, configured for this agent. Custom JSON backends
 	// (--backend-config) have no factory, and spawn from their Backend.
+	cwd := opts.Cwd
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
 	provider, err := s.backends.CreateProvider(opts.Backend, backend.ProviderConfig{
 		SkipPermissions: opts.SkipPermissions,
 		AgentDir:        s.cfg.AgentDir(opts.Name),
+		Cwd:             cwd,
 		Resume:          opts.Resume,
 	})
 	if err != nil {

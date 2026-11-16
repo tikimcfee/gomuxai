@@ -20,6 +20,9 @@ type ProviderConfig struct {
 	// AgentDir is the per-agent bundle directory under .gomuxai/agents/<name>
 	AgentDir string
 
+	// Cwd is the absolute directory the agent runs in.
+	Cwd string
+
 	// Resume is the session Claude or Agy continues instead of starting a
 	// new one: Claude's session id, agy's conversation id.
 	Resume string
@@ -63,6 +66,7 @@ func NewRegistry() *Registry {
 		return namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{
 			SkipPermissions: cfg.SkipPermissions,
 			AgentDir:        cfg.AgentDir,
+			Cwd:             cfg.Cwd,
 			Resume:          cfg.Resume,
 		})
 	})
