@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -142,7 +143,8 @@ func inputBox(lines []string, prompt string, panels int) (start, end int, ok boo
 
 // inputBoxText returns the text typed in the input box of screen (with its
 // styling escapes), whose first line starts with prompt, found as inputBox
-// finds it. Text drawn dim (placeholders, suggestions) is left out.
+// finds it. Text drawn faint (placeholders, hints, suggestions: unfaint)
+// is left out; the prompt itself may be drawn grey (Claude's, mid-turn).
 func inputBoxText(screen, prompt string, panels int) (string, bool) {
 	lines := strings.Split(strings.TrimRight(screen, "\n"), "\n")
 	start, end, ok := inputBox(lines, prompt, panels)
@@ -151,12 +153,15 @@ func inputBoxText(screen, prompt string, panels int) (string, bool) {
 	}
 	var text []string
 	for i, line := range lines[start:end] {
-		line = undimmed(line)
 		if i == 0 {
-			var ok bool
-			if line, ok = strings.CutPrefix(strings.TrimLeft(line, " "), prompt); !ok {
+			at := strings.Index(line, prompt)
+			if at < 0 || strings.TrimSpace(util.StripANSI(line[:at])) != "" {
 				return "", false
 			}
+			dim, grey := faintAfter(line[:at+len(prompt)])
+			line = unfaintFrom(line[at+len(prompt):], dim, grey)
+		} else {
+			line = unfaint(line)
 		}
 		if t := strings.TrimSpace(strings.ReplaceAll(line, " ", " ")); t != "" {
 			text = append(text, t)
@@ -184,14 +189,41 @@ func isRule(line string) bool {
 		label[0] == ' ' && label[len(label)-1] == ' ' && !strings.Contains(label, "─")
 }
 
-// undimmed returns line's text without escapes, and without the text drawn
-// dim (SGR 2, until 22 or a reset).
-func undimmed(line string) string {
+// unfaint returns line's text without escapes, and without the text drawn
+// faint: dim (SGR 2, until 22 or a reset) or in a grey (bright black, 90; a
+// grey of the 256-color palette, 38;5;8 or 232-250; or an RGB grey, until
+// another foreground, 39, or a reset). That is how a CLI draws what sits in
+// its input box without having been typed: Claude's "Try ..." placeholder
+// and suggestions (dim), agy's mode hint, "Auto mode: edits & safe commands
+// auto-approved (shift+tab to cycle)", which 1.5.8 shows after every turn
+// (90). Typed text is drawn in the default foreground. Reading the style,
+// not the words, keeps working when a release changes the hint.
+func unfaint(line string) string { return unfaintFrom(line, false, false) }
+
+// faintAfter returns whether text after s is drawn dim, and in a grey.
+func faintAfter(s string) (dim, grey bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\x1b' || i+1 >= len(s) || s[i+1] != '[' {
+			continue
+		}
+		j := i + 2
+		for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+			j++
+		}
+		if j < len(s) && s[j] == 'm' {
+			dim, grey = sgrFaint(strings.Split(s[i+2:j], ";"), dim, grey)
+		}
+		i = j
+	}
+	return dim, grey
+}
+
+// unfaintFrom is unfaint for text that starts drawn dim or grey.
+func unfaintFrom(line string, dim, grey bool) string {
 	var out strings.Builder
-	dim := false
 	for i := 0; i < len(line); i++ {
 		if line[i] != '\x1b' {
-			if !dim {
+			if !dim && !grey {
 				out.WriteByte(line[i])
 			}
 			continue
@@ -204,18 +236,53 @@ func undimmed(line string) string {
 			j++
 		}
 		if j < len(line) && line[j] == 'm' {
-			for _, p := range strings.Split(line[i+2:j], ";") {
-				switch p {
-				case "2":
-					dim = true
-				case "", "0", "22":
-					dim = false
-				}
-			}
+			dim, grey = sgrFaint(strings.Split(line[i+2:j], ";"), dim, grey)
 		}
 		i = j
 	}
 	return out.String()
+}
+
+// sgrFaint applies one SGR sequence's parameters to whether text is drawn
+// dim and whether its foreground is a grey.
+func sgrFaint(params []string, dim, grey bool) (bool, bool) {
+	num := func(k int) int {
+		if k >= len(params) {
+			return -1
+		}
+		n, err := strconv.Atoi(params[k])
+		if err != nil {
+			return -1
+		}
+		return n
+	}
+	for k := 0; k < len(params); k++ {
+		switch n := num(k); {
+		case params[k] == "" || n == 0:
+			dim, grey = false, false
+		case n == 2:
+			dim = true
+		case n == 22:
+			dim = false
+		case n == 39 || n >= 30 && n <= 37 || n >= 91 && n <= 97:
+			grey = false
+		case n == 90:
+			grey = true
+		case n == 38 && num(k+1) == 5:
+			c := num(k + 2)
+			grey = c == 8 || c >= 232 && c <= 250
+			k += 2
+		case n == 38 && num(k+1) == 2:
+			r, g, b := num(k+2), num(k+3), num(k+4)
+			grey = r == g && g == b && r >= 48 && r <= 200
+			k += 4
+		case n == 48 && num(k+1) == 5:
+			k += 2
+		case n == 48 && num(k+1) == 2:
+			k += 4
+		}
+	}
+	return dim, grey
 }
 
 func truncate(s string) string {
