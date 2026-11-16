@@ -190,6 +190,26 @@ func TestAgyInputText(t *testing.T) {
 	if _, found := b.InputText(agyQuestionScreen); found {
 		t.Error("question dialog: found an input line")
 	}
+	// agy 1.5.8 and on draw a mode hint in the empty input line after every
+	// turn, in grey (SGR 90; captured from 1.5.9). Read as typed text, it
+	// held every send to an idle agy agent forever (friction #45, #47).
+	hint := " \x1b[90mAuto mode: edits & safe commands auto-approved (shift+tab to cycle)\x1b[39m"
+	if text, found := b.InputText(screen(hint)); !found || text != "" {
+		t.Errorf("the mode hint: %q, %v; want an empty input line", text, found)
+	}
+	// Whatever the hint says: it is the style that marks it.
+	if text, found := b.InputText(screen(" \x1b[38;5;244mPlan mode: some future wording\x1b[39m")); !found || text != "" {
+		t.Errorf("a 256-color grey hint: %q, %v", text, found)
+	}
+	if text, found := b.InputText(screen(" \x1b[38;2;128;128;128mtruecolor grey\x1b[0m")); !found || text != "" {
+		t.Errorf("an RGB grey hint: %q, %v", text, found)
+	}
+	// Text a person typed is drawn in the default (or another) color.
+	for _, typed := range []string{" hello typed", " \x1b[37mwhite\x1b[39m", " \x1b[38;2;250;250;250malmost white\x1b[0m"} {
+		if text, found := b.InputText(screen(typed)); !found || text == "" {
+			t.Errorf("typed %q: %q, %v; want its text", typed, text, found)
+		}
+	}
 
 	// A background task's panel sits between the box and the footer (agy
 	// 1.5.3): a send to the idle agent was held as "its input line isn't on
