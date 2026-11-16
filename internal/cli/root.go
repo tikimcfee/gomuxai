@@ -13,6 +13,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
 var (
@@ -229,76 +230,53 @@ func getContext() context.Context {
 
 var (
 	cachedCallerStore storage.Storage
-	cachedCallerPane  string
+	cachedCallerEnv   string
 	cachedCallerName  string
 	cachedCallerValid bool
 )
 
-// callerAgent returns the name of the agent running this command: AGENT_NAME
-// if set, or for an adopted tmux session whose process predates AGENT_NAME,
-// the adopted agent registered on $TMUX_PANE's session (when $TMUX_PANE is
-// that session's first pane).
+// callerChain returns this process and its ancestors, nearest first; tests
+// replace it to stand a process somewhere in the tree.
+var callerChain = func() ([]int, error) {
+	return util.ProcAncestors(getContext(), os.Getpid())
+}
+
+// callerAgent returns the name of the agent running this command, as the
+// processes show it (service.CallerAgent): the agent whose pane it runs
+// under, or whose conversation the Claude Code background session it runs
+// in carries on. AGENT_NAME is inherited by everything an agent starts, and
+// a background session can run under another agent's pane with that one's
+// AGENT_NAME (friction #48), so it counts only where the processes say
+// nothing: a process outside this tmux server's agent panes (detached from
+// its session, or under a pane another agent binary's store records).
 func callerAgent() string {
-	if name := os.Getenv("AGENT_NAME"); name != "" {
-		return name
+	if tmuxClient == nil || store == nil || agentService == nil {
+		return os.Getenv("AGENT_NAME")
 	}
-	pane := os.Getenv("TMUX_PANE")
-	if pane == "" || tmuxClient == nil || store == nil {
-		return ""
-	}
-	if cachedCallerValid && cachedCallerStore == store && cachedCallerPane == pane {
+	env := os.Getenv("AGENT_NAME")
+	if cachedCallerValid && cachedCallerStore == store && cachedCallerEnv == env {
 		return cachedCallerName
 	}
-	name := resolveAdoptedCaller(pane)
-	cachedCallerStore, cachedCallerPane, cachedCallerName, cachedCallerValid = store, pane, name, true
+	name := resolveCaller()
+	cachedCallerStore, cachedCallerEnv, cachedCallerName, cachedCallerValid = store, env, name, true
 	return name
 }
 
-func resolveAdoptedCaller(pane string) string {
-	c, ok := tmuxClient.(*tmux.Client)
-	if !ok {
-		return ""
-	}
-	agents, err := store.ListAgents(getContext())
-	if err != nil {
-		return ""
-	}
-	hasAdopted := false
-	for _, a := range agents {
-		if a.Adopted {
-			hasAdopted = true
-			break
+func resolveCaller() string {
+	if chain, err := callerChain(); err == nil {
+		if name, known, err := agentService.CallerAgent(getContext(), chain); err == nil && known {
+			return name
 		}
 	}
-	if !hasAdopted {
-		return ""
-	}
-	sess, err := c.SessionOfPane(pane)
-	if err != nil || sess == "" {
-		return ""
-	}
-	first, err := c.FirstPane(sess)
-	if err != nil || first.ID != pane {
-		return ""
-	}
-	for _, a := range agents {
-		if a.SessionName == sess && a.Adopted {
-			return a.Name
-		}
-	}
-	return ""
+	return os.Getenv("AGENT_NAME")
 }
 
-// nonInteractiveCallerAgent returns AGENT_NAME when set, or callerAgent() when
-// stdin is not a terminal (e.g. an AI CLI tool invocation inside an adopted
-// pane). When a person types interactively at a terminal in an adopted pane
-// without AGENT_NAME set, it returns "".
+// nonInteractiveCallerAgent returns callerAgent(), except for a person
+// typing at a terminal (stdin is one, and AGENT_NAME isn't set), say in an
+// adopted agent's pane: they aren't the agent.
 func nonInteractiveCallerAgent() string {
-	if name := os.Getenv("AGENT_NAME"); name != "" {
-		return name
+	if os.Getenv("AGENT_NAME") == "" && stdinIsTerminal() {
+		return ""
 	}
-	if !stdinIsTerminal() {
-		return callerAgent()
-	}
-	return ""
+	return callerAgent()
 }

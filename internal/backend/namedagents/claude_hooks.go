@@ -382,9 +382,13 @@ func (b *ClaudeBackend) PaneSession(ctx context.Context, panePID int) (types.Pan
 		return types.PaneSession{}, false, err
 	}
 	// Claude Code may have moved the pane CLI's conversation into a
-	// background session it runs under that CLI: the pane shows it, and
-	// that session is the one going on (claudereg.Continues).
-	if moved, ok := snap.Continuation(tree, e, util.ProcArgs); ok {
+	// background session: the pane shows it, and that session is the one
+	// going on, wherever its process runs (claudereg.Continuation).
+	if moved, ok := snap.Continuation(e, claudereg.FindTranscript); ok {
+		if moved.Verdict == claudereg.Stale {
+			return types.PaneSession{ID: moved.SessionID, PID: e.PID, Status: types.StatusUnknown,
+				Detail: "its conversation moved into background session " + moved.SessionID + ", which no process runs now; the pane's CLI starts it again on its next input"}, true, nil
+		}
 		e = moved
 	}
 	st, detail := RegistryStatus(e.Entry)

@@ -772,10 +772,10 @@ func (s *AgentService) adoptPaneSession(ctx context.Context, agent *storage.Agen
 const EventSessionMoved = "SessionMoved"
 
 // followMovedSession moves the agent onto the session Claude Code carried
-// its conversation into, when it has: Claude Code 2.1.319 can hand an
-// interactive session over to a background session its daemon runs, under
-// the agent's own CLI, with an id of its own (claudereg.Continues). The
-// agent's transcript then says which (continued-in), and its pane runs that
+// its conversation into, when it has: Claude Code can hand an interactive
+// session over to a background session its daemon runs, with an id of its
+// own, in a process that may run anywhere (claudereg.Continuation). The
+// agent's transcript then says which (continued-in), and its pane shows that
 // session. Hooks from it reach the agent from then on (FindHookSession), but
 // the agent's record still names the old session, whose registry entry keeps
 // its last status, so status would read that until the new session's next

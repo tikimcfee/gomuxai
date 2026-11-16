@@ -60,18 +60,9 @@ func (s *AgentService) FindHookSession(ctx context.Context, self int, sessionID,
 	}
 	// Any running process with a registry entry above that CLI, below the
 	// pane, is another CLI: the one whose session this one started inside.
-	// Unless this CLI carries on that one's session: Claude Code moved the
-	// conversation into a background session its daemon (a child of that
-	// CLI) runs, and the pane's agent goes on in it (claudereg.Continues).
-	otherCLI := func(cli, pid int) (bool, error) {
+	otherCLI := func(_, pid int) (bool, error) {
 		e, found, err := claudereg.ReadPID(dir, pid, claudereg.System{})
-		if err != nil || !found || (e.Verdict != claudereg.Live && e.Verdict != claudereg.Unproven) {
-			return false, err
-		}
-		if args, ok := util.ProcArgs(cli); ok && claudereg.Continues(args, e.SessionID, sessionID) {
-			return false, nil
-		}
-		return true, nil
+		return found && (e.Verdict == claudereg.Live || e.Verdict == claudereg.Unproven), err
 	}
 	panes := func() (map[int]string, map[string]string, error) {
 		panes, err := s.tmux.PanePIDs()
@@ -89,10 +80,17 @@ func (s *AgentService) FindHookSession(ctx context.Context, self int, sessionID,
 		return panes, bySession, nil
 	}
 	hs, err := placeHook(chain, ownCLI, otherCLI, panes)
-	if err == nil && hs.CLIPID != 0 {
-		if args, ok := util.ProcArgs(hs.CLIPID); ok {
-			hs.SpawnHooked = spawnHooked(args)
-		}
+	if err != nil || hs.CLIPID == 0 {
+		return hs, err
+	}
+	if args, ok := util.ProcArgs(hs.CLIPID); ok {
+		hs.SpawnHooked = spawnHooked(args)
+	}
+	// A background session's process runs where Claude Code's daemon put
+	// it, often under another agent's pane: its place in the process tree
+	// says nothing about whose conversation it is. Its lineage does.
+	if e, found, _ := claudereg.ReadPID(dir, hs.CLIPID, claudereg.System{}); found && e.Kind == claudereg.KindBackground {
+		hs.Owner, err = s.backgroundOwner(ctx, sessionID)
 	}
 	return hs, err
 }
