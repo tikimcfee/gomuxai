@@ -2,9 +2,9 @@ package service
 
 import (
 	"context"
+	"path/filepath"
 
 	"github.com/tikimcfee/gomuxai/internal/claudereg"
-	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
 // Who runs a command, and whose conversation a background session is.
@@ -12,13 +12,14 @@ import (
 // AGENT_NAME and AGENT_HOST are set in an agent's tmux session, and every
 // process started from it inherits them: a terminal daemon a tool started,
 // a shell it opened, and Claude Code's background-session daemon, which is
-// one per user and a child of whichever CLI started it first. From Claude
-// Code 2.1.325 that daemon hands a moved session to a spare host it started
-// ahead of time, so agent A's conversation can run, and run its tools, in a
-// process under agent B's pane with B's AGENT_NAME (friction #48: A's
-// messages went out as "[from B@host]"). So the sender is found from what
-// the processes and Claude Code's records say, and AGENT_NAME counts only
-// where they say nothing.
+// one per user (per config dir), started by whichever CLI first needs it,
+// with that CLI's environment. Claude Code 2.1.325 hands a session sent to
+// the background (/bg) to a spare host the daemon started ahead of time, so
+// agent A's conversation runs, and runs its tools, with the AGENT_NAME of
+// agent B, whose /bg started the daemon (friction #48: A's messages went
+// out as "[from B@host]"). So the sender is found from what the processes
+// and Claude Code's records say, and AGENT_NAME counts only where they say
+// nothing.
 
 // CallerAgent returns the agent whose session runs the process whose
 // ancestors are chain (the process itself first, then its parent, and so
@@ -82,9 +83,11 @@ func (s *AgentService) agentsBySession(ctx context.Context) (map[string]string, 
 // backgroundOwner returns the agent whose conversation Claude Code
 // background session sessionID carries on, or "" if none does: the agent
 // already on that session (an earlier hook or status check moved it
-// there), or else the agent whose pane's CLI held the conversation that
-// moved into it (claudereg.Continuation, which follows the moves recorded
-// in the transcripts).
+// there), or else the agent whose transcript records the move into it (its
+// continued-in line, followed through any later moves). The transcript is
+// the conversation's own record: the pane's CLI may have exited when the
+// session went to the background (/bg frees the terminal), and the
+// background process runs wherever the daemon put it.
 func (s *AgentService) backgroundOwner(ctx context.Context, sessionID string) (string, error) {
 	agents, err := s.storage.ListAgents(ctx)
 	if err != nil {
@@ -95,34 +98,32 @@ func (s *AgentService) backgroundOwner(ctx context.Context, sessionID string) (s
 			return a.Name, nil
 		}
 	}
-	panes, err := s.tmux.PanePIDs()
-	if err != nil {
-		return "", err
-	}
-	snap, err := claudereg.ReadSystem()
-	if err != nil {
-		return "", err
-	}
-	tree, err := util.ReadProcTree(ctx)
-	if err != nil {
-		return "", err
-	}
-	agentOf := map[string]string{}
 	for _, a := range agents {
-		agentOf[a.SessionName] = a.Name
-	}
-	for panePID, session := range panes {
-		name := agentOf[session]
-		if name == "" {
-			continue
-		}
-		e, found, err := snap.UnderPane(tree, panePID)
-		if err != nil || !found {
-			continue
-		}
-		if moved, ok := snap.Continuation(e, claudereg.FindTranscript); ok && moved.SessionID == sessionID {
-			return name, nil
+		if movedInto(s.stateValue(ctx, a.Name, StateKeyTranscript), sessionID) {
+			return a.Name, nil
 		}
 	}
 	return "", nil
+}
+
+// movedInto reports whether the conversation whose transcript is at path
+// moved into session id, directly or through later moves (each session's
+// transcript sits beside the one it continued from).
+func movedInto(path, id string) bool {
+	seen := map[string]bool{}
+	for range 16 {
+		if path == "" || seen[path] {
+			return false
+		}
+		seen[path] = true
+		next := claudereg.ContinuedIn(path)
+		switch next {
+		case "":
+			return false
+		case id:
+			return true
+		}
+		path = filepath.Join(filepath.Dir(path), next+".jsonl")
+	}
+	return false
 }

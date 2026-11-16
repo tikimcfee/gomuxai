@@ -53,11 +53,11 @@ func panePID(t *testing.T, env *testEnv, session string) int {
 	return 0
 }
 
-// What friction #48-#50 hit on workstation: Claude Code 2.1.325 moved agent
-// A's conversation (/compact) into a spare background host its daemon had
-// started under agent B's pane, so the session ran under B's CLI, with B's
-// AGENT_NAME. The hook placed nothing on A (B's CLI sat between the session
-// and B's pane), so A's long messages lost their text and its sends went
+// What friction #48-#50 hit on workstation: Claude Code 2.1.325 sent agent
+// A's conversation to the background (/bg) into a spare host its daemon had
+// started for agent B, so the session ran with B's environment (AGENT_NAME)
+// and outside A's pane, under the daemon or B's CLI. The hook placed
+// nothing on A, so A's long messages lost their text and its sends went
 // out as B's. Its lineage says whose it is: A's transcript continued in it.
 func TestBackgroundSessionBelongsToItsConversation(t *testing.T) {
 	if runtime.GOOS != "linux" {
@@ -119,9 +119,14 @@ func TestBackgroundSessionBelongsToItsConversation(t *testing.T) {
 		t.Fatalf("hook before the move: %+v %v, want CLI %d, no owner", hs, err, bg)
 	}
 
-	// a's transcript records the move.
+	// a's transcript records the move. (a's pane CLI may be gone: /bg
+	// frees the terminal.)
 	line := `{"type":"continued-in","sessionId":"a-old","continuedInSessionId":"a-new"}`
-	if err := os.WriteFile(filepath.Join(cfgDir, "projects", "-w", "a-old.jsonl"), []byte(line+"\n"), 0o600); err != nil {
+	old := filepath.Join(cfgDir, "projects", "-w", "a-old.jsonl")
+	if err := os.WriteFile(old, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.SetState(ctx, &storage.StateEntry{AgentName: "a", Key: "_transcript", Value: old, UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if name, known, err := env.service.CallerAgent(ctx, chain); err != nil || !known || name != "a" {
