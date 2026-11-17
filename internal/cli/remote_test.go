@@ -70,9 +70,14 @@ func setupCLI(t *testing.T) {
 		testStore.Close()
 	})
 
-	oldCfg, oldStore, oldTmux, oldBackends, oldService, oldConnect := cfg, store, tmuxClient, backends, agentService, busConnect
+	oldCfg, oldStore, oldTmux, oldBackends, oldService, oldConnect, oldBusSession := cfg, store, tmuxClient, backends, agentService, busConnect, busSession
+	testBusSession := "rpc-cli-gomux-bus"
 	t.Cleanup(func() {
-		cfg, store, tmuxClient, backends, agentService, busConnect = oldCfg, oldStore, oldTmux, oldBackends, oldService, oldConnect
+		_ = testTmux.KillSession(busSession)
+		if busSession != testBusSession {
+			_ = testTmux.KillSession(testBusSession)
+		}
+		cfg, store, tmuxClient, backends, agentService, busConnect, busSession = oldCfg, oldStore, oldTmux, oldBackends, oldService, oldConnect, oldBusSession
 		statusVerbose, listHost, permissionExpect, keysNoEnter = false, "", "", false
 		spawnHost, spawnCwd, spawnTask, spawnResume = "", "", "", ""
 		spawnAttach, spawnSkipPermissions, spawnTrustWorkspace, spawnContinue = false, false, false, false
@@ -80,7 +85,7 @@ func setupCLI(t *testing.T) {
 	})
 	hints = new(strings.Builder)
 	hintOut, hinted = hints, false
-	cfg, store, tmuxClient, backends = testCfg, testStore, testTmux, backend.NewRegistry()
+	cfg, store, tmuxClient, backends, busSession = testCfg, testStore, testTmux, backend.NewRegistry(), testBusSession
 	agentService = service.NewAgentService(cfg, store, tmuxClient, backends)
 
 	ctx := context.Background()

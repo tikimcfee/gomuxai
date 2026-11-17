@@ -379,7 +379,6 @@ func TestRestartBus_KeepsSession(t *testing.T) {
 	if err := tmuxClient.CreateSession(busSession, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { tmuxClient.KillSession(busSession) })
 	before, err := tmuxClient.(*tmux.Client).FirstPane(busSession)
 	if err != nil {
 		t.Fatal(err)

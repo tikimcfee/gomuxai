@@ -12,13 +12,9 @@ import (
 // must leave a session alone when this data dir's bus isn't the one in it.
 func TestBusStopLeavesAnotherDataDirsBus(t *testing.T) {
 	setupCLI(t)
-	old := busSession
-	busSession = "rpc-cli-gomux-bus"
-	t.Cleanup(func() { busSession = old })
 	if err := tmuxClient.CreateSession(busSession, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { tmuxClient.KillSession(busSession) })
 	busConnect = func() (*nats.Conn, error) { return nil, natsbus.ErrNoBus }
 
 	for name, run := range map[string]func() error{
