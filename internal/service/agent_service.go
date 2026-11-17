@@ -384,18 +384,34 @@ func (s *AgentService) prepareExistingSession(ctx context.Context, name, session
 			return fmt.Errorf("tmux session %s is already registered as agent %s", sessionName, a.Name)
 		}
 	}
-	_ = s.tmux.PipePane(sessionName, s.cfg.LogPath(name)) // non-fatal: the agent runs unlogged
+	if s.cfg.Mux != config.MuxTermd {
+		_ = s.tmux.PipePane(sessionName, s.cfg.LogPath(name)) // non-fatal: the agent runs unlogged
+	}
 	return nil
 }
 
-// createSession creates an agent's tmux session in dir ("" for this
-// process's working directory) and pipes its output to the agent's log.
+// createSession creates an agent's session in dir ("" for this process's
+// working directory) and, under tmux, pipes its output to the agent's log.
 func (s *AgentService) createSession(name, dir string) (string, error) {
 	env := map[string]string{
 		"AGENT_NAME": name,
 		// Hooks publish status events under this host; without it they'd
 		// fall back to the hostname, which AGENT_HOST may override.
 		"AGENT_HOST": s.cfg.Host,
+	}
+	if s.cfg.Mux == config.MuxTermd {
+		ns := s.cfg.TermdNamespace
+		if ns == "" {
+			ns = config.DefaultTermdNamespace
+		}
+		env["GOMUXAI_MUX"] = config.MuxTermd
+		env["GOMUXAI_TERMD_NS"] = ns
+		if s.cfg.TermdBinary != "" {
+			env["G3D_TERMD_BIN"] = s.cfg.TermdBinary
+		}
+		if s.cfg.G3DBinary != "" {
+			env["G3D_BIN"] = s.cfg.G3DBinary
+		}
 	}
 	if s.cfg.AgentBinary != "" {
 		// So the agent (and its hooks) can just run `agent`.
@@ -405,7 +421,9 @@ func (s *AgentService) createSession(name, dir string) (string, error) {
 	if err := s.tmux.CreateSessionIn(sessionName, dir, env); err != nil {
 		return "", fmt.Errorf("creating session: %w", err)
 	}
-	_ = s.tmux.PipePane(sessionName, s.cfg.LogPath(name)) // non-fatal: the agent runs unlogged
+	if s.cfg.Mux != config.MuxTermd {
+		_ = s.tmux.PipePane(sessionName, s.cfg.LogPath(name)) // non-fatal: the agent runs unlogged
+	}
 	return sessionName, nil
 }
 
@@ -843,6 +861,13 @@ func (s *AgentService) Cleanup(ctx context.Context, name string) error {
 	if err != nil {
 		cleanupErrs.Add(fmt.Errorf("checking session exists: %w", err))
 	} else if exists {
+		if s.cfg.Mux == config.MuxTermd && !agent.Adopted {
+			// termd holds scrollback in-daemon rather than running pipe-pane;
+			// snapshot it before killing so `agent logs --terminal` works after cleanup.
+			if out, cerr := s.tmux.Capture(agent.SessionName, max(s.cfg.DefaultScrollback, 2000)); cerr == nil && out != "" {
+				_ = os.WriteFile(s.cfg.LogPath(name), []byte(out), 0o600)
+			}
+		}
 		if err := s.tmux.StopPipePane(agent.SessionName); err != nil {
 			cleanupErrs.Add(fmt.Errorf("stopping pipe pane: %w", err))
 		}

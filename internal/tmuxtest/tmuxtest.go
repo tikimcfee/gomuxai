@@ -46,7 +46,7 @@ func Run(m *testing.M) int {
 	defer os.RemoveAll(dir)
 	// TMUX_PANE goes too: the CLI reads it to find the agent it runs in,
 	// and a test must not depend on the developer's own pane.
-	for _, k := range []string{"TMUX", "TMUX_PANE"} {
+	for _, k := range []string{"TMUX", "TMUX_PANE", "GOMUXAI_MUX", "GOMUXAI_TERMD_NS"} {
 		if err := os.Unsetenv(k); err != nil {
 			fmt.Fprintln(os.Stderr, "tmuxtest:", err)
 			return 1

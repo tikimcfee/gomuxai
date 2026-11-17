@@ -492,6 +492,14 @@ func logExists(name string) bool {
 // or a line saying it has logged nothing yet.
 func terminalLogChunks(name string, n int) ([]logsChunk, error) {
 	lines, err := tailLogLines(cfg.LogPath(name), n)
+	if (errors.Is(err, fs.ErrNotExist) || (err == nil && len(lines) == 0)) && cfg != nil && cfg.Mux == config.MuxTermd {
+		if captured, cerr := agentService.Capture(getContext(), name, n, false); cerr == nil {
+			if live := util.TerminalLines(captured); len(live) > 0 {
+				lines = live[max(len(live)-n, 0):]
+				err = nil
+			}
+		}
+	}
 	if errors.Is(err, fs.ErrNotExist) || (err == nil && len(lines) == 0) {
 		if _, agentErr := agentService.Agent(getContext(), name); agentErr != nil {
 			return nil, noLog(name)

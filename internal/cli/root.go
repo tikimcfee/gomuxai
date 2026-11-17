@@ -12,6 +12,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
+	"github.com/tikimcfee/gomuxai/internal/termd"
 	"github.com/tikimcfee/gomuxai/internal/tmux"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
@@ -20,6 +21,8 @@ var (
 	// Global flags
 	backendName   string
 	backendConfig string
+	muxName       string
+	termdNS       string
 
 	// Shared state
 	cfg          *config.Config
@@ -119,6 +122,8 @@ var (
 func init() {
 	rootCmd.PersistentFlags().StringVar(&backendName, "backend", "", "Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)")
 	rootCmd.PersistentFlags().StringVar(&backendConfig, "backend-config", "", "JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it")
+	rootCmd.PersistentFlags().StringVar(&muxName, "mux", "", "Terminal multiplexer backend: tmux (default) or termd (overrides GOMUXAI_MUX and mux.json)")
+	rootCmd.PersistentFlags().StringVar(&termdNS, "termd-ns", "", "Daemon namespace when using --mux termd (default: agents; never default or wall)")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Don't print hints (results and errors still print)")
 
 	for _, g := range commandGroups {
@@ -160,6 +165,15 @@ func setup(cmd *cobra.Command, args []string) error {
 	if backendName != "" {
 		cfg.Backend = backendName
 	}
+	if muxName != "" {
+		cfg.Mux = muxName
+	}
+	if termdNS != "" {
+		cfg.TermdNamespace = termdNS
+	}
+	if err := cfg.ValidateMux(); err != nil {
+		return err
+	}
 	setupBackends()
 
 	// Only spawn needs a backend
@@ -181,10 +195,21 @@ func setup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("initializing storage: %w", err)
 	}
 
-	// Initialize tmux client
-	tmuxClient, err = tmux.NewClient()
-	if err != nil {
-		return fmt.Errorf("initializing tmux: %w", err)
+	// Initialize terminal multiplexer client
+	if cfg.Mux == config.MuxTermd {
+		tmuxClient, err = termd.NewClient(termd.Options{
+			Namespace: cfg.TermdNamespace,
+			DaemonBin: cfg.TermdBinary,
+			AttachBin: cfg.G3DBinary,
+		})
+		if err != nil {
+			return fmt.Errorf("initializing termd: %w", err)
+		}
+	} else {
+		tmuxClient, err = tmux.NewClient()
+		if err != nil {
+			return fmt.Errorf("initializing tmux: %w", err)
+		}
 	}
 
 	// Initialize agent service
