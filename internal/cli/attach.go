@@ -88,9 +88,23 @@ func goneAttachError(ref, session, reason string, resumable bool) error {
 	return fmt.Errorf("%s %s: its tmux session %s is gone, so there is nothing to attach to (agent logs %s shows its last output)", ref, ended, session, ref)
 }
 
-// attachSession hands this terminal to tmux, showing session, until the
-// person detaches: this process becomes tmux (execInto).
+type sessionAttacher interface {
+	AttachCommand(session string) (bin string, argv []string, err error)
+}
+
+// attachSession hands this terminal to the multiplexer, showing session,
+// until the person detaches: this process becomes tmux or g3d (execInto).
 func attachSession(session string) error {
+	if a, ok := tmuxClient.(sessionAttacher); ok {
+		bin, argv, err := a.AttachCommand(session)
+		if err != nil {
+			return fmt.Errorf("attaching to session %s: %w", session, err)
+		}
+		if err := execInto(bin, argv); err != nil {
+			return fmt.Errorf("attaching to session %s: %w", session, err)
+		}
+		return nil
+	}
 	bin, err := tmux.Binary()
 	if err != nil {
 		return fmt.Errorf("attaching to tmux session %s: %w", session, err)

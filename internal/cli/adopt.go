@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/backend"
+	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
@@ -59,10 +60,15 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 		explicitBackend = cfg.Backend
 	}
 
+	currentPane := os.Getenv("TMUX_PANE")
+	if cfg != nil && cfg.Mux == config.MuxTermd {
+		currentPane = os.Getenv("G3D_TERMD_ID")
+	}
+
 	res, err := agentService.Adopt(ctx, service.AdoptOptions{
 		Name:        name,
 		SessionName: adoptSession,
-		CurrentPane: os.Getenv("TMUX_PANE"),
+		CurrentPane: currentPane,
 		Backend:     explicitBackend,
 		SpawnedBy:   nonInteractiveCallerAgent(),
 	})

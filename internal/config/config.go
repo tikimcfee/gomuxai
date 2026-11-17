@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/tikimcfee/gomuxai/internal/termd"
 )
 
 // Config holds runtime configuration for the agent tool.
@@ -59,7 +61,24 @@ type Config struct {
 	ClaudeProjectsDir *string `json:"claude_projects_dir,omitempty"`
 	AgyBrainDir       *string `json:"agy_brain_dir,omitempty"`
 	KimiSessionsDir   *string `json:"kimi_sessions_dir,omitempty"`
+
+	// Mux selects the terminal multiplexer: "tmux" (default) or "termd".
+	Mux string `json:"mux,omitempty"`
+
+	// TermdNamespace is the g3d-termd namespace when Mux is "termd"
+	// (default "agents"; never "default" or "wall").
+	TermdNamespace string `json:"termd_namespace,omitempty"`
+
+	// TermdBinary and G3DBinary are optional explicit paths to g3d-termd and g3d.
+	TermdBinary string `json:"termd_binary,omitempty"`
+	G3DBinary   string `json:"g3d_binary,omitempty"`
 }
+
+const (
+	MuxTmux               = "tmux"
+	MuxTermd              = "termd"
+	DefaultTermdNamespace = "agents"
+)
 
 // DefaultStartupDelay is the default StartupDelay.
 const DefaultStartupDelay = 2 * time.Second
@@ -157,7 +176,7 @@ func agentBinaryPath() string {
 func DefaultConfig() *Config {
 	baseDir := getStorageDir()
 
-	return &Config{
+	cfg := &Config{
 		Backend:           "", // Must be explicitly set
 		DatabasePath:      filepath.Join(baseDir, "gomuxai.db"),
 		LogDir:            filepath.Join(baseDir, "logs"),
@@ -168,7 +187,12 @@ func DefaultConfig() *Config {
 		SubmitWait:        DefaultSubmitWait,
 		AgentBinary:       agentBinaryPath(),
 		Host:              defaultHost(filepath.Join(baseDir, "bus")),
+		Mux:               MuxTmux,
+		TermdNamespace:    DefaultTermdNamespace,
 	}
+	cfg.loadMuxFile(baseDir)
+	cfg.applyMuxEnv()
+	return cfg
 }
 
 // LoadFromFile loads configuration from a JSON file.
@@ -179,21 +203,100 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 
 	cfg := DefaultConfig()
+	// Reset to built-in mux defaults before unmarshaling so a database_path
+	// in the file reads its own data dir's mux.json rather than the binary's.
+	cfg.Mux = MuxTmux
+	cfg.TermdNamespace = DefaultTermdNamespace
+	cfg.TermdBinary = ""
+	cfg.G3DBinary = ""
+
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
-	// A database_path elsewhere has its own bus dir, whose identity names
-	// the host, unless the file names one itself.
 	var set struct {
-		Host *string `json:"host"`
+		Host           *string `json:"host"`
+		Mux            *string `json:"mux"`
+		TermdNamespace *string `json:"termd_namespace"`
+		TermdBinary    *string `json:"termd_binary"`
+		G3DBinary      *string `json:"g3d_binary"`
 	}
-	if json.Unmarshal(data, &set) == nil && set.Host == nil {
+	_ = json.Unmarshal(data, &set)
+	// A database_path elsewhere has its own bus dir and mux.json, unless the
+	// file names those fields itself.
+	if set.Host == nil {
 		cfg.Host = defaultHost(cfg.BusDir())
 	} else if cfg.Host != "" {
 		cfg.Host = currentHost(cfg.BusDir(), cfg.Host)
 	}
+	if cfg.DatabasePath != "" {
+		var fileMux muxSettings
+		if readMuxFile(filepath.Dir(cfg.DatabasePath), &fileMux) {
+			if set.Mux == nil && fileMux.Mux != "" {
+				cfg.Mux = fileMux.Mux
+			}
+			if set.TermdNamespace == nil && fileMux.TermdNamespace != "" {
+				cfg.TermdNamespace = fileMux.TermdNamespace
+			}
+			if set.TermdBinary == nil && fileMux.TermdBinary != "" {
+				cfg.TermdBinary = fileMux.TermdBinary
+			}
+			if set.G3DBinary == nil && fileMux.G3DBinary != "" {
+				cfg.G3DBinary = fileMux.G3DBinary
+			}
+		}
+	}
+	cfg.applyMuxEnv()
 
 	return cfg, nil
+}
+
+type muxSettings struct {
+	Mux            string `json:"mux"`
+	TermdNamespace string `json:"termd_namespace"`
+	TermdBinary    string `json:"termd_binary"`
+	G3DBinary      string `json:"g3d_binary"`
+}
+
+func readMuxFile(dataDir string, out *muxSettings) bool {
+	b, err := os.ReadFile(filepath.Join(dataDir, "mux.json"))
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(b, out) == nil
+}
+
+func (c *Config) loadMuxFile(dataDir string) {
+	var s muxSettings
+	if !readMuxFile(dataDir, &s) {
+		return
+	}
+	if s.Mux != "" {
+		c.Mux = s.Mux
+	}
+	if s.TermdNamespace != "" {
+		c.TermdNamespace = s.TermdNamespace
+	}
+	if s.TermdBinary != "" {
+		c.TermdBinary = s.TermdBinary
+	}
+	if s.G3DBinary != "" {
+		c.G3DBinary = s.G3DBinary
+	}
+}
+
+func (c *Config) applyMuxEnv() {
+	if v := os.Getenv("GOMUXAI_MUX"); v != "" {
+		c.Mux = v
+	}
+	if v := os.Getenv("GOMUXAI_TERMD_NS"); v != "" {
+		c.TermdNamespace = v
+	}
+	if v := os.Getenv("G3D_TERMD_BIN"); v != "" {
+		c.TermdBinary = v
+	}
+	if v := os.Getenv("G3D_BIN"); v != "" {
+		c.G3DBinary = v
+	}
 }
 
 // Validate checks that required configuration is present.
@@ -202,6 +305,24 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("backend is required: use --backend <name> or --backend-config <file>")
 	}
 	return nil
+}
+
+// ValidateMux checks Mux and TermdNamespace.
+func (c *Config) ValidateMux() error {
+	if c.Mux == "" {
+		c.Mux = MuxTmux
+	}
+	switch c.Mux {
+	case MuxTmux:
+		return nil
+	case MuxTermd:
+		if c.TermdNamespace == "" {
+			c.TermdNamespace = DefaultTermdNamespace
+		}
+		return termd.ValidateNamespace(c.TermdNamespace)
+	default:
+		return fmt.Errorf("invalid mux %q (want %q or %q)", c.Mux, MuxTmux, MuxTermd)
+	}
 }
 
 // EnsureDirs creates necessary directories if they don't exist.

@@ -19,7 +19,6 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/export"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/service"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
 var exportCmd = &cobra.Command{
@@ -222,7 +221,12 @@ func followScope(dirs, hosts []string) string {
 	return s
 }
 
-// exportDeps wires the tree to tmux, the bus, and this host.
+type sessionInspector interface {
+	SessionNames() ([]string, error)
+	SessionEnv(session, name string) string
+}
+
+// exportDeps wires the tree to the multiplexer, the bus, and this host.
 func exportDeps() export.Deps {
 	d := export.Deps{
 		Host:          cfg.Host,
@@ -236,7 +240,7 @@ func exportDeps() export.Deps {
 			return agents, err
 		},
 	}
-	if c, ok := tmuxClient.(*tmux.Client); ok {
+	if c, ok := tmuxClient.(sessionInspector); ok {
 		d.Sessions = c.SessionNames
 		d.SessionStore = func(session string) string {
 			// spawn puts its binary's dir first on the session's PATH.

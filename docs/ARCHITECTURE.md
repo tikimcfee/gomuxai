@@ -59,6 +59,7 @@ installed one:
 | `internal/claudereg` | Reads Claude Code's session registry (`~/.claude/sessions/<pid>.json`), proves each entry against the running processes, and finds the session a tmux pane runs. |
 | `internal/allowcmd` | Decides whether a shell command line is one plain run of a given binary with a safe subcommand (parsed with `mvdan.cc/sh`), for the PreToolUse approval. |
 | `internal/tmux` | `TmuxOps` over the `tmux` command: sessions, send keys, capture, pipe-pane. Errors carry tmux's own message. |
+| `internal/termd` | `TmuxOps` over the `g3d-termd` daemon's Unix socket protocol (v1.5), in a dedicated namespace (`agents`, never `default` or `wall`). `internal/termdtest` isolates tests in private socket dirs. |
 | `internal/natsbus` | The bus: contract (subjects, ops, wire types), identity and trust, the daemon's server config, RPC server and client, status events and `Wait`. `natstest` starts throwaway NATS servers for tests. |
 | `internal/transcript` | Readers for Claude Code, agy and Kimi Code session transcripts, into one event stream (`docs/EVENTS.md`). |
 | `internal/watcher` | The `agent watch` loop: delivers queued messages when their agent is idle. |
@@ -191,6 +192,35 @@ keys are in the terminal, whether or not the CLI read it, and anything typed
 at a dialog answers the dialog. `Send` and the watcher guard against that
 (see [Messages](#messages)). The alternatives considered for sharing a TUI
 are in `exploration/tmux-tui-connector-ideation.md`.
+
+### The termd backend (`internal/termd`)
+
+Beside `tmux`, `internal/termd` implements `TmuxOps` directly over the
+terminal daemon's (`g3d-termd`) local Unix socket protocol (version 1.5),
+selected per store in `.gomuxai/mux.json`, in an app config JSON (`"mux":
+"termd"`, `"termd_namespace": "agents"`), via `GOMUXAI_MUX=termd` /
+`GOMUXAI_TERMD_NS`, or via `--mux termd` / `--termd-ns`:
+
+- **Namespace isolation.** Defaults to `agents` and refuses `default` and
+  `wall`, so agent sessions never share a daemon with interactive or wall
+  terminals. Tests run under `internal/termdtest` (`GOMUXAI_TEST_TERMD_DIR`
+  and `G3D_TERMD_DIR`), refusing to touch the user's socket directory.
+- **Operations.** `CreateSessionIn` runs `create` (auto-starting
+  `g3d-termd --ns <ns> --daemon` if absent, passing `env_base` and the
+  agent's `env`, including `GOMUXAI_MUX` and `GOMUXAI_TERMD_NS`);
+  `SendKeys` writes `INPUT` frames synchronized by `unsubscribe`;
+  `PasteText` streams chunked `paste` requests (`paste_stream`,
+  `allow_unsafe: true`) at the program's read pace; `SendSpecialKey`
+  encodes W3C key events via `key` (Kitty keyboard, modifyOtherKeys,
+  DECCKM); `Capture` and `CaptureStyled` call `capture` (`plain` and `vt`
+  with CRLF normalized to LF); session liveness, `PanePIDs`, and `FirstPane`
+  read the daemon's `status` document (resolving OSC 7 `file://` URLs);
+  `KillSession` runs `kill`, ending the terminal's whole process tree.
+- **Attach and logs.** Local `agent attach` `exec`s `g3d --ns <ns> attach
+  --take <session>`; `agent attach name@host` keeps the existing `ssh -t`
+  hop. Instead of `pipe-pane`, `agent logs --terminal` reads live scrollback
+  from the daemon while the terminal runs and snapshots scrollback to
+  `logs/<name>.log` on cleanup.
 
 ## Spawning an agent
 
