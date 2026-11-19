@@ -13,6 +13,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/tikimcfee/gomuxai/internal/termdwire"
 	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
@@ -98,7 +99,7 @@ type SubscriberStatus struct {
 }
 
 type pipeWatcher struct {
-	conn   *wireConn
+	conn   *termdwire.Conn
 	handle uint32
 	done   chan struct{}
 }
@@ -163,13 +164,13 @@ func (c *Client) Status() (*StatusDoc, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer w.close()
+	defer w.Close()
 
-	if w.hasFeature("status") {
+	if w.Has("status") {
 		var reply struct {
 			Status StatusDoc `json:"status"`
 		}
-		if err := w.request("status", nil, &reply); err != nil {
+		if err := w.Request("status", nil, &reply); err != nil {
 			return nil, fmt.Errorf("termd status: %w", err)
 		}
 		if reply.Status.Terminals == nil {
@@ -181,14 +182,14 @@ func (c *Client) Status() (*StatusDoc, error) {
 	var list struct {
 		Terminals []TerminalStatus `json:"terminals"`
 	}
-	if err := w.request("list", nil, &list); err != nil {
+	if err := w.Request("list", nil, &list); err != nil {
 		return nil, fmt.Errorf("termd list: %w", err)
 	}
 	if list.Terminals == nil {
 		list.Terminals = []TerminalStatus{}
 	}
 	return &StatusDoc{
-		Daemon:    DaemonStatus{NS: c.ns, Proto: w.welcome.Proto, Instance: w.welcome.Instance},
+		Daemon:    DaemonStatus{NS: c.ns, Proto: w.Welcome.Proto, Instance: w.Welcome.Instance},
 		Terminals: list.Terminals,
 	}, nil
 }
@@ -203,8 +204,8 @@ func (c *Client) StopDaemon() error {
 	if err != nil {
 		return err
 	}
-	defer w.close()
-	return w.request("stop", nil, nil)
+	defer w.Close()
+	return w.Request("stop", nil, nil)
 }
 
 // AttachCommand returns the g3d executable and argv to replace this process
@@ -240,7 +241,7 @@ func (c *Client) CreateSessionIn(name, dir string, env map[string]string) error 
 	if err != nil {
 		return err
 	}
-	defer w.close()
+	defer w.Close()
 
 	fields := map[string]any{
 		"id":        name,
@@ -255,7 +256,7 @@ func (c *Client) CreateSessionIn(name, dir string, env map[string]string) error 
 	if reqEnv := sanitizeRequestEnv(env); len(reqEnv) > 0 {
 		fields["env"] = reqEnv
 	}
-	if err := w.request("create", fields, nil); err != nil {
+	if err := w.Request("create", fields, nil); err != nil {
 		if isWireCode(err, "exists") {
 			return fmt.Errorf("session %q already exists", name)
 		}
@@ -274,9 +275,9 @@ func (c *Client) KillSession(name string) error {
 	if err != nil {
 		return err
 	}
-	defer w.close()
+	defer w.Close()
 
-	if err := w.request("kill", map[string]any{"id": name}, nil); err != nil {
+	if err := w.Request("kill", map[string]any{"id": name}, nil); err != nil {
 		if isWireCode(err, "no_terminal") {
 			return fmt.Errorf("session %q not found", name)
 		}
@@ -331,13 +332,13 @@ func ResolveTerminalCwd(osc7Pwd, fallbackCwd string) string {
 
 func (c *Client) requestEnvOf(session string) map[string]string {
 	w, err := dialNamespace(c.ns)
-	if err != nil || !w.hasFeature("env") {
+	if err != nil || !w.Has("env") {
 		if w != nil {
-			_ = w.close()
+			_ = w.Close()
 		}
 		return nil
 	}
-	defer w.close()
+	defer w.Close()
 	var reply struct {
 		Env []struct {
 			Name   string `json:"name"`
@@ -345,7 +346,7 @@ func (c *Client) requestEnvOf(session string) map[string]string {
 			Source string `json:"source"`
 		} `json:"env"`
 	}
-	if err := w.request("env", map[string]any{"id": session}, &reply); err != nil {
+	if err := w.Request("env", map[string]any{"id": session}, &reply); err != nil {
 		return nil
 	}
 	out := map[string]string{}
@@ -416,8 +417,8 @@ func (c *Client) SessionEnv(session, name string) string {
 	if err != nil {
 		return ""
 	}
-	defer w.close()
-	if !w.hasFeature("env") {
+	defer w.Close()
+	if !w.Has("env") {
 		return ""
 	}
 	var reply struct {
@@ -426,7 +427,7 @@ func (c *Client) SessionEnv(session, name string) string {
 			Value string `json:"value"`
 		} `json:"env"`
 	}
-	if err := w.request("env", map[string]any{"id": session}, &reply); err != nil {
+	if err := w.Request("env", map[string]any{"id": session}, &reply); err != nil {
 		return ""
 	}
 	for _, e := range reply.Env {
@@ -437,7 +438,7 @@ func (c *Client) SessionEnv(session, name string) string {
 	return ""
 }
 
-func (c *Client) withWriter(session, feature string, fn func(w *wireConn, handle uint32) error) error {
+func (c *Client) withWriter(session, feature string, fn func(w *termdwire.Conn, handle uint32) error) error {
 	w, err := dialNamespace(c.ns)
 	if errors.Is(err, errNotRunning) {
 		return fmt.Errorf("session %q not found", session)
@@ -445,16 +446,16 @@ func (c *Client) withWriter(session, feature string, fn func(w *wireConn, handle
 	if err != nil {
 		return err
 	}
-	defer w.close()
+	defer w.Close()
 
-	if feature != "" && !w.hasFeature(feature) {
-		return fmt.Errorf("termd daemon %s lacks feature %q; upgrade g3d-termd", w.welcome.Daemon, feature)
+	if feature != "" && !w.Has(feature) {
+		return fmt.Errorf("termd daemon %s lacks feature %q; upgrade g3d-termd", w.Welcome.Daemon, feature)
 	}
 
 	var sub struct {
 		Handle uint32 `json:"handle"`
 	}
-	err = w.request("subscribe", map[string]any{
+	err = w.Request("subscribe", map[string]any{
 		"id":   session,
 		"mode": "none",
 		"role": "attach",
@@ -469,17 +470,17 @@ func (c *Client) withWriter(session, feature string, fn func(w *wireConn, handle
 	opErr := fn(w, sub.Handle)
 	// Synchronize through the terminal actor (g3d's done_writing pattern):
 	// unsubscribe's reply arrives after any error event caused by INPUT.
-	_ = w.request("unsubscribe", map[string]any{"handle": sub.Handle}, nil)
+	_ = w.Request("unsubscribe", map[string]any{"handle": sub.Handle}, nil)
 	if opErr != nil {
 		return opErr
 	}
 	for {
 		select {
-		case f, ok := <-w.frames:
+		case f, ok := <-w.Frames:
 			if !ok {
 				return nil
 			}
-			if f.Type == frameEvent && f.Stream == sub.Handle {
+			if f.Type == termdwire.FrameEvent && f.Stream == sub.Handle {
 				var ev struct {
 					Ev      string `json:"ev"`
 					Code    string `json:"code"`
@@ -498,12 +499,12 @@ func (c *Client) withWriter(session, feature string, fn func(w *wireConn, handle
 // SendKeys writes literal bytes to session's PTY without key-name parsing or
 // bracketed-paste framing, matching tmux send-keys -l / g3d send.
 func (c *Client) SendKeys(session, text string) error {
-	err := c.withWriter(session, "", func(w *wireConn, handle uint32) error {
+	err := c.withWriter(session, "", func(w *termdwire.Conn, handle uint32) error {
 		b := []byte(text)
 		const chunk = 1 << 20
 		for len(b) > 0 {
 			n := min(len(b), chunk)
-			if err := w.input(handle, b[:n]); err != nil {
+			if err := w.Input(handle, b[:n]); err != nil {
 				return err
 			}
 			b = b[n:]
@@ -531,10 +532,10 @@ func (c *Client) PasteText(session, text string) error {
 		}
 		return nil
 	}
-	err := c.withWriter(session, "paste", func(w *wireConn, handle uint32) error {
-		chunkMax := min(1<<20, max((w.maxFrame()-1024)/6, 4))
-		if !w.hasFeature("paste_stream") || len(clean) <= chunkMax {
-			return w.request("paste", map[string]any{
+	err := c.withWriter(session, "paste", func(w *termdwire.Conn, handle uint32) error {
+		chunkMax := min(1<<20, max((w.MaxFrame()-1024)/6, 4))
+		if !w.Has("paste_stream") || len(clean) <= chunkMax {
+			return w.Request("paste", map[string]any{
 				"handle":       handle,
 				"text":         clean,
 				"allow_unsafe": true,
@@ -565,7 +566,7 @@ func (c *Client) PasteText(session, text string) error {
 			if more {
 				fields["more"] = true
 			}
-			if err := w.request("paste", fields, nil); err != nil {
+			if err := w.Request("paste", fields, nil); err != nil {
 				return err
 			}
 		}
@@ -586,7 +587,7 @@ func (c *Client) SendSpecialKey(session, key string) error {
 	if !ok {
 		return c.SendKeys(session, key)
 	}
-	err := c.withWriter(session, "key", func(w *wireConn, handle uint32) error {
+	err := c.withWriter(session, "key", func(w *termdwire.Conn, handle uint32) error {
 		fields := map[string]any{
 			"handle": handle,
 		}
@@ -602,10 +603,10 @@ func (c *Client) SendSpecialKey(session, key string) error {
 		if ev.Text != "" {
 			fields["text"] = ev.Text
 		}
-		if w.hasFeature("option_as_alt") {
+		if w.Has("option_as_alt") {
 			fields["option_as_alt"] = "auto"
 		}
-		return w.request("key", fields, nil)
+		return w.Request("key", fields, nil)
 	})
 	if err != nil {
 		return fmt.Errorf("sending key %q: %w", key, err)
@@ -633,12 +634,12 @@ func (c *Client) capture(session string, lines int, format string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	defer w.close()
+	defer w.Close()
 
 	var reply struct {
 		Text string `json:"text"`
 	}
-	err = w.request("capture", map[string]any{
+	err = w.Request("capture", map[string]any{
 		"id":           session,
 		"format":       format,
 		"history_rows": max(lines, 0),
@@ -672,14 +673,14 @@ func (c *Client) PipePane(session, logPath string) error {
 	var sub struct {
 		Handle uint32 `json:"handle"`
 	}
-	err = w.request("subscribe", map[string]any{
+	err = w.Request("subscribe", map[string]any{
 		"id":   session,
 		"mode": "raw",
 		"role": "watch",
 		"flow": "lossy",
 	}, &sub)
 	if err != nil {
-		_ = w.close()
+		_ = w.Close()
 		if isWireCode(err, "no_terminal") {
 			return fmt.Errorf("session %q not found", session)
 		}
@@ -688,7 +689,7 @@ func (c *Client) PipePane(session, logPath string) error {
 
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		_ = w.close()
+		_ = w.Close()
 		return fmt.Errorf("opening pipe log: %w", err)
 	}
 
@@ -704,11 +705,11 @@ func (c *Client) PipePane(session, logPath string) error {
 	go func() {
 		defer close(pw.done)
 		defer f.Close()
-		for frame := range w.frames {
+		for frame := range w.Frames {
 			switch {
-			case frame.Type == frameOutput && frame.Stream == sub.Handle && len(frame.Payload) > 8:
+			case frame.Type == termdwire.FrameOutput && frame.Stream == sub.Handle && len(frame.Payload) > 8:
 				_, _ = f.Write(frame.Payload[8:])
-			case frame.Type == frameEvent && frame.Stream == sub.Handle:
+			case frame.Type == termdwire.FrameEvent && frame.Stream == sub.Handle:
 				var ev struct {
 					Ev string `json:"ev"`
 				}
@@ -746,8 +747,8 @@ func (c *Client) stopPipe(session string) bool {
 	if !ok {
 		return false
 	}
-	_ = pw.conn.request("unsubscribe", map[string]any{"handle": pw.handle}, nil)
-	_ = pw.conn.close()
+	_ = pw.conn.Request("unsubscribe", map[string]any{"handle": pw.handle}, nil)
+	_ = pw.conn.Close()
 	<-pw.done
 	return true
 }

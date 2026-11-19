@@ -41,14 +41,28 @@ func validEnvName(name string) bool {
 	return true
 }
 
+func isInternalG3DVar(name string) bool {
+	return strings.HasPrefix(name, "G3D_RELAY_") || strings.HasPrefix(name, "G3D_TERMD_")
+}
+
+func isShellTransientVar(name string) bool {
+	switch name {
+	case "SHLVL", "OLDPWD", "PWD", "_":
+		return true
+	default:
+		return false
+	}
+}
+
 // CallerEnv filters "NAME=VALUE" environment entries to those g3d-termd's
-// create.env_base accepts: valid POSIX identifier names, valid UTF-8 without
-// NUL, and at most 128 KiB per entry.
+// create.env_base accepts, while scrubbing G3D_RELAY_* capability tokens,
+// G3D_TERMD_* internal controls, and shell-transient state so they are never
+// transmitted over the termd socket.
 func CallerEnv(environ []string) map[string]string {
 	out := make(map[string]string, len(environ))
 	for _, kv := range environ {
 		k, v, ok := strings.Cut(kv, "=")
-		if !ok || !validEnvName(k) {
+		if !ok || !validEnvName(k) || isInternalG3DVar(k) || isShellTransientVar(k) {
 			continue
 		}
 		if !utf8.ValidString(k) || !utf8.ValidString(v) || strings.IndexByte(v, 0) >= 0 {
@@ -68,7 +82,7 @@ func sanitizeRequestEnv(env map[string]string) map[string]string {
 	}
 	out := make(map[string]string, len(env))
 	for k, v := range env {
-		if !validEnvName(k) || layer6Reserved[k] || !utf8.ValidString(v) || strings.IndexByte(v, 0) >= 0 {
+		if !validEnvName(k) || layer6Reserved[k] || isInternalG3DVar(k) || !utf8.ValidString(v) || strings.IndexByte(v, 0) >= 0 {
 			continue
 		}
 		if len(k)+len(v)+2 > envValueMax {

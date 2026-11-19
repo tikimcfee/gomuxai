@@ -1,12 +1,31 @@
 package termd_test
 
 import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/termd"
+	"github.com/tikimcfee/gomuxai/internal/termdwire"
 )
+
+func shortTempDir(t *testing.T, pattern string) string {
+	t.Helper()
+	// Keep Unix socket paths well within macOS's 104-byte SUN_LEN limit.
+	dir, err := os.MkdirTemp("/tmp", pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
 
 func TestValidateNamespace(t *testing.T) {
 	for _, valid := range []string{"agents", "agents-dev", "a1.b_c-2"} {
@@ -111,10 +130,24 @@ func TestCallerEnv(t *testing.T) {
 	got := termd.CallerEnv([]string{
 		"FOO=bar=baz",
 		"EMPTY=",
+		"G3D_BIN=/usr/local/bin/g3d",
+		"GOMUXAI_MUX=termd",
 		"BASH_FUNC_fn%%=() { :; }",
 		"BAD-NAME=1",
 		"INVALID_UTF8=\xff",
+		"NUL_VAL=abc\x00def",
 		"HUGE=" + strings.Repeat("x", 130*1024),
+		"G3D_RELAY_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"G3D_RELAY_TOKEN_DIR=/tmp/relay-tokens",
+		"G3D_RELAY_PORT=8080",
+		"G3D_TERMD_DIR=/tmp/g3d-501",
+		"G3D_TERMD_SOCKET=/tmp/g3d-501/termd-wall.sock",
+		"G3D_TERMD_ID=pane-1",
+		"G3D_TERMD_CONFIG=/tmp/termd.toml",
+		"SHLVL=3",
+		"OLDPWD=/tmp/prev",
+		"PWD=/tmp/curr",
+		"_=/usr/bin/env",
 	})
 	if got["FOO"] != "bar=baz" {
 		t.Errorf("FOO = %q, want bar=baz", got["FOO"])
@@ -122,11 +155,260 @@ func TestCallerEnv(t *testing.T) {
 	if v, ok := got["EMPTY"]; !ok || v != "" {
 		t.Errorf("EMPTY = %q, %v; want empty present", v, ok)
 	}
-	for _, rejected := range []string{"BASH_FUNC_fn%%", "BAD-NAME", "INVALID_UTF8", "HUGE"} {
+	if got["G3D_BIN"] != "/usr/local/bin/g3d" {
+		t.Errorf("G3D_BIN = %q, want /usr/local/bin/g3d", got["G3D_BIN"])
+	}
+	if got["GOMUXAI_MUX"] != "termd" {
+		t.Errorf("GOMUXAI_MUX = %q, want termd", got["GOMUXAI_MUX"])
+	}
+	for _, rejected := range []string{
+		"BASH_FUNC_fn%%",
+		"BAD-NAME",
+		"INVALID_UTF8",
+		"NUL_VAL",
+		"HUGE",
+		"G3D_RELAY_TOKEN",
+		"G3D_RELAY_TOKEN_DIR",
+		"G3D_RELAY_PORT",
+		"G3D_TERMD_DIR",
+		"G3D_TERMD_SOCKET",
+		"G3D_TERMD_ID",
+		"G3D_TERMD_CONFIG",
+		"SHLVL",
+		"OLDPWD",
+		"PWD",
+		"_",
+	} {
 		if _, ok := got[rejected]; ok {
 			t.Errorf("%s should be excluded from CallerEnv", rejected)
 		}
 	}
+}
+
+func TestCreateSessionScrubsRelayAndTermdVarsFromWire(t *testing.T) {
+	dir := shortTempDir(t, "gmxt-env-")
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const ns = "agents"
+	sockPath := filepath.Join(dir, "termd-"+ns+".sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	createCh := make(chan map[string]any, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		f, err := termdwire.ReadFrame(r)
+		if err != nil || f.Type != termdwire.FrameHello {
+			return
+		}
+		welcome, _ := json.Marshal(map[string]any{
+			"proto":     []int{1, 5},
+			"daemon":    "g3d-termd/mock",
+			"engine":    "mock",
+			"ns":        ns,
+			"pid":       os.Getpid(),
+			"features":  []string{"status"},
+			"max_frame": termdwire.DefaultMaxFrame,
+			"instance":  "inst-mock",
+		})
+		if _, err := conn.Write(termdwire.EncodeFrame(termdwire.FrameWelcome, 0, welcome)); err != nil {
+			return
+		}
+		reqFrame, err := termdwire.ReadFrame(r)
+		if err != nil || reqFrame.Type != termdwire.FrameRequest {
+			return
+		}
+		var req map[string]any
+		_ = json.Unmarshal(reqFrame.Payload, &req)
+		createCh <- req
+		reply, _ := json.Marshal(map[string]any{"req": req["req"], "ok": true})
+		_, _ = conn.Write(termdwire.EncodeFrame(termdwire.FrameReply, 0, reply))
+	}()
+
+	fakeBin := filepath.Join(t.TempDir(), "fake-g3d-termd")
+	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("G3D_TERMD_DIR", dir)
+	t.Setenv(termd.TestServerEnv, dir)
+	t.Setenv("G3D_TERMD_SOCKET", "")
+	t.Setenv("G3D_TERMD_ID", "caller-pane")
+	t.Setenv("G3D_RELAY_TOKEN", "secret-capability-token")
+	t.Setenv("G3D_RELAY_TOKEN_DIR", "/tmp/secret-token-dir")
+	t.Setenv("SHLVL", "4")
+	t.Setenv("OLDPWD", "/tmp/old")
+
+	c, err := termd.NewClient(termd.Options{Namespace: ns, DaemonBin: fakeBin})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	err = c.CreateSession("worker", map[string]string{
+		"AGENT_NAME":          "worker",
+		"G3D_RELAY_TOKEN":     "req-leak",
+		"G3D_RELAY_TOKEN_DIR": "/req-leak",
+		"G3D_TERMD_DIR":       "/req-leak",
+		"G3D_TERMD_CONFIG":    "/req-leak",
+		"G3D_TERMD_SOCKET":    "/req-leak",
+		"G3D_TERMD_ID":        "req-leak",
+		"PWD":                 "/req-leak",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	req := <-createCh
+	envBase, _ := req["env_base"].(map[string]any)
+	for _, forbidden := range []string{
+		"G3D_RELAY_TOKEN",
+		"G3D_RELAY_TOKEN_DIR",
+		"G3D_TERMD_DIR",
+		"G3D_TERMD_SOCKET",
+		"G3D_TERMD_ID",
+		"SHLVL",
+		"OLDPWD",
+		"PWD",
+		"_",
+	} {
+		if v, ok := envBase[forbidden]; ok {
+			t.Errorf("create.env_base leaked %s=%v", forbidden, v)
+		}
+	}
+	reqEnv, _ := req["env"].(map[string]any)
+	if reqEnv["AGENT_NAME"] != "worker" {
+		t.Errorf("create.env[AGENT_NAME] = %v, want worker", reqEnv["AGENT_NAME"])
+	}
+	for _, forbidden := range []string{
+		"G3D_RELAY_TOKEN",
+		"G3D_RELAY_TOKEN_DIR",
+		"G3D_TERMD_DIR",
+		"G3D_TERMD_CONFIG",
+		"G3D_TERMD_SOCKET",
+		"G3D_TERMD_ID",
+		"PWD",
+	} {
+		if v, ok := reqEnv[forbidden]; ok {
+			t.Errorf("create.env leaked %s=%v", forbidden, v)
+		}
+	}
+}
+
+func startImpostorListener(t *testing.T, sockPath string) <-chan struct{} {
+	t.Helper()
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+		select {
+		case accepted <- struct{}{}:
+		default:
+		}
+	}()
+	return accepted
+}
+
+func TestSocketTrust_FailsClosedOnUnsafeDirAndSymlink(t *testing.T) {
+	const ns = "agents"
+	binDir := t.TempDir()
+	spawnMarker := filepath.Join(binDir, "daemon-spawned")
+	fakeBin := filepath.Join(binDir, "fake-g3d-termd")
+	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\ntouch '"+spawnMarker+"'\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	assertFailsClosed := func(t *testing.T, sockDir string) {
+		t.Helper()
+		t.Setenv("G3D_TERMD_DIR", sockDir)
+		t.Setenv(termd.TestServerEnv, sockDir)
+		t.Setenv("G3D_TERMD_SOCKET", "")
+
+		c, err := termd.NewClient(termd.Options{Namespace: ns, DaemonBin: fakeBin})
+		if err != nil {
+			t.Fatalf("NewClient(%q): %v", sockDir, err)
+		}
+
+		st, err := c.Status()
+		if !errors.Is(err, termd.ErrUnsafeSocket) {
+			t.Fatalf("Status(%q) = (%+v, %v), want error wrapping ErrUnsafeSocket", sockDir, st, err)
+		}
+		if st != nil {
+			t.Fatalf("Status(%q) returned non-nil StatusDoc %+v alongside error", sockDir, st)
+		}
+
+		start := time.Now()
+		err = c.CreateSession("sess", nil)
+		if !errors.Is(err, termd.ErrUnsafeSocket) {
+			t.Fatalf("CreateSession(%q) = %v, want error wrapping ErrUnsafeSocket", sockDir, err)
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("CreateSession(%q) took %s instead of failing closed immediately", sockDir, elapsed)
+		}
+		if _, statErr := os.Stat(spawnMarker); statErr == nil {
+			t.Fatalf("CreateSession(%q) spawned daemon despite unsafe socket directory", sockDir)
+		}
+
+		sockPath := filepath.Join(sockDir, "termd-"+ns+".sock")
+		if err := termd.StopSocket(sockPath); !errors.Is(err, termd.ErrUnsafeSocket) {
+			t.Fatalf("StopSocket(%q) = %v, want error wrapping ErrUnsafeSocket", sockPath, err)
+		}
+	}
+
+	t.Run("mode_0755", func(t *testing.T) {
+		dir := shortTempDir(t, "gmxt755-")
+		accepted := startImpostorListener(t, filepath.Join(dir, "termd-"+ns+".sock"))
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		assertFailsClosed(t, dir)
+		select {
+		case <-accepted:
+			t.Fatal("connected to impostor socket inside 0755 directory")
+		default:
+		}
+	})
+
+	t.Run("symlink_and_dangling", func(t *testing.T) {
+		realDir := shortTempDir(t, "gmxtreal-")
+		if err := os.Chmod(realDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		accepted := startImpostorListener(t, filepath.Join(realDir, "termd-"+ns+".sock"))
+
+		parent := shortTempDir(t, "gmxtlnk-")
+		linkDir := filepath.Join(parent, "socklink")
+		if err := os.Symlink(realDir, linkDir); err != nil {
+			t.Fatal(err)
+		}
+		danglingDir := filepath.Join(parent, "dangling")
+		if err := os.Symlink(filepath.Join(parent, "missing"), danglingDir); err != nil {
+			t.Fatal(err)
+		}
+
+		for _, candidate := range []string{linkDir, linkDir + "/", danglingDir} {
+			assertFailsClosed(t, candidate)
+		}
+		select {
+		case <-accepted:
+			t.Fatal("connected to impostor socket through symlinked G3D_TERMD_DIR")
+		default:
+		}
+	})
 }
 
 func TestResolveTerminalCwd(t *testing.T) {
