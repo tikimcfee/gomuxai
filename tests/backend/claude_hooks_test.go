@@ -2,7 +2,9 @@ package backend_test
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -403,15 +405,59 @@ func TestClaudePermissionPromptVisible(t *testing.T) {
 	}
 }
 
+// The briefing goes inline, quoted as one word whatever it holds.
 func TestClaudeWithInstructions(t *testing.T) {
-	cmd := namedagents.NewClaudeBackend().WithInstructions("claude --session-id x", "/data/agents/it's/instructions.md")
-	out, err := exec.Command("sh", "-c", `printf '%s\n' `+strings.TrimPrefix(cmd, "claude ")).Output()
+	brief := "# You're agent \"worker\"\n\nRun `agent send` when done; $HOME stays literal.\n"
+	path := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(path, []byte(brief), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := namedagents.NewClaudeBackend().WithInstructions("claude --session-id x", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(args) != 4 || args[2] != "--append-system-prompt-file" || args[3] != "/data/agents/it's/instructions.md" {
+	out, err := exec.Command("sh", "-c", `printf '%s\000' `+strings.TrimPrefix(cmd, "claude ")).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00")
+	if len(args) != 4 || args[2] != "--append-system-prompt" || args[3] != brief {
 		t.Errorf("args = %q", args)
+	}
+
+	// A briefing that can't be read is an error, never an agent without it.
+	if cmd, err := namedagents.NewClaudeBackend().WithInstructions("claude", filepath.Join(t.TempDir(), "missing.md")); err == nil {
+		t.Errorf("missing briefing launched: %s", cmd)
+	}
+}
+
+// Every launch flag gomuxai gives claude must be one Claude Code's /restart
+// carries over; after any of ClaudeRestartBlockingFlags it refuses to restart
+// in place. The command is built as spawn builds it, every option on.
+func TestClaudeLaunchRestartable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "instructions.md")
+	if err := os.WriteFile(path, []byte("# briefing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, cfg := range []namedagents.ClaudeConfig{{}, {SkipPermissions: true, Resume: "r1"}} {
+		b := namedagents.NewClaudeBackendWithConfig(cfg)
+		cmd := b.WithModel(b.LaunchCommandWithSession("s1"), "opus")
+		cmd, err := b.WithInstructions(cmd, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd = b.AllowCommands(cmd, []string{"agent send", "/opt/x/agent status"})
+		out, err := exec.Command("sh", "-c", `printf '%s\000' `+strings.TrimPrefix(cmd, "claude ")).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, arg := range strings.Split(string(out), "\x00") {
+			for _, f := range namedagents.ClaudeRestartBlockingFlags {
+				if arg == f || strings.HasPrefix(arg, f+"=") {
+					t.Errorf("%+v: launch uses %s, which Claude Code's /restart refuses: %s", cfg, f, cmd)
+				}
+			}
+		}
 	}
 }
 

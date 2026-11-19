@@ -41,6 +41,22 @@ func (b *ClaudeBackend) Name() string {
 // wizard, which reads the person's shell history and other repos.
 const ClaudeSpawnSettings = `{"skillOverrides":{"auto-mode-setup":"off"}}`
 
+// ClaudeRestartBlockingFlags are the launch flags after which Claude Code's
+// /restart refuses to restart the session in place ("it has restrictions a
+// restart can't carry over (launch flags: a custom system prompt, a tool
+// allowlist, or restricted settings)"), so an agent on an old version could
+// only be ended and resumed by hand. No launch command gomuxai builds may use
+// one: --append-system-prompt, --settings, --model, --allowedTools rules and
+// --resume all ride the restart.
+var ClaudeRestartBlockingFlags = []string{
+	"--system-prompt",
+	"--system-prompt-file",
+	"--append-system-prompt-file",
+	"--permission-prompt-tool",
+	"--setting-sources",
+	"--tools",
+}
+
 func (b *ClaudeBackend) LaunchCommand() string {
 	cmd := "claude"
 	if b.config.SkipPermissions {

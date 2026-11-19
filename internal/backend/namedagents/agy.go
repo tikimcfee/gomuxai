@@ -105,23 +105,23 @@ func (b *AgyBackend) DeclineTrustKeys(screen string) []string {
 // directories, not from .agents/rules. The briefing already lives in the
 // agent's own directory, which doubles as the hooks bundle, so usually the
 // --add-dir is already there.
-func (b *AgyBackend) WithInstructions(launchCmd, path string) string {
+func (b *AgyBackend) WithInstructions(launchCmd, path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return launchCmd
+		return "", fmt.Errorf("reading the instructions for agy's AGENTS.md: %w", err)
 	}
 	dir := filepath.Dir(path)
 	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), data, 0600); err != nil {
-		return launchCmd
+		return "", fmt.Errorf("writing agy's AGENTS.md: %w", err)
 	}
 	if b.addedDir != "" && filepath.Clean(dir) == filepath.Clean(b.bundleDir("")) {
-		return launchCmd // LaunchCommandWithHooks added it
+		return launchCmd, nil // LaunchCommandWithHooks added it
 	}
 	addDir := " --add-dir " + util.ShellQuote(b.workspaceDir(dir))
 	if strings.Contains(launchCmd, addDir) {
-		return launchCmd
+		return launchCmd, nil
 	}
-	return b.insertBeforeExit(launchCmd, addDir)
+	return b.insertBeforeExit(launchCmd, addDir), nil
 }
 
 // AppendPromptFlag delivers the initial task via agy's -i (--prompt-interactive)

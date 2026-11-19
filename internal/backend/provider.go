@@ -174,8 +174,9 @@ type QuestionPrompter interface {
 // standing instructions at launch without writing into its project.
 type InstructionsProvider interface {
 	// WithInstructions returns launchCmd changed to load the instructions in
-	// the file at path (absolute).
-	WithInstructions(launchCmd, path string) string
+	// the file at path (absolute), or why it can't: an agent is never started
+	// without its briefing.
+	WithInstructions(launchCmd, path string) (string, error)
 }
 
 // CommandAllower is implemented by backends that can pre-approve shell
