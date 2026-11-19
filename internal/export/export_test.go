@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,9 +156,13 @@ func TestSnapshot(t *testing.T) {
 		t.Fatalf("agents = %v, want lead, lead-t1 (gone was cleaned up)", names)
 	}
 	a := snap.Agents[1]
-	if a.Parent != "lead" || a.Host != "box" || a.Kind != KindTmux || !a.Live || a.Attached == nil || !*a.Attached ||
+	if a.Parent != "lead" || a.Host != "box" || a.Kind != KindTermd || a.Namespace != "agents" || !a.Live || a.Attached == nil || !*a.Attached ||
 		a.Status != "waiting" || a.Run == 0 || a.Store != f.dir || a.Cwd != "/w" {
 		t.Errorf("lead-t1 = %+v", a)
+	}
+	rawAgent, err := json.Marshal(a)
+	if err != nil || !strings.Contains(string(rawAgent), `"namespace":"agents"`) {
+		t.Errorf("marshaled local agent = %s (%v), want namespace:agents", rawAgent, err)
 	}
 	if a.Transcript != transcript || a.Dialect != "claude" || a.TranscriptSize != 3 || a.TranscriptMtime.IsZero() {
 		t.Errorf("lead-t1 transcript = %q %q %d %v, want the file, claude, 3 bytes", a.Transcript, a.Dialect, a.TranscriptSize, a.TranscriptMtime)
@@ -537,7 +542,7 @@ func TestHosts_Fields(t *testing.T) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"attached", "resumable", "end_reason", "session_id", "cwd", "detail"} {
+	for _, k := range []string{"attached", "resumable", "end_reason", "session_id", "cwd", "detail", "namespace"} {
 		if v, ok := fields[k]; ok {
 			t.Errorf("old host's agent has %s = %v, want it absent (unknown)", k, v)
 		}

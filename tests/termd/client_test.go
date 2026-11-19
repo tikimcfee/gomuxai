@@ -21,12 +21,11 @@ func newTestClient(t *testing.T, ns string) *termd.Client {
 	termdtest.Require(t)
 	c, err := termd.NewClient(termd.Options{Namespace: ns})
 	if err != nil {
-		if strings.Contains(err.Error(), "no g3d-termd binary") {
-			t.Skipf("g3d-termd not installed (%v)", err)
-		}
 		t.Fatalf("NewClient(%q): %v", ns, err)
 	}
-	t.Cleanup(func() { _ = c.StopDaemon() })
+	if ns != termd.DefaultNamespace {
+		t.Cleanup(func() { _ = c.StopDaemon() })
+	}
 	return c
 }
 
@@ -174,7 +173,7 @@ func TestSessionLifecycleStatusAndProcessTreeKill(t *testing.T) {
 }
 
 func TestLiteralSendKeysAndSpecialKeys(t *testing.T) {
-	c := newTestClient(t, "agents-keys")
+	c := newTestClient(t, termd.DefaultNamespace)
 	sess := newShell(t, c, "keys")
 
 	// C-c cancels a half-typed command.
@@ -222,7 +221,7 @@ func TestLiteralSendKeysAndSpecialKeys(t *testing.T) {
 }
 
 func TestLargeBracketedPasteAndCaptureStyled(t *testing.T) {
-	c := newTestClient(t, "agents-paste")
+	c := newTestClient(t, termd.DefaultNamespace)
 	sess := newShell(t, c, "paste")
 
 	// 66 KB paste (over 60x macOS's 1024-byte PTY MAX_CANON) with embedded
@@ -298,38 +297,20 @@ func TestLargeBracketedPasteAndCaptureStyled(t *testing.T) {
 	}
 }
 
-func TestPipePaneRespawnAndAttachCommand(t *testing.T) {
-	c := newTestClient(t, "agents-pipe")
-	sess := newShell(t, c, "pipe")
+func TestRespawnPreservesEnvAndAttachCommand(t *testing.T) {
+	c := newTestClient(t, termd.DefaultNamespace)
+	sess := uniqueSession(t, "respawn")
+	dir := t.TempDir()
+	reqEnv := map[string]string{
+		"AGENT_NAME": "respawn-agent",
+		"CUSTOM_KEY": "preserved-42",
+	}
+	if err := c.CreateSessionIn(sess, dir, reqEnv); err != nil {
+		t.Fatalf("CreateSessionIn: %v", err)
+	}
+	t.Cleanup(func() { _ = c.KillSession(sess) })
 
-	// Malicious path with command substitution must write literal file, never run shell.
-	tmp := t.TempDir()
-	marker := filepath.Join(tmp, "PWNED")
-	logPath := filepath.Join(tmp, fmt.Sprintf("log$(touch %s).txt", marker))
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.PipePane(sess, logPath); err != nil {
-		t.Fatalf("PipePane: %v", err)
-	}
-	if err := c.SendKeys(sess, "echo piped-$((40+2))"); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.SendSpecialKey(sess, "Enter"); err != nil {
-		t.Fatal(err)
-	}
-	await.Until(t, "piped output in file", func() (string, bool) {
-		b, _ := os.ReadFile(logPath)
-		return string(b), strings.Contains(string(b), "piped-42")
-	})
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("PipePane executed shell injection!")
-	}
-	if err := c.StopPipePane(sess); err != nil {
-		t.Fatalf("StopPipePane: %v", err)
-	}
-
-	// RespawnPane replaces the shell PID while keeping the session.
+	// RespawnPane replaces the shell PID while keeping the session, cwd, and request env.
 	before, err := c.FirstPane(sess)
 	if err != nil {
 		t.Fatal(err)
@@ -344,6 +325,16 @@ func TestPipePaneRespawnAndAttachCommand(t *testing.T) {
 	if after.PID == before.PID {
 		t.Errorf("RespawnPane kept same PID %d", after.PID)
 	}
+	if got := c.SessionEnv(sess, "CUSTOM_KEY"); got != "preserved-42" {
+		t.Errorf("SessionEnv(CUSTOM_KEY) after RespawnPane = %q, want preserved-42", got)
+	}
+	if err := c.SendKeys(sess, `echo "AFTER=[$AGENT_NAME:$CUSTOM_KEY]"`); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SendSpecialKey(sess, "Enter"); err != nil {
+		t.Fatal(err)
+	}
+	waitLine(t, c, sess, "AFTER=[respawn-agent:preserved-42]")
 
 	// AttachCommand builds g3d --ns <ns> attach --take <session>.
 	if _, err := termd.AttachBinary("", ""); err == nil {
@@ -351,7 +342,7 @@ func TestPipePaneRespawnAndAttachCommand(t *testing.T) {
 		if err != nil {
 			t.Fatalf("AttachCommand: %v", err)
 		}
-		if bin == "" || !slices.Equal(argv, []string{"g3d", "--ns", "agents-pipe", "attach", "--take", sess}) {
+		if bin == "" || !slices.Equal(argv, []string{"g3d", "--ns", termd.DefaultNamespace, "attach", "--take", sess}) {
 			t.Errorf("AttachCommand = %q, %q", bin, argv)
 		}
 	}

@@ -25,13 +25,14 @@ var exportCmd = &cobra.Command{
 	Use:   "export",
 	Short: "Print the agent tree for a program to read, and follow its changes",
 	Long: `Export prints every agent this binary's store records, with what a display
-needs: parent, backend, tmux session and whether it exists, cwd, the last
-reported status, and the CLI transcript's path, size, and time. --json
-prints it as one JSON object; "agent list" is the view for a person.
+needs: parent, backend, session and g3d-termd namespace (and whether the
+session exists), cwd, the last reported status, and the CLI transcript's path,
+size, and time. --json prints it as one JSON object; "agent list" is the view
+for a person.
 
 --follow then prints one JSON line per change until Ctrl-C: spawned,
 changed, and removed agents, read from the store's agent events (which
-spawn, cleanup, and every status report record), plus tmux sessions and
+spawn, cleanup, and every status report record), plus terminal sessions and
 transcripts checked every second. Each event line carries its id; --since
 <id> resumes after it, without a snapshot, if the store still keeps the
 events after it (the newest 20000). docs/ARCHITECTURE.md ("Export") has
@@ -44,7 +45,7 @@ until the next hook.
 
 Stores: an agent spawned with another agent binary (a worktree's
 ./bin/agent) is recorded in that binary's store. Export finds those stores
-through the PATH of each agent-* tmux session no store records, and reads
+through the PATH of each agent-* session no store records, and reads
 them read-only; --store adds one. Sessions it still can't match are listed
 as unrecorded.
 
@@ -222,14 +223,20 @@ func followScope(dirs, hosts []string) string {
 }
 
 type sessionInspector interface {
+	Namespace() string
 	SessionNames() ([]string, error)
 	SessionEnv(session, name string) string
 }
 
 // exportDeps wires the tree to the multiplexer, the bus, and this host.
 func exportDeps() export.Deps {
+	ns := cfg.TermdNamespace
+	if ns == "" {
+		ns = config.DefaultTermdNamespace
+	}
 	d := export.Deps{
 		Host:          cfg.Host,
+		Namespace:     ns,
 		SessionPrefix: cfg.SessionPrefix,
 		ListHost: func(ctx context.Context, host string) ([]natsbus.AgentInfo, error) {
 			var agents []natsbus.AgentInfo
@@ -241,6 +248,9 @@ func exportDeps() export.Deps {
 		},
 	}
 	if c, ok := tmuxClient.(sessionInspector); ok {
+		if cns := c.Namespace(); cns != "" {
+			d.Namespace = cns
+		}
 		d.Sessions = c.SessionNames
 		d.SessionStore = func(session string) string {
 			// spawn puts its binary's dir first on the session's PATH.

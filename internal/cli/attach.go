@@ -2,27 +2,19 @@ package cli
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/service"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
 var attachCmd = &cobra.Command{
 	Use:   "attach <name>",
-	Short: "Open an agent's tmux session in this terminal",
-	Long: `Attach opens an agent's tmux session in this terminal, as tmux attach
-does: you see its screen and can type into it. Ctrl-b d detaches; the agent
-keeps running.
-
-Inside tmux, it switches this terminal's client to the agent's session
-instead of starting a tmux inside a tmux.
-
-It never attaches read-only: while a read-only client is attached, tmux
-refuses the keys agent send types, so no message could reach the agent.
+	Short: "Open an agent's session in this terminal",
+	Long: `Attach opens an agent's g3d-termd session in this terminal via "g3d attach
+--take": you see its screen and can type into it. Ctrl-\ twice detaches; the
+agent keeps running.
 
 agent attach name@host opens an agent on another host. The bus can't carry
 a terminal, so agent runs ssh: ssh -t <destination> <its agent binary>
@@ -32,11 +24,11 @@ where its binary is. ssh is a separate trust path from the bus (your ssh
 keys and ~/.ssh/config, not the bus's pinned keys), so it needs "ssh
 <destination>" to work from here; if ssh fails, its error is what you see.
 
-Either way this process becomes tmux (or ssh): a signal to it reaches them
+Either way this process becomes g3d (or ssh): a signal to it reaches them
 directly, and nothing is left behind.
 
-An agent whose tmux session is gone (it ended: a reboot, say) has nothing
-to attach to, and attach says so before running tmux or ssh; agent resume
+An agent whose session is gone (it ended: a reboot, say) has nothing to
+attach to, and attach says so before running g3d or ssh; agent resume
 <name> --attach (or name@host) starts a claude or agy agent again and
 opens it.
 
@@ -72,54 +64,38 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	return attachSession(agent.SessionName)
 }
 
-// goneAttachError is attach's refusal for an agent whose tmux session is
-// gone (a reboot, a killed tmux server, or the CLI exited): there is
-// nothing to open, and tmux would say only "can't find session". ref names
-// the agent as the person typed it (name or name@host); reason is how it
-// ended, if known.
+// goneAttachError is attach's refusal for an agent whose session is gone
+// (a reboot, a stopped g3d-termd, or the CLI exited): there is nothing to
+// open. ref names the agent as the person typed it (name or name@host);
+// reason is how it ended, if known.
 func goneAttachError(ref, session, reason string, resumable bool) error {
 	ended := "has ended"
 	if reason != "" {
 		ended += " (" + reason + ")"
 	}
 	if resumable {
-		return fmt.Errorf("%s %s: its tmux session %s is gone, so there is nothing to attach to. agent resume %s --attach starts it again on its last session and opens it", ref, ended, session, ref)
+		return fmt.Errorf("%s %s: its session %s is gone, so there is nothing to attach to. agent resume %s --attach starts it again on its last session and opens it", ref, ended, session, ref)
 	}
-	return fmt.Errorf("%s %s: its tmux session %s is gone, so there is nothing to attach to (agent logs %s shows its last output)", ref, ended, session, ref)
+	return fmt.Errorf("%s %s: its session %s is gone, so there is nothing to attach to (agent logs %s shows its last output)", ref, ended, session, ref)
 }
 
 type sessionAttacher interface {
 	AttachCommand(session string) (bin string, argv []string, err error)
 }
 
-// attachSession hands this terminal to the multiplexer, showing session,
-// until the person detaches: this process becomes tmux or g3d (execInto).
+// attachSession hands this terminal to g3d, showing session, until the
+// person detaches: this process becomes g3d (execInto).
 func attachSession(session string) error {
-	if a, ok := tmuxClient.(sessionAttacher); ok {
-		bin, argv, err := a.AttachCommand(session)
-		if err != nil {
-			return fmt.Errorf("attaching to session %s: %w", session, err)
-		}
-		if err := execInto(bin, argv); err != nil {
-			return fmt.Errorf("attaching to session %s: %w", session, err)
-		}
-		return nil
+	a, ok := tmuxClient.(sessionAttacher)
+	if !ok {
+		return fmt.Errorf("attaching to session %s: multiplexer does not support interactive attach", session)
 	}
-	bin, err := tmux.Binary()
+	bin, argv, err := a.AttachCommand(session)
 	if err != nil {
-		return fmt.Errorf("attaching to tmux session %s: %w", session, err)
+		return fmt.Errorf("attaching to session %s: %w", session, err)
 	}
-	if err := execInto(bin, append([]string{"tmux"}, attachArgs(session, os.Getenv("TMUX") != "")...)); err != nil {
-		return fmt.Errorf("attaching to tmux session %s: %w", session, err)
+	if err := execInto(bin, argv); err != nil {
+		return fmt.Errorf("attaching to session %s: %w", session, err)
 	}
 	return nil
-}
-
-// attachArgs are the tmux arguments that show session in this terminal: a
-// switch of this client inside tmux, else a new client. Never read-only.
-func attachArgs(session string, insideTmux bool) []string {
-	if insideTmux {
-		return []string{"switch-client", "-t", "=" + session}
-	}
-	return []string{"attach-session", "-t", "=" + session}
 }

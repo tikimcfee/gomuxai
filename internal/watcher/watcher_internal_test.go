@@ -12,27 +12,24 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/termd"
 )
 
-// nopTmux is a tmux where every session exists and nothing happens.
-type nopTmux struct{}
+// nopMux is a mux where every session exists and nothing happens.
+type nopMux struct{}
 
-func (nopTmux) CreateSession(string, map[string]string) error           { return nil }
-func (nopTmux) CreateSessionIn(string, string, map[string]string) error { return nil }
-func (nopTmux) KillSession(string) error                                { return nil }
-func (nopTmux) RespawnPane(string) error                                { return nil }
-func (nopTmux) SessionExists(string) (bool, error)                      { return true, nil }
-func (nopTmux) ListSessions() ([]tmux.Session, error)                   { return nil, nil }
-func (nopTmux) SendKeys(string, string) error                           { return nil }
-func (nopTmux) PasteText(string, string) error                          { return nil }
-func (nopTmux) SendSpecialKey(string, string) error                     { return nil }
-func (nopTmux) Capture(string, int) (string, error)                     { return "", nil }
-func (nopTmux) CaptureStyled(string, int) (string, error)               { return "", nil }
-func (nopTmux) PipePane(string, string) error                           { return nil }
-func (nopTmux) StopPipePane(string) error                               { return nil }
-func (nopTmux) Clear(string) error                                      { return nil }
-func (nopTmux) PanePIDs() (map[int]string, error)                       { return nil, nil }
+func (nopMux) CreateSession(string, map[string]string) error           { return nil }
+func (nopMux) CreateSessionIn(string, string, map[string]string) error { return nil }
+func (nopMux) KillSession(string) error                                { return nil }
+func (nopMux) RespawnPane(string) error                                { return nil }
+func (nopMux) SessionExists(string) (bool, error)                      { return true, nil }
+func (nopMux) ListSessions() ([]termd.Session, error)                  { return nil, nil }
+func (nopMux) SendKeys(string, string) error                           { return nil }
+func (nopMux) PasteText(string, string) error                          { return nil }
+func (nopMux) SendSpecialKey(string, string) error                     { return nil }
+func (nopMux) Capture(string, int) (string, error)                     { return "", nil }
+func (nopMux) CaptureStyled(string, int) (string, error)               { return "", nil }
+func (nopMux) PanePIDs() (map[int]string, error)                       { return nil, nil }
 
 // The unknown threshold counts unknowns in a row: busy checks between them
 // start the count over, so an agent that is mostly busy keeps its message.
@@ -43,7 +40,7 @@ func TestUnknownCountResetsOnKnownStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	svc := service.NewAgentService(&config.Config{SessionPrefix: "test-"}, store, nopTmux{}, backend.NewRegistry())
+	svc := service.NewAgentService(&config.Config{SessionPrefix: "test-"}, store, nopMux{}, backend.NewRegistry())
 
 	agent := &storage.Agent{Name: "worker", SessionName: "test-worker", Backend: "claude", CreatedAt: time.Now()}
 	if err := store.CreateAgent(ctx, agent); err != nil {

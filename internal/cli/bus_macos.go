@@ -98,16 +98,16 @@ func watchBusParent(ctx context.Context, cancel context.CancelFunc) {
 }
 
 // warnLocalNetwork points at the fix when this bus will dial a peer over
-// the LAN from inside tmux on macOS with a binary that can't hold the Local
-// Network permission: the link would otherwise fail with only "no route to
-// host" in the log.
+// the LAN from inside g3d-termd on macOS with a binary that can't hold the
+// Local Network permission: the link would otherwise fail with only "no route
+// to host" in the log.
 func warnLocalNetwork(peers []natsbus.PeerBundle) {
-	if os.Getenv("TMUX") == "" || os.Getenv(disclaimedEnv) != "" || busListen != "" {
+	if os.Getenv("G3D_TERMD_ID") == "" || os.Getenv(disclaimedEnv) != "" || busListen != "" {
 		return
 	}
 	for _, p := range peers {
 		if p.URL != "" {
-			fmt.Fprintln(os.Stderr, "note: macOS blocks LAN links from processes in tmux unless the agent binary "+
+			fmt.Fprintln(os.Stderr, "note: macOS blocks LAN links from background daemon processes unless the agent binary "+
 				"carries its own Local Network permission. If linking fails with \"no route to host\", "+
 				"build with `make macos` on this Mac (see the macOS section of README.md).")
 			return

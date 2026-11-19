@@ -2,7 +2,6 @@ package cli
 
 import (
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -46,7 +45,6 @@ func TestCommandArgs(t *testing.T) {
 		{keyCmd, []string{"my-session"}, false},
 		{keyCmd, []string{"my-session", "Enter"}, true},
 		{keyCmd, []string{"my-session", "Enter", "extra"}, false},
-		{clearCmd, []string{"my-session"}, true},
 		{taskSetCmd, []string{"name"}, true}, // with -f
 		{taskSetCmd, []string{"name", "content"}, true},
 		{taskSetCmd, []string{"name", "content", "extra"}, false},
@@ -277,19 +275,5 @@ func TestCheckResumable(t *testing.T) {
 				t.Errorf("checkResumable = %v, want an error containing %q", err, tt.want)
 			}
 		})
-	}
-}
-
-func TestAttachArgs(t *testing.T) {
-	if got := attachArgs("agent-lead", false); !slices.Equal(got, []string{"attach-session", "-t", "=agent-lead"}) {
-		t.Errorf("outside tmux: %q", got)
-	}
-	if got := attachArgs("agent-lead", true); !slices.Equal(got, []string{"switch-client", "-t", "=agent-lead"}) {
-		t.Errorf("inside tmux: %q", got)
-	}
-	for _, inside := range []bool{false, true} {
-		if slices.Contains(attachArgs("agent-lead", inside), "-r") {
-			t.Errorf("attach is never read-only (inside tmux: %v)", inside)
-		}
 	}
 }

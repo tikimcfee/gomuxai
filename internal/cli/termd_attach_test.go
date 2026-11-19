@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/await"
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/config"
@@ -16,11 +17,10 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/termd"
 	"github.com/tikimcfee/gomuxai/internal/termdtest"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
 type fakeTermdAttacher struct {
-	tmux.TmuxOps
+	termd.Ops
 	ns  string
 	bin string
 }
@@ -37,9 +37,9 @@ func TestAttachLocal_ExecsG3DUnderTermd(t *testing.T) {
 	prevMux := tmuxClient
 	t.Cleanup(func() { tmuxClient = prevMux })
 	tmuxClient = fakeTermdAttacher{
-		TmuxOps: prevMux,
-		ns:      "agents",
-		bin:     "/opt/g3d/bin/g3d",
+		Ops: prevMux,
+		ns:  "agents",
+		bin: "/opt/g3d/bin/g3d",
 	}
 
 	oldCmd, oldStart := runCmd, runStart
@@ -65,22 +65,21 @@ func TestAttachLocal_ExecsG3DUnderTermd(t *testing.T) {
 func TestSetup_RefusesReservedTermdNamespace(t *testing.T) {
 	oldCfg := cfg
 	t.Cleanup(func() { cfg = oldCfg })
-	t.Setenv("GOMUXAI_MUX", config.MuxTermd)
-	t.Setenv("GOMUXAI_TERMD_NS", "wall")
-
-	err := setup(listCmd, nil)
-	if err == nil || !strings.Contains(err.Error(), "reserved") {
-		t.Fatalf("setup with GOMUXAI_TERMD_NS=wall = %v, want reserved refusal", err)
+	for _, reserved := range []string{"default", "wall"} {
+		t.Setenv("GOMUXAI_TERMD_NS", reserved)
+		for _, cmd := range []*cobra.Command{listCmd, adoptCmd} {
+			err := setup(cmd, nil)
+			if err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("setup(%s) with GOMUXAI_TERMD_NS=%s = %v, want reserved refusal", cmd.Name(), reserved, err)
+			}
+		}
 	}
 }
 
 func TestTermdLogsAndExportDeps(t *testing.T) {
-	termdtest.Setup(t)
+	termdtest.Require(t)
 	tc, err := termd.NewClient(termd.Options{Namespace: "agents-cli"})
 	if err != nil {
-		if strings.Contains(err.Error(), "no g3d-termd binary") {
-			t.Skipf("g3d-termd not installed (%v)", err)
-		}
 		t.Fatalf("NewClient: %v", err)
 	}
 	t.Cleanup(func() { _ = tc.StopDaemon() })
@@ -105,7 +104,6 @@ func TestTermdLogsAndExportDeps(t *testing.T) {
 	}
 	otherDB.Close()
 
-	cfg.Mux = config.MuxTermd
 	cfg.TermdNamespace = "agents-cli"
 	cfg.StartupDelay = 0
 	cfg.SubmitWait = 0
@@ -136,8 +134,11 @@ func TestTermdLogsAndExportDeps(t *testing.T) {
 		t.Fatalf("live logs --terminal = %q, %v", out, err)
 	}
 
-	// exportDeps lists live termd sessions and resolves SessionStore via op "env".
+	// exportDeps lists live termd sessions, carries the configured namespace, and resolves SessionStore via op "env".
 	deps := exportDeps()
+	if deps.Namespace != "agents-cli" {
+		t.Errorf("exportDeps.Namespace = %q, want agents-cli", deps.Namespace)
+	}
 	names, err := deps.Sessions()
 	if err != nil || !slices.Contains(names, a.SessionName) {
 		t.Errorf("exportDeps.Sessions() = %v, %v; want %s", names, err, a.SessionName)

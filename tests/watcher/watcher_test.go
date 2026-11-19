@@ -17,7 +17,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/termd"
 	"github.com/tikimcfee/gomuxai/internal/watcher"
 )
 
@@ -59,16 +59,13 @@ func (f *fakeTmux) CreateSessionIn(string, string, map[string]string) error { re
 func (f *fakeTmux) KillSession(string) error                                { return nil }
 func (f *fakeTmux) RespawnPane(string) error                                { return nil }
 func (f *fakeTmux) SessionExists(string) (bool, error)                      { return true, nil }
-func (f *fakeTmux) ListSessions() ([]tmux.Session, error)                   { return nil, nil }
+func (f *fakeTmux) ListSessions() ([]termd.Session, error)                  { return nil, nil }
 func (f *fakeTmux) SendSpecialKey(string, string) error                     { return nil }
 func (f *fakeTmux) Capture(string, int) (string, error)                     { return "", nil }
 func (f *fakeTmux) CaptureStyled(string, int) (string, error)               { return "", nil }
-func (f *fakeTmux) PipePane(string, string) error                           { return nil }
-func (f *fakeTmux) StopPipePane(string) error                               { return nil }
-func (f *fakeTmux) Clear(string) error                                      { return nil }
 func (f *fakeTmux) PanePIDs() (map[int]string, error)                       { return nil, nil }
 
-// PasteText is how messages are typed (see tmux.Client.PasteText).
+// PasteText is how messages are typed (see termd.Client.PasteText).
 func (f *fakeTmux) PasteText(session string, text string) error {
 	return f.SendKeys(session, text)
 }

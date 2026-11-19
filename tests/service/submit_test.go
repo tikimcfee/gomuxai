@@ -18,10 +18,10 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/termd"
 )
 
-// claudeTerminal stands in for tmux and a Claude pane behind it, as far
+// claudeTerminal stands in for termd and a Claude pane behind it, as far
 // as typing a message goes: what is written to the pane waits there until
 // Claude reads it, and Claude reads everything that has arrived at once.
 // A read that brings text and an Enter together is a paste, where the
@@ -32,7 +32,7 @@ import (
 // Code on macOS, 2026-11). Screens are synthesized like those in
 // tests/backend's TestClaudeInputText.
 type claudeTerminal struct {
-	tmux.TmuxOps // only the methods below are used
+	termd.Ops // only the methods below are used
 
 	mu        sync.Mutex
 	unread    string   // written to the pane, not read by Claude yet

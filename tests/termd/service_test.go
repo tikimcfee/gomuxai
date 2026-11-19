@@ -14,62 +14,57 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/storage"
 )
 
-func TestConfigMuxPrecedenceAndValidation(t *testing.T) {
-	t.Setenv("GOMUXAI_MUX", "")
+func TestConfigTermdPrecedenceAndValidation(t *testing.T) {
 	t.Setenv("GOMUXAI_TERMD_NS", "")
 
 	def := config.DefaultConfig()
-	if def.Mux != config.MuxTmux || def.TermdNamespace != config.DefaultTermdNamespace {
-		t.Fatalf("DefaultConfig mux = (%q, %q), want (%q, %q)",
-			def.Mux, def.TermdNamespace, config.MuxTmux, config.DefaultTermdNamespace)
+	if def.TermdNamespace != config.DefaultTermdNamespace {
+		t.Fatalf("DefaultConfig TermdNamespace = %q, want %q",
+			def.TermdNamespace, config.DefaultTermdNamespace)
 	}
-	if err := def.ValidateMux(); err != nil {
-		t.Fatalf("default ValidateMux: %v", err)
+	if err := def.ValidateTermd(); err != nil {
+		t.Fatalf("default ValidateTermd: %v", err)
 	}
 
-	// Store-level mux.json sets mux and namespace for that data dir.
+	// File config sets termd_namespace.
 	dataDir := t.TempDir()
-	muxJSON := `{"mux": "termd", "termd_namespace": "agents-store"}`
-	if err := os.WriteFile(filepath.Join(dataDir, "mux.json"), []byte(muxJSON), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	appCfgPath := filepath.Join(t.TempDir(), "app.json")
 	dbPath := filepath.Join(dataDir, "gomuxai.db")
-	if err := os.WriteFile(appCfgPath, []byte(`{"database_path": `+ `"` + filepath.ToSlash(dbPath) + `"}`), 0o600); err != nil {
+	rawCfg := `{"database_path": "` + filepath.ToSlash(dbPath) + `", "termd_namespace": "agents-file"}`
+	if err := os.WriteFile(appCfgPath, []byte(rawCfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := config.LoadFromFile(appCfgPath)
 	if err != nil {
 		t.Fatalf("LoadFromFile: %v", err)
 	}
-	if loaded.Mux != config.MuxTermd || loaded.TermdNamespace != "agents-store" {
-		t.Errorf("from mux.json = (%q, %q), want (termd, agents-store)", loaded.Mux, loaded.TermdNamespace)
+	if loaded.TermdNamespace != "agents-file" {
+		t.Errorf("from file = %q, want agents-file", loaded.TermdNamespace)
 	}
 
-	// Env overrides file and mux.json.
-	t.Setenv("GOMUXAI_MUX", "termd")
+	// Env overrides file.
 	t.Setenv("GOMUXAI_TERMD_NS", "agents-env")
 	envCfg, err := config.LoadFromFile(appCfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if envCfg.Mux != config.MuxTermd || envCfg.TermdNamespace != "agents-env" {
-		t.Errorf("from env = (%q, %q), want (termd, agents-env)", envCfg.Mux, envCfg.TermdNamespace)
+	if envCfg.TermdNamespace != "agents-env" {
+		t.Errorf("from env = %q, want agents-env", envCfg.TermdNamespace)
 	}
-	if err := envCfg.ValidateMux(); err != nil {
-		t.Errorf("ValidateMux(agents-env) = %v, want nil", err)
+	if err := envCfg.ValidateTermd(); err != nil {
+		t.Errorf("ValidateTermd(agents-env) = %v, want nil", err)
 	}
 
-	// Reserved namespaces and unknown mux names fail loud.
+	// Reserved and invalid namespaces fail loud.
 	for _, reserved := range []string{"default", "wall"} {
-		bad := &config.Config{Mux: config.MuxTermd, TermdNamespace: reserved}
-		if err := bad.ValidateMux(); err == nil || !strings.Contains(err.Error(), "reserved") {
-			t.Errorf("ValidateMux(%q) = %v, want reserved refusal", reserved, err)
+		bad := &config.Config{TermdNamespace: reserved}
+		if err := bad.ValidateTermd(); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("ValidateTermd(%q) = %v, want reserved refusal", reserved, err)
 		}
 	}
-	unknown := &config.Config{Mux: "screen"}
-	if err := unknown.ValidateMux(); err == nil {
-		t.Error("ValidateMux(screen) = nil, want error")
+	invalid := &config.Config{TermdNamespace: "bad/ns"}
+	if err := invalid.ValidateTermd(); err == nil {
+		t.Error("ValidateTermd(bad/ns) = nil, want error")
 	}
 }
 
@@ -89,7 +84,6 @@ func TestAgentServiceEndToEndOnTermd(t *testing.T) {
 
 	cfg := &config.Config{
 		Backend:           "shell",
-		Mux:               config.MuxTermd,
 		TermdNamespace:    "agents-svc",
 		DatabasePath:      filepath.Join(root, ".gomuxai", "gomuxai.db"),
 		LogDir:            filepath.Join(root, ".gomuxai", "logs"),
@@ -122,12 +116,9 @@ func TestAgentServiceEndToEndOnTermd(t *testing.T) {
 		t.Fatalf("Spawn on termd: %v", err)
 	}
 
-	// Verify session exists in termd and carries AGENT_NAME, AGENT_HOST, GOMUXAI_MUX, GOMUXAI_TERMD_NS.
+	// Verify session exists in termd and carries AGENT_NAME, AGENT_HOST, GOMUXAI_TERMD_NS.
 	if got := tc.SessionEnv(agent.SessionName, "AGENT_NAME"); got != "helper" {
 		t.Errorf("AGENT_NAME = %q, want helper", got)
-	}
-	if got := tc.SessionEnv(agent.SessionName, "GOMUXAI_MUX"); got != config.MuxTermd {
-		t.Errorf("GOMUXAI_MUX = %q, want termd", got)
 	}
 	if got := tc.SessionEnv(agent.SessionName, "GOMUXAI_TERMD_NS"); got != "agents-svc" {
 		t.Errorf("GOMUXAI_TERMD_NS = %q, want agents-svc", got)

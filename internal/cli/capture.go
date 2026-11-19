@@ -16,9 +16,9 @@ name. For history older than the scrollback, or after cleanup, use
 "agent logs".
 
 By default it prints plain text. --raw prints the screen with its colors and
-styling, as tmux's SGR escape codes (capture-pane -e): what tells a CLI's dim
-placeholder text from typed text. Print it to a terminal to see the styling,
-or pipe it to cat -v to read the codes.
+styling as SGR escape codes: what tells a CLI's dim placeholder text from
+typed text. Print it to a terminal to see the styling, or pipe it to cat -v
+to read the codes.
 
 An agent on another host is addressed as name@host (needs a running bus).
 Its text is sanitized, since that host may be hostile: plain text keeps no

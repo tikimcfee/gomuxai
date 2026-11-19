@@ -31,7 +31,12 @@ func Run(m *testing.M) int {
 			return 1
 		}
 	}
-	for k, v := range map[string]string{"G3D_TERMD_DIR": dir, termd.TestServerEnv: dir} {
+	zdotdir := filepath.Join(dir, "zdotdir")
+	if err := os.MkdirAll(zdotdir, 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, "termdtest:", err)
+		return 1
+	}
+	for k, v := range map[string]string{"G3D_TERMD_DIR": dir, termd.TestServerEnv: dir, "ZDOTDIR": zdotdir} {
 		if err := os.Setenv(k, v); err != nil {
 			fmt.Fprintln(os.Stderr, "termdtest:", err)
 			return 1
@@ -41,27 +46,35 @@ func Run(m *testing.M) int {
 	return m.Run()
 }
 
-// Require skips t if g3d-termd is not available, and fails t if this test
-// binary is not running under termdtest.Run (or Setup).
+// Require fails t if this test binary is not running under termdtest.Run (or
+// Setup), and skips t if g3d-termd is not available.
 func Require(t testing.TB) {
 	t.Helper()
 	if err := termd.CheckTestServer(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := termd.DaemonBinary(""); err != nil {
+		t.Skipf("g3d-termd not available: %v", err)
+	}
 }
 
-// Setup isolates a single test in its own private G3D_TERMD_DIR when the
-// package's TestMain already runs tmuxtest.Run.
+// Setup isolates a single test in its own private G3D_TERMD_DIR when a test
+// needs its own socket directory separate from the package's TestMain.
 func Setup(t testing.TB) string {
 	t.Helper()
 	dir, err := socketDir()
 	if err != nil {
 		t.Fatal(err)
 	}
+	zdotdir := filepath.Join(dir, "zdotdir")
+	if err := os.MkdirAll(zdotdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("G3D_TERMD_SOCKET", "")
 	t.Setenv("G3D_TERMD_ID", "")
 	t.Setenv("G3D_TERMD_DIR", dir)
 	t.Setenv(termd.TestServerEnv, dir)
+	t.Setenv("ZDOTDIR", zdotdir)
 	t.Cleanup(func() {
 		stopAll(dir)
 		_ = os.RemoveAll(dir)

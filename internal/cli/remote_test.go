@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,8 +18,8 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
-	"github.com/tikimcfee/gomuxai/internal/tmuxtest"
+	"github.com/tikimcfee/gomuxai/internal/termd"
+	"github.com/tikimcfee/gomuxai/internal/termdtest"
 )
 
 // hints collects what the commands of a test that called setupCLI print on
@@ -28,25 +27,23 @@ import (
 var hints *strings.Builder
 
 // setupCLI points the CLI's globals at a temp database holding one agent,
-// "worker", waiting on a Bash permission prompt, on host "local". The agent
-// has no tmux session: status comes from its report alone.
+// "worker", waiting on a Bash permission prompt, on host "local".
 //
 // Session names (rpc-cli-worker and the like) are fixed. They can't collide:
-// this binary has a tmux server of its own (TestMain), so another test run
-// never sees them, and its tests run one at a time, since they swap the
-// CLI's globals; each test kills its sessions when it ends.
+// this binary has an isolated g3d-termd socket directory of its own
+// (TestMain), so another test run never sees them, and its tests run one at
+// a time, since they swap the CLI's globals; each test kills its sessions
+// when it ends.
 func setupCLI(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
-	tmuxtest.Require(t)
+	termdtest.Require(t)
 	dir := t.TempDir()
 	testCfg := &config.Config{
 		DatabasePath:      filepath.Join(dir, "gomuxai.db"),
 		LogDir:            filepath.Join(dir, "logs"),
 		StateDir:          filepath.Join(dir, "state"),
 		SessionPrefix:     "rpc-cli-",
+		TermdNamespace:    termd.DefaultNamespace,
 		DefaultScrollback: 100,
 		Host:              "local",
 	}
@@ -54,7 +51,7 @@ func setupCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testTmux, err := tmux.NewClient()
+	testTmux, err := termd.NewClient(termd.Options{Namespace: testCfg.TermdNamespace})
 	if err != nil {
 		testStore.Close()
 		t.Fatal(err)
@@ -64,6 +61,13 @@ func setupCLI(t *testing.T) {
 			for _, a := range agents {
 				if a.SessionName != "" {
 					_ = testTmux.KillSession(a.SessionName)
+				}
+			}
+		}
+		if sessions, err := testTmux.ListSessions(); err == nil {
+			for _, s := range sessions {
+				if strings.HasPrefix(s.Name, "rpc-cli-") {
+					_ = testTmux.KillSession(s.Name)
 				}
 			}
 		}

@@ -4,9 +4,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/tikimcfee/gomuxai/internal/tmuxtest"
+	"github.com/tikimcfee/gomuxai/internal/termdtest"
 )
 
-// TestMain runs the package's tests on a private tmux server, never the one
-// the environment names (internal/tmuxtest).
-func TestMain(m *testing.M) { os.Exit(tmuxtest.Run(m)) }
+// TestMain isolates the package's tests in a private g3d-termd socket
+// directory (internal/termdtest).
+func TestMain(m *testing.M) { os.Exit(termdtest.Run(m)) }

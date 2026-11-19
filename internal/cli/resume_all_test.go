@@ -113,7 +113,7 @@ func TestResumeAll(t *testing.T) {
 
 	// Nothing left that a reboot ended.
 	out, err = stdout(t, func() error { return runResumeAll(context.Background(), false, "", false, false) })
-	if err != nil || !strings.HasSuffix(out, "No agents here were ended by a reboot or a killed tmux server. Skipped 3. 3 agents still running.\n") {
+	if err != nil || !strings.HasSuffix(out, "No agents here were ended by a reboot or a stopped g3d-termd. Skipped 3. 3 agents still running.\n") {
 		t.Errorf("second resume --all: %v\n%s", err, out)
 	}
 }

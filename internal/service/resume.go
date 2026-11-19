@@ -52,10 +52,10 @@ func (s *AgentService) Resume(ctx context.Context, opts ResumeOptions) (*storage
 		return nil, err
 	}
 
-	// A spawned CLI that quit leaves its pane behind, running a bare shell.
+	// A spawned CLI that quit leaves its terminal behind, running a bare shell.
 	if exists, _ := s.tmux.SessionExists(agent.SessionName); exists {
 		if err := s.tmux.KillSession(agent.SessionName); err != nil {
-			return nil, fmt.Errorf("closing its old tmux session %s: %w", agent.SessionName, err)
+			return nil, fmt.Errorf("closing its old session %s: %w", agent.SessionName, err)
 		}
 	}
 	// Its run closes with the status it ended in, which its last report may
@@ -117,19 +117,19 @@ func (s *AgentService) LastSessionID(ctx context.Context, name string) string {
 	return s.stateValue(ctx, name, StateKeySessionID)
 }
 
-// AdoptedResumeError is why an adopted agent can't be resumed: its tmux
-// session is the person's own, so gomuxai neither types a launch into
-// their shell nor makes a session to replace it. It says what to do instead.
+// AdoptedResumeError is why an adopted agent can't be resumed: its session is
+// the person's own, so gomuxai neither types a launch into their shell nor
+// makes a session to replace it. It says what to do instead.
 func (s *AgentService) AdoptedResumeError(agent *storage.Agent) error {
 	cli := "claude"
 	if agent.Backend == "agy" {
 		cli = "agy"
 	}
 	if exists, _ := s.tmux.SessionExists(agent.SessionName); !exists {
-		return fmt.Errorf("agent %s is an adopted session (tmux session %s, which is gone): resume doesn't relaunch CLIs in sessions gomuxai didn't start; agent cleanup %s, then agent spawn %s --backend %s --continue (or --resume <session>) starts it in a session of gomuxai's own",
+		return fmt.Errorf("agent %s is an adopted session (session %s, which is gone): resume doesn't relaunch CLIs in sessions gomuxai didn't start; agent cleanup %s, then agent spawn %s --backend %s --continue (or --resume <session>) starts it in a session of gomuxai's own",
 			agent.Name, agent.SessionName, agent.Name, agent.Name, cli)
 	}
-	return fmt.Errorf("agent %s is an adopted session (tmux session %s): resume doesn't relaunch CLIs in sessions gomuxai didn't start; start the CLI there yourself (%s -c continues its last conversation), and adopt keeps tracking it",
+	return fmt.Errorf("agent %s is an adopted session (session %s): resume doesn't relaunch CLIs in sessions gomuxai didn't start; start the CLI there yourself (%s -c continues its last conversation), and adopt keeps tracking it",
 		agent.Name, agent.SessionName, cli)
 }
 

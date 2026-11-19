@@ -13,7 +13,6 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
 	"github.com/tikimcfee/gomuxai/internal/termd"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
 	"github.com/tikimcfee/gomuxai/internal/util"
 )
 
@@ -21,13 +20,12 @@ var (
 	// Global flags
 	backendName   string
 	backendConfig string
-	muxName       string
 	termdNS       string
 
 	// Shared state
 	cfg          *config.Config
 	store        storage.Storage
-	tmuxClient   tmux.TmuxOps
+	tmuxClient   termd.Ops
 	backends     *backend.Registry
 	agentService *service.AgentService
 
@@ -39,10 +37,10 @@ var (
 // rootCmd is the base command.
 var rootCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "Coordinate AI agents running in tmux sessions",
-	Long: `agent spawns AI agents (claude, aider, agy) in tmux sessions and coordinates
-them: messages, status, permission prompts, and shared state, on this host or
-across hosts linked by the agent bus.
+	Short: "Coordinate AI agents running in g3d-termd sessions",
+	Long: `agent spawns AI agents (claude, aider, agy) in g3d-termd sessions and
+coordinates them: messages, status, permission prompts, and shared state, on
+this host or across hosts linked by the agent bus.
 
 Run "agent" alone for a short orientation (who you are, your agents, the bus);
 "agent help <command>" has each command's details and examples.
@@ -95,7 +93,7 @@ var commandGroups = []struct {
 	{&cobra.Group{ID: "state", Title: "State and tasks:"}, []*cobra.Command{stateCmd, taskCmd}},
 	{&cobra.Group{ID: "bus", Title: "Machines (bus):"}, []*cobra.Command{busCmd}},
 	{&cobra.Group{ID: "tool", Title: "About this tool:"}, []*cobra.Command{frictionCmd, historyCmd, versionCmd}},
-	{&cobra.Group{ID: "tmux", Title: "Low-level tmux (session names, not agent names):"}, []*cobra.Command{sessionCmd, keysCmd, keyCmd, clearCmd}},
+	{&cobra.Group{ID: "sessions", Title: "Low-level sessions (session names, not agent names):"}, []*cobra.Command{sessionCmd, keysCmd, keyCmd}},
 }
 
 // Execute runs the CLI and records the run in the command log. Its error's
@@ -122,8 +120,7 @@ var (
 func init() {
 	rootCmd.PersistentFlags().StringVar(&backendName, "backend", "", "Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)")
 	rootCmd.PersistentFlags().StringVar(&backendConfig, "backend-config", "", "JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it")
-	rootCmd.PersistentFlags().StringVar(&muxName, "mux", "", "Terminal multiplexer backend: tmux (default) or termd (overrides GOMUXAI_MUX and mux.json)")
-	rootCmd.PersistentFlags().StringVar(&termdNS, "termd-ns", "", "Daemon namespace when using --mux termd (default: agents; never default or wall)")
+	rootCmd.PersistentFlags().StringVar(&termdNS, "termd-ns", "", "g3d-termd namespace (default: agents; never default or wall)")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Don't print hints (results and errors still print)")
 
 	for _, g := range commandGroups {
@@ -165,13 +162,10 @@ func setup(cmd *cobra.Command, args []string) error {
 	if backendName != "" {
 		cfg.Backend = backendName
 	}
-	if muxName != "" {
-		cfg.Mux = muxName
-	}
 	if termdNS != "" {
 		cfg.TermdNamespace = termdNS
 	}
-	if err := cfg.ValidateMux(); err != nil {
+	if err := cfg.ValidateTermd(); err != nil {
 		return err
 	}
 	setupBackends()
@@ -195,21 +189,14 @@ func setup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("initializing storage: %w", err)
 	}
 
-	// Initialize terminal multiplexer client
-	if cfg.Mux == config.MuxTermd {
-		tmuxClient, err = termd.NewClient(termd.Options{
-			Namespace: cfg.TermdNamespace,
-			DaemonBin: cfg.TermdBinary,
-			AttachBin: cfg.G3DBinary,
-		})
-		if err != nil {
-			return fmt.Errorf("initializing termd: %w", err)
-		}
-	} else {
-		tmuxClient, err = tmux.NewClient()
-		if err != nil {
-			return fmt.Errorf("initializing tmux: %w", err)
-		}
+	// Initialize g3d-termd client
+	tmuxClient, err = termd.NewClient(termd.Options{
+		Namespace: cfg.TermdNamespace,
+		DaemonBin: cfg.TermdBinary,
+		AttachBin: cfg.G3DBinary,
+	})
+	if err != nil {
+		return fmt.Errorf("initializing termd: %w", err)
 	}
 
 	// Initialize agent service

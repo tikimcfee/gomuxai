@@ -15,7 +15,7 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/natsbus/natstest"
 	"github.com/tikimcfee/gomuxai/internal/storage"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/termd"
 )
 
 // setupBusIdentity gives the test CLI host ("local") a bus identity, with
@@ -273,7 +273,7 @@ func TestBusRestart_Settings(t *testing.T) {
 	if len(*restarts) != 1 || (*restarts)[0].String() != want.String() {
 		t.Errorf("restarted with %+v, want %+v", *restarts, want)
 	}
-	if !strings.Contains(out, "Bus restarted in tmux session") || !strings.Contains(out, "--listen 0.0.0.0:7422 --client-port 7499 --remote-ops list,send") {
+	if !strings.Contains(out, "Bus restarted in session") || !strings.Contains(out, "--listen 0.0.0.0:7422 --client-port 7499 --remote-ops list,send") {
 		t.Errorf("output:\n%s", out)
 	}
 }
@@ -369,17 +369,16 @@ func TestBusStart_Settings(t *testing.T) {
 	}
 }
 
-// A restart keeps the bus's tmux session, so the tmux server can't exit for
-// lack of sessions: the pane gets a fresh shell, and the new bus run is
-// typed into it. (/bin/echo stands in for the agent binary: it prints the
-// command line instead of running a bus.)
+// A restart keeps the bus's session, getting a fresh shell under the same
+// terminal id, and the new bus run is typed into it. (/bin/echo stands in
+// for the agent binary: it prints the command line instead of running a bus.)
 func TestRestartBus_KeepsSession(t *testing.T) {
 	setupBusIdentity(t)
 	runningBus(t, busInfo{Host: "local", ClientURL: "tls://127.0.0.1:7420", ClientPort: 7420, RemoteOps: []string{"list"}})
 	if err := tmuxClient.CreateSession(busSession, nil); err != nil {
 		t.Fatal(err)
 	}
-	before, err := tmuxClient.(*tmux.Client).FirstPane(busSession)
+	before, err := tmuxClient.(*termd.Client).FirstPane(busSession)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +390,7 @@ func TestRestartBus_KeepsSession(t *testing.T) {
 	if exists, _ := tmuxClient.SessionExists(busSession); !exists {
 		t.Fatal("restart closed the bus session")
 	}
-	after, err := tmuxClient.(*tmux.Client).FirstPane(busSession)
+	after, err := tmuxClient.(*termd.Client).FirstPane(busSession)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,12 +411,12 @@ func TestRestartBus_KeepsSession(t *testing.T) {
 	}
 
 	// A setting the bus can't start with is refused before the bus stops.
-	shell, _ := tmuxClient.(*tmux.Client).FirstPane(busSession)
+	shell, _ := tmuxClient.(*termd.Client).FirstPane(busSession)
 	cfg.AgentBinary = ""
 	if err := restartBus(busSettings{ClientPort: 7499}); err == nil || !strings.Contains(err.Error(), "can't locate the agent binary") {
 		t.Errorf("restart without a binary: %v", err)
 	}
-	if now, _ := tmuxClient.(*tmux.Client).FirstPane(busSession); now.PID != shell.PID {
+	if now, _ := tmuxClient.(*termd.Client).FirstPane(busSession); now.PID != shell.PID {
 		t.Error("restart stopped the bus before finding it couldn't start one")
 	}
 }

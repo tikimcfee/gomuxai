@@ -163,7 +163,7 @@ var attachTerminal = stdinIsTerminal
 // where its binary is, and that the agent exists.
 func sshAttach(ref natsbus.AgentRef, verb string, extra ...string) error {
 	if !attachTerminal() {
-		return fmt.Errorf("%s %s opens its tmux session in this terminal, over ssh, so it needs one: run it in a terminal (agent capture %s shows its screen from here)", verb, ref, ref)
+		return fmt.Errorf("%s %s opens its session in this terminal, over ssh, so it needs one: run it in a terminal (agent capture %s shows its screen from here)", verb, ref, ref)
 	}
 	var resp *natsbus.ListResponse
 	err := callRemote(ref.Host, func(c *natsbus.RPCClient) (err error) {
@@ -197,7 +197,7 @@ func sshAttach(ref natsbus.AgentRef, verb string, extra ...string) error {
 	}
 	dest := sshDestFor(ref.Host)
 	remote := strings.Join(append([]string{util.ShellQuote(bin), verb, util.ShellQuote(ref.Name)}, extra...), " ")
-	notice("Attaching to %s over ssh to %s. That is ssh, not the bus: it needs \"ssh %s\" to work from here (agent bus ssh %s <destination> changes where). Ctrl-b d detaches.",
+	notice("Attaching to %s over ssh to %s. That is ssh, not the bus: it needs \"ssh %s\" to work from here (agent bus ssh %s <destination> changes where). Ctrl-\\ twice detaches.",
 		ref, dest, dest, ref.Host)
 	if err := execInto("ssh", []string{"ssh", "-t", "--", dest, remote}); err != nil {
 		return fmt.Errorf("attaching to %s runs ssh to %s, which didn't start: %w", ref, dest, err)

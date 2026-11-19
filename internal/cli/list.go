@@ -14,7 +14,7 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List the agents on this host (or another)",
 	Long: `List shows the agents recorded on this host as a nested list, with each
-agent's status, backend, parent, tmux session, and creation time. --host lists
+agent's status, backend, parent, session, and creation time. --host lists
 another host's agents through the bus.
 
 Status is the same live status "agent status" shows (idle, processing,

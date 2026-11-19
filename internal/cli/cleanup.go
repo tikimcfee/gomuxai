@@ -23,8 +23,8 @@ var cleanupCmd = &cobra.Command{
 	Use:   "cleanup <name> [<name>...] | --ended [--dry-run]",
 	Short: "Stop agents and delete their records",
 	Long: `Cleanup removes the named agents: for a spawned agent it asks an idle CLI to
-exit and kills its tmux session; for an adopted session (agent adopt) it stops
-log piping and leaves the pre-existing tmux session running. In both cases it
+exit, snapshots its scrollback, and kills its session; for an adopted session
+(agent adopt) it leaves the pre-existing session running. In both cases it
 deletes the agent's record, queued messages, state, and files while keeping its
 log file and list of transcripts, for agent logs. It prints one line per name ("cleaned up",
 "refused", or "failed"), and exits 1 if any of them wasn't cleaned up.
@@ -43,7 +43,7 @@ helpers that haven't ended stay; for a person cleanup says so, and inside an
 agent the ended one is skipped with them, since only a person could reach
 them once it's gone ("skipped"). It prints one line per agent, as for names,
 then a total, and exits 1 if any it picked wasn't cleaned up. --dry-run lists what it
-would clean up, why each is ended, what happens to its tmux session, and how
+would clean up, why each is ended, what happens to its session, and how
 many held messages would be deleted with it, and changes nothing.`,
 	Example: `  agent cleanup researcher
   agent cleanup lead-build lead-build-test

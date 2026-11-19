@@ -188,9 +188,9 @@ func resumeAllTotal(picked, skipped, failed, others, running int, dryRun bool, c
 	var parts []string
 	switch {
 	case picked == 0 && caller == "":
-		parts = append(parts, "No agents here were ended by a reboot or a killed tmux server.")
+		parts = append(parts, "No agents here were ended by a reboot or a stopped g3d-termd.")
 	case picked == 0:
-		parts = append(parts, "None of your helpers was ended by a reboot or a killed tmux server.")
+		parts = append(parts, "None of your helpers was ended by a reboot or a stopped g3d-termd.")
 	case dryRun && failed > 0:
 		parts = append(parts, fmt.Sprintf("Would resume %d of %s; %d would fail; nothing changed (dry run).", picked-failed, plural(picked, "agent"), failed))
 	case dryRun:

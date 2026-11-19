@@ -16,7 +16,7 @@ type AgentNotFoundError struct {
 	Host    string
 	Count   int      // agents on the host
 	Similar []string // close agent names
-	// SessionOf is the agent whose tmux session Name is, if it is one.
+	// SessionOf is the agent whose session Name is, if it is one.
 	SessionOf string
 	// Remote is set when the request came over the bus, so listing the
 	// agents takes --host.
@@ -30,7 +30,7 @@ func (e *AgentNotFoundError) Error() string {
 	}
 	switch {
 	case e.SessionOf != "":
-		return fmt.Sprintf("%s: that is the tmux session of agent %s, so use the agent name %s", msg, e.SessionOf, e.SessionOf)
+		return fmt.Sprintf("%s: that is the session of agent %s, so use the agent name %s", msg, e.SessionOf, e.SessionOf)
 	case len(e.Similar) > 0:
 		return fmt.Sprintf("%s; did you mean %s?", msg, util.OrList(e.Similar, nil))
 	case e.Count == 0:

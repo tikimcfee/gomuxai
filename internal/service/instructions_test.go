@@ -26,7 +26,7 @@ func TestBriefingForAgy(t *testing.T) {
 	if strings.Contains(brief, "Stop hook") || !strings.Contains(brief, "current step") || !strings.Contains(brief, "--now") {
 		t.Errorf("agy briefing on held messages:\n%s", brief)
 	}
-	if !strings.Contains(brief, "rather than tmux to reach other agents.\n") {
+	if !strings.Contains(brief, "rather than g3d to reach other agents.\n") {
 		t.Error("agy briefing lost the paragraph after held messages")
 	}
 }

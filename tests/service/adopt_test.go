@@ -135,7 +135,7 @@ func TestAdopt_ResumeRefusesAdoptedAgent(t *testing.T) {
 	}
 
 	_, err := env.service.Resume(ctx, service.ResumeOptions{Name: "adopted-agy", SessionID: "conv-initial"})
-	want := "agent adopted-agy is an adopted session (tmux session " + userSession + "): resume doesn't relaunch CLIs in sessions gomuxai didn't start; start the CLI there yourself (agy -c continues its last conversation), and adopt keeps tracking it"
+	want := "agent adopted-agy is an adopted session (session " + userSession + "): resume doesn't relaunch CLIs in sessions gomuxai didn't start; start the CLI there yourself (agy -c continues its last conversation), and adopt keeps tracking it"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Resume err = %v\nwant %s", err, want)
 	}
@@ -163,7 +163,7 @@ func TestAdopt_ResumeRefusesAdoptedAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = env.service.Resume(ctx, service.ResumeOptions{Name: "adopted-agy", SessionID: "conv-initial"})
-	if err == nil || !strings.Contains(err.Error(), "(tmux session "+userSession+", which is gone)") ||
+	if err == nil || !strings.Contains(err.Error(), "(session "+userSession+", which is gone)") ||
 		!strings.Contains(err.Error(), "agent cleanup adopted-agy, then agent spawn adopted-agy --backend agy --continue") {
 		t.Errorf("Resume with the session gone: err = %v", err)
 	}

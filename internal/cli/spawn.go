@@ -31,8 +31,8 @@ var (
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn <name>[@host] [task-file]",
-	Short: "Start a new agent in its own tmux session",
-	Long: `Spawn creates a new agent in a tmux session, running the backend's CLI
+	Short: "Start a new agent in its own g3d-termd session",
+	Long: `Spawn creates a new agent in a g3d-termd session, running the backend's CLI
 (built in: claude, aider, agy, shell).
 
 Initial work, if given, is sent as the agent's first message:
@@ -103,8 +103,8 @@ agent resume relaunches it on the same model, and agent status -v shows it.
 A model switched inside the session (Claude's /model, which agent send
 types in as a command) lasts for that run only.
 
---attach opens the new agent's tmux session in this terminal once it
-starts, as agent attach does (Ctrl-b d detaches; the agent keeps running).
+--attach opens the new agent's session in this terminal once it
+starts, as agent attach does (Ctrl-\ twice detaches; the agent keeps running).
 
 --cwd starts the agent in that directory instead of the one spawn runs
 from (a relative task file is then taken from spawn's directory).
@@ -154,7 +154,7 @@ func init() {
 	spawnCmd.Flags().BoolVarP(&spawnContinue, "continue", "c", false,
 		"Continue the session the CLI's own --continue would pick here (claude, agy): its most recent one in this directory, or --cwd's")
 	spawnCmd.Flags().BoolVar(&spawnAttach, "attach", false,
-		"Open the agent's tmux session in this terminal once it starts")
+		"Open the agent's session in this terminal once it starts")
 	spawnCmd.Flags().StringVar(&spawnHost, "host", "",
 		"Start the agent on this host, through the agent bus (same as name@host)")
 	spawnCmd.Flags().StringVar(&spawnCwd, "cwd", "",

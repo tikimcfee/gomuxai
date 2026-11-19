@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/storage"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/termd"
 )
 
 func TestAdoptAndCleanupPreservesSession(t *testing.T) {
 	setupCLI(t)
 	t.Setenv("AGENT_NAME", "")
-	t.Setenv("TMUX_PANE", "")
+	t.Setenv("G3D_TERMD_ID", "")
 
 	userSess := fmt.Sprintf("rpc-cli-user-%d", os.Getpid())
 	if err := tmuxClient.CreateSession(userSess, nil); err != nil {
@@ -23,7 +23,8 @@ func TestAdoptAndCleanupPreservesSession(t *testing.T) {
 	}
 	t.Cleanup(func() { tmuxClient.KillSession(userSess) })
 
-	adoptSession = userSess
+	t.Setenv("G3D_TERMD_ID", userSess)
+	adoptSession = ""
 	backendName = ""
 	t.Cleanup(func() {
 		adoptSession, backendName = "", ""
@@ -44,7 +45,7 @@ func TestAdoptAndCleanupPreservesSession(t *testing.T) {
 
 	// A process under the adopted session's pane is the adopted agent's,
 	// even without AGENT_NAME set.
-	pane, err := tmuxClient.(*tmux.Client).FirstPane(userSess)
+	pane, err := tmuxClient.(*termd.Client).FirstPane(userSess)
 	if err != nil {
 		t.Fatalf("FirstPane: %v", err)
 	}
@@ -54,8 +55,8 @@ func TestAdoptAndCleanupPreservesSession(t *testing.T) {
 	}
 	leave()
 
-	// Cleaning up the adopted agent (from outside its pane) leaves its tmux session running.
-	t.Setenv("TMUX_PANE", "")
+	// Cleaning up the adopted agent (from outside its pane) leaves its session running.
+	t.Setenv("G3D_TERMD_ID", "")
 	cleanOut, err := stdout(t, func() error { return runCleanup(cleanupCmd, []string{"my-adopted"}) })
 	if err != nil {
 		t.Fatalf("runCleanup: %v", err)
@@ -64,27 +65,27 @@ func TestAdoptAndCleanupPreservesSession(t *testing.T) {
 		t.Errorf("cleanup output = %q, want 'left session %s running'", cleanOut, userSess)
 	}
 	if exists, _ := tmuxClient.SessionExists(userSess); !exists {
-		t.Errorf("adopted tmux session %s was killed by cleanup", userSess)
+		t.Errorf("adopted session %s was killed by cleanup", userSess)
 	}
 }
 
-func TestAdoptRequiresTmuxSession(t *testing.T) {
+func TestAdoptRequiresTermdSession(t *testing.T) {
 	setupCLI(t)
-	t.Setenv("TMUX_PANE", "")
+	t.Setenv("G3D_TERMD_ID", "")
 	adoptSession = ""
 
-	err := runAdopt(adoptCmd, []string{"no-tmux"})
-	if err == nil || !strings.Contains(err.Error(), "not in a tmux session") {
-		t.Errorf("err = %v, want not in a tmux session", err)
+	err := runAdopt(adoptCmd, []string{"no-termd"})
+	if err == nil || !strings.Contains(err.Error(), "not in a termd session") {
+		t.Errorf("err = %v, want not in a termd session", err)
 	}
 }
 
 // agent resume refuses an adopted agent before it looks for a session or
-// enters a directory: its tmux session is the person's own.
+// enters a directory: its session is the person's own.
 func TestResumeRefusesAdoptedAgent(t *testing.T) {
 	setupCLI(t)
 	t.Setenv("AGENT_NAME", "")
-	t.Setenv("TMUX_PANE", "")
+	t.Setenv("G3D_TERMD_ID", "")
 	userSess := fmt.Sprintf("rpc-cli-user-resume-%d", os.Getpid())
 	if err := tmuxClient.CreateSession(userSess, nil); err != nil {
 		t.Fatal(err)
@@ -98,7 +99,7 @@ func TestResumeRefusesAdoptedAgent(t *testing.T) {
 	wd, _ := os.Getwd()
 
 	err := runResume(resumeCmd, []string{"mine"})
-	want := "agent mine is an adopted session (tmux session " + userSess + "): resume doesn't relaunch CLIs in sessions gomuxai didn't start; start the CLI there yourself (claude -c continues its last conversation), and adopt keeps tracking it"
+	want := "agent mine is an adopted session (session " + userSess + "): resume doesn't relaunch CLIs in sessions gomuxai didn't start; start the CLI there yourself (claude -c continues its last conversation), and adopt keeps tracking it"
 	if err == nil || err.Error() != want {
 		t.Errorf("resume err = %v\nwant %s", err, want)
 	}
@@ -106,7 +107,7 @@ func TestResumeRefusesAdoptedAgent(t *testing.T) {
 		t.Errorf("resume moved to %s", now)
 	}
 	if exists, _ := tmuxClient.SessionExists(userSess); !exists {
-		t.Error("the person's tmux session is gone")
+		t.Error("the person's session is gone")
 	}
 }
 
@@ -138,7 +139,7 @@ func TestSenderIsTheAgentTheProcessesShow(t *testing.T) {
 	if err := store.CreateAgent(ctx, &storage.Agent{Name: "sender-probe", SessionName: session, Backend: "claude", CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	pane, err := tmuxClient.(*tmux.Client).FirstPane(session)
+	pane, err := tmuxClient.(*termd.Client).FirstPane(session)
 	if err != nil {
 		t.Fatal(err)
 	}

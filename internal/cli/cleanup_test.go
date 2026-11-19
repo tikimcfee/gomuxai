@@ -230,11 +230,11 @@ func TestCleanupEnded_Person(t *testing.T) {
 
 	// Helpers first, then by name.
 	want := []string{
-		`would clean up "gone-h": ended (gone): its tmux session rpc-cli-gone-h is gone (a reboot, or the tmux server was killed); agent resume gone-h continues its session`,
+		`would clean up "gone-h": ended (gone): its session rpc-cli-gone-h is gone (a reboot, or g3d-termd was stopped); agent resume gone-h continues its session`,
 		`  its session rpc-cli-gone-h is already gone; no held messages`,
 		`would clean up "adopted": ended (`,
 		`  adopted: its session ` + userSess + ` stays running, and only the record goes; no held messages`,
-		`would clean up "gone": ended (gone): its tmux session rpc-cli-gone is gone`,
+		`would clean up "gone": ended (gone): its session rpc-cli-gone is gone`,
 		`  its session rpc-cli-gone is already gone; deletes 2 messages held for it`,
 		`would clean up "lead": ended (gone)`,
 		`  its session rpc-cli-lead is already gone; no held messages`,

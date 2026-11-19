@@ -8,8 +8,8 @@ import (
 
 var keyCmd = &cobra.Command{
 	Use:   "key <session> <key>",
-	Short: "Press a special key (Enter, Escape, c-c, ...) in a tmux session",
-	Long: `Key presses a special key or key combination in a tmux session, by session
+	Short: "Press a special key (Enter, Escape, c-c, ...) in a session",
+	Long: `Key presses a special key or key combination in a g3d-termd session, by session
 name (agent "helper"'s session is "agent-helper").
 
 Supported keys include:
@@ -17,9 +17,9 @@ Supported keys include:
   c-c (Ctrl+C), c-d (Ctrl+D), c-z (Ctrl+Z), etc.
   Up, Down, Left, Right
   Home, End, PgUp, PgDn
-  F1-F12
+  F1-F24
 
-tmux types a name it doesn't know as text.`,
+Unrecognized multi-character names are typed literally.`,
 	Example: `  agent key my-session Enter
   agent key agent-helper c-c
   agent key my-session Escape`,

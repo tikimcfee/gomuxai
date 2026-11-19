@@ -28,7 +28,7 @@ type Config struct {
 	// database; AgentDir takes the data directory from its parent.
 	StateDir string `json:"state_dir"`
 
-	// SessionPrefix is the prefix for tmux session names.
+	// SessionPrefix is the prefix for terminal session names.
 	SessionPrefix string `json:"session_prefix"`
 
 	// DefaultScrollback is the default number of lines to capture.
@@ -62,11 +62,8 @@ type Config struct {
 	AgyBrainDir       *string `json:"agy_brain_dir,omitempty"`
 	KimiSessionsDir   *string `json:"kimi_sessions_dir,omitempty"`
 
-	// Mux selects the terminal multiplexer: "tmux" (default) or "termd".
-	Mux string `json:"mux,omitempty"`
-
-	// TermdNamespace is the g3d-termd namespace when Mux is "termd"
-	// (default "agents"; never "default" or "wall").
+	// TermdNamespace is the g3d-termd namespace (default "agents"; never
+	// "default" or "wall").
 	TermdNamespace string `json:"termd_namespace,omitempty"`
 
 	// TermdBinary and G3DBinary are optional explicit paths to g3d-termd and g3d.
@@ -74,11 +71,7 @@ type Config struct {
 	G3DBinary   string `json:"g3d_binary,omitempty"`
 }
 
-const (
-	MuxTmux               = "tmux"
-	MuxTermd              = "termd"
-	DefaultTermdNamespace = "agents"
-)
+const DefaultTermdNamespace = termd.DefaultNamespace
 
 // DefaultStartupDelay is the default StartupDelay.
 const DefaultStartupDelay = 2 * time.Second
@@ -187,11 +180,9 @@ func DefaultConfig() *Config {
 		SubmitWait:        DefaultSubmitWait,
 		AgentBinary:       agentBinaryPath(),
 		Host:              defaultHost(filepath.Join(baseDir, "bus")),
-		Mux:               MuxTmux,
 		TermdNamespace:    DefaultTermdNamespace,
 	}
-	cfg.loadMuxFile(baseDir)
-	cfg.applyMuxEnv()
+	cfg.applyTermdEnv()
 	return cfg
 }
 
@@ -203,9 +194,6 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 
 	cfg := DefaultConfig()
-	// Reset to built-in mux defaults before unmarshaling so a database_path
-	// in the file reads its own data dir's mux.json rather than the binary's.
-	cfg.Mux = MuxTmux
 	cfg.TermdNamespace = DefaultTermdNamespace
 	cfg.TermdBinary = ""
 	cfg.G3DBinary = ""
@@ -214,80 +202,22 @@ func LoadFromFile(path string) (*Config, error) {
 		return nil, fmt.Errorf("parsing config file: %w", err)
 	}
 	var set struct {
-		Host           *string `json:"host"`
-		Mux            *string `json:"mux"`
-		TermdNamespace *string `json:"termd_namespace"`
-		TermdBinary    *string `json:"termd_binary"`
-		G3DBinary      *string `json:"g3d_binary"`
+		Host *string `json:"host"`
 	}
 	_ = json.Unmarshal(data, &set)
-	// A database_path elsewhere has its own bus dir and mux.json, unless the
-	// file names those fields itself.
+	// A database_path elsewhere has its own bus dir, unless the file names
+	// host itself.
 	if set.Host == nil {
 		cfg.Host = defaultHost(cfg.BusDir())
 	} else if cfg.Host != "" {
 		cfg.Host = currentHost(cfg.BusDir(), cfg.Host)
 	}
-	if cfg.DatabasePath != "" {
-		var fileMux muxSettings
-		if readMuxFile(filepath.Dir(cfg.DatabasePath), &fileMux) {
-			if set.Mux == nil && fileMux.Mux != "" {
-				cfg.Mux = fileMux.Mux
-			}
-			if set.TermdNamespace == nil && fileMux.TermdNamespace != "" {
-				cfg.TermdNamespace = fileMux.TermdNamespace
-			}
-			if set.TermdBinary == nil && fileMux.TermdBinary != "" {
-				cfg.TermdBinary = fileMux.TermdBinary
-			}
-			if set.G3DBinary == nil && fileMux.G3DBinary != "" {
-				cfg.G3DBinary = fileMux.G3DBinary
-			}
-		}
-	}
-	cfg.applyMuxEnv()
+	cfg.applyTermdEnv()
 
 	return cfg, nil
 }
 
-type muxSettings struct {
-	Mux            string `json:"mux"`
-	TermdNamespace string `json:"termd_namespace"`
-	TermdBinary    string `json:"termd_binary"`
-	G3DBinary      string `json:"g3d_binary"`
-}
-
-func readMuxFile(dataDir string, out *muxSettings) bool {
-	b, err := os.ReadFile(filepath.Join(dataDir, "mux.json"))
-	if err != nil {
-		return false
-	}
-	return json.Unmarshal(b, out) == nil
-}
-
-func (c *Config) loadMuxFile(dataDir string) {
-	var s muxSettings
-	if !readMuxFile(dataDir, &s) {
-		return
-	}
-	if s.Mux != "" {
-		c.Mux = s.Mux
-	}
-	if s.TermdNamespace != "" {
-		c.TermdNamespace = s.TermdNamespace
-	}
-	if s.TermdBinary != "" {
-		c.TermdBinary = s.TermdBinary
-	}
-	if s.G3DBinary != "" {
-		c.G3DBinary = s.G3DBinary
-	}
-}
-
-func (c *Config) applyMuxEnv() {
-	if v := os.Getenv("GOMUXAI_MUX"); v != "" {
-		c.Mux = v
-	}
+func (c *Config) applyTermdEnv() {
 	if v := os.Getenv("GOMUXAI_TERMD_NS"); v != "" {
 		c.TermdNamespace = v
 	}
@@ -307,22 +237,12 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// ValidateMux checks Mux and TermdNamespace.
-func (c *Config) ValidateMux() error {
-	if c.Mux == "" {
-		c.Mux = MuxTmux
+// ValidateTermd checks TermdNamespace (defaulting empty to "agents").
+func (c *Config) ValidateTermd() error {
+	if c.TermdNamespace == "" {
+		c.TermdNamespace = DefaultTermdNamespace
 	}
-	switch c.Mux {
-	case MuxTmux:
-		return nil
-	case MuxTermd:
-		if c.TermdNamespace == "" {
-			c.TermdNamespace = DefaultTermdNamespace
-		}
-		return termd.ValidateNamespace(c.TermdNamespace)
-	default:
-		return fmt.Errorf("invalid mux %q (want %q or %q)", c.Mux, MuxTmux, MuxTermd)
-	}
+	return termd.ValidateNamespace(c.TermdNamespace)
 }
 
 // EnsureDirs creates necessary directories if they don't exist.
@@ -343,14 +263,13 @@ func (c *Config) EnsureDirs() error {
 	return nil
 }
 
-// SessionName returns the full tmux session name for an agent.
+// SessionName returns the full terminal session name for an agent.
 func (c *Config) SessionName(agentName string) string {
 	return c.SessionPrefix + agentName
 }
 
-// LogPath returns the log file path for an agent: the pane's pipe-pane
-// output. External viewers (glyph3d-js's screens) tail this path, so
-// changing it breaks them.
+// LogPath returns the terminal scrollback snapshot log path for an agent.
+// External viewers tail this path, so changing it breaks them.
 func (c *Config) LogPath(agentName string) string {
 	return filepath.Join(c.LogDir, agentName+".log")
 }

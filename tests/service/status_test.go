@@ -504,12 +504,12 @@ func TestSend_RefusesAtDialogs(t *testing.T) {
 	}
 
 	// No dialog: send goes through. Send reads the visible screen, which
-	// Clear empties before it returns. The Enter first ends the read that
-	// kept the shell's prompt off the dialog.
+	// `clear` empties. The Enter first ends the read that kept the shell's
+	// prompt off the dialog.
 	if err := env.tmux.SendSpecialKey(session, "Enter"); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.tmux.Clear(session); err != nil {
+	if _, err := env.service.SendUnchecked(ctx, "worker", "clear"); err != nil {
 		t.Fatal(err)
 	}
 	waitPane(t, env, session, "the dialog cleared off the screen", func(screen string) bool {

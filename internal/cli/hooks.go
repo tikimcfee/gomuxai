@@ -22,7 +22,7 @@ var hookCmd = &cobra.Command{
 reads the event's payload on stdin and works out, from the running
 processes, which session fired it: the Claude Code CLI above it (proven by
 Claude's session registry: pid and start time), and the workgroup agent
-whose tmux pane runs that CLI as its own session, if any.
+whose session runs that CLI, if any.
 
 Every session's report is recorded (agent sessions shows how each ended).
 An agent's session also gets the agent's report, as agent status reads it,
