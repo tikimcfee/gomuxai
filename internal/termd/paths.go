@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tikimcfee/gomuxai/internal/termdwire"
 )
 
 // fallbackDirs are common installation locations checked when PATH omits
@@ -24,7 +26,7 @@ var fallbackDirs = []string{
 // ValidateNamespace checks that ns is 1..64 bytes of [A-Za-z0-9._-] and is
 // neither "default" nor "wall", which belong to interactive and wall sessions.
 func ValidateNamespace(ns string) error {
-	if err := validateName("termd namespace", ns); err != nil {
+	if err := termdwire.ValidateName("termd namespace", ns); err != nil {
 		return err
 	}
 	if ns == "default" || ns == "wall" {
@@ -35,22 +37,7 @@ func ValidateNamespace(ns string) error {
 
 // ValidateTerminalID checks that id is 1..64 bytes of [A-Za-z0-9._-].
 func ValidateTerminalID(id string) error {
-	return validateName("terminal id", id)
-}
-
-func validateName(what, s string) error {
-	if len(s) == 0 || len(s) > 64 {
-		return fmt.Errorf("%s %q must be 1 to 64 bytes of [A-Za-z0-9._-]", what, s)
-	}
-	for i := 0; i < len(s); i++ {
-		b := s[i]
-		ok := (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') ||
-			b == '.' || b == '_' || b == '-'
-		if !ok {
-			return fmt.Errorf("%s %q must be 1 to 64 bytes of [A-Za-z0-9._-]", what, s)
-		}
-	}
-	return nil
+	return termdwire.ValidateName("terminal id", id)
 }
 
 // CheckTestServer refuses to touch the user's real termd sockets from a test
@@ -74,50 +61,19 @@ func CheckTestServer() error {
 	return nil
 }
 
-// SocketDir returns the directory where g3d-termd sockets live, matching
-// g3d::paths::socket_dir: $G3D_TERMD_DIR, else /run/user/<uid>/g3d when owned
-// privately by <uid>, else /tmp/g3d-<uid>.
+// SocketDir returns the directory where g3d-termd sockets live.
 func SocketDir() string {
-	if d := os.Getenv("G3D_TERMD_DIR"); d != "" {
-		return d
-	}
-	uid := os.Getuid()
-	if rt := userRuntimeDir(uid); rt != "" {
-		return filepath.Join(rt, "g3d")
-	}
-	return fmt.Sprintf("/tmp/g3d-%d", uid)
-}
-
-func userRuntimeDir(uid int) string {
-	dir := fmt.Sprintf("/run/user/%d", uid)
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return ""
-	}
-	owner, ok := statOwnerUID(info)
-	if !ok || owner != uid {
-		return ""
-	}
-	return dir
+	return termdwire.SocketDir()
 }
 
 // SocketPath returns the Unix socket path for namespace ns.
 func SocketPath(ns string) string {
-	return filepath.Join(SocketDir(), "termd-"+ns+".sock")
+	return termdwire.SocketPath(ns)
 }
 
 // LogPath returns the daemon log path for namespace ns.
 func LogPath(ns string) string {
-	if d := os.Getenv("G3D_TERMD_DIR"); d != "" {
-		return filepath.Join(d, "termd-"+ns+".log")
-	}
-	if s := os.Getenv("XDG_STATE_HOME"); s != "" {
-		return filepath.Join(s, "g3d", "termd-"+ns+".log")
-	}
-	if h := os.Getenv("HOME"); h != "" {
-		return filepath.Join(h, ".local", "state", "g3d", "termd-"+ns+".log")
-	}
-	return filepath.Join(SocketDir(), "termd-"+ns+".log")
+	return termdwire.LogPath(ns)
 }
 
 // DaemonBinary locates g3d-termd: explicit, $G3D_TERMD_BIN, beside the running
