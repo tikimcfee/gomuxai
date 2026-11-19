@@ -25,7 +25,7 @@ var resumeCmd = &cobra.Command{
 	Use:   "resume <name> | --all [--dry-run]",
 	Short: "Start an ended agent again, continuing its last session; --all: every one a reboot ended",
 	Long: `Resume starts an agent whose session has ended again, on that same
-session: after a reboot, a killed tmux server, or a CLI that quit. It keeps
+session: after a reboot, a stopped g3d-termd daemon, or a CLI that quit. It keeps
 the agent's name, backend and parent (so its helpers stay its helpers),
 the model spawn --model started it on, its own state keys and its last
 _result, and delivers the messages held
@@ -35,18 +35,18 @@ Only an ended claude or agy agent can be resumed ("agent list" shows
 "ended (...)"). A failed resume leaves it ended, to resume again or clean
 up.
 
-An adopted agent (agent adopt) is refused: its tmux session is your own,
-so resume neither types a launch into your shell nor creates a session to
+An adopted agent (agent adopt) is refused: its session is your own, so
+resume neither types a launch into your shell nor creates a session to
 replace it. Start the CLI there yourself (claude -c continues its last
-conversation) and adopt keeps tracking it. If that tmux session is gone,
+conversation) and adopt keeps tracking it. If that session is gone,
 agent cleanup <name>, then agent spawn <name> --continue (or --resume
 <session>) starts it in a session of gomuxai's own.
 
 Inside an agent (AGENT_NAME set), you can resume only your own helpers and
 theirs.
 
---all resumes every agent on this host that a reboot or a killed tmux
-server ended: status ended (gone), as agent status resolves it, and
+--all resumes every agent on this host that a reboot or a stopped g3d-termd
+ended: status ended (gone), as agent status resolves it, and
 resumable (claude or agy, not adopted, with a session). Agents that ended
 any other way (quit, finished, closed, replaced, parent) were ended on
 purpose, so --all leaves them, listing each as skipped with how it ended;
@@ -95,9 +95,9 @@ func init() {
 	resumeCmd.Flags().BoolVar(&resumeTrustWorkspace, "trust-workspace", false,
 		"Confirm the CLI's workspace trust prompt on launch (use with caution)")
 	resumeCmd.Flags().BoolVar(&resumeAttach, "attach", false,
-		"Open the agent's tmux session in this terminal once it starts")
+		"Open the agent's session in this terminal once it starts")
 	resumeCmd.Flags().BoolVar(&resumeAll, "all", false,
-		"Resume every agent here that a reboot or killed tmux server ended (yours only, inside an agent)")
+		"Resume every agent here that a reboot or stopped g3d-termd ended (yours only, inside an agent)")
 	resumeCmd.Flags().BoolVar(&resumeDryRun, "dry-run", false,
 		"With --all: list what it would resume and skip, and why, changing nothing")
 }

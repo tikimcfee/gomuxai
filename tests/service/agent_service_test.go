@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,15 +17,15 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
 	"github.com/tikimcfee/gomuxai/internal/storage"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
-	"github.com/tikimcfee/gomuxai/internal/tmuxtest"
+	"github.com/tikimcfee/gomuxai/internal/termd"
+	"github.com/tikimcfee/gomuxai/internal/termdtest"
 )
 
 // testEnv holds test environment resources.
 type testEnv struct {
 	cfg      *config.Config
 	store    *storage.SQLiteStorage
-	tmux     *tmux.Client
+	tmux     *termd.Client
 	backends *backend.Registry
 	service  *service.AgentService
 	cleanup  func()
@@ -43,11 +42,7 @@ var (
 func setupTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
-	// Check tmux is available
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available, skipping integration test")
-	}
-	tmuxtest.Require(t)
+	termdtest.Require(t)
 
 	// Create temp database
 	tmpFile, err := os.CreateTemp("", "gomuxai-service-test-*.db")
@@ -68,6 +63,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	// Create config with unique prefix to avoid collision
 	cfg := &config.Config{
 		Backend:           "claude",
+		TermdNamespace:    termd.DefaultNamespace,
 		DatabasePath:      tmpFile.Name(),
 		LogDir:            tmpDir + "/logs",
 		StateDir:          tmpDir + "/state",
@@ -90,13 +86,13 @@ func setupTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("creating storage: %v", err)
 	}
 
-	// Create tmux client
-	tmuxClient, err := tmux.NewClient()
+	// Create termd client on the shared test namespace
+	tmuxClient, err := termd.NewClient(termd.Options{Namespace: cfg.TermdNamespace})
 	if err != nil {
 		store.Close()
 		os.Remove(tmpFile.Name())
 		os.RemoveAll(tmpDir)
-		t.Fatalf("creating tmux client: %v", err)
+		t.Fatalf("creating termd client: %v", err)
 	}
 
 	// Create backend registry

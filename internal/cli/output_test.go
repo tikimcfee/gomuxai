@@ -85,7 +85,7 @@ func TestAgentNotFoundSuggests(t *testing.T) {
 	addTeam(t, map[string]string{"helper": ""})
 	tests := map[string]string{
 		"helpr":          `agent "helpr" not found on host local; did you mean helper?`,
-		"rpc-cli-helper": `agent "rpc-cli-helper" not found on host local: that is the tmux session of agent helper, so use the agent name helper`,
+		"rpc-cli-helper": `agent "rpc-cli-helper" not found on host local: that is the session of agent helper, so use the agent name helper`,
 		"zzz":            `agent "zzz" not found on host local (2 agents there: agent list)`,
 	}
 	for name, want := range tests {
@@ -171,12 +171,11 @@ func TestSendRefusesWaitingAgentSayingWhatToDo(t *testing.T) {
 
 func TestSessionCommandsNameTheAgentsSession(t *testing.T) {
 	setupCLI(t)
-	want := `no tmux session "worker", but there is an agent worker: this command takes session names, and its session is rpc-cli-worker`
+	want := `no session "worker", but there is an agent worker: this command takes session names, and its session is rpc-cli-worker`
 	for name, run := range map[string]func() error{
-		"keys":  func() error { return runKeys(keysCmd, []string{"worker", "hi"}) },
-		"key":   func() error { return runKey(keyCmd, []string{"worker", "Enter"}) },
-		"clear": func() error { return runClear(clearCmd, []string{"worker"}) },
-		"kill":  func() error { return runSessionKill(sessionKillCmd, []string{"worker"}) },
+		"keys": func() error { return runKeys(keysCmd, []string{"worker", "hi"}) },
+		"key":  func() error { return runKey(keyCmd, []string{"worker", "Enter"}) },
+		"kill": func() error { return runSessionKill(sessionKillCmd, []string{"worker"}) },
 	} {
 		if err := run(); err == nil || err.Error() != want {
 			t.Errorf("%s: err = %v", name, err)

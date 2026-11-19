@@ -19,13 +19,12 @@ import (
 	"github.com/tikimcfee/gomuxai/internal/backend/types"
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/storage"
+	"github.com/tikimcfee/gomuxai/internal/termd"
 	"github.com/tikimcfee/gomuxai/internal/transcript"
 )
 
-// KindTmux is an agent running in a tmux session that agent spawned. It is
-// the only kind so far; plain CLI sessions a person started could be
-// another.
-const KindTmux = "tmux"
+// KindTermd is an agent running in a g3d-termd terminal managed by gomuxai.
+const KindTermd = "termd"
 
 // Agent is one agent as agent export prints it. Status, Event, Detail,
 // Tool, and ToolInput are the last recorded report (hooks or agent report),
@@ -37,13 +36,14 @@ type Agent struct {
 	Run       int64     `json:"run,omitempty"`    // the spawn's id in its store; 0 if spawned before runs were recorded
 	Parent    string    `json:"parent,omitempty"` // the agent that spawned it; absent for a person
 	Backend   string    `json:"backend"`
-	Session   string    `json:"session"`         // tmux session on Host
-	Store     string    `json:"store,omitempty"` // the data dir that records it; absent for other hosts
+	Session   string    `json:"session"`             // terminal id on Host
+	Namespace string    `json:"namespace,omitempty"` // g3d-termd namespace on this host (e.g. "agents"); absent for other hosts
+	Store     string    `json:"store,omitempty"`     // the data dir that records it; absent for other hosts
 	Cwd       string    `json:"cwd,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	EndedAt   time.Time `json:"ended_at,omitzero"` // when cleanup removed it
 	Live      bool      `json:"live"`              // it has a record (not cleaned up)
-	// Attached reports whether its tmux session exists; absent for
+	// Attached reports whether its terminal session exists; absent for
 	// another host that predates sending it (unknown).
 	Attached *bool `json:"attached,omitempty"`
 	// Resumable says whether agent resume would continue it, by its own
@@ -157,11 +157,12 @@ type UnrecordedLine struct {
 	Sessions []Session `json:"sessions"`
 }
 
-// Deps is what a Tree needs from outside: tmux, the bus, the clock.
+// Deps is what a Tree needs from outside: termd, the bus, the clock.
 type Deps struct {
 	Host          string // this host's name
+	Namespace     string // this host's g3d-termd namespace (default "agents")
 	SessionPrefix string // agent sessions' prefix, "agent-"
-	// Sessions lists the tmux server's session names.
+	// Sessions lists the termd namespace's terminal ids.
 	Sessions func() ([]string, error)
 	// SessionStore returns the data dir of the binary that started a
 	// session (from the PATH it was given), or "".
@@ -207,6 +208,9 @@ const pollBatch = 500
 func New(d Deps, dirs []string, hosts []string, all bool) *Tree {
 	if d.Now == nil {
 		d.Now = time.Now
+	}
+	if d.Namespace == "" {
+		d.Namespace = termd.DefaultNamespace
 	}
 	t := &Tree{d: d, all: all, hosts: hosts, sessStore: map[string]string{}, remote: map[string][]Agent{}, hostErrs: map[string]string{}}
 	for i, dir := range dirs {
@@ -512,8 +516,8 @@ func (t *Tree) read(ctx context.Context, s *store) error {
 		state[e.AgentName][e.Key] = e
 	}
 	for _, rec := range tree.Agents {
-		a := Agent{Name: rec.Name, Host: t.d.Host, Kind: KindTmux, Parent: rec.SpawnedBy, Backend: rec.Backend,
-			Session: rec.SessionName, Store: s.dir, Cwd: rec.Cwd, CreatedAt: rec.CreatedAt.UTC(), Live: true, adopted: rec.Adopted}
+		a := Agent{Name: rec.Name, Host: t.d.Host, Kind: KindTermd, Parent: rec.SpawnedBy, Backend: rec.Backend,
+			Session: rec.SessionName, Namespace: t.d.Namespace, Store: s.dir, Cwd: rec.Cwd, CreatedAt: rec.CreatedAt.UTC(), Live: true, adopted: rec.Adopted}
 		if run := tree.Runs[rec.Name]; run != nil {
 			a.Run = run.ID
 			if a.Cwd == "" {
@@ -552,8 +556,8 @@ func (t *Tree) read(ctx context.Context, s *store) error {
 // fromRun describes a run: departed if it ended, otherwise without the
 // live agent's status.
 func (t *Tree) fromRun(s *store, run *storage.Run) Agent {
-	a := Agent{Name: run.Name, Host: t.d.Host, Kind: KindTmux, Run: run.ID, Parent: run.Parent, Backend: run.Backend,
-		Session: run.Session, Store: s.dir, Cwd: run.Cwd, CreatedAt: run.CreatedAt.UTC(), EndedAt: run.EndedAt.UTC(),
+	a := Agent{Name: run.Name, Host: t.d.Host, Kind: KindTermd, Run: run.ID, Parent: run.Parent, Backend: run.Backend,
+		Session: run.Session, Namespace: t.d.Namespace, Store: s.dir, Cwd: run.Cwd, CreatedAt: run.CreatedAt.UTC(), EndedAt: run.EndedAt.UTC(),
 		Status: run.Status, EndReason: run.EndReason, Transcript: run.Transcript}
 	if !run.EndedAt.IsZero() {
 		attached := false
@@ -672,7 +676,7 @@ func (t *Tree) readHost(ctx context.Context, host string) {
 	agents := make([]Agent, 0, len(infos))
 	for _, in := range infos {
 		// Fields an older host doesn't send stay absent: unknown.
-		agents = append(agents, Agent{Name: in.Name, Host: host, Kind: KindTmux, Parent: in.SpawnedBy, Backend: in.Backend,
+		agents = append(agents, Agent{Name: in.Name, Host: host, Kind: KindTermd, Parent: in.SpawnedBy, Backend: in.Backend,
 			Session: in.Session, Cwd: in.Cwd, CreatedAt: in.CreatedAt.UTC(), Live: true, Attached: in.Attached, Resumable: in.Resumable,
 			Status: in.Status, EndReason: in.EndReason, Detail: in.Detail, SessionID: in.SessionID, adopted: in.Adopted})
 	}

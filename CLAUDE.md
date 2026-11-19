@@ -9,7 +9,7 @@ check it before relying on a detail here.
 
 **The `agent` binary is your interface to other agents.** Spawning,
 messaging, waiting, reading results, and answering prompts all go through
-it. Don't drive tmux yourself, and don't pass messages through files in
+it. Don't drive `g3d` yourself, and don't pass messages through files in
 `/tmp`.
 
 If `agent` can't do what you need, confuses you, or gives an error that
@@ -64,16 +64,17 @@ failed and what to try. Most read commands take `--json`.
 ## How It Works
 
 - Each agent is an AI CLI (`claude`, `aider`, `agy`, or a custom backend)
-  running in its own tmux session. Agent `helper` runs in session
-  `agent-helper`. Agent commands take the agent name; the low-level
-  `session`, `keys`, `key`, and `clear` take the session name.
+  running in its own `g3d-termd` session (namespace `agents` by default).
+  Agent `helper` runs in session `agent-helper`. Agent commands take the
+  agent name; the low-level `session`, `keys`, and `key` take the session
+  name.
 - It's recursive. A spawned agent has the same `agent` binary, so it can
   message others and spawn its own helpers. When an agent spawns one, the
   new agent is its helper: `agent list` nests it under its parent, and only
   its parent (or theirs, up the chain) or a person can clean it up.
-- An existing tmux session can also be registered on the bus without
+- An existing `g3d-termd` session can also be registered on the bus without
   restarting what's running in it: `agent adopt <name>` (or `--session <session>`).
-  Cleaning up an adopted agent unregisters it and leaves its tmux session running.
+  Cleaning up an adopted agent unregisters it and leaves its session running.
   gomuxai never launches anything in an adopted session, so `agent resume`
   refuses one: if its CLI exits, start it there yourself (`claude -c`
   continues its last conversation) and adopt keeps tracking it.
@@ -305,7 +306,7 @@ log, which other backends get), and survives cleanup. `capture` is the live
 screen, and the way to look at an agent on another host. It prints plain
 text; `--raw` keeps the colors and styling as SGR escape codes (`| cat -v`
 to read them), which tell, say, dim placeholder text from typed text. To
-watch an agent, use `capture` rather than `tmux attach -r` (see Warts).
+watch an agent without taking over its terminal, use `capture`.
 
 ### 5. Answer permission prompts
 
@@ -368,7 +369,7 @@ name.
 `agent status` resolves it) is ended, that you may clean up. An ended
 agent's helpers that are still running stay: for a person it says so, and
 inside an agent it skips the ended one too, since only a person could reach
-its helpers once it's gone. An adopted agent's tmux session stays running.
+its helpers once it's gone. An adopted agent's session stays running.
 It ends with a total; `--dry-run` lists each agent, how it ended, what
 happens to its session, and how many held messages go with it.
 
@@ -380,18 +381,18 @@ agent resume --all --dry-run # after a reboot: what --all would resume and skip,
 agent resume --all           # every agent the reboot ended, parents before their helpers
 ```
 
-A reboot (or a killed tmux server) ends every agent: `ended (gone)`.
+A reboot (or a stopped `g3d-termd` daemon) ends every agent: `ended (gone)`.
 `resume` (or `resume name@host`, for another host's) starts one again on
 its last session, in the directory it ran in, keeping its name, backend, parent (its helpers stay its helpers),
 the model it was spawned on, its own state keys and `_result`, and delivers messages held for it. Claude
-and agy agents only, and not an adopted one (its tmux session is a
+and agy agents only, and not an adopted one (its session is a
 person's: start the CLI there yourself). Inside an agent, only your own
 helpers. To continue
 a session no agent owns, `agent spawn <name> --resume <session>`, or
 `--continue` for the most recent one in the directory.
 
 `--all` resumes every agent here whose status is `ended (gone)` and that
-can be resumed: what a reboot or a killed tmux server leaves. An agent
+can be resumed: what a reboot or a stopped `g3d-termd` leaves. An agent
 that ended any other way (`quit`, `finished`, `closed`, `replaced`,
 `parent`) was ended on purpose, so `--all` lists it as skipped and leaves
 it (name it to resume it), and so with a gone one it can't resume (aider,
@@ -483,7 +484,7 @@ agent export --json --all             # include departed (cleaned up) agents
 Export reads only, runs no backend CLI, and logs one command-log row per
 run, so many followers are cheap. Its status is the last hook report, not
 the resolved status `agent status` shows. It also reads the stores of other
-`agent` binaries that the tmux `agent-*` sessions point at (a worktree's
+`agent` binaries that the `g3d-termd` `agent-*` sessions point at (a worktree's
 `./bin/agent`), read-only. To coordinate, use `wait` and `_result`; export
 is for programs that draw or log the tree. `docs/ARCHITECTURE.md` ("Export")
 has the JSON shapes. A departed agent's `session_id` is the one its
@@ -636,7 +637,7 @@ agent bus start                                 # every other machine
 agent bus status                                # running? which peers are linked?
 ```
 
-The bus runs in tmux session `gomux-bus`. `agent bus restart` restarts it
+The bus runs in `g3d-termd` session `gomux-bus`. `agent bus restart` restarts it
 with the settings it runs with (`--listen`, `--client-port`,
 `--remote-ops`); run it after `trust`. nats-server can't reload trust, so
 every trust change applies on a restart. Give restart one of those flags
@@ -679,20 +680,20 @@ aren't signed in v1. Status events are hints that `wait` confirms with a
 real status check. Text from other hosts is stripped of terminal control
 sequences; `capture --raw` keeps only the SGR codes (colors, bold, dim).
 
-**macOS:** from inside tmux, the bus can't dial other machines on the LAN
-unless the binary holds its own Local Network permission. The link fails
-with `no route to host` in `.gomuxai/bus/bus.log`, with no alert. Build with
-`make macos` in a terminal on the Mac (it embeds an Info.plist and signs with
-an Apple Development or Developer ID identity; `CODESIGN_IDENTITY=...` picks
-one). Signing needs the login keychain, which is unlocked only in the
-Mac's GUI login session. A tmux window has the session of whoever started
-the tmux *server*, so over SSH, `make macos` signs only in a tmux server
-started from a terminal on the Mac (or by a LaunchAgent in the GUI
-domain: `docs/ARCHITECTURE.md`, "Signing over ssh"); one started over SSH
-can't (codesign: `errSecInternalComponent`), and `make macos` then says
-so. `agent bus restart` and `rename` keep the bus's tmux session, so they
-can't replace the server. On the first `agent bus start`, allow "gomuxai"
-to find devices on the local network.
+**macOS:** from inside a background `g3d-termd` daemon, the bus can't dial
+other machines on the LAN unless the binary holds its own Local Network
+permission. The link fails with `no route to host` in `.gomuxai/bus/bus.log`,
+with no alert. Build with `make macos` in a terminal on the Mac (it embeds an
+Info.plist and signs with an Apple Development or Developer ID identity;
+`CODESIGN_IDENTITY=...` picks one). Signing needs the login keychain, which
+is unlocked only in the Mac's GUI login session. A `g3d-termd` terminal has
+the session of whoever started the `g3d-termd` *daemon*, so over SSH,
+`make macos` signs only in a `g3d-termd` daemon started from a terminal on
+the Mac (or by a LaunchAgent in the GUI domain: `docs/ARCHITECTURE.md`,
+"Signing over ssh"); one started over SSH can't (codesign:
+`errSecInternalComponent`), and `make macos` then says so. `agent bus restart`
+and `rename` keep the bus's session, so they don't stop the daemon. On the
+first `agent bus start`, allow "gomuxai" to find devices on the local network.
 
 ## When Things Go Wrong
 
@@ -708,11 +709,10 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | Every agent `ended (gone)` after a reboot | `agent resume --all --dry-run`, then `agent resume --all`: it resumes each one the reboot ended, parents first, and leaves the ones ended on purpose. |
 | `wait` timed out | `status -v` and `capture`: still working, stuck, or missed the turn? |
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
-| A key fails: "a read-only client is attached" | Detach the client it names (`tmux detach-client -t /dev/pts/N`); watch with `agent capture` instead of `tmux attach -r`. |
 | Queued messages never arrive (not Claude) | Start `agent watch` (one per host is enough). |
 | A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's (or agy's step's) end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there, or close what covers it: `agent capture`); `agent deliver <name>` (or `<name>@host`) types it now if the agent is at its prompt. |
 | `send` says the message is still in the input box; `status` shows `unsent:` | Enter didn't submit it: `agent key agent-<name> Enter` does. Don't send it again. |
-| Leftover tmux session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
+| Leftover session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one; if it has ended, `agent resume <name>` continues it. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |
 
@@ -782,11 +782,6 @@ Known gaps; `agent friction list` has the rest.
   (`$A send`), chained, or piped; see "What a spawned Claude agent may run
   without asking".
 - Bus replies are unsigned (see trust, above).
-- A read-only tmux client (`tmux attach -r`) attached to any session makes
-  tmux refuse `send-keys` to every session. `agent` pastes text and common
-  keys past it instead (Enter, Escape, Tab, BSpace, Space, the arrows,
-  C-a to C-z, single characters), so `send`, `approve`, and the like still
-  work; any other key name fails, naming the client to detach.
 - `export` shows the last reported status: an interrupted permission
   prompt stays `waiting`, and a crashed CLI keeps its last status, until
   the next hook. A store written by an `agent` built before export has no

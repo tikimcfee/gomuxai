@@ -3,7 +3,6 @@ package service_test
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,18 +36,18 @@ func serveSpawn(t *testing.T, env *testEnv) *natsbus.RPCClient {
 	return natsbus.NewRPCClient(natstest.Connect(t, nc.ConnectedUrl()), 5*time.Second)
 }
 
-// panePath is the working directory of session's pane, as tmux sees it.
-func panePath(t *testing.T, session string) string {
+// panePath is the working directory of session's pane, as termd sees it.
+func panePath(t *testing.T, env *testEnv, session string) string {
 	t.Helper()
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", session, "#{pane_current_path}").Output()
+	pane, err := env.tmux.FirstPane(session)
 	if err != nil {
 		t.Fatalf("reading %s's pane path: %v", session, err)
 	}
-	return strings.TrimSpace(string(out))
+	return realPath(t, pane.Cwd)
 }
 
-// realPath is path with its symlinks resolved, as tmux reports a pane's
-// directory: on macOS, t.TempDir() is under /var, a link to /private/var.
+// realPath is path with its symlinks resolved: on macOS, t.TempDir() is
+// under /var, a link to /private/var.
 func realPath(t *testing.T, path string) string {
 	t.Helper()
 	real, err := filepath.EvalSymlinks(path)
@@ -94,7 +93,7 @@ func TestRPC_SpawnStartsAgentWhereAsked(t *testing.T) {
 	if stored.Cwd != dir || stored.SpawnedBy != "lead@laptop" || stored.TaskFile != want.TaskFile {
 		t.Errorf("stored cwd %q, parent %q, task %q", stored.Cwd, stored.SpawnedBy, stored.TaskFile)
 	}
-	if got, want := panePath(t, session), realPath(t, dir); got != want {
+	if got, want := panePath(t, env, session), realPath(t, dir); got != want {
 		t.Errorf("pane starts in %q, want %q", got, want)
 	}
 
@@ -120,7 +119,7 @@ func TestRPC_SpawnWithoutCwdStartsInHome(t *testing.T) {
 	if resp.Cwd != home || resp.SpawnedBy != "" {
 		t.Errorf("cwd %q, parent %q; want %q and none (a person spawned it)", resp.Cwd, resp.SpawnedBy, home)
 	}
-	if got, want := panePath(t, resp.Session), realPath(t, home); got != want {
+	if got, want := panePath(t, env, resp.Session), realPath(t, home); got != want {
 		t.Errorf("pane starts in %q, want %q", got, want)
 	}
 }
@@ -181,7 +180,7 @@ func TestSpawn_Cwd(t *testing.T) {
 	if a, _ := env.store.GetAgent(context.Background(), "placed"); a == nil || a.Cwd != dir {
 		t.Errorf("stored agent = %+v, want cwd %q", a, dir)
 	}
-	if got, want := panePath(t, env.cfg.SessionName("placed")), realPath(t, dir); got != want {
+	if got, want := panePath(t, env, env.cfg.SessionName("placed")), realPath(t, dir); got != want {
 		t.Errorf("pane starts in %q, want %q", got, want)
 	}
 }

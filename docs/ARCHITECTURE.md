@@ -9,8 +9,8 @@ so it stays current where this file can drift.
 ## Overview
 
 `agent` is one Go binary. Each agent is an AI CLI (Claude Code, agy, aider,
-or a custom one) running in its own tmux session. The binary starts those
-sessions, types into them, and records everything about them in one SQLite
+or a custom one) running in its own `g3d-termd` session (namespace `agents` by
+default). The binary starts those sessions, types into them, and records everything about them in one SQLite
 database per data dir. Claude and agy agents report their own status through
 lifecycle hooks: Claude Code runs `agent hook` for every session on the
 machine (registered once by `agent hooks install`), and each agy agent's
@@ -31,7 +31,7 @@ installed one:
 .gomuxai/
 ├── gomuxai.db               # agents, runs, agent_events, messages, tasks, state, session_reports, command_log, friction, friction_links
 ├── logs/
-│   ├── <name>.log           # tmux pipe-pane output (survives cleanup)
+│   ├── <name>.log           # terminal scrollback snapshot (written on cleanup)
 │   ├── <name>.transcripts   # "<backend>\t<path>" per CLI transcript (survives cleanup)
 │   └── hook-errors.log      # what `agent hook` failed at, one line each
 ├── backups/                 # Claude Code's settings.json, copied before `agent hooks` edits it
@@ -56,10 +56,9 @@ installed one:
 | `internal/backend` | Backend interfaces (`Backend`, `Provider`, and the optional capability interfaces), the registry, and custom JSON backends (`generic.go`). |
 | `internal/backend/namedagents` | The built-in backends: `claude`, `agy`, `aider`, and the hook plumbing they share (`hooks.go`). |
 | `internal/backend/types` | `Status`, `EndReason`, `HookReport`, `PermissionResponse`, shared by backends and service; `Statuses` and `EndReasons` hold each word's meaning, which `agent statuses` prints. |
-| `internal/claudereg` | Reads Claude Code's session registry (`~/.claude/sessions/<pid>.json`), proves each entry against the running processes, and finds the session a tmux pane runs. |
+| `internal/claudereg` | Reads Claude Code's session registry (`~/.claude/sessions/<pid>.json`), proves each entry against the running processes, and finds the session a terminal pane runs. |
 | `internal/allowcmd` | Decides whether a shell command line is one plain run of a given binary with a safe subcommand (parsed with `mvdan.cc/sh`), for the PreToolUse approval. |
-| `internal/tmux` | `TmuxOps` over the `tmux` command: sessions, send keys, capture, pipe-pane. Errors carry tmux's own message. |
-| `internal/termd` | `TmuxOps` over the `g3d-termd` daemon's Unix socket protocol (v1.5), in a dedicated namespace (`agents`, never `default` or `wall`). `internal/termdtest` isolates tests in private socket dirs. |
+| `internal/termd` | `Ops` over the `g3d-termd` daemon's Unix socket protocol (v1.5), in a dedicated namespace (`agents` by default, refusing `default` and `wall`). `internal/termdwire` speaks the framing; `internal/termdtest` isolates tests in private socket dirs. |
 | `internal/natsbus` | The bus: contract (subjects, ops, wire types), identity and trust, the daemon's server config, RPC server and client, status events and `Wait`. `natstest` starts throwaway NATS servers for tests. |
 | `internal/transcript` | Readers for Claude Code, agy and Kimi Code session transcripts, into one event stream (`docs/EVENTS.md`). |
 | `internal/watcher` | The `agent watch` loop: delivers queued messages when their agent is idle. |
@@ -70,68 +69,45 @@ installed one:
 | `internal/buildinfo` | The build id (`c7253f9-dirty`, a version, or `devel`) from the Go toolchain's embedded VCS info. |
 | `internal/util` | Shell quoting and word splitting, ANSI stripping, terminal sanitizing, terminal-log cleanup (`TerminalLines`), "did you mean" suggestions, the process tree (`ReadProcTree`, `ProcAncestors`, `ProcArgs`), atomic file writes. |
 
-## Why tmux
+## Why g3d-termd
 
-Each agent runs in a tmux session named `agent-<name>` (`Config.SessionPrefix`).
-tmux gives:
+Each agent runs in a `g3d-termd` terminal named `agent-<name>`
+(`Config.SessionPrefix`) inside a dedicated daemon namespace (`agents` by
+default, configured via `--termd-ns` or `GOMUXAI_TERMD_NS`, and refusing
+`default` and `wall` so agent sessions never share a daemon with interactive or
+wall terminals). `g3d-termd` gives:
 
-1. **Process isolation.** An agent can crash without taking others down.
+1. **Process isolation.** An agent can crash without taking others down, and
+   `kill` terminates the terminal's entire process tree.
 2. **Persistent terminals.** Sessions survive disconnects, and a person can
-   attach (`agent attach <name>`) to watch or steer any agent.
-3. **Scriptable I/O.** `paste-buffer` types messages, `send-keys` keys;
-   `capture-pane` reads the screen; `pipe-pane` logs everything.
-4. **Escape hatches.** `agent session`, `keys`, `key`, and `clear` expose
-   raw tmux for when the higher-level commands fail.
-
-`internal/tmux` runs the `tmux` command itself, and a failure's error
-(`tmux.Error`) carries what tmux printed on stderr ("tmux send-keys: can't
-find pane: %9"). Session targets are exact (`=name`): tmux otherwise falls
-back to a prefix match, so `agent-a` could reach `agent-ab`. Every
-session-level operation targets the session's first pane by id.
-
-`clear` types nothing: `send-keys -R` resets the pane's terminal (blank
-screen, cursor home), and `clear-history`, in the same tmux command, then
-drops the scrollback, which includes the old screen, since `scroll-on-clear`
-(on by default) moves it there. Typing `clear` into the shell raced
-`clear-history` and could leave the old screen behind; it also reached an
-agent's CLI as a message.
-
-`capture` reads plain text (`capture-pane -p`); `capture --raw` and
-`TmuxOps.CaptureStyled` add `-e`, which keeps the SGR escape codes (colors,
-bold, dim). tmux re-encodes the screen, so neither carries the program's
-other escape sequences.
-
-**Read-only clients.** While any client attached with `tmux attach -r` is
-on the server, tmux refuses `send-keys` to every session ("client is
-read-only"): with no `-c`, send-keys checks the most recently active client,
-whichever session it watches. The check is meant to keep a read-only viewer
-from typing through key bindings, not to lock the session, and
-`paste-buffer` isn't refused. So on that refusal, `SendKeys` and
-`SendSpecialKey` paste instead: `load-buffer -` (the bytes on stdin), then `paste-buffer -d -r -S`
-(`-r` keeps newlines, `-S` keeps control characters, which tmux 3.5+
-otherwise turns into `^C`; without `-p` there's no bracketed paste), which
-types the same bytes `send-keys -l` does. A key is pasted as the bytes a
-terminal sends for it, for names with fixed bytes: Enter, Escape, Tab,
-BSpace, Space, the arrows (in the pane's cursor key mode,
-`#{keypad_cursor_flag}`), C-a to C-z, and single characters. Any other key
-name fails with a `tmux.ReadOnlyError` that names the read-only clients
-(`list-clients`) and says to detach them or watch with `agent capture`.
+   attach (`agent attach <name>`, which `exec`s `g3d --ns <ns> attach --take
+   <session>`, detaching with `Ctrl-\` twice) to watch or steer any agent.
+3. **Structured socket I/O.** `internal/termd` (`termd.Ops`) speaks
+   `g3d-termd`'s local Unix socket protocol (v1.5) directly without spawning a
+   CLI per call: `CreateSessionIn` runs `create` (lazily resolving and
+   auto-starting `g3d-termd --ns <ns> --daemon` only when absent, passing
+   `env_base` and request `env` overrides); `SendKeys` writes literal `INPUT`
+   frames synchronized by `unsubscribe`; `PasteText` streams chunked `paste`
+   requests (`paste_stream`, `allow_unsafe: true`) wrapped in bracketed paste
+   codes (`ESC [200~` ... `ESC [201~`) when the program asked for mode 2004,
+   dropping any embedded `ESC [201~`; `SendSpecialKey` encodes W3C key events
+   via `key` (Kitty keyboard, modifyOtherKeys, DECCKM); `Capture` and
+   `CaptureStyled` call `capture` (`plain` and `vt` with CRLF normalized to
+   LF); session liveness, `PanePIDs`, and `FirstPane` read the daemon's
+   `status` document (resolving OSC 7 `file://` URLs), briefly redialing on
+   transient `restart`/`busy` states; `SessionEnv` reads `env` preferring
+   `source == "request"`; and `RespawnPane` preserves `cwd`, `env_base`, and
+   request `env` across a shell restart.
+4. **Escape hatches.** `agent session`, `keys`, and `key` expose low-level
+   session operations for when the higher-level commands fail.
 
 **Typing messages.** A message (a send, held messages typed in, spawn's
-first message) is typed with `TmuxOps.PasteText`: `load-buffer -` with the
-text on stdin, then `paste-buffer -d -r -S -p`. (`set-buffer` takes the
-text as an argument, which the tmux client sends its server as one
-message: tmux 3.8 refuses one past about 16 KB, "command too long", so a
-longer message failed to type at all.) In `paste-buffer`, `-p` wraps it in bracketed paste codes (`ESC [200~` ...
-`ESC [201~`) if the pane's program asked for bracketed paste, as Claude
-does; one that didn't gets the bytes `send-keys -l` would type. A pty's
-input queue holds 1024 bytes on macOS (4096 on Linux), so the program reads
-a longer write in pieces: 1022 bytes, then the rest. Typed without
-brackets, Claude took the pieces for separate pastes and kept only the
-last, so a 1066-byte message arrived as its last 44 bytes (friction #36,
-#37). The brackets make the pieces one paste, as a person's paste is. A
-message can't end its paste early: `ESC [201~` in it is dropped. Shell
-command lines (spawn's launch) and keys still go through `send-keys`.
+first message) is typed with `Ops.PasteText`. Wrapping in bracketed paste
+codes (`ESC [200~` ... `ESC [201~`) when the pane's program asked for
+bracketed paste (as Claude does) ensures that writes exceeding a PTY's input
+queue (1024 bytes on macOS, 4096 on Linux) arrive as one paste rather than
+separate chunks (friction #36, #37). Shell command lines (spawn's launch) go
+through `SendKeys`.
 
 **Long messages to Claude: handed over by hook.** Claude Code (2.1.319,
 and again 2.1.325, measured with a bracketed paste: 800 characters stay
@@ -190,49 +166,19 @@ records a long multi-line typed message as the request itself
 The cost is that input is typed, not delivered: a message is "sent" once its
 keys are in the terminal, whether or not the CLI read it, and anything typed
 at a dialog answers the dialog. `Send` and the watcher guard against that
-(see [Messages](#messages)). The alternatives considered for sharing a TUI
-are in `exploration/tmux-tui-connector-ideation.md`.
-
-### The termd backend (`internal/termd`)
-
-Beside `tmux`, `internal/termd` implements `TmuxOps` directly over the
-terminal daemon's (`g3d-termd`) local Unix socket protocol (version 1.5),
-selected per store in `.gomuxai/mux.json`, in an app config JSON (`"mux":
-"termd"`, `"termd_namespace": "agents"`), via `GOMUXAI_MUX=termd` /
-`GOMUXAI_TERMD_NS`, or via `--mux termd` / `--termd-ns`:
-
-- **Namespace isolation.** Defaults to `agents` and refuses `default` and
-  `wall`, so agent sessions never share a daemon with interactive or wall
-  terminals. Tests run under `internal/termdtest` (`GOMUXAI_TEST_TERMD_DIR`
-  and `G3D_TERMD_DIR`), refusing to touch the user's socket directory.
-- **Operations.** `CreateSessionIn` runs `create` (auto-starting
-  `g3d-termd --ns <ns> --daemon` if absent, passing `env_base` and the
-  agent's `env`, including `GOMUXAI_MUX` and `GOMUXAI_TERMD_NS`);
-  `SendKeys` writes `INPUT` frames synchronized by `unsubscribe`;
-  `PasteText` streams chunked `paste` requests (`paste_stream`,
-  `allow_unsafe: true`) at the program's read pace; `SendSpecialKey`
-  encodes W3C key events via `key` (Kitty keyboard, modifyOtherKeys,
-  DECCKM); `Capture` and `CaptureStyled` call `capture` (`plain` and `vt`
-  with CRLF normalized to LF); session liveness, `PanePIDs`, and `FirstPane`
-  read the daemon's `status` document (resolving OSC 7 `file://` URLs);
-  `KillSession` runs `kill`, ending the terminal's whole process tree.
-- **Attach and logs.** Local `agent attach` `exec`s `g3d --ns <ns> attach
-  --take <session>`; `agent attach name@host` keeps the existing `ssh -t`
-  hop. Instead of `pipe-pane`, `agent logs --terminal` reads live scrollback
-  from the daemon while the terminal runs and snapshots scrollback to
-  `logs/<name>.log` on cleanup.
+(see [Messages](#messages)).
 
 ## Spawning an agent
 
 `AgentService.Spawn` (`internal/service/agent_service.go`):
 
-1. Validates the name (`^[A-Za-z0-9][A-Za-z0-9_-]*$`): it becomes a tmux
-   session name, a path component, and a bus subject token.
-2. Refuses if the agent record or the tmux session already exists (and
+1. Validates the name (`^[A-Za-z0-9][A-Za-z0-9_-]*$`): it becomes a
+   `g3d-termd` session name, a path component, and a bus subject token.
+2. Refuses if the agent record or the session already exists (and
    says `agent resume <name>` when that agent has ended).
-3. Creates the session with `AGENT_NAME`, `AGENT_HOST`, and `PATH` prefixed
-   with the binary's directory, and starts `pipe-pane` into
-   `logs/<name>.log`.
+3. Creates the session with `AGENT_NAME`, `AGENT_HOST`, `GOMUXAI_TERMD_NS`,
+   and `PATH` prefixed with the binary's directory, removing any stale
+   `logs/<name>.log` snapshot from a previous run.
 4. Stores the agent record, with `spawned_by` the calling agent (see
    [Who sends](#who-sends); "" for a person) and the spawn's cwd, and in the same
    transaction opens a run and records a `spawned` agent event (see
@@ -325,8 +271,8 @@ Notes on each:
   offer when the command is off (`skillOverrides["auto-mode-setup"] ===
   "off"`, read in its eligibility check).
 - **agy's launch command** is prefixed with
-  `env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY`: with those set (a tmux
-  server started over SSH passes them on) agy skips the OS keyring and comes
+  `env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY`: with those set (a daemon
+  started over SSH passes them on) agy skips the OS keyring and comes
   up signed out.
 - **The briefing** (`service/instructions.go`) tells the agent its name,
   host, and who started it, how to message, wait on, and read other agents,
@@ -407,7 +353,7 @@ It must carry a host: the bus refuses a bare `spawned_by`, which would make
 the new agent a helper of the serving host's agent of that name.
 
 `cleanup --ended` picks the names itself, from every agent's
-`StatusInfo` (the resolved status, so an agent whose tmux session is gone
+`StatusInfo` (the resolved status, so an agent whose session is gone
 counts though its last report said idle), all read before anything is
 removed. The same rules then apply, with one difference: where named
 cleanup refuses a helper whose own helpers would be left behind, `--ended`
@@ -420,12 +366,12 @@ gone) and `StatusInfo.Held`.
 
 `AgentService.Cleanup` types the backend's exit command (`/exit`) into an
 idle agent and waits 1.5s, so the CLI exits cleanly and its hooks record it.
-Then it stops pipe-pane, kills the session, deletes the agent's messages
-and agent dir, and deletes the record; state rows go with it through the
-foreign key's `ON DELETE CASCADE`. The same transaction closes the agent's
-run (with its last `_status`, `_end_reason` and `_transcript`) and records a `removed`
-agent event, so the run stays readable (`export --all`). The terminal log
-and the transcripts list stay.
+Then it snapshots terminal scrollback to `logs/<name>.log`, kills the
+session, deletes the agent's messages and agent dir, and deletes the record;
+state rows go with it through the foreign key's `ON DELETE CASCADE`. The same
+transaction closes the agent's run (with its last `_status`, `_end_reason` and
+`_transcript`) and records a `removed` agent event, so the run stays readable
+(`export --all`). The terminal log and the transcripts list stay.
 
 
 ### Resuming an ended agent
@@ -435,20 +381,20 @@ starts an ended claude or agy agent again on its last session, under its
 own record. The CLI (`resumeAgent`, which the bus's `resume` op runs too)
 finds that session as `agent transcript <name>` does (`resumeSession`),
 checks it can be continued (`checkResumable`, as `spawn --resume`), and
-passes the directory it ran in as `ResumeOptions.Cwd`, where the tmux
-session starts. A session that recorded no directory takes the agent
-record's `cwd` (where its tmux session started): agy ties a conversation
-to its workspace in `history.jsonl` only in some lines (its prompts' carry
-no conversation id), so a conversation can have none recorded yet.
+passes the directory it ran in as `ResumeOptions.Cwd`, where the session
+starts. A session that recorded no directory takes the agent record's `cwd`
+(where its session started): agy ties a conversation to its workspace in
+`history.jsonl` only in some lines (its prompts' carry no conversation id),
+so a conversation can have none recorded yet.
 It doesn't `chdir`: the bus serves requests concurrently in one process.
 The service then:
 
 1. Refuses an adopted agent (`AdoptedResumeError`), and refuses unless
-   the agent's resolved status is `ended`; then kills a leftover tmux
+   the agent's resolved status is `ended`; then kills a leftover
    session (a CLI that quit leaves its pane's shell).
 2. Writes `_status` `ended` and its end reason, so its run closes with how
    it really ended (a reboot fires no hook).
-3. Spawns with `Resume` set and the old record to replace: a new tmux
+3. Spawns with `Resume` set and the old record to replace: a new
    session, then `storage.ReplaceAgent`, which in one transaction closes
    the old run (a `removed` event), rewrites the record in place, and opens
    a new run (a `spawned` event). The record is updated, not deleted:
@@ -463,7 +409,7 @@ The service then:
 Its name, backend and parent stay, so its helpers stay its helpers. A
 failed resume leaves the agent ended (its record and files are kept).
 
-An adopted agent (`agent adopt`) runs in a tmux session the person made,
+An adopted agent (`agent adopt`) runs in a session the person made,
 so resume refuses it: gomuxai doesn't type a launch into their shell, and
 doesn't create an `agent-<name>` session to replace theirs. The error says
 to start the CLI there (`claude -c` continues its last conversation), which
@@ -488,7 +434,7 @@ resume spends most of its time in `startup_delay` waiting for its CLI, so
 overlapping them saves most of that, while the spacing keeps CLIs from
 starting in the same instant (Claude Code rewrites its shared
 `~/.claude.json` as it starts). Resumes share nothing but the store
-(SQLite, with a busy timeout) and the tmux server, and resume never
+(SQLite, with a busy timeout) and the `g3d-termd` daemon, and resume never
 `chdir`s. Lines print in the sorted order as each finishes, so output is
 stable however the resumes interleave. `--dry-run` runs `resumeSession`
 (the session lookup and `checkResumable`) for each pick and starts
@@ -540,7 +486,7 @@ The sender (the `[from ...]` tag, a held message's `sender_id`, spawn's
 `spawned_by`, the command log, and the rules on what an agent may clean up
 or resume) is the agent the processes show, not `AGENT_NAME`
 (`service.CallerAgent`, `cli.callerAgent`). `AGENT_NAME` and `AGENT_HOST`
-are set in an agent's tmux session, and every process started from it
+are set in an agent's session, and every process started from it
 inherits them: a shell a tool opened, a terminal daemon it started, and
 Claude Code's background-session daemon, one per user (per config dir),
 started with the environment of whichever CLI first needs it. Claude Code
@@ -549,7 +495,7 @@ that daemon started ahead of time, so agent A's conversation ran its tools
 with agent B's `AGENT_NAME`, and A's messages went out as `[from B@host]`
 (friction #48). Walking up from the command's process:
 
-- an agent's pane (its tmux session's first pane process): that agent;
+- an agent's pane (its session's root process): that agent;
 - a Claude Code background session's process (registry `"kind": "bg"`):
   the agent whose conversation it carries on (see [Sessions Claude moves
   into the background](#sessions-claude-moves-into-the-background)), or no
@@ -810,7 +756,7 @@ from three sources, most authoritative first:
    lines of the screen, for backends with neither. A custom backend needs
    its `--backend-config` loaded for this.
 
-Before any of these, an agent whose tmux session doesn't exist is `ended
+Before any of these, an agent whose session doesn't exist is `ended
 (gone)` whatever its last report said (an `ended` report stands, with its
 reason): no session, no CLI.
 
@@ -827,7 +773,7 @@ the folder scrolled off). So `wait --for waiting`, `wait --any` and
 it, and `approve`/`deny` answer it (below). Approving records
 `processing`/`trusted` (detail `trusted <folder>; its CLI is starting`):
 for 30s after it (`trustStartGrace`) a session Claude's registry doesn't
-list yet is starting, not `ended (gone)`. A reboot or a killed tmux server ends every
+list yet is starting, not `ended (gone)`. A reboot or a stopped `g3d-termd` daemon ends every
 agent at once and fires no hook, and a backend with no native session list
 (agy) would otherwise show its last report, `idle`, forever.
 
@@ -1002,8 +948,8 @@ An entry's `tmux` field is **not** used to place a session: Claude copies it
 from its environment, so a `claude -p` run from inside an agent's pane
 names that pane too. Where a session runs comes from the process tree
 instead (`ps -A -o pid=,ppid=`): `Snapshot.UnderPane` takes the live
-entries whose process descends from the pane's process (`#{pane_pid}`, from
-`tmux list-panes -a`), and returns the shallowest. A `claude -p` that a tool
+entries whose process descends from the terminal's root process (`PanePIDs`
+from `g3d-termd`'s `status` document), and returns the shallowest. A `claude -p` that a tool
 started inside the session is deeper, so it is never taken for the pane's
 own. Two at the same depth (two CLIs side by side under one shell) are an
 error naming both, unless one was updated last.
@@ -1241,7 +1187,7 @@ reads the payload and places itself (`FindHookSession`, `placeHook`):
    be compared, and the first event of a session, which can come before
    Claude writes its registry file (seen at `SessionStart`).
 2. **The agent above that CLI**: walking on up, the first process that is
-   a tmux pane's (`list-panes -a -F '#{pane_pid} #{session_name}'`), if its
+   a terminal's root process (`PanePIDs` from `g3d-termd`), if its
    session is an agent's. Another CLI on the way first (any running
    process with a registry entry, proven or not) means this CLI was started
    from inside that one's session (a `claude -p` a tool ran), so no agent
@@ -1284,7 +1230,7 @@ are questions rather than yes/no prompts (Claude's `AskUserQuestion` and
 `ExitPlanMode`, agy's `ask_question`). The status it checked can be hundreds
 of milliseconds old, so right before the keypress it captures the screen and
 requires the dialog to still be there: Claude's deny key is Escape, and
-Escape on a running turn interrupts it. That narrows the race to a few tmux
+Escape on a running turn interrupts it. That narrows the race to a few socket
 calls; it doesn't close it. Keys: `1` approve, `2` approve always, Escape
 deny. It then records the expected outcome (`processing`/`approved`, or
 `idle`/`denied`), because a denied prompt fires no hook, and drops the
@@ -1427,7 +1373,7 @@ checks beside the poll, one at a time in a goroutine the stream waits for
 before it returns, so a slow one never holds up the poll. For a session an
 agent of this store owns, a report check every 2s reads that agent's
 record and state from the store alone (`ownAgent`: what export reads, no
-tmux, no other store) and resolves the probed session against it with no
+termd, no other store) and resolves the probed session against it with no
 harness list, counting only when the agent has reported since the status
 was last set. A full check, `discovery.Resolve` over every store's agents,
 Claude Code's session registry and the global hook's session reports, as
@@ -1478,13 +1424,14 @@ read from the database's tables, which aren't an interface.
   whose session id differs from the agent's last, with no transcript,
   empties the agent's `transcript` fields: the old file isn't the new
   session's.
-- **Sessions and transcripts** are checked every second: `tmux
-  list-sessions -F '#{session_name}'` and a stat of each live agent's
+- **Sessions and transcripts** are checked every second: `g3d-termd`
+  `status` (terminal ids) and a stat of each live agent's
   transcript. A change is a `changed` line with `reason` `session` or
   `transcript`.
 - **Other stores.** An agent spawned by another binary is recorded in that
   binary's store. For each `agent-*` session no read store records, export
-  asks tmux for the session's `PATH` (spawn puts the binary's dir first),
+  asks `g3d-termd` (op `env`, preferring `source == "request"`) for the
+  session's `PATH` (spawn puts the binary's dir first),
   opens `<dir>/.gomuxai/gomuxai.db` read-only, and adds it (a `store` line
   while following). `--store` adds one up front. A store written by an
   older binary has no `agent_events`: `--follow` checks its `PRAGMA
@@ -1504,7 +1451,7 @@ read from the database's tables, which aren't an interface.
   gives the reasons for): a claude or agy agent gomuxai started (not
   adopted), with a session id, that has ended, and still has a record. For
   this host's agents export applies them to what it knows: the last report
-  says `ended`, or the tmux session is gone (where `agent status` says
+  says `ended`, or the session is gone (where `agent status` says
   `ended (gone)`); the session id is `_session_id`, else the transcript
   path's. Another host's comes from its `list`, which uses the resolved
   status and the newest transcript's session id. A departed agent is never
@@ -1520,7 +1467,7 @@ follower keys agents by `host` + `store` + `name`, and `run` tells two
 runs of one name apart. Every agent object has the same fields:
 
 ```json
-{"name":"lead-t1","host":"laptop","kind":"tmux","run":12,"parent":"lead","backend":"claude",
+{"name":"lead-t1","host":"laptop","kind":"termd","namespace":"agents","run":12,"parent":"lead","backend":"claude",
  "session":"agent-lead-t1","store":"/home/user/gomuxai/bin/.gomuxai","cwd":"/home/user/gomuxai",
  "created_at":"2026-10-24T14:00:00.5Z","live":true,"attached":true,"resumable":false,
  "status":"waiting","event":"PermissionRequest","detail":"permission: Bash: rm -rf build","tool":"Bash",
@@ -1529,9 +1476,9 @@ runs of one name apart. Every agent object has the same fields:
  "dialect":"claude","transcript_size":48211,"transcript_mtime":"2026-10-24T14:01:02.3Z"}
 ```
 
-`kind` is `tmux` for every agent so far (room for CLI sessions that agent
-didn't start). Absent fields are empty: `parent` for a person's agent,
-`ended_at` while live, `store` and the transcript fields for another
+`kind` is `termd` for every agent, and `namespace` names this host's
+`g3d-termd` namespace (default `agents`). Absent fields are empty: `parent` for a person's agent,
+`ended_at` while live, `namespace`, `store` and the transcript fields for another
 host's agents. For another host that predates them, absent means unknown:
 `attached`, `resumable`, `end_reason`, `detail`, `session_id` and `cwd`
 are then left out, and `attached` and `resumable` are never `false` for
@@ -1622,7 +1569,7 @@ so only its metadata is looked for. Measured on 1851 transcripts (896 MB):
 part.
 
 **Workgroup join.** The agents come from export's tree with `--all` (this
-store and those its tmux sessions point at), each with its name's
+store and those its `g3d-termd` sessions point at), each with its name's
 `logs/<name>.transcripts`. A transcript belongs to the run whose current or
 last transcript it is; one only the history names, to that name's newest
 run created before the file's last write. A subagent's session belongs to
@@ -1702,8 +1649,8 @@ transcript's last write (a departed run's: when it ended).
 ## The bus
 
 The bus adds cross-host reach and push status events. SQLite stays each
-host's source of truth: an agent is a tmux session on one host, so that host
-owns its state. Everything on one host works without a bus.
+host's source of truth: an agent is a `g3d-termd` session on one host, so that
+host owns its state. Everything on one host works without a bus.
 
 Each host runs one `agent bus run` process: an embedded `nats-server` (no
 JetStream, no monitoring, no system account) with a client port for the
@@ -1958,7 +1905,7 @@ never builds the ssh command or guesses a binary's path:
    are quoted. It needs a terminal here, and says so without one.
 4. **Exec:** `execInto` replaces the agent process with ssh
    (`syscall.Exec`), so a signal to `agent attach` reaches ssh and nothing
-   is orphaned; local attach does the same with tmux. The command-log row
+   is orphaned; local attach does the same with `g3d`. The command-log row
    is written just before, since nothing runs after. Before the exec, a
    line on stderr says it is ssh, not the bus, and needs `ssh <dest>` to
    work: once ssh runs, its errors are its own.
@@ -2055,11 +2002,11 @@ against a hub with real leaves, including a hostile one.
 
 macOS (15+) only lets a process reach the local network if its
 *responsible* code holds the Local Network permission (Apple TN3179). A
-tmux server detaches from the terminal that started it, so for processes in
-tmux responsibility resolves to nothing that can hold the grant: dialing the
-hub over the LAN fails with `EHOSTUNREACH` ("no route to host" in
-`bus.log`) and no alert. Loopback, the internet, and accepting connections
-are unaffected. The fix has two halves, and both are needed:
+`g3d-termd` daemon detaches from the terminal that started it, so for
+processes inside `g3d-termd` responsibility resolves to nothing that can hold
+the grant: dialing the hub over the LAN fails with `EHOSTUNREACH` ("no route
+to host" in `bus.log`) and no alert. Loopback, the internet, and accepting
+connections are unaffected. The fix has two halves, and both are needed:
 
 1. **The build.** `make macos` (on a Mac) links with cgo and the system
    linker to embed `cmd/agent/Info.plist` (bundle identifier and
@@ -2077,44 +2024,43 @@ are unaffected. The fix has two halves, and both are needed:
    shared process group. The child exits if the parent dies.
 
 On macOS, `warnLocalNetwork` prints a note at bus start when the bus runs
-in tmux without having been disclaimed and will dial a hub. Cross-compiled
-darwin builds (`make build-darwin`, `CGO_ENABLED=0`) have neither half.
+in `g3d-termd` (`$G3D_TERMD_ID` set) without having been disclaimed and will
+dial a hub. Cross-compiled darwin builds (`make build-darwin`, `CGO_ENABLED=0`)
+have neither half.
 
 ### Signing over ssh
 
 The login keychain is unlocked only in the GUI (Aqua) security session,
 and every process keeps the security session of the process that started
-it. A tmux pane is forked by the tmux *server*, so it has the session of
-whatever started the server, not of the client that asked for the pane.
-So a `make macos` sent over ssh into a tmux session signs when the server
-was started from a terminal on the Mac, and fails when the server was
-started over ssh: securityd logs `CSSMERR_CSP_NO_USER_INTERACTION` and
-codesign reports `errSecInternalComponent`, with a valid identity and the
+it. A `g3d-termd` terminal is forked by the `g3d-termd` *daemon*, so it has
+the session of whatever started the daemon, not of the client that asked for
+the terminal. So a `make macos` sent over ssh into a `g3d-termd` session signs
+when the daemon was started from a terminal on the Mac, and fails when the
+daemon was started over ssh: securityd logs `CSSMERR_CSP_NO_USER_INTERACTION`
+and codesign reports `errSecInternalComponent`, with a valid identity and the
 screen unlocked. `launchctl managername` prints `Aqua` in the GUI session
 and `Background` over ssh; `make macos` prints it when codesign fails.
 
-Two things keep a Mac's server in the GUI session:
+Two things keep a Mac's daemon in the GUI session:
 
-- A LaunchAgent in the `gui/<uid>` domain that runs `tmux -D`
-  (`LimitLoadToSessionType` Aqua, `KeepAlive`), loaded with `launchctl
-  bootstrap gui/<uid> <plist>` while no tmux server runs: launchd starts
-  the server at each login, in the GUI session, and `-D` turns
-  `exit-empty` off, so it stays up with no sessions. The cost: any process
-  running as the user can open a pane there and use the unlocked login
-  keychain, as from an open terminal tab.
-- `agent bus restart` and `bus rename` never close the bus's session
-  (`pauseBusSession`: Ctrl-C, then `respawn-pane -k` for a fresh shell,
-  and the new `bus run` typed in). Closing it, when it was the server's
-  last session, stopped the server, and the next tmux command started a
-  new one with its own (ssh) session.
+- A LaunchAgent in the `gui/<uid>` domain that starts `g3d-termd --ns agents
+  --daemon` (`LimitLoadToSessionType` Aqua), loaded with `launchctl bootstrap
+  gui/<uid> <plist>` while no `agents` daemon runs: launchd starts the daemon
+  at login in the GUI session, and `g3d-termd` stays up across empty terminal
+  lists. The cost: any process running as the user can open a terminal there
+  and use the unlocked login keychain, as from an open terminal tab.
+- `agent bus restart` and `bus rename` keep the bus's session
+  (`pauseBusSession`: Ctrl-C, then `RespawnPane` for a fresh shell under the
+  same terminal id, preserving `cwd`, `env_base`, and request `env`, and the
+  new `bus run` typed in).
 
 ### The gomux-bus session
 
 `agent bus start` runs `env AGENT_HOST=<host> <binary> bus run ...` in the
-tmux session `gomux-bus`, pinning the host so the bus runs as the identity
-that started it, and waits up to 5s for it to answer. The session name is
-the same for every data dir on the tmux server, while each bus records its
-URL in its own data dir. So `start` and `stop` first check that this data
+`g3d-termd` session `gomux-bus`, pinning the host so the bus runs as the
+identity that started it, and waits up to 5s for it to answer. The session
+name is the same for every data dir in the namespace, while each bus records
+its URL in its own data dir. So `start` and `stop` first check that this data
 dir's bus is the one answering (`checkOwnBusSession`), and otherwise leave
 the session alone: it likely belongs to another binary (e.g. a dev build in
 `bin/`). `stop` interrupts the bus so it removes `bus.url`, then kills the
@@ -2272,8 +2218,8 @@ Shared by every command (`internal/cli/output.go`, `exit.go`, `root.go`):
   not HTML-escaped. Streams (`events --json`, `export --json --follow`)
   print one compact object per line instead.
 - **Setup.** `PersistentPreRunE` (`setup`) loads config, the backend
-  registry (and `--backend-config`), the database, tmux, and the service for
-  every command except help.
+  registry (and `--backend-config`), the database, the `termd` client, and the
+  service for every command except help.
 - **Help is grouped by task** (`commandGroups` in `root.go`), and tested:
   `TestHelpExamplesParse` (`cli/commands_test.go`) parses every example line
   in every command's help and fails on an unknown command or flag or a wrong
@@ -2294,52 +2240,36 @@ make lint          # golangci-lint
 - **`internal/*/..._test.go`**: in-package tests: CLI output, hints, exit
   codes, help examples, cleanup rules, logs, history, friction; storage
   pruning and friction queries; runs, agent events, and reading old stores
-  read-only; the export snapshot and stream (temp stores, fake tmux and
+  read-only; the export snapshot and stream (temp stores, fake sessions and
   bus); transcript parsing against fixtures in
   `internal/transcript/testdata`; watcher internals; build ids; the RPC op
-  tables.
+  tables; `internal/termd` wire, key-chord, and lazy-daemon unit tests.
 - **`tests/<package>/`**: black-box tests per package. `backend`: hook
   payload mapping for Claude and agy, dialog detection, launch commands.
   `service`: spawn, send, status resolution (with a fake Claude backend whose
   native status the test controls), events, RPC. `natsbus`: real buses in
   process, linked hub and leaves with real identities, RPC across links,
-  events, `Wait`, and the security tests. `storage`, `config`, `tmux`,
+  events, `Wait`, and the security tests. `storage`, `config`, `termd`,
   `util`, `watcher`: as named.
-- **tmux** is needed by `tests/tmux`, `tests/service`, and part of
+- **`g3d-termd`** is needed by `tests/termd`, `tests/service`, and part of
   `internal/cli`; they skip without it. They use real sessions and a temp
   database. No test needs claude or agy installed.
-- **A private tmux server per test binary.** Tests never touch the tmux
-  server the environment names, which is where the real agents and the bus
-  run. Each package whose tests can run tmux (`internal/cli`, `tests/tmux`,
-  `tests/service`, `tests/backend`, `tests/natsbus`, `tests/watcher`) calls
-  `tmuxtest.Run` from its `TestMain`: it makes a short socket directory
-  (`gmx*` under `$TMPDIR`, or `/tmp` if that's too long for a socket path),
-  unsets `TMUX` and `TMUX_PANE`, points `TMUX_TMPDIR` at it for the whole
-  process, so every tmux the code and its children run uses that server,
-  starts it with `exit-empty off` so it stays up with no sessions, as the
-  shared server always has some (a test killing its only session otherwise
-  raced the server's exit), and after the tests kills that server by its socket (`tmux -S`, with `TMUX`
-  left out) and removes the directory. Why: tests sharing the real server
-  collided on fixed session names when two runs overlapped (friction #9),
-  and inside an agent's pane `$TMUX` names the real server *ahead of*
-  `TMUX_TMPDIR`, so a `TMUX_TMPDIR=$dir tmux kill-server` meant for a test
-  server killed every agent on the host, twice (#10). Unsetting `TMUX` is
-  what makes `TMUX_TMPDIR` count. With a server per binary, fixed names like
-  `rpc-cli-worker` can only meet within one binary, whose tests run one at a
-  time and kill their sessions as they end.
-- **The guard.** `internal/tmux` refuses to run tmux from a test binary
-  (`testing.Testing()`) that isn't on its private server: `GOMUXAI_TEST_TMUX_TMPDIR`
-  (set by `tmuxtest.Run`) is missing, `$TMUX` is set, or `TMUX_TMPDIR` was
-  changed. The refusal names the fix, so a new package that forgets its
-  `TestMain` fails at once instead of reaching the real server.
-  `tmuxtest.Require(t)` makes the same check for a test that runs `tmux`
-  itself (the setup helpers call it). `internal/tmux`'s own tests run a fake
-  tmux, which declares itself the private server. A test binary killed
-  mid-run (a `-timeout` panic) leaves its private server and `gmx*`
-  directory behind; they touch nothing else, and `env -u TMUX
-  TMUX_TMPDIR=<dir> tmux kill-server` ends one. By hand, always use
-  `env -u TMUX` with a private `TMUX_TMPDIR` (made with `mktemp -d -t gmx`:
-  a scratchpad path is too long for a socket) or `tmux -S <socket>`.
+- **An isolated socket directory per test binary.** Tests never touch the
+  `g3d-termd` socket directory the environment names, which is where real
+  agents and the bus run. Each package whose tests can talk to `g3d-termd`
+  (`internal/cli`, `tests/termd`, `tests/service`, `tests/backend`,
+  `tests/natsbus`, `tests/watcher`) calls `termdtest.Run` from its `TestMain`:
+  it makes a short 0700 socket directory (`gmxt*` under `/tmp` or `$TMPDIR`,
+  kept within macOS's 104-byte `sun_path` limit), unsets `G3D_TERMD_SOCKET`
+  and `G3D_TERMD_ID`, points `G3D_TERMD_DIR` and `GOMUXAI_TEST_TERMD_DIR` at
+  it for the whole process, shares the `agents` namespace across tests in the
+  binary (killing per-test sessions on cleanup), and stops every daemon in
+  that directory when the binary finishes.
+- **The guard.** `internal/termd.CheckTestServer` refuses to use `termd` from
+  a test binary (`testing.Testing()`) unless `GOMUXAI_TEST_TERMD_DIR` (set by
+  `termdtest.Run` or `termdtest.Setup`) matches `G3D_TERMD_DIR` and
+  `$G3D_TERMD_SOCKET` is unset. `termdtest.Require(t)` runs the same check and
+  skips `t` if no `g3d-termd` binary is installed.
 - **Waiting.** Tests wait for state, never sleep for it: `internal/await`
   polls a condition (a shell's printed marker, a screen, a status, a log
   line) and on timeout says what it waited for and what it last saw. A
@@ -2401,8 +2331,6 @@ make lint          # golangci-lint
   rules already trust the name the same way. Commands through a variable
   (`$A send`) still prompt.
 - `agent capture` reads managed agents only, not raw sessions.
-- With a read-only tmux client attached anywhere, keys other than the
-  pasteable ones (see [tmux](#why-tmux)) fail until it detaches.
 - `approve`/`deny` can still hit a prompt answered in the milliseconds
   between the screen check and the keypress.
 - Two data dirs on one machine can't both `bus start`: they share the

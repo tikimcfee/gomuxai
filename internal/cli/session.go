@@ -10,8 +10,9 @@ import (
 
 var sessionCmd = &cobra.Command{
 	Use:   "session",
-	Short: "Create, kill, and list raw tmux sessions",
-	Long: `Session manages tmux sessions directly, by session name.
+	Short: "Create, kill, and list raw g3d-termd sessions",
+	Long: `Session manages g3d-termd sessions in the configured namespace directly, by
+session name.
 
 An agent's session is named after it with a prefix ("agent-helper" for agent
 "helper"); session list shows which agent each session belongs to. To remove
@@ -23,8 +24,8 @@ an agent, use "agent cleanup", which also deletes its record.`,
 
 var sessionNewCmd = &cobra.Command{
 	Use:   "new <session>",
-	Short: "Create a tmux session running a shell",
-	Long: `New creates a detached tmux session running a shell, with no agent record:
+	Short: "Create a session running a shell",
+	Long: `New creates a detached g3d-termd session running a shell, with no agent record:
 drive it with "agent keys" and "agent key".`,
 	Example: `  agent session new scratch
   agent session new scratch && agent keys scratch "make test"`,
@@ -34,9 +35,9 @@ drive it with "agent keys" and "agent key".`,
 
 var sessionKillCmd = &cobra.Command{
 	Use:   "kill <session>",
-	Short: "Kill a tmux session",
-	Long: `Kill kills a tmux session. Killing an agent's session leaves its record;
-"agent cleanup <name>" removes both.`,
+	Short: "Kill a session",
+	Long: `Kill kills a g3d-termd session and its process tree. Killing an agent's session
+leaves its record; "agent cleanup <name>" removes both.`,
 	Example: `  agent session kill scratch`,
 	Args:    cobra.ExactArgs(1),
 	RunE:    runSessionKill,
@@ -44,7 +45,7 @@ var sessionKillCmd = &cobra.Command{
 
 var sessionListCmd = &cobra.Command{
 	Use:     "list",
-	Short:   "List all tmux sessions, with the agent each belongs to",
+	Short:   "List all sessions in the namespace, with the agent each belongs to",
 	Example: `  agent session list`,
 	Args:    cobra.NoArgs,
 	RunE:    runSessionList,
@@ -63,7 +64,7 @@ func init() {
 func runSessionNew(cmd *cobra.Command, args []string) error {
 	name := args[0]
 	if exists, _ := tmuxClient.SessionExists(name); exists {
-		return fmt.Errorf("tmux session %s already exists (agent session list shows them)", name)
+		return fmt.Errorf("session %s already exists (agent session list shows them)", name)
 	}
 
 	if err := tmuxClient.CreateSession(name, nil); err != nil {
@@ -102,23 +103,22 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 		type sessionJSON struct {
 			Name     string `json:"name"`
 			Agent    string `json:"agent,omitempty"`
-			Windows  int    `json:"windows"`
 			Attached bool   `json:"attached"`
 		}
 		out := make([]sessionJSON, 0, len(sessions))
 		for _, s := range sessions {
-			out = append(out, sessionJSON{Name: s.Name, Agent: owners[s.Name], Windows: s.Windows, Attached: s.Attached})
+			out = append(out, sessionJSON{Name: s.Name, Agent: owners[s.Name], Attached: s.Attached})
 		}
 		return printJSON(out)
 	}
 
 	if len(sessions) == 0 {
-		fmt.Println("No tmux sessions (agent spawn or agent session new creates one).")
+		fmt.Println("No sessions (agent spawn or agent session new creates one).")
 		return nil
 	}
 
-	fmt.Printf("%-30s %-20s %-10s %s\n", "NAME", "AGENT", "WINDOWS", "ATTACHED")
-	fmt.Println("------------------------------------------------------------------------")
+	fmt.Printf("%-30s %-20s %s\n", "NAME", "AGENT", "ATTACHED")
+	fmt.Println("------------------------------------------------------------")
 
 	for _, s := range sessions {
 		attached := "no"
@@ -129,7 +129,7 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 		if owner == "" {
 			owner = "-"
 		}
-		fmt.Printf("%-30s %-20s %-10d %s\n", s.Name, owner, s.Windows, attached)
+		fmt.Printf("%-30s %-20s %s\n", s.Name, owner, attached)
 	}
 
 	return nil
@@ -156,15 +156,14 @@ func sessionAgent(session string) *storage.Agent {
 	return nil
 }
 
-// checkSession fails, saying what to use instead, if there is no tmux
-// session named name: the session of the agent called name, or close
-// session names.
+// checkSession fails, saying what to use instead, if there is no session
+// named name: the session of the agent called name, or close session names.
 func checkSession(name string) error {
 	if exists, err := tmuxClient.SessionExists(name); err != nil || exists {
 		return nil
 	}
 	if a, _ := store.GetAgent(getContext(), name); a != nil {
-		return fmt.Errorf("no tmux session %q, but there is an agent %s: this command takes session names, and its session is %s", name, a.Name, a.SessionName)
+		return fmt.Errorf("no session %q, but there is an agent %s: this command takes session names, and its session is %s", name, a.Name, a.SessionName)
 	}
 	var names []string
 	if sessions, err := tmuxClient.ListSessions(); err == nil {
@@ -173,7 +172,7 @@ func checkSession(name string) error {
 		}
 	}
 	if similar := util.Similar(name, names); len(similar) > 0 {
-		return fmt.Errorf("no tmux session %q; did you mean %s?", name, util.OrList(similar, nil))
+		return fmt.Errorf("no session %q; did you mean %s?", name, util.OrList(similar, nil))
 	}
-	return fmt.Errorf("no tmux session %q (agent session list shows them)", name)
+	return fmt.Errorf("no session %q (agent session list shows them)", name)
 }

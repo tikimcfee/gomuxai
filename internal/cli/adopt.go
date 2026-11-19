@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tikimcfee/gomuxai/internal/backend"
-	"github.com/tikimcfee/gomuxai/internal/config"
 	"github.com/tikimcfee/gomuxai/internal/service"
 )
 
@@ -16,26 +15,24 @@ var adoptSession string
 
 var adoptCmd = &cobra.Command{
 	Use:   "adopt <name>",
-	Short: "Create a bus entry for an existing tmux session",
-	Long: `Adopt gives an existing tmux session a seat on the agent bus under <name>,
+	Short: "Create a bus entry for an existing g3d-termd session",
+	Long: `Adopt gives an existing g3d-termd session a seat on the agent bus under <name>,
 so other agents and hosts can reach it with agent send, status, capture, and
 wait without restarting or interrupting what is running in the session.
 
-Run "agent adopt <name>" inside a tmux pane to adopt that tmux session, or
-pass --session <tmux-session> to adopt another tmux session on this host.
-If Claude Code is running in the session's first pane (or started there
-later), its session and status are tracked automatically; otherwise the
-session uses the "shell" backend (status is "unknown", and messages are typed
-immediately).
+Run "agent adopt <name>" inside a g3d terminal in the target namespace
+(default "agents", or --termd-ns <ns>; "default" and "wall" are refused), or
+pass --session <session> to adopt another terminal in that namespace.
+If Claude Code is running in the session (or started there later), its session
+and status are tracked automatically; otherwise the session uses the "shell"
+backend (status is "unknown", and messages are typed immediately).
 
-Adopting attaches tmux pipe-pane on the session's first pane for "agent logs"
-(replacing any existing pipe-pane on that pane). Cleaning up an adopted tmux
-session ("agent cleanup <name>") unregisters it from the bus and stops log
-piping while leaving the pre-existing tmux session running.
+Cleaning up an adopted session ("agent cleanup <name>") unregisters it from the
+bus while leaving the pre-existing session running.
 
-gomuxai never launches anything in an adopted session: agent resume
-refuses an adopted agent. If its CLI exits, start it again there yourself
-(claude -c continues its last conversation); adopt keeps tracking it.`,
+gomuxai never launches anything in an adopted session: agent resume refuses an
+adopted agent. If its CLI exits, start it again there yourself (claude -c
+continues its last conversation); adopt keeps tracking it.`,
 	Example: `  agent adopt helper
   agent adopt helper --session dev
   agent adopt helper --session dev --backend agy`,
@@ -45,7 +42,7 @@ refuses an adopted agent. If its CLI exits, start it again there yourself
 
 func init() {
 	adoptCmd.Flags().StringVar(&adoptSession, "session", "",
-		"Existing tmux session name to adopt (defaults to the current tmux session)")
+		"Existing g3d-termd session id to adopt (defaults to $G3D_TERMD_ID)")
 }
 
 func runAdopt(cmd *cobra.Command, args []string) error {
@@ -60,15 +57,10 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 		explicitBackend = cfg.Backend
 	}
 
-	currentPane := os.Getenv("TMUX_PANE")
-	if cfg != nil && cfg.Mux == config.MuxTermd {
-		currentPane = os.Getenv("G3D_TERMD_ID")
-	}
-
 	res, err := agentService.Adopt(ctx, service.AdoptOptions{
 		Name:        name,
 		SessionName: adoptSession,
-		CurrentPane: currentPane,
+		CurrentPane: os.Getenv("G3D_TERMD_ID"),
 		Backend:     explicitBackend,
 		SpawnedBy:   nonInteractiveCallerAgent(),
 	})
@@ -86,7 +78,7 @@ func runAdopt(cmd *cobra.Command, args []string) error {
 func adoptSummary(res *service.AdoptResult) string {
 	a := res.Agent
 	var b strings.Builder
-	fmt.Fprintf(&b, "Adopted agent %s (tmux session %s)\n", a.Name, a.SessionName)
+	fmt.Fprintf(&b, "Adopted agent %s (session %s)\n", a.Name, a.SessionName)
 	fmt.Fprintf(&b, "  Backend: %s\n", a.Backend)
 	if a.Cwd != "" {
 		fmt.Fprintf(&b, "  Cwd:     %s\n", a.Cwd)

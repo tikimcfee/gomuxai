@@ -19,7 +19,7 @@ build:
 	@echo "Built $(BUILD_DIR)/$(BINARY_NAME)"
 
 # Cross-compile release binaries. There is no Windows target: agents run in
-# tmux, which Windows doesn't have (use the Linux build under WSL).
+# g3d-termd Unix sessions (use the Linux build under WSL).
 build-all: build-linux build-darwin
 
 build-linux:
@@ -28,18 +28,19 @@ build-linux:
 	GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 $(MAIN_PATH)
 
 # Plain macOS binaries, without the embedded Info.plist and signature: their
-# bus can't link to peers over the LAN from inside tmux. Use `make macos` on
-# the Mac for that.
+# bus can't link to peers over the LAN from inside a background daemon session.
+# Use `make macos` on the Mac for that.
 build-darwin:
 	@mkdir -p $(BUILD_DIR)
 	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(MAIN_PATH)
 	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 $(MAIN_PATH)
 
 # macOS build that can hold its own Local Network permission, so the bus can
-# link to peers on the LAN from inside tmux (see internal/macos). Run it on a
-# Mac: cgo and the system linker embed cmd/agent/Info.plist, then codesign
-# signs with an Apple-issued identity (ad hoc signatures don't keep the
-# grant). CODESIGN_IDENTITY defaults to the first one in the keychain.
+# link to peers on the LAN from inside a background g3d-termd session (see
+# internal/macos). Run it on a Mac: cgo and the system linker embed
+# cmd/agent/Info.plist, then codesign signs with an Apple-issued identity (ad
+# hoc signatures don't keep the grant). CODESIGN_IDENTITY defaults to the first
+# one in the keychain.
 MACOS_INFO_PLIST=$(CURDIR)/cmd/agent/Info.plist
 CODESIGN_IDENTITY?=
 
@@ -70,8 +71,8 @@ macos:
 		session=$$(launchctl managername 2>/dev/null); \
 		if [ "$$session" != Aqua ]; then \
 			echo "This shell isn't in the Mac's GUI login session (launchctl managername: $$session), and only there is the login keychain unlocked."; \
-			echo "Over ssh, or in a tmux server that was started over ssh, codesign can't use the key (errSecInternalComponent). Build in a terminal on the Mac,"; \
-			echo "or in a tmux server started from one or by a LaunchAgent (docs/ARCHITECTURE.md, macOS), or run security unlock-keychain in this shell first."; \
+			echo "Over ssh, or in a daemon started over ssh, codesign can't use the key (errSecInternalComponent). Build in a terminal on the Mac,"; \
+			echo "or in a g3d-termd daemon started from one or by a LaunchAgent (docs/ARCHITECTURE.md, macOS), or run security unlock-keychain in this shell first."; \
 		fi; \
 		exit 1; }
 	codesign --verify --strict $(BUILD_DIR)/$(BINARY_NAME)

@@ -1,12 +1,12 @@
 # gomuxai
 
 `agent` is a CLI that runs AI coding agents (Claude Code, agy, aider, or any
-CLI you describe in JSON) in their own tmux sessions, and lets them
+CLI you describe in JSON) in their own `g3d-termd` sessions, and lets them
 coordinate: spawn helpers, message each other, wait on each other, share
 state. You can attach to any session to watch an agent work, and steer it
 from your own terminal with the same commands the agents use.
 
-What it adds over a pile of tmux windows:
+What it adds over a pile of terminal windows:
 - **Status from the CLIs themselves.** For Claude Code and agy, status
   (idle, processing, waiting on a permission prompt, ended) comes from the
   CLI's own hooks and session records, not from scraping the screen. A
@@ -24,8 +24,9 @@ How it works inside: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Install
 
-Needs Go (the version in `go.mod`, currently 1.26) and tmux. The CLIs you
-want to run (`claude`, `agy`, `aider`) must be on your `PATH`.
+Needs Go (the version in `go.mod`, currently 1.26) and `g3d-termd` (`g3d` for
+interactive `agent attach`). The CLIs you want to run (`claude`, `agy`,
+`aider`) must be on your `PATH`.
 
 ```bash
 make build                     # builds bin/agent
@@ -62,10 +63,10 @@ change up when restarted.
 
 Build on the Mac with `make macos` if the Mac will link to another machine
 over the bus. macOS only lets a process reach the local network if it holds
-the Local Network permission, and processes inside tmux can't inherit one
-from your terminal: the bus link fails with `no route to host`, and macOS
-shows no alert. `make macos` embeds an Info.plist and signs the binary so it
-can hold the permission itself.
+the Local Network permission, and processes inside a background `g3d-termd`
+daemon can't inherit one from your terminal: the bus link fails with `no
+route to host`, and macOS shows no alert. `make macos` embeds an Info.plist
+and signs the binary so it can hold the permission itself.
 
 - It signs with the first code-signing identity in your keychain; pick one
   with `make macos CODESIGN_IDENTITY=...`. An Apple Development or
@@ -102,11 +103,9 @@ It is idle: ready for a message.
 ```
 
 Watch or steer it any time with `agent attach helper`, which opens its
-tmux session in your terminal (detach with `Ctrl-b d`); `agent spawn
---attach` spawns and attaches in one step. Avoid `tmux attach -r`: while a
-read-only client is attached, tmux refuses `send-keys` to every session, and
-`agent` has to paste around it. Give it a task, and wait for the turn that
-message starts:
+session in your terminal via `g3d attach --take` (press `Ctrl-\` twice to
+detach); `agent spawn --attach` spawns and attaches in one step. Give it a
+task, and wait for the turn that message starts:
 
 ```console
 $ agent send helper "Run the shell command: curl -sI https://example.com" \
@@ -157,7 +156,7 @@ Other ways in:
   task saved with `agent task set`.
 - `agent spawn lead --backend claude --resume <session> --attach` brings
   a Claude or agy session you ran in a terminal into the workgroup: quit
-  that CLI, and the agent continues the same conversation in its own tmux
+  that CLI, and the agent continues the same conversation in its own
   session, in the directory it ran in, where `agent send` reaches it.
 - `agent send` to a busy Claude or agy agent holds the message (`Held for
   helper until its turn ends`) and a hook hands it over: Claude's Stop when
@@ -172,8 +171,8 @@ Other ways in:
   a prompt and says which one and what it's asking; `agent wait --follow
   --for waiting` prints each new prompt until Ctrl-C, for a spare terminal.
 - `agent adopt <name>` (or `agent adopt <name> --session <session>`) gives
-  an existing tmux session a seat on the bus without restarting what is
-  running in it; `agent cleanup <name>` unregisters it and leaves the tmux
+  an existing `g3d-termd` session a seat on the bus without restarting what is
+  running in it; `agent cleanup <name>` unregisters it and leaves the
   session running. `agent resume` refuses an adopted agent: if its CLI
   exits, start it there yourself (`claude -c` continues its conversation).
 - Agents run these same commands. An agent's helpers show nested under their
@@ -246,7 +245,7 @@ They are what each side pins; a mismatch means you copied the wrong file.
 sudo ufw allow from 192.0.2.0/24 to any port 7422 proto tcp
 ```
 
-**4. Start.** The bus runs in the tmux session `gomux-bus`:
+**4. Start.** The bus runs in the `g3d-termd` session `gomux-bus` (namespace `agents`):
 
 ```bash
 hub$ agent bus start --listen 0.0.0.0:7422
@@ -315,7 +314,7 @@ the bus with the settings it runs with.
 
 On the Mac, use a `make macos` build (see [macOS](#macos)). Without one, the
 bus prints a note about it in its `gomux-bus` session
-(`tmux attach -t gomux-bus`).
+(`g3d --ns agents attach --take gomux-bus`).
 
 ## Seeing what's going on
 
@@ -351,7 +350,7 @@ add` found a similar entry.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Bus on the Mac never links; `.gomuxai/bus/bus.log` says `no route to host` | macOS blocks LAN connections from processes in tmux without their own Local Network permission | `make macos` on the Mac, allow the alert on the first `agent bus start` |
+| Bus on the Mac never links; `.gomuxai/bus/bus.log` says `no route to host` | macOS blocks LAN connections from processes in a background daemon without their own Local Network permission | `make macos` on the Mac, allow the alert on the first `agent bus start` |
 | `make macos` fails in `codesign` with `errSecInternalComponent` | Over SSH the login keychain is locked | Build in a terminal on the Mac, or `security unlock-keychain` first |
 | `no bus answering for host "X"` | X's bus is down, not linked to yours, or doesn't allow that op | `agent bus status` on both machines; check the firewall and the `--url` in the hub's bundle |
 | `agent bus status` says not running, though `gomux-bus` exists | The session name is shared by every data dir; another copy of `agent` owns it | Use that copy, or stop its bus first |
@@ -359,10 +358,10 @@ add` found a similar entry.
 | A held message hasn't arrived | The agent's turn (agy: its current step) is still running, or ended with no hook (Esc, Ctrl+C, deny), or something covers its input line (`it isn't on screen`) | `agent status NAME -v` shows `held:`; a deliverer types it 10s after the turn ends; `agent deliver NAME` (or `NAME@host`, over the bus) types it now if the agent is at its prompt; `agent capture NAME` shows what covers the input line |
 | Agent stays `waiting` | A permission prompt, or a question for the user | `agent status NAME -v`, then `approve`/`deny`; for a question (e.g. AskUserQuestion), `agent capture NAME` and answer with `agent keys` |
 | `send` refused | The agent's session has ended, or it is at a dialog (the Enter would answer it) and the message can't be held (`--now`, or not a Claude or agy agent) | Answer the dialog first; for an ended agent, `agent logs NAME`, then `agent cleanup NAME` |
-| Status `ended (...)` or the tmux session is gone | No CLI runs the agent's session any more: `quit` (it ended and said so), `gone` (it crashed or was killed, or the machine rebooted), ... (`agent statuses` lists them all) | `agent resume NAME` continues its session (claude and agy), `agent resume --all` every one a reboot ended (`--dry-run` first); `agent logs NAME` shows how it ended; `agent cleanup NAME` removes the record, `agent cleanup --ended` every ended one (`--dry-run` first) |
+| Status `ended (...)` or the session is gone | No CLI runs the agent's session any more: `quit` (it ended and said so), `gone` (it crashed, `g3d-termd` was stopped, or the machine rebooted), ... (`agent statuses` lists them all) | `agent resume NAME` continues its session (claude and agy), `agent resume --all` every one a reboot ended (`--dry-run` first); `agent logs NAME` shows how it ended; `agent cleanup NAME` removes the record, `agent cleanup --ended` every ended one (`--dry-run` first) |
 | `spawn --backend claude` says Claude Code's settings don't run this binary's hook | The global hook isn't installed, or runs another copy of `agent` (one hook serves one binary: its store hears the sessions) | `agent hooks install`; for another copy, spawn with the copy the hook runs, or `agent hooks install --force` (that copy's agents then stop reporting) |
 | A Claude agent's status never changes, or held messages never arrive | Its CLI started before `agent hooks install`, or the hook is failing | `agent hooks status` shows the last errors; restart the agent's CLI to load the hook |
-| A tmux session `agent-NAME` with no agent record | Leftover session | `agent session kill agent-NAME` |
+| A session `agent-NAME` with no agent record | Leftover session | `agent session kill agent-NAME` |
 | Status `unknown` | aider and custom backends have no hooks; the screen matched no pattern | `agent capture NAME`; adjust the backend's patterns |
 | A long message arrives in Claude as pasted content | Claude takes typed input over 800 characters, or with 3+ line breaks, as a paste, i.e. material. `send` hands such a message over by hook instead, but only to a Claude CLI the hook reaches | `agent hooks status`; restart the agent's CLI (`agent resume`) so it runs the hook |
 | `send` says it typed a short line in place of the message, but the hook didn't take the whole message | The hook doesn't reach the session the agent's conversation runs in now | `agent status NAME -v` (a session sent to the background with `/bg` is followed through its transcript; `agent hooks status` shows hook errors) |

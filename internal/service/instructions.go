@@ -74,13 +74,13 @@ answer it in your reply, as you would a prompt typed into your terminal.
 %s
 Your status (idle, processing, waiting on a permission prompt, ended) is
 reported automatically; `+"`agent status NAME -v`"+` says what an agent's status
-means. Use `+"`agent`"+` rather than tmux to reach other agents.
+means. Use `+"`agent`"+` rather than g3d to reach other agents.
 `, name, s.cfg.Host, by, bin, heldBriefing(backendName))
 	fmt.Fprintf(&b, `
 ## Helpers
 
 For parallel or long-running work that a person may want to watch or steer,
-spawn a helper: it runs in its own tmux session, where they can see it. Your
+spawn a helper: it runs in its own terminal session, where they can see it. Your
 CLI's built-in subagents are still fine for quick lookups. Name helpers
 <yourname>-<role>:
 

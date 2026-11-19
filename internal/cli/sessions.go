@@ -98,7 +98,7 @@ only the transcripts it shows (their head and tail), and for --project the
 Claude ones whose project folder, named for the directory the session
 started in, could match.
 
-Workgroup agents come from this binary's store and the stores its tmux
+Workgroup agents come from this binary's store and the stores its termd
 sessions point at, live and departed, as agent export --all reads them.
 This host only. --json prints each session as docs/EVENTS.md describes a
 Session: the "session" line agent transcript opens with.`,

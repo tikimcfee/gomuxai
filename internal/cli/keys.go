@@ -10,12 +10,12 @@ import (
 
 var keysCmd = &cobra.Command{
 	Use:   "keys <session | name@host> <text>",
-	Short: "Type text into a tmux session (then Enter)",
-	Long: `Keys types text into a tmux session's pane, then presses Enter (--no-enter
+	Short: "Type text into a session (then Enter)",
+	Long: `Keys types text into a g3d-termd session, then presses Enter (--no-enter
 skips it). The text is typed literally: key names like "Escape" are typed as
 words; use "agent key" to press special keys.
 
-This is a low-level command for driving arbitrary tmux sessions, and takes a
+This is a low-level command for driving arbitrary sessions, and takes a
 session name (agent "helper"'s session is "agent-helper"). It does no dialog
 checks: to message an agent, use "agent send".
 

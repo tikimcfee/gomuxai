@@ -1,4 +1,4 @@
-// Command agent orchestrates AI agents in tmux sessions.
+// Command agent orchestrates AI agents in g3d-termd sessions.
 package main
 
 import (

@@ -9,7 +9,7 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/natsbus"
 	"github.com/tikimcfee/gomuxai/internal/storage"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/termd"
 )
 
 // execCall is what execInto would have replaced this process with.
@@ -121,13 +121,16 @@ func TestAttachRemote_Refusals(t *testing.T) {
 	}
 }
 
-// Local attach becomes tmux rather than running it as a child, and the
+// Local attach becomes g3d rather than running it as a child, and the
 // command-log row is written first, since nothing runs after.
-func TestAttachLocal_ExecsTmux(t *testing.T) {
+func TestAttachLocal_ExecsG3D(t *testing.T) {
 	setupCLI(t)
 	forbidBus(t)
 	calls := stubExec(t)
-	t.Setenv("TMUX", "")
+	bin, err := termd.AttachBinary("", "")
+	if err != nil {
+		t.Skip(err)
+	}
 	oldCmd, oldStart := runCmd, runStart
 	t.Cleanup(func() { runCmd, runStart = oldCmd, oldStart })
 	runCmd, runStart, runRecorded = attachCmd, time.Now(), false
@@ -135,13 +138,7 @@ func TestAttachLocal_ExecsTmux(t *testing.T) {
 	if err := runAttach(attachCmd, []string{"worker"}); err != nil {
 		t.Fatal(err)
 	}
-	// The tmux it execs is the one internal/tmux runs: on PATH, or where
-	// a package manager put it.
-	bin, err := tmux.Binary()
-	if err != nil {
-		t.Skip(err)
-	}
-	want := []execCall{{bin, []string{"tmux", "attach-session", "-t", "=rpc-cli-worker"}}}
+	want := []execCall{{bin, []string{"g3d", "--ns", "agents", "attach", "--take", "rpc-cli-worker"}}}
 	if !slices.EqualFunc(*calls, want, sameCall) {
 		t.Errorf("exec = %+v, want %+v", *calls, want)
 	}
@@ -218,8 +215,8 @@ func TestValidateAgentBinary(t *testing.T) {
 	}
 }
 
-// Attach to an agent whose tmux session is gone (a reboot ended it) says
-// so, here or over ssh, instead of handing tmux a session it can't find;
+// Attach to an agent whose session is gone (a reboot ended it) says so,
+// here or over ssh, instead of handing g3d a session it can't find;
 // resume --attach over ssh still runs, since it starts the session first.
 func TestAttach_SessionGone(t *testing.T) {
 	setupCLI(t)
@@ -232,14 +229,14 @@ func TestAttach_SessionGone(t *testing.T) {
 
 	for _, target := range []string{"worker", "worker@h1"} {
 		err := runAttach(attachCmd, []string{target})
-		for _, want := range []string{target + " has ended (gone)", "its tmux session rpc-cli-worker is gone", "agent logs " + target} {
+		for _, want := range []string{target + " has ended (gone)", "its session rpc-cli-worker is gone", "agent logs " + target} {
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Errorf("attach %s: %v, want it to say %q", target, err, want)
 			}
 		}
 	}
 	if len(*calls) != 0 {
-		t.Errorf("exec = %+v, want no tmux or ssh for a gone session", *calls)
+		t.Errorf("exec = %+v, want no g3d or ssh for a gone session", *calls)
 	}
 
 	resumeAttach = true
@@ -255,7 +252,7 @@ func TestAttach_SessionGone(t *testing.T) {
 // An agent resume can continue gets the command that brings it back.
 func TestGoneAttachError_Resumable(t *testing.T) {
 	err := goneAttachError("bot@mac", "agent-bot", "gone", true)
-	want := "bot@mac has ended (gone): its tmux session agent-bot is gone, so there is nothing to attach to. agent resume bot@mac --attach starts it again on its last session and opens it"
+	want := "bot@mac has ended (gone): its session agent-bot is gone, so there is nothing to attach to. agent resume bot@mac --attach starts it again on its last session and opens it"
 	if err.Error() != want {
 		t.Errorf("got  %q\nwant %q", err, want)
 	}

@@ -131,7 +131,7 @@ func TestCallerEnv(t *testing.T) {
 		"FOO=bar=baz",
 		"EMPTY=",
 		"G3D_BIN=/usr/local/bin/g3d",
-		"GOMUXAI_MUX=termd",
+		"GOMUXAI_TERMD_NS=agents",
 		"BASH_FUNC_fn%%=() { :; }",
 		"BAD-NAME=1",
 		"INVALID_UTF8=\xff",
@@ -158,8 +158,8 @@ func TestCallerEnv(t *testing.T) {
 	if got["G3D_BIN"] != "/usr/local/bin/g3d" {
 		t.Errorf("G3D_BIN = %q, want /usr/local/bin/g3d", got["G3D_BIN"])
 	}
-	if got["GOMUXAI_MUX"] != "termd" {
-		t.Errorf("GOMUXAI_MUX = %q, want termd", got["GOMUXAI_MUX"])
+	if got["GOMUXAI_TERMD_NS"] != "agents" {
+		t.Errorf("GOMUXAI_TERMD_NS = %q, want agents", got["GOMUXAI_TERMD_NS"])
 	}
 	for _, rejected := range []string{
 		"BASH_FUNC_fn%%",
@@ -420,5 +420,212 @@ func TestResolveTerminalCwd(t *testing.T) {
 	}
 	if got := termd.ResolveTerminalCwd("file://some-host/nonexistent/path/xyz", dir); got != dir {
 		t.Errorf("fallback on nonexistent OSC 7 = %q, want %q", got, dir)
+	}
+}
+
+func TestNewClient_LazyDaemonBinary(t *testing.T) {
+	dir := shortTempDir(t, "gmxt-lazy-")
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("G3D_TERMD_DIR", dir)
+	t.Setenv(termd.TestServerEnv, dir)
+	t.Setenv("G3D_TERMD_SOCKET", "")
+	t.Setenv("G3D_TERMD_BIN", "/nonexistent/g3d-termd")
+
+	// NewClient and read-only Status succeed without resolving DaemonBinary.
+	c, err := termd.NewClient(termd.Options{Namespace: "agents"})
+	if err != nil {
+		t.Fatalf("NewClient should not resolve DaemonBinary eagerly: %v", err)
+	}
+	st, err := c.Status()
+	if err != nil || len(st.Terminals) != 0 {
+		t.Fatalf("Status with no daemon = (%+v, %v), want empty nil", st, err)
+	}
+	if err := c.CreateSession("w", nil); err == nil || !strings.Contains(err.Error(), "G3D_TERMD_BIN") {
+		t.Fatalf("CreateSession with bad G3D_TERMD_BIN = %v, want DaemonBinary error", err)
+	}
+}
+
+func TestSessionEnv_PrefersRequestAndRedialsOnBusy(t *testing.T) {
+	dir := shortTempDir(t, "gmxt-senv-")
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const ns = "agents"
+	sockPath := filepath.Join(dir, "termd-"+ns+".sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		// Attempt 1: simulate transient daemon busy/restarting frame on handshake.
+		if c1, err := ln.Accept(); err == nil {
+			r1 := bufio.NewReader(c1)
+			_, _ = termdwire.ReadFrame(r1)
+			busy, _ := json.Marshal(map[string]any{"code": "restarting", "message": "brain restarting"})
+			_, _ = c1.Write(termdwire.EncodeFrame(termdwire.FrameError, 0, busy))
+			_ = c1.Close()
+		}
+		// Attempt 2: serve WELCOME and op "env" with base PATH before request PATH.
+		c2, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c2.Close()
+		r2 := bufio.NewReader(c2)
+		if _, err := termdwire.ReadFrame(r2); err != nil {
+			return
+		}
+		welcome, _ := json.Marshal(map[string]any{
+			"proto":     []int{1, 5},
+			"daemon":    "g3d-termd/mock",
+			"engine":    "mock",
+			"ns":        ns,
+			"pid":       os.Getpid(),
+			"features":  []string{"status", "env"},
+			"max_frame": termdwire.DefaultMaxFrame,
+			"instance":  "inst-mock",
+		})
+		_, _ = c2.Write(termdwire.EncodeFrame(termdwire.FrameWelcome, 0, welcome))
+		reqFrame, err := termdwire.ReadFrame(r2)
+		if err != nil {
+			return
+		}
+		var req map[string]any
+		_ = json.Unmarshal(reqFrame.Payload, &req)
+		reply, _ := json.Marshal(map[string]any{
+			"req": req["req"],
+			"ok":  true,
+			"env": []map[string]string{
+				{"name": "PATH", "value": "/usr/bin:/bin", "source": "caller"},
+				{"name": "BASE_ONLY", "value": "from-base", "source": "caller"},
+				{"name": "PATH", "value": "/opt/worktree/bin:/usr/bin:/bin", "source": "request"},
+			},
+		})
+		_, _ = c2.Write(termdwire.EncodeFrame(termdwire.FrameReply, 0, reply))
+	}()
+
+	t.Setenv("G3D_TERMD_DIR", dir)
+	t.Setenv(termd.TestServerEnv, dir)
+	t.Setenv("G3D_TERMD_SOCKET", "")
+
+	c, err := termd.NewClient(termd.Options{Namespace: ns})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if got := c.SessionEnv("agent-x", "PATH"); got != "/opt/worktree/bin:/usr/bin:/bin" {
+		t.Errorf("SessionEnv(PATH) = %q, want /opt/worktree/bin:/usr/bin:/bin", got)
+	}
+}
+
+func TestRespawnPane_PreservesBaseAndRequestEnv(t *testing.T) {
+	dir := shortTempDir(t, "gmxt-resp-")
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const ns = "agents"
+	sockPath := filepath.Join(dir, "termd-"+ns+".sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	workDir := t.TempDir()
+	createCh := make(chan map[string]any, 1)
+	go func() {
+		for range 4 {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			r := bufio.NewReader(conn)
+			if _, err := termdwire.ReadFrame(r); err != nil {
+				_ = conn.Close()
+				continue
+			}
+			welcome, _ := json.Marshal(map[string]any{
+				"proto":     []int{1, 5},
+				"daemon":    "g3d-termd/mock",
+				"engine":    "mock",
+				"ns":        ns,
+				"pid":       os.Getpid(),
+				"features":  []string{"status", "env"},
+				"max_frame": termdwire.DefaultMaxFrame,
+				"instance":  "inst-mock",
+			})
+			_, _ = conn.Write(termdwire.EncodeFrame(termdwire.FrameWelcome, 0, welcome))
+			reqFrame, err := termdwire.ReadFrame(r)
+			if err != nil {
+				_ = conn.Close()
+				continue
+			}
+			var req map[string]any
+			_ = json.Unmarshal(reqFrame.Payload, &req)
+			var reply any
+			switch req["op"] {
+			case "status":
+				reply = map[string]any{
+					"req": req["req"],
+					"ok":  true,
+					"status": map[string]any{
+						"daemon": map[string]any{"ns": ns},
+						"terminals": []map[string]any{
+							{"id": "gomux-bus", "handle": 1, "pid": 4321, "cwd": workDir},
+						},
+					},
+				}
+			case "env":
+				reply = map[string]any{
+					"req": req["req"],
+					"ok":  true,
+					"env": []map[string]string{
+						{"name": "AQUA_CONTEXT", "value": "kept-from-gui", "source": "caller"},
+						{"name": "AGENT_HOST", "value": "IL-Air-M2", "source": "request"},
+						{"name": "G3D_TERMD_ID", "value": "gomux-bus", "source": "termd"},
+					},
+				}
+			case "kill":
+				reply = map[string]any{"req": req["req"], "ok": true}
+			case "create":
+				createCh <- req
+				reply = map[string]any{"req": req["req"], "ok": true}
+			}
+			raw, _ := json.Marshal(reply)
+			_, _ = conn.Write(termdwire.EncodeFrame(termdwire.FrameReply, 0, raw))
+			_ = conn.Close()
+		}
+	}()
+
+	t.Setenv("G3D_TERMD_DIR", dir)
+	t.Setenv(termd.TestServerEnv, dir)
+	t.Setenv("G3D_TERMD_SOCKET", "")
+	t.Setenv("SSH_ONLY_VAR", "from-ssh-caller")
+
+	c, err := termd.NewClient(termd.Options{Namespace: ns})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if err := c.RespawnPane("gomux-bus"); err != nil {
+		t.Fatalf("RespawnPane: %v", err)
+	}
+
+	created := <-createCh
+	envBase, _ := created["env_base"].(map[string]any)
+	if envBase["AQUA_CONTEXT"] != "kept-from-gui" {
+		t.Errorf("env_base[AQUA_CONTEXT] = %v, want kept-from-gui", envBase["AQUA_CONTEXT"])
+	}
+	if _, leaked := envBase["SSH_ONLY_VAR"]; leaked {
+		t.Errorf("env_base replaced with SSH caller's environment: %v", envBase)
+	}
+	if _, leaked := envBase["G3D_TERMD_ID"]; leaked {
+		t.Errorf("env_base leaked layer-6 G3D_TERMD_ID: %v", envBase)
+	}
+	reqEnv, _ := created["env"].(map[string]any)
+	if reqEnv["AGENT_HOST"] != "IL-Air-M2" {
+		t.Errorf("create.env[AGENT_HOST] = %v, want IL-Air-M2", reqEnv["AGENT_HOST"])
 	}
 }

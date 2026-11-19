@@ -10,11 +10,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/tikimcfee/gomuxai/internal/termdwire"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
 )
 
 // DefaultNamespace is the daemon namespace gomuxai uses when none is
@@ -98,26 +96,20 @@ type SubscriberStatus struct {
 	Flow   string `json:"flow"`
 }
 
-type pipeWatcher struct {
-	conn   *termdwire.Conn
-	handle uint32
-	done   chan struct{}
-}
+var _ Ops = (*Client)(nil)
 
-// Client implements tmux.TmuxOps against a g3d-termd namespace.
+// Client implements Ops against a g3d-termd namespace.
 type Client struct {
 	ns        string
 	daemonBin string
 	attachBin string
 	cols      int
 	rows      int
-
-	pipesMu sync.Mutex
-	pipes   map[string]*pipeWatcher
 }
 
-// NewClient constructs a termd Client after validating its namespace and
-// locating the daemon binary.
+// NewClient constructs a termd Client after validating its namespace.
+// The daemon binary is resolved lazily when a terminal is created so read-only
+// commands and global hooks only need socket access.
 func NewClient(opts Options) (*Client, error) {
 	if err := CheckTestServer(); err != nil {
 		return nil, err
@@ -127,10 +119,6 @@ func NewClient(opts Options) (*Client, error) {
 		ns = DefaultNamespace
 	}
 	if err := ValidateNamespace(ns); err != nil {
-		return nil, err
-	}
-	daemonBin, err := DaemonBinary(opts.DaemonBin)
-	if err != nil {
 		return nil, err
 	}
 	cols := opts.InitialCols
@@ -143,11 +131,10 @@ func NewClient(opts Options) (*Client, error) {
 	}
 	return &Client{
 		ns:        ns,
-		daemonBin: daemonBin,
+		daemonBin: opts.DaemonBin,
 		attachBin: opts.AttachBin,
 		cols:      cols,
 		rows:      rows,
-		pipes:     make(map[string]*pipeWatcher),
 	}, nil
 }
 
@@ -157,46 +144,48 @@ func (c *Client) Namespace() string { return c.ns }
 // Status returns the namespace's status document. When no daemon is running
 // in the namespace, it returns an empty StatusDoc (0 live terminals).
 func (c *Client) Status() (*StatusDoc, error) {
-	w, err := dialNamespace(c.ns)
+	var doc *StatusDoc
+	err := withReadConn(c.ns, func(w *termdwire.Conn) error {
+		if w.Has("status") {
+			var reply struct {
+				Status StatusDoc `json:"status"`
+			}
+			if err := w.Request("status", nil, &reply); err != nil {
+				return fmt.Errorf("termd status: %w", err)
+			}
+			if reply.Status.Terminals == nil {
+				reply.Status.Terminals = []TerminalStatus{}
+			}
+			doc = &reply.Status
+			return nil
+		}
+
+		var list struct {
+			Terminals []TerminalStatus `json:"terminals"`
+		}
+		if err := w.Request("list", nil, &list); err != nil {
+			return fmt.Errorf("termd list: %w", err)
+		}
+		if list.Terminals == nil {
+			list.Terminals = []TerminalStatus{}
+		}
+		doc = &StatusDoc{
+			Daemon:    DaemonStatus{NS: c.ns, Proto: w.Welcome.Proto, Instance: w.Welcome.Instance},
+			Terminals: list.Terminals,
+		}
+		return nil
+	})
 	if errors.Is(err, errNotRunning) {
 		return &StatusDoc{Terminals: []TerminalStatus{}}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	defer w.Close()
-
-	if w.Has("status") {
-		var reply struct {
-			Status StatusDoc `json:"status"`
-		}
-		if err := w.Request("status", nil, &reply); err != nil {
-			return nil, fmt.Errorf("termd status: %w", err)
-		}
-		if reply.Status.Terminals == nil {
-			reply.Status.Terminals = []TerminalStatus{}
-		}
-		return &reply.Status, nil
-	}
-
-	var list struct {
-		Terminals []TerminalStatus `json:"terminals"`
-	}
-	if err := w.Request("list", nil, &list); err != nil {
-		return nil, fmt.Errorf("termd list: %w", err)
-	}
-	if list.Terminals == nil {
-		list.Terminals = []TerminalStatus{}
-	}
-	return &StatusDoc{
-		Daemon:    DaemonStatus{NS: c.ns, Proto: w.Welcome.Proto, Instance: w.Welcome.Instance},
-		Terminals: list.Terminals,
-	}, nil
+	return doc, nil
 }
 
 // StopDaemon stops the namespace's daemon and kills every terminal in it.
 func (c *Client) StopDaemon() error {
-	c.stopAllPipes()
 	w, err := dialNamespace(c.ns)
 	if errors.Is(err, errNotRunning) {
 		return nil
@@ -230,6 +219,10 @@ func (c *Client) CreateSession(name string, env map[string]string) error {
 // CreateSessionIn creates a new terminal running the user's shell in dir
 // (or the current working directory when dir is "").
 func (c *Client) CreateSessionIn(name, dir string, env map[string]string) error {
+	return c.createSessionWithEnv(name, dir, CallerEnv(os.Environ()), env)
+}
+
+func (c *Client) createSessionWithEnv(name, dir string, envBase, env map[string]string) error {
 	if err := ValidateTerminalID(name); err != nil {
 		return err
 	}
@@ -248,7 +241,7 @@ func (c *Client) CreateSessionIn(name, dir string, env map[string]string) error 
 		"cols":      c.cols,
 		"rows":      c.rows,
 		"if_exists": "error",
-		"env_base":  CallerEnv(os.Environ()),
+		"env_base":  envBase,
 	}
 	if cwd != "" {
 		fields["cwd"] = cwd
@@ -267,7 +260,6 @@ func (c *Client) CreateSessionIn(name, dir string, env map[string]string) error 
 
 // KillSession terminates a terminal and its entire process tree.
 func (c *Client) KillSession(name string) error {
-	c.stopPipe(name)
 	w, err := dialNamespace(c.ns)
 	if errors.Is(err, errNotRunning) {
 		return fmt.Errorf("session %q not found", name)
@@ -287,7 +279,8 @@ func (c *Client) KillSession(name string) error {
 }
 
 // RespawnPane kills what runs in session and starts a fresh shell under the
-// same terminal id, preserving its starting directory and request env.
+// same terminal id, preserving its directory, original caller env_base, and
+// request env.
 func (c *Client) RespawnPane(session string) error {
 	st, err := c.Status()
 	if err != nil {
@@ -303,11 +296,14 @@ func (c *Client) RespawnPane(session string) error {
 	if found == nil {
 		return fmt.Errorf("session %q not found", session)
 	}
-	reqEnv := c.requestEnvOf(session)
-	if err := c.KillSession(session); err != nil {
+	baseEnv, reqEnv, hasBase := c.terminalEnvOf(session)
+	if !hasBase {
+		baseEnv = CallerEnv(os.Environ())
+	}
+	if err := c.KillSession(session); err != nil && !strings.Contains(err.Error(), "not found") {
 		return err
 	}
-	return c.CreateSessionIn(session, ResolveTerminalCwd(found.Pwd, found.Cwd), reqEnv)
+	return c.createSessionWithEnv(session, ResolveTerminalCwd(found.Pwd, found.Cwd), baseEnv, reqEnv)
 }
 
 // ResolveTerminalCwd extracts a local directory path from a terminal's OSC 7
@@ -330,32 +326,53 @@ func ResolveTerminalCwd(osc7Pwd, fallbackCwd string) string {
 	return fallbackCwd
 }
 
-func (c *Client) requestEnvOf(session string) map[string]string {
-	w, err := dialNamespace(c.ns)
-	if err != nil || !w.Has("env") {
-		if w != nil {
-			_ = w.Close()
+type envEntry struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Source string `json:"source"`
+}
+
+func (c *Client) queryTerminalEnv(session string) ([]envEntry, bool) {
+	var entries []envEntry
+	supported := false
+	err := withReadConn(c.ns, func(w *termdwire.Conn) error {
+		if !w.Has("env") {
+			return nil
 		}
+		var reply struct {
+			Env []envEntry `json:"env"`
+		}
+		if err := w.Request("env", map[string]any{"id": session}, &reply); err != nil {
+			return err
+		}
+		supported = true
+		entries = reply.Env
 		return nil
+	})
+	if err != nil || !supported {
+		return nil, false
 	}
-	defer w.Close()
-	var reply struct {
-		Env []struct {
-			Name   string `json:"name"`
-			Value  string `json:"value"`
-			Source string `json:"source"`
-		} `json:"env"`
+	return entries, true
+}
+
+func (c *Client) terminalEnvOf(session string) (baseEnv, reqEnv map[string]string, ok bool) {
+	entries, ok := c.queryTerminalEnv(session)
+	if !ok {
+		return nil, nil, false
 	}
-	if err := w.Request("env", map[string]any{"id": session}, &reply); err != nil {
-		return nil
-	}
-	out := map[string]string{}
-	for _, e := range reply.Env {
-		if e.Source == "request" {
-			out[e.Name] = e.Value
+	var basePairs []string
+	reqEnv = map[string]string{}
+	for _, e := range entries {
+		switch e.Source {
+		case "request":
+			reqEnv[e.Name] = e.Value
+		case "termd":
+			// Layer-6 vars are synthesized by g3d-termd on create.
+		default:
+			basePairs = append(basePairs, e.Name+"="+e.Value)
 		}
 	}
-	return out
+	return CallerEnv(basePairs), reqEnv, true
 }
 
 // SessionExists reports whether a live terminal named name exists.
@@ -372,13 +389,13 @@ func (c *Client) SessionExists(name string) (bool, error) {
 	return false, nil
 }
 
-// ListSessions lists every live terminal in the namespace as a tmux.Session.
-func (c *Client) ListSessions() ([]tmux.Session, error) {
+// ListSessions lists every live terminal in the namespace.
+func (c *Client) ListSessions() ([]Session, error) {
 	st, err := c.Status()
 	if err != nil {
 		return nil, err
 	}
-	out := make([]tmux.Session, 0, len(st.Terminals))
+	out := make([]Session, 0, len(st.Terminals))
 	for _, t := range st.Terminals {
 		attached := false
 		for _, sub := range t.Subscribers {
@@ -387,11 +404,10 @@ func (c *Client) ListSessions() ([]tmux.Session, error) {
 				break
 			}
 		}
-		out = append(out, tmux.Session{
+		out = append(out, Session{
 			Name:      t.ID,
 			Created:   strconv.FormatInt(t.CreatedAt/1000, 10),
 			Attached:  attached,
-			Windows:   1,
 			SessionID: fmt.Sprintf("$%d", t.Handle),
 		})
 	}
@@ -411,29 +427,27 @@ func (c *Client) SessionNames() ([]string, error) {
 	return names, nil
 }
 
-// SessionEnv returns a variable from session's starting environment, or "".
+// SessionEnv returns a variable from session's environment (preferring the
+// create request override over base environment), or "".
 func (c *Client) SessionEnv(session, name string) string {
-	w, err := dialNamespace(c.ns)
-	if err != nil {
+	entries, ok := c.queryTerminalEnv(session)
+	if !ok {
 		return ""
 	}
-	defer w.Close()
-	if !w.Has("env") {
-		return ""
-	}
-	var reply struct {
-		Env []struct {
-			Name  string `json:"name"`
-			Value string `json:"value"`
-		} `json:"env"`
-	}
-	if err := w.Request("env", map[string]any{"id": session}, &reply); err != nil {
-		return ""
-	}
-	for _, e := range reply.Env {
-		if e.Name == name {
+	fallback := ""
+	hasFallback := false
+	for _, e := range entries {
+		if e.Name != name {
+			continue
+		}
+		if e.Source == "request" {
 			return e.Value
 		}
+		fallback = e.Value
+		hasFallback = true
+	}
+	if hasFallback {
+		return fallback
 	}
 	return ""
 }
@@ -497,7 +511,7 @@ func (c *Client) withWriter(session, feature string, fn func(w *termdwire.Conn, 
 }
 
 // SendKeys writes literal bytes to session's PTY without key-name parsing or
-// bracketed-paste framing, matching tmux send-keys -l / g3d send.
+// bracketed-paste framing, matching g3d send.
 func (c *Client) SendKeys(session, text string) error {
 	err := c.withWriter(session, "", func(w *termdwire.Conn, handle uint32) error {
 		b := []byte(text)
@@ -580,8 +594,7 @@ func (c *Client) PasteText(session, text string) error {
 
 // SendSpecialKey encodes and sends a special key or chord via termd's "key"
 // op (honoring Kitty keyboard flags, modifyOtherKeys, and DECCKM), falling
-// back to literal INPUT bytes for unrecognized multi-character strings as
-// tmux send-keys does.
+// back to literal INPUT bytes for unrecognized multi-character strings.
 func (c *Client) SendSpecialKey(session, key string) error {
 	ev, ok := ParseSpecialKey(key)
 	if !ok {
@@ -627,155 +640,33 @@ func (c *Client) CaptureStyled(session string, lines int) (string, error) {
 }
 
 func (c *Client) capture(session string, lines int, format string) (string, error) {
-	w, err := dialNamespace(c.ns)
-	if errors.Is(err, errNotRunning) {
+	var text string
+	err := withReadConn(c.ns, func(w *termdwire.Conn) error {
+		var reply struct {
+			Text string `json:"text"`
+		}
+		err := w.Request("capture", map[string]any{
+			"id":           session,
+			"format":       format,
+			"history_rows": max(lines, 0),
+		}, &reply)
+		if err != nil {
+			return err
+		}
+		text = reply.Text
+		return nil
+	})
+	if errors.Is(err, errNotRunning) || isWireCode(err, "no_terminal") {
 		return "", fmt.Errorf("session %q not found", session)
 	}
 	if err != nil {
-		return "", err
-	}
-	defer w.Close()
-
-	var reply struct {
-		Text string `json:"text"`
-	}
-	err = w.Request("capture", map[string]any{
-		"id":           session,
-		"format":       format,
-		"history_rows": max(lines, 0),
-	}, &reply)
-	if err != nil {
-		if isWireCode(err, "no_terminal") {
-			return "", fmt.Errorf("session %q not found", session)
-		}
 		return "", fmt.Errorf("capturing pane: %w", err)
 	}
-	text := strings.ReplaceAll(reply.Text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
 	if text != "" && !strings.HasSuffix(text, "\n") {
 		text += "\n"
 	}
 	return text, nil
-}
-
-// PipePane subscribes to session in watch mode and appends live PTY output
-// directly to logPath (no shell invocation).
-func (c *Client) PipePane(session, logPath string) error {
-	c.stopPipe(session)
-
-	w, err := dialNamespace(c.ns)
-	if errors.Is(err, errNotRunning) {
-		return fmt.Errorf("session %q not found", session)
-	}
-	if err != nil {
-		return err
-	}
-
-	var sub struct {
-		Handle uint32 `json:"handle"`
-	}
-	err = w.Request("subscribe", map[string]any{
-		"id":   session,
-		"mode": "raw",
-		"role": "watch",
-		"flow": "lossy",
-	}, &sub)
-	if err != nil {
-		_ = w.Close()
-		if isWireCode(err, "no_terminal") {
-			return fmt.Errorf("session %q not found", session)
-		}
-		return fmt.Errorf("piping pane: %w", err)
-	}
-
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		_ = w.Close()
-		return fmt.Errorf("opening pipe log: %w", err)
-	}
-
-	pw := &pipeWatcher{
-		conn:   w,
-		handle: sub.Handle,
-		done:   make(chan struct{}),
-	}
-	c.pipesMu.Lock()
-	c.pipes[session] = pw
-	c.pipesMu.Unlock()
-
-	go func() {
-		defer close(pw.done)
-		defer f.Close()
-		for frame := range w.Frames {
-			switch {
-			case frame.Type == termdwire.FrameOutput && frame.Stream == sub.Handle && len(frame.Payload) > 8:
-				_, _ = f.Write(frame.Payload[8:])
-			case frame.Type == termdwire.FrameEvent && frame.Stream == sub.Handle:
-				var ev struct {
-					Ev string `json:"ev"`
-				}
-				if json.Unmarshal(frame.Payload, &ev) == nil && ev.Ev == "closed" {
-					return
-				}
-			}
-		}
-	}()
-	return nil
-}
-
-// StopPipePane stops any active PipePane watcher on session.
-func (c *Client) StopPipePane(session string) error {
-	if c.stopPipe(session) {
-		return nil
-	}
-	exists, err := c.SessionExists(session)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("session %q not found", session)
-	}
-	return nil
-}
-
-func (c *Client) stopPipe(session string) bool {
-	c.pipesMu.Lock()
-	pw, ok := c.pipes[session]
-	if ok {
-		delete(c.pipes, session)
-	}
-	c.pipesMu.Unlock()
-	if !ok {
-		return false
-	}
-	_ = pw.conn.Request("unsubscribe", map[string]any{"handle": pw.handle}, nil)
-	_ = pw.conn.Close()
-	<-pw.done
-	return true
-}
-
-func (c *Client) stopAllPipes() {
-	c.pipesMu.Lock()
-	sessions := make([]string, 0, len(c.pipes))
-	for s := range c.pipes {
-		sessions = append(sessions, s)
-	}
-	c.pipesMu.Unlock()
-	for _, s := range sessions {
-		c.stopPipe(s)
-	}
-}
-
-// Clear fails at the seam: g3d-termd owns the program's emulator screen and
-// offers no client-side screen-wipe operation behind the program's back.
-func (c *Client) Clear(session string) error {
-	exists, err := c.SessionExists(session)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("session %q not found", session)
-	}
-	return fmt.Errorf("clearing %q: termd has no client-side clear op (clear inside the running program instead)", session)
 }
 
 // PanePIDs maps each live terminal's root process PID to its terminal id.
@@ -794,21 +685,21 @@ func (c *Client) PanePIDs() (map[int]string, error) {
 }
 
 // FirstPane returns the id, root PID, and working directory of session.
-func (c *Client) FirstPane(session string) (tmux.PaneInfo, error) {
+func (c *Client) FirstPane(session string) (PaneInfo, error) {
 	st, err := c.Status()
 	if err != nil {
-		return tmux.PaneInfo{}, err
+		return PaneInfo{}, err
 	}
 	for _, t := range st.Terminals {
 		if t.ID == session {
-			return tmux.PaneInfo{
+			return PaneInfo{
 				ID:  t.ID,
 				PID: t.PID,
 				Cwd: ResolveTerminalCwd(t.Pwd, t.Cwd),
 			}, nil
 		}
 	}
-	return tmux.PaneInfo{}, fmt.Errorf("session %q not found", session)
+	return PaneInfo{}, fmt.Errorf("session %q not found", session)
 }
 
 // SessionOfPane maps a G3D_TERMD_ID value to its terminal name if live.

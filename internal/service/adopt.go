@@ -9,14 +9,14 @@ import (
 
 	"github.com/tikimcfee/gomuxai/internal/backend"
 	"github.com/tikimcfee/gomuxai/internal/storage"
-	"github.com/tikimcfee/gomuxai/internal/tmux"
+	"github.com/tikimcfee/gomuxai/internal/termd"
 )
 
-// AdoptOptions holds options for adopting an existing tmux session onto the bus.
+// AdoptOptions holds options for adopting an existing termd session onto the bus.
 type AdoptOptions struct {
 	Name        string
-	SessionName string // explicit target tmux session (--session); "" uses CurrentPane
-	CurrentPane string // caller's $TMUX_PANE (e.g. "%0"), "" when outside tmux
+	SessionName string // explicit target terminal id (--session); "" uses CurrentPane
+	CurrentPane string // caller's $G3D_TERMD_ID, "" when outside g3d
 	Backend     string // explicit --backend override; "" auto-detects Claude or defaults to "shell"
 	SpawnedBy   string
 }
@@ -27,12 +27,12 @@ type AdoptResult struct {
 	SessionID string // detected Claude session ID, if any
 }
 
-type tmuxPaneInspector interface {
-	FirstPane(sessionName string) (tmux.PaneInfo, error)
+type paneInspector interface {
+	FirstPane(sessionName string) (termd.PaneInfo, error)
 	SessionOfPane(pane string) (string, error)
 }
 
-// Adopt registers an existing tmux session on the agent bus without launching,
+// Adopt registers an existing termd session on the agent bus without launching,
 // stopping, or restarting any processes in the session.
 func (s *AgentService) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, error) {
 	if err := ValidateAgentName(opts.Name); err != nil {
@@ -48,16 +48,12 @@ func (s *AgentService) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResu
 		targetSession = sess
 	}
 	if targetSession == "" {
-		return nil, errors.New("not in a tmux session: run agent adopt inside tmux or pass --session <tmux-session>")
+		return nil, errors.New("not in a termd session: run agent adopt inside g3d or pass --session <session>")
 	}
 
 	pane, err := s.firstPane(targetSession)
 	if err != nil {
 		return nil, err
-	}
-	if opts.SessionName == "" && opts.CurrentPane != "" && pane.ID != "" && opts.CurrentPane != pane.ID {
-		return nil, fmt.Errorf("tmux session %s has multiple panes and agent targets its first pane (%s, not current pane %s): run adopt in the first pane or move this pane to its own session",
-			targetSession, pane.ID, opts.CurrentPane)
 	}
 
 	var paneSession *backend.PaneSession
@@ -116,20 +112,20 @@ func (s *AgentService) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResu
 }
 
 func (s *AgentService) sessionOfPane(pane string) (string, error) {
-	if pi, ok := s.tmux.(tmuxPaneInspector); ok {
+	if pi, ok := s.tmux.(paneInspector); ok {
 		return pi.SessionOfPane(pane)
 	}
 	return "", nil
 }
 
-func (s *AgentService) firstPane(sessionName string) (tmux.PaneInfo, error) {
-	if pi, ok := s.tmux.(tmuxPaneInspector); ok {
+func (s *AgentService) firstPane(sessionName string) (termd.PaneInfo, error) {
+	if pi, ok := s.tmux.(paneInspector); ok {
 		return pi.FirstPane(sessionName)
 	}
 	pid, err := s.panePID(sessionName)
 	if err != nil {
-		return tmux.PaneInfo{}, err
+		return termd.PaneInfo{}, err
 	}
 	cwd, _ := os.Getwd()
-	return tmux.PaneInfo{PID: pid, Cwd: cwd}, nil
+	return termd.PaneInfo{PID: pid, Cwd: cwd}, nil
 }

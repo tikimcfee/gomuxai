@@ -83,7 +83,7 @@ func TestRootHelpStillFull(t *testing.T) {
 	if err := rootCmd.Help(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Agents:", "Low-level tmux", "spawn", "-q, --quiet"} {
+	for _, want := range []string{"Agents:", "Low-level sessions", "spawn", "-q, --quiet"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("help lacks %q", want)
 		}

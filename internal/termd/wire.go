@@ -2,6 +2,9 @@ package termd
 
 import (
 	"errors"
+	"io"
+	"syscall"
+	"time"
 
 	"github.com/tikimcfee/gomuxai/internal/termdwire"
 )
@@ -22,6 +25,12 @@ var (
 		Client: "gomuxai",
 		Proto:  [2]int{1, 5},
 	}
+
+	readRetryDelays = []time.Duration{
+		25 * time.Millisecond,
+		50 * time.Millisecond,
+		100 * time.Millisecond,
+	}
 )
 
 func dialNamespace(ns string) (*termdwire.Conn, error) {
@@ -32,6 +41,37 @@ func dialNamespace(ns string) (*termdwire.Conn, error) {
 		return nil, err
 	}
 	return termdwire.Dial(ns, dialOpts)
+}
+
+func isTransientReadErr(err error) bool {
+	if err == nil || errors.Is(err, errNotRunning) || errors.Is(err, ErrUnsafeSocket) {
+		return false
+	}
+	for _, code := range []string{"restart", "restarting", "busy"} {
+		if isWireCode(err, code) {
+			return true
+		}
+	}
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE)
+}
+
+// withReadConn runs a read-only op against ns, briefly redialing if the daemon
+// reports a transient brain restart or busy state.
+func withReadConn(ns string, fn func(w *termdwire.Conn) error) error {
+	for attempt := 0; ; attempt++ {
+		w, err := dialNamespace(ns)
+		if err == nil {
+			err = fn(w)
+			_ = w.Close()
+		}
+		if err == nil || attempt >= len(readRetryDelays) || !isTransientReadErr(err) {
+			return err
+		}
+		time.Sleep(readRetryDelays[attempt])
+	}
 }
 
 func ensureDaemon(ns, daemonBin string) (*termdwire.Conn, error) {

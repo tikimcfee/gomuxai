@@ -155,7 +155,7 @@ the bus (--no-restart skips that).`,
 var busRunCmd = &cobra.Command{
 	Use:     "run",
 	Short:   "Run the bus in the foreground",
-	Long:    `Run serves the bus until interrupted. "agent bus start" runs it in a tmux session.`,
+	Long:    `Run serves the bus until interrupted. "agent bus start" runs it in a background session.`,
 	Example: `  agent bus run --listen 0.0.0.0:7422`,
 	Args:    cobra.NoArgs,
 	RunE:    runBus,
@@ -163,8 +163,8 @@ var busRunCmd = &cobra.Command{
 
 var busStartCmd = &cobra.Command{
 	Use:   "start",
-	Short: "Start the bus in the background (tmux session " + busSession + ")",
-	Long: `Start runs the bus in tmux session ` + busSession + `.
+	Short: "Start the bus in the background (session " + busSession + ")",
+	Long: `Start runs the bus in background session ` + busSession + `.
 
 It saves the --listen, --client-port and --remote-ops it starts with (in
 bus/settings.json), and a later start without them uses the saved ones: on
@@ -315,7 +315,7 @@ func startBus(cmd *cobra.Command, args []string) error {
 		if err := checkOwnBusSession(); err != nil {
 			return err
 		}
-		return fmt.Errorf("the bus is already running in tmux session %s (agent bus status shows it; agent bus restart restarts it)", busSession)
+		return fmt.Errorf("the bus is already running in session %s (agent bus status shows it; agent bus restart restarts it)", busSession)
 	}
 	s, from, err := startSettings(cmd)
 	if err != nil {
@@ -328,7 +328,7 @@ func startBus(cmd *cobra.Command, args []string) error {
 	if err := saveBusSettings(s); err != nil {
 		return fmt.Errorf("the bus started (%s), but saving its settings failed: %w", s, err)
 	}
-	fmt.Printf("Bus started in tmux session %q (%s%s)\n", busSession, s, from)
+	fmt.Printf("Bus started in session %q (%s%s)\n", busSession, s, from)
 	return busStatus(cmd, args)
 }
 
@@ -432,7 +432,7 @@ func checkOwnBusSession() error {
 	if !errors.Is(err, natsbus.ErrNoBus) {
 		return err
 	}
-	return fmt.Errorf("tmux session %s exists, but this data dir's bus (%s) isn't running: the session likely runs the bus of another agent binary with its own data dir, so it's left alone. If it's a dead bus of this one, agent session kill %s",
+	return fmt.Errorf("session %s exists, but this data dir's bus (%s) isn't running: the session likely runs the bus of another agent binary with its own data dir, so it's left alone. If it's a dead bus of this one, agent session kill %s",
 		busSession, cfg.BusDir(), busSession)
 }
 
@@ -443,9 +443,9 @@ func stopBus(cmd *cobra.Command, args []string) error {
 	}
 	if !exists {
 		if _, err := queryBus(time.Second); err == nil {
-			return fmt.Errorf("the bus is running, but not in tmux session %s (started with agent bus run?): stop it with Ctrl-C where it runs", busSession)
+			return fmt.Errorf("the bus is running, but not in session %s (started with agent bus run?): stop it with Ctrl-C where it runs", busSession)
 		}
-		return fmt.Errorf("no bus is running on host %s (no tmux session %s), so there is nothing to stop", cfg.Host, busSession)
+		return fmt.Errorf("no bus is running on host %s (no session %s), so there is nothing to stop", cfg.Host, busSession)
 	}
 	if err := checkOwnBusSession(); err != nil {
 		return err
@@ -457,23 +457,28 @@ func stopBus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// stopBusSession stops the bus running in its tmux session and kills the
-// session (agent bus stop).
+// stopBusSession stops the bus running in its session and kills the session
+// (agent bus stop).
 func stopBusSession() error {
 	interruptBus()
-	return tmuxClient.KillSession(busSession)
+	if err := tmuxClient.KillSession(busSession); err != nil && !strings.Contains(err.Error(), "not found") {
+		return err
+	}
+	return nil
 }
 
-// pauseBusSession stops the bus running in its tmux session and leaves the
-// session with a fresh shell, for runBusIn to start it again (restart,
-// rename). Killing the session instead could stop the tmux server, when it
-// was the last one, and the next tmux command would start a new server
-// with that command's login context: on macOS, one started over ssh can't
-// use the login keychain, so make macos run in it can't sign.
+// pauseBusSession stops the bus running in its session and leaves the session
+// with a fresh shell, preserving its starting environment, for runBusIn to
+// start it again (restart, rename).
 func pauseBusSession() error {
 	interruptBus()
 	if err := tmuxClient.RespawnPane(busSession); err != nil {
-		return fmt.Errorf("the bus is stopped, but its tmux session %s couldn't get a fresh shell: %w", busSession, err)
+		if !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("the bus is stopped, but its session %s couldn't get a fresh shell: %w", busSession, err)
+		}
+		if err := tmuxClient.CreateSession(busSession, nil); err != nil {
+			return fmt.Errorf("the bus is stopped, but its session %s couldn't get a fresh shell: %w", busSession, err)
+		}
 	}
 	return nil
 }
@@ -562,7 +567,7 @@ func busStatus(cmd *cobra.Command, args []string) error {
 	if errors.Is(err, natsbus.ErrNoBus) {
 		fmt.Printf("%s: bus not running\n", cfg.Host)
 		if exists, _ := tmuxClient.SessionExists(busSession); exists {
-			hint("tmux session %s exists, but runs no bus of this data dir (%s): likely another agent binary's bus", busSession, cfg.BusDir())
+			hint("session %s exists, but runs no bus of this data dir (%s): likely another agent binary's bus", busSession, cfg.BusDir())
 		} else if busSetUp() {
 			hint("start it: agent bus start (add --listen 0.0.0.0:7422 on the hub)")
 		} else {

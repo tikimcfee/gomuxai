@@ -480,10 +480,10 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 		return nil, nil, err
 	}
 
-	// No tmux session, no CLI: whatever the last report said, nothing runs
-	// now. A reboot or a killed tmux server ends every agent at once and
-	// fires no hook, and backends with no native session list (agy) would
-	// otherwise keep their last report (idle) forever.
+	// No termd terminal, no CLI: whatever the last report said, nothing runs
+	// now. A reboot or a stopped g3d-termd ends every agent at once and fires
+	// no hook, and backends with no native session list (agy) would otherwise
+	// keep their last report (idle) forever.
 	if exists, err := s.tmux.SessionExists(agent.SessionName); err == nil && !exists {
 		if reported != nil && reported.Status == AgentStatusEnded {
 			return reported, reported, nil
@@ -492,7 +492,7 @@ func (s *AgentService) resolveStatus(ctx context.Context, name string) (info, re
 			Status:    AgentStatusEnded,
 			EndReason: backend.EndGone,
 			Source:    StatusSourceNative,
-			Detail:    fmt.Sprintf("its tmux session %s is gone (a reboot, or the tmux server was killed); agent resume %s continues its session, agent resume --all every one that ended so", agent.SessionName, agent.Name),
+			Detail:    fmt.Sprintf("its session %s is gone (a reboot, or g3d-termd was stopped); agent resume %s continues its session, agent resume --all every one that ended so", agent.SessionName, agent.Name),
 		}
 		if reported != nil {
 			info.Event, info.UpdatedAt = reported.Event, reported.UpdatedAt

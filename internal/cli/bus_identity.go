@@ -72,7 +72,7 @@ reach it.`,
 var busRestartCmd = &cobra.Command{
 	Use:   "restart",
 	Short: "Restart the background bus with the settings it runs with",
-	Long: `Restart stops the bus in tmux session ` + busSession + ` and starts it
+	Long: `Restart stops the bus in session ` + busSession + ` and starts it
 again with the --listen, --client-port and --remote-ops it was running
 with: what agent bus trust needs to apply.
 
@@ -228,7 +228,7 @@ func checkBusInSession() error {
 		return err
 	}
 	if !exists {
-		return fmt.Errorf("the bus is running, but not in tmux session %s (started with agent bus run?): restart it where it runs (Ctrl-C, then the same command)", busSession)
+		return fmt.Errorf("the bus is running, but not in session %s (started with agent bus run?): restart it where it runs (Ctrl-C, then the same command)", busSession)
 	}
 	return checkOwnBusSession()
 }
@@ -263,7 +263,7 @@ func runBusRestart(cmd *cobra.Command, args []string) error {
 	if err := saveBusSettings(*s); err != nil {
 		return fmt.Errorf("the bus restarted (%s), but saving its settings failed: %w", s, err)
 	}
-	fmt.Printf("Bus restarted in tmux session %q (%s); settings saved for agent bus start\n", busSession, s)
+	fmt.Printf("Bus restarted in session %q (%s); settings saved for agent bus start\n", busSession, s)
 	return busStatus(cmd, args)
 }
 
