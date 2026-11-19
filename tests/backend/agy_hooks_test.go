@@ -441,7 +441,10 @@ func TestAgyWithInstructions(t *testing.T) {
 	// Hooks already added the agent's dir: no second --add-dir, wrapper kept.
 	provider := namedagents.NewAgyBackendWithConfig(namedagents.AgyConfig{AgentDir: dir})
 	withHooks := provider.LaunchCommandWithHooks("agent report --hook", "sid")
-	cmd := provider.WithInstructions(withHooks, path)
+	cmd, err := provider.WithInstructions(withHooks, path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Count(cmd, "--add-dir") != 1 || !strings.HasSuffix(cmd, `; agent report ended --end-reason quit "agy exited with code $?"`) {
 		t.Errorf("with hooks: %s", cmd)
 	}
@@ -451,9 +454,17 @@ func TestAgyWithInstructions(t *testing.T) {
 
 	// Without hooks, the directory is added, before nothing else.
 	plain := namedagents.NewAgyBackend()
-	cmd = plain.WithInstructions(plain.LaunchCommand(), path)
+	cmd, err = plain.WithInstructions(plain.LaunchCommand(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.HasSuffix(cmd, " --add-dir '"+dir+"'") {
 		t.Errorf("without hooks: %s", cmd)
+	}
+
+	// A briefing that can't be read is an error, never an agent without it.
+	if cmd, err := plain.WithInstructions(plain.LaunchCommand(), filepath.Join(dir, "missing.md")); err == nil {
+		t.Errorf("missing briefing launched: %s", cmd)
 	}
 }
 
@@ -479,7 +490,10 @@ func TestAgyWorksInItsProject(t *testing.T) {
 	if err := os.WriteFile(brief, []byte("# briefing"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd = provider.WithInstructions(cmd, brief)
+	cmd, err := provider.WithInstructions(cmd, brief)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if n := strings.Count(cmd, "--add-dir"); n != 1 {
 		t.Fatalf("%d --add-dir in %s", n, cmd)
 	}

@@ -532,7 +532,9 @@ func (s *AgentService) launchCommand(ctx context.Context, opts SpawnOptions, pro
 		if err != nil {
 			return "", false, err
 		}
-		cmd = ip.WithInstructions(cmd, path)
+		if cmd, err = ip.WithInstructions(cmd, path); err != nil {
+			return "", false, err
+		}
 	}
 	if ca, ok := provider.(backend.CommandAllower); ok {
 		cmd = ca.AllowCommands(cmd, s.allowedCommandPrefixes())

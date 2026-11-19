@@ -461,7 +461,7 @@ func TestSpawn_BriefsTheAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("launch script not written: %v", err)
 	}
-	if !strings.Contains(string(launch), "--append-system-prompt-file") || !strings.Contains(string(launch), "instructions.md") {
+	if !strings.Contains(string(launch), "--append-system-prompt '") || !strings.Contains(string(launch), `agent "worker" on host "h1"`) {
 		t.Errorf("launch command doesn't load the instructions:\n%s", launch)
 	}
 	waitForSession(t, env, env.cfg.SessionName("worker"), "launch.sh")

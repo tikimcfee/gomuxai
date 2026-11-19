@@ -216,7 +216,7 @@ applies each one it finds:
 | `HookProvider`: maps hook payloads to status | yes | yes | — |
 | `GlobalHooker`: hooks from the CLI's user settings, for every session | `--session-id <id>`; spawn fails unless `agent hooks install` has registered this binary's hook | — | — |
 | `SpawnHooker`: hooks wired into each spawn's launch command | — | `--add-dir <agent dir>` (or a symlink to it, below) with `.agents/hooks.json`, plus the exit wrapper | — |
-| `InstructionsProvider`: the briefing | `--append-system-prompt-file instructions.md` | `AGENTS.md` in the `--add-dir` directory | — |
+| `InstructionsProvider`: the briefing; an unreadable one fails the spawn | `--append-system-prompt '<instructions.md>'`, inline: Claude Code's `/restart` refuses a session launched with `--append-system-prompt-file` (or any of `ClaudeRestartBlockingFlags`) | `AGENTS.md` in the `--add-dir` directory | — |
 | `CommandAllower`: pre-allowed commands | `--allowedTools 'Bash(agent status:*)' ...` | — | — |
 | `PromptFlagProvider`: first message on the command line | — | `-i '<task>'` | — |
 | `PromptHandover`: a long message typed as a short line, its text handed over by `UserPromptSubmit` | yes | — | — |

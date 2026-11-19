@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"unicode/utf16"
@@ -57,9 +58,16 @@ func (b *ClaudeBackend) HooksInstalled(binary string) error {
 }
 
 // WithInstructions appends the briefing to Claude's system prompt. Unlike a
-// CLAUDE.md, nothing is written into the agent's project.
-func (b *ClaudeBackend) WithInstructions(launchCmd, path string) string {
-	return launchCmd + " --append-system-prompt-file " + util.ShellQuote(path)
+// CLAUDE.md, nothing is written into the agent's project. It goes inline
+// (--append-system-prompt), not as --append-system-prompt-file: Claude Code's
+// /restart carries the inline flag into the restarted session, but refuses to
+// restart a session launched with a prompt file (see ClaudeRestartBlockingFlags).
+func (b *ClaudeBackend) WithInstructions(launchCmd, path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading the instructions for claude's system prompt: %w", err)
+	}
+	return launchCmd + " --append-system-prompt " + util.ShellQuote(string(data)), nil
 }
 
 // claudeHookPayload holds the hook payload fields we use. Every payload
