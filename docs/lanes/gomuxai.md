@@ -6,8 +6,9 @@ the repository (it names people and machines); its Done list is quoted below.
 ## State
 
 **Done.** `agent` is the Rust tool (`rs/`) plus the Go bus server it starts
-(`busd/`, binary `agent-busd`). All three hosts of the fleet run build `ce18473`,
-linked on one bus. The work is merged to `main`.
+(`busd/`, binary `agent-busd`). All three hosts of the fleet run build `0c2eab5`,
+linked on one bus. The work is merged to `main` as one commit (`0c2eab5`); the
+branch it was built on, with its history, stays local.
 
 Done list (from the brief), each shown in the lead's conversation with its command
 and output:
@@ -18,7 +19,7 @@ and output:
       accounted for, and every Parity command is run end to end as a subprocess.
 - [x] 2. The Rust `agent` is installed on the hub and on the Mac (signed, with the
       embedded Info.plist, built in the Mac's GUI-session termd daemon). `agent
-      version` prints `agent 0.2.0 ce18473 ... rustc ...` on both.
+      version` prints `agent 0.2.0 0c2eab5 ... rustc ...` on both.
 - [x] 3. `agent bus status` on the hub: 2 of 2 peers linked. `agent list --host` works
       for both peers.
 - [x] 4. spawn → send → wait → `state get _result` returned the reply for a claude and
@@ -31,7 +32,7 @@ and output:
       on its own conversation, re-briefed from its handoff doc. `agent skill install`
       set up Claude Code and agy (hub and Mac).
 - [x] 6. Static arm64 binaries built and, at the owner's word, installed on the phone
-      (see Where things are for the path and sha256). The phone runs `ce18473` too.
+      (see Where things are for the path and sha256). The phone runs `0c2eab5` too.
 - [x] 7. Friction triaged: the hub's one open entry (#51) is resolved by `agent
       revive`; the Mac's #13 was rechecked, is still true, and stays open with a note;
       the phone's box is empty. `agent fleet --report` printed the baseline.
@@ -120,10 +121,10 @@ Nothing blocks. Left over, for whoever picks the lane up:
 - `Makefile`: `build`, `test`, `lint`, `install`, `macos`, `arm64`, `legacy`.
 - `docs/FLEET.md`: the design of fleet, focus, templates, run, skill, revive.
   `docs/RUST-PORT.md`: the porting rulebook, kept as the record.
-- The arm64 bundle for the phone: `bin/arm64-ce18473/` in this checkout on
+- The arm64 bundle for the phone: `bin/arm64-0c2eab5/` in this checkout on
   the hub (`bin/` is not committed), with `SHA256SUMS`:
-  - `agent`: `ab235f244ba7803e1c4cc2d4833ab23126c47310ce2663908c3b1a3219996eec`
-  - `agent-busd`: `4304315438082d37fa907dd8d6205629c92f7e7b522071d56be77af24b6c93d2`
+  - `agent`: `d8f57c16317c1ffd491d1c4e298a90953a6584a9f5634fb1da3fb7d134437236`
+  - `agent-busd`: `a73c6ea539e043ef8f4b80715f0fb87dc9019e0e75f8db876c16a15c999346e9`
 - Rollback on each host: the Go binary is kept beside the installed one as
   `agent.go-84b9c94`, and the store as it was before the first Rust open is
   `.gomuxai/backups/gomuxai-before-rust-20261120.db`.
