@@ -1,0 +1,15 @@
+[package]
+name = "agent-manage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The manager's view of a host, as `agent manage --json` prints it and the manager GUI reads
+# it. Types and rules only, so a display links nothing of the store, the bus or the service.
+[dependencies]
+agent-transcript.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true

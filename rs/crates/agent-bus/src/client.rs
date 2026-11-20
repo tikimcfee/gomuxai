@@ -33,11 +33,11 @@ use crate::contract::{
     AgentInfo, AgentRef, CaptureRequest, CaptureResponse, DeliverResponse, ErrNoBus, FleetAgent,
     FleetFriction, FleetHost, FleetReport, FleetRequest, FocusEvent, FrictionRequest,
     FrictionResponse, KeysRequest, ListRequest, ListResponse, LogsRequest, LogsResponse,
-    OP_CAPTURE, OP_FLEET, OP_FRICTION, OP_KEYS, OP_LIST, OP_LOGS, OP_RESPOND, OP_RESUME, OP_SEND,
-    OP_SPAWN, OP_STATUS, OP_TEMPLATE, RESPONSE_DELIVER, RPCResponse, RespondRequest, ResumeRequest,
-    ResumeResponse, SendRequest, SendResponse, SpawnRequest, SpawnResponse, StatusRequest,
-    StatusResponse, TEMPLATE_RESUME, TEMPLATE_START, TemplateRequest, TemplateResponse,
-    inbox_prefix, subject_rpc, validate_host,
+    OP_CAPTURE, OP_FLEET, OP_FRICTION, OP_KEYS, OP_LIST, OP_LOGS, OP_MANAGE, OP_RESPOND, OP_RESUME,
+    OP_SEND, OP_SPAWN, OP_STATUS, OP_TEMPLATE, RESPONSE_DELIVER, RPCResponse, RespondRequest,
+    ResumeRequest, ResumeResponse, SendRequest, SendResponse, SpawnRequest, SpawnResponse,
+    StatusRequest, StatusResponse, TEMPLATE_RESUME, TEMPLATE_START, TemplateRequest,
+    TemplateResponse, inbox_prefix, subject_rpc, validate_host,
 };
 use crate::daemon::BUS_URL_FILE;
 use crate::identity::{load_identity, spki_sha256};
@@ -844,6 +844,24 @@ impl RpcClient {
         Ok(resp)
     }
 
+    /// Asks `host` for the manager's view of it (`agent manage view`), with
+    /// every string in the answer sanitized. When `host` doesn't allow
+    /// `manage` (an older `agent`, or its `--remote-ops`), the error says so.
+    pub fn manage(
+        &self,
+        ctx: &Context,
+        host: &str,
+        req: &agent_manage::Request,
+    ) -> anyhow::Result<agent_manage::HostView> {
+        let mut raw: serde_json::Value = self.call(ctx, host, OP_MANAGE, req)?;
+        clean_json(&mut raw);
+        let mut view: agent_manage::HostView = serde_json::from_value(raw)?;
+        // The host is the one asked, whatever it calls itself.
+        view.host = host.to_string();
+        view.reachable = true;
+        Ok(view)
+    }
+
     /// Queries `host`'s `fleet` view (3s default timeout), sanitizing remote text.
     /// When `host` doesn't allow `fleet`, fails with
     /// [`NoRespondersError`] or [`TimeoutError`] (see [`is_unanswered`]).
@@ -1043,6 +1061,22 @@ enum RpcTransportErr {
 
 fn clean(s: &str) -> String {
     sanitize_terminal(s)
+}
+
+/// Sanitizes every string in a JSON document, keys included.
+fn clean_json(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::String(s) => *s = clean(s),
+        serde_json::Value::Array(a) => a.iter_mut().for_each(clean_json),
+        serde_json::Value::Object(o) => {
+            let old = std::mem::take(o);
+            for (k, mut val) in old {
+                clean_json(&mut val);
+                o.insert(clean(&k), val);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Sanitizes `tool_input` both as raw text and — when it is JSON — inside every

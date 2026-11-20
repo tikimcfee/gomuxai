@@ -1,0 +1,40 @@
+Prune deletes what this host recorded about things that are over and
+older than --older-than (a duration back from now: 30d, 2w; or a local
+date):
+  command_log       agent history's records
+  agent_events      status events (what agent export --follow replays)
+  runs              runs of agents that were cleaned up
+  session_reports   last reports of ended sessions no agent owns
+  messages          delivered or failed messages (never held ones)
+  jobs              finished agent run jobs, with the script each ran
+  session_usage     cached token counts not refreshed since (recounted
+                    from the transcript when next needed)
+With --logs it also deletes the terminal logs and transcript lists in
+logs/ of agents no longer recorded, not written since then.
+
+It never touches recorded agents, their state or held messages, friction,
+tasks, scripts, untracked sessions, or any harness's transcripts.
+
+--dry-run prints what would go and changes nothing. Otherwise prune first
+backs the database up (agent manage backup; --no-backup skips that), and
+afterwards returns the freed space to the filesystem.
+
+Usage:
+  agent manage prune [flags]
+
+Examples:
+  agent manage prune --older-than 30d --dry-run
+  agent manage prune --older-than 30d --logs
+
+Flags:
+      --dry-run             Print what would be deleted; change nothing
+  -h, --help                help for prune
+      --logs                Also delete the logs of agents no longer recorded
+      --no-backup           Don't back the database up first
+      --older-than string   What counts as old: a duration back from now (30d, 2w) or a local date (required)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -25,6 +25,7 @@ pub fn bus_handler_with(ctx: &Ctx, svc: Arc<AgentService>) -> anyhow::Result<Rpc
     let share = ctx.share()?;
     let logs_share = share.clone();
     let template_share = share.clone();
+    let manage_share = share.clone();
     let fleet = agent_fleet::fleet::rpc_handler(
         Arc::clone(&svc),
         Arc::clone(svc.storage()),
@@ -39,6 +40,9 @@ pub fn bus_handler_with(ctx: &Ctx, svc: Arc<AgentService>) -> anyhow::Result<Rpc
             fleet: Some(fleet),
             template: Some(Box::new(move |c, req| {
                 super::template::serve_template(&template_share, &template_svc, c, req)
+            })),
+            manage: Some(Box::new(move |_c, req| {
+                super::manage::local_host(&manage_share.quiet_ctx(), &req)
             })),
         },
     ))

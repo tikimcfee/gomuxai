@@ -20,6 +20,7 @@ pub mod kimi;
 pub mod meta;
 pub mod tools;
 pub mod transcript;
+pub mod usage;
 
 #[cfg(test)]
 mod corpus_test;
@@ -44,3 +45,4 @@ pub use meta::{
 };
 pub use tools::{ACTION_NOISE, FileText, ToolSummary, describe_tool, summarize_tool};
 pub use transcript::{ErrUnparseable, File, detect, file_options, read_file, session_id_from_path};
+pub use usage::{Scan as UsageScan, Tokens, Usage, read_usage};

@@ -83,3 +83,9 @@ run
 skill
 skill install
 skill show
+manage
+manage view
+manage untrack
+manage track
+manage backup
+manage prune

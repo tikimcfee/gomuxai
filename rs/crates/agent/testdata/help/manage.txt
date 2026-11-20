@@ -1,0 +1,44 @@
+Manage is the manager's side of agent: one view of who is running, where,
+on what model, with how much context and how many tokens, and the commands
+that keep the data in hand. The manager GUI (agent-manager) draws "agent
+manage view --json" and runs these commands; they work without it.
+
+Nothing here is a second record. The view is read from this store and the
+harnesses' transcripts each time it is asked for. The store keeps two
+things for it: which sessions a person stopped tracking, and a cache of
+each transcript's token count (rebuilt from the transcript when missing).
+
+  view       the view, for a person or as JSON
+  untrack    stop tracking sessions (the transcripts stay)
+  track      track them again
+  backup     copy the database to backups/
+  prune      delete old records of finished things
+
+Usage:
+  agent manage [flags]
+  agent manage [command]
+
+Examples:
+  agent manage view
+  agent manage view --json --usage-budget 2s
+  agent manage untrack --state ended,dormant --older-than 30d --dry-run
+  agent manage backup
+  agent manage prune --older-than 30d --dry-run
+
+Available Commands:
+  view        Show agents, sessions, tokens, friction, history and data for this host and its peers
+  untrack     Stop tracking sessions: agent manage leaves them out (their transcripts stay)
+  track       Track untracked sessions again
+  backup      Copy this host's database to backups/
+  prune       Delete old records of finished things: history, events, departed agents' runs and logs
+
+Flags:
+  -h, --help   help for manage
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent manage [command] --help" for more information about a command.

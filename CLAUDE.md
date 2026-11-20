@@ -637,6 +637,51 @@ has the rules, and `docs/ARCHITECTURE.md` ("Sessions") where each field
 comes from. This host only. `claude_projects_dir`, `agy_brain_dir` and
 `kimi_sessions_dir` in the JSON app config change where it looks.
 
+### Manage: who runs what, tokens, and the data
+
+```bash
+agent manage view                     # per host: agents, sessions by state, tokens, friction, data on disk
+agent manage view --json              # the whole view (agent-manage's View): what the manager GUI draws
+agent manage view --local --usage-budget 2s   # this host only; count tokens for at most 2s
+agent manage untrack --state ended,dormant --older-than 30d --dry-run
+agent manage untrack claude:3f3a9c    # one session (HARNESS:ID, or the start of an id), with its subagents
+agent manage track --all              # track every untracked session again
+agent manage backup --keep 5          # copy the database to backups/gomuxai-<date>-<time>.db
+agent manage prune --older-than 30d --logs --dry-run
+```
+
+`manage view` joins what `fleet`, `sessions`, `friction list` and `history`
+show into one document per host, and adds two things: each session's
+state and its token usage. The state is decided from the status `agent
+sessions` resolves and whether the transcript is on disk: `running` (a CLI
+holds it), `dormant` (`ended (gone)`: not on right now, nobody ended it,
+resumable), `ended` (on purpose: quit, finished, closed, replaced, parent),
+`missing` (an agent's record names it, the transcript isn't there), `unknown`;
+plus a `stale` flag for one that isn't running and wasn't written for
+`--stale-days` (14). Tokens are counted from the transcripts' own records of
+each model call (input, output, cache read, cache write, and `context_tokens`,
+the latest call's prompt size; no harness records the model's window), per
+session, with a second sum that includes its subagents. Counting reads whole
+transcripts, so the store caches each count by path and reads only what a
+transcript gained; `--usage-budget` bounds one view's counting
+(`usage_pending` says how many sessions are left), and a peer is always asked
+with 2s and for its newest 300 sessions.
+
+Nothing in it is a second record: the store keeps only which sessions a
+person untracked and the token cache. `untrack` makes `manage view` leave a
+session out (`--untracked` shows them); the transcript stays, the harness can
+still resume it, and `agent sessions` still lists it. It never takes a running
+session unless named with `--force`. `agent cleanup` is what removes an ended
+agent's record. `prune` deletes old records of finished things (history,
+agent events, departed agents' runs, ended sessions' reports, delivered
+messages, finished jobs; with `--logs`, departed agents' logs), backing the
+database up first, and never recorded agents, state, held messages, friction
+or transcripts. These commands prompt the person when an agent runs them.
+
+The manager GUI is `agent-manager` (`rs/manager`, Makepad), installed beside
+`agent`: it draws `agent manage view --json` and runs `agent` commands for
+its buttons, so it holds no state of its own.
+
 ```bash
 agent transcript helper               # one session's events as JSON lines: a session line, then events
 agent transcript 3f3a9c --follow      # by session id (or its start), live until Ctrl-C
@@ -681,7 +726,7 @@ hosts this one knows. Not across hosts: `state` (ask the agent to send what
 you need, or `capture`), `queue` (use `send`), `revive` (use `resume
 name@host`, or run `revive` on that host), `cleanup` (clean up on that host).
 The other host's bus serves only its `--remote-ops` (default
-`list,status,capture,send,respond,friction,logs,fleet,template`), so `keys`,
+`list,status,capture,send,respond,friction,logs,fleet,template,manage`), so `keys`,
 `spawn` and `resume` to another host are refused unless it lists them. "no bus
 answering for host X" means that host's bus is down, not linked, or doesn't
 serve that op.
@@ -852,7 +897,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `send` says the message is still in the input box; `status` shows `unsent:` | Enter didn't submit it: `agent key agent-<name> Enter` does. Don't send it again. |
 | Leftover session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one; if it has ended, `agent resume <name>` or `agent revive <name>` continues it. |
-| `agent fleet` shows a linked host as `unreachable` | Its bus doesn't list `fleet` in `--remote-ops` (settings saved before `fleet` existed win over the defaults): on that host, `agent bus restart --remote-ops <its list>,fleet,template`. |
+| `agent fleet` shows a linked host as `unreachable` | Its bus doesn't list `fleet` in `--remote-ops` (settings saved before `fleet` existed win over the defaults): on that host, `agent bus restart --remote-ops <its list>,fleet,template,manage`. |
 | `agent run` says `runs without memory limits` or `couldn't ask systemd to spare g3d-termd's units` | On macOS or Linux without a user `systemd` manager, jobs run plainly with provenance only (`agent run --show <id>`); where `systemd-oomd` watches the root-owned user slice rather than user units, the job's own `MemoryMax` + `MemorySwapMax=0` scope is what protects the terminal (`--no-protect` skips the `g3d-termd` check). |
 | After `agent revive`, an agy agent says it runs without hooks | A person started `agy` by hand in its pane, without the `--add-dir` hooks `agent` wires at launch (status comes from its screen and messages are typed): quit `agy` there and run `agent revive <name>` again so `agent` launches it. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |

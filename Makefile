@@ -1,4 +1,4 @@
-.PHONY: all build test install macos arm64 clean lint fmt
+.PHONY: all build test install macos arm64 clean lint fmt manager manager-test install-manager
 
 # `agent` is two programs: the Rust CLI (rs/, binary `agent`) and the bus server it starts
 # (busd/, Go, binary `agent-busd`: the embedded nats-server). They are built, installed and
@@ -47,6 +47,29 @@ install:
 	done
 	@echo "Installed $(BINDIR)/agent and $(BINDIR)/agent-busd (the store: $(BINDIR)/.gomuxai)"
 	@echo "Then: agent bus restart (a running bus keeps the old binaries until then)"
+
+# The manager GUI (rs/manager, Makepad). It is a workspace of its own with its own target
+# directory, built and installed apart from `agent`: it needs a desktop's libraries (Wayland or
+# X11, EGL/GL or Vulkan, ALSA and PulseAudio headers on Linux), which a host that only runs
+# agents may not have. It is installed beside `agent`, the binary it runs for everything.
+# Makepad reads its fonts from the source cargo fetched (~/.cargo/git/checkouts/makepad-*), so
+# build it on the machine that runs it, and keep that checkout.
+MANAGER_TARGET_DIR ?= $(if $(wildcard /var/tmp),/var/tmp/agent-manager-target,$(CURDIR)/rs/manager/target)
+manager:
+	@mkdir -p $(BUILD_DIR)
+	cd rs/manager && CARGO_TARGET_DIR=$(MANAGER_TARGET_DIR) $(CARGO) build --release
+	cp $(MANAGER_TARGET_DIR)/release/agent-manager $(BUILD_DIR)/agent-manager
+	@echo "Built $(BUILD_DIR)/agent-manager"
+
+manager-test:
+	cd rs/manager && CARGO_TARGET_DIR=$(MANAGER_TARGET_DIR) $(CARGO) fmt --all --check
+	cd rs/manager && CARGO_TARGET_DIR=$(MANAGER_TARGET_DIR) $(CARGO) clippy --workspace --all-targets -- -D warnings
+	cd rs/manager && CARGO_TARGET_DIR=$(MANAGER_TARGET_DIR) $(CARGO) test --workspace
+
+install-manager: manager
+	@mkdir -p $(BINDIR)
+	@cp $(BUILD_DIR)/agent-manager $(BINDIR)/agent-manager.new && mv -f $(BINDIR)/agent-manager.new $(BINDIR)/agent-manager
+	@echo "Installed $(BINDIR)/agent-manager (it runs $(BINDIR)/agent)"
 
 # macOS build that can hold its own Local Network permission, so the bus can link to peers on
 # the LAN from inside a background g3d-termd session. The process that dials the LAN is

@@ -12,6 +12,7 @@ use crate::friction_links::FRICTION_LINKS_SCHEMA;
 use crate::gotime::Time;
 use crate::host_state::HOST_STATE_SCHEMA;
 use crate::jobs::{JOBS_ADDED_COLUMNS, JOBS_SCHEMA, SCRIPTS_SCHEMA};
+use crate::manage::MANAGE_SCHEMA;
 use crate::models::*;
 use crate::session_reports::SESSION_REPORTS_SCHEMA;
 use crate::tree::{
@@ -143,7 +144,8 @@ impl Store {
             // them leaves a store the Go opens as before.
             + JOBS_SCHEMA
             + SCRIPTS_SCHEMA
-            + HOST_STATE_SCHEMA;
+            + HOST_STATE_SCHEMA
+            + MANAGE_SCHEMA;
 
         let conn = self.conn();
         conn.execute_batch(&schema)?;

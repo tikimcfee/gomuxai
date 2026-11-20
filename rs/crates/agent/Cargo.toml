@@ -28,6 +28,7 @@ agent-discovery.workspace = true
 agent-claudereg.workspace = true
 agent-allowcmd.workspace = true
 agent-export.workspace = true
+agent-manage.workspace = true
 libc.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

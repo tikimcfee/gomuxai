@@ -26,13 +26,14 @@ const (
 	OpFriction = "friction"
 	OpFleet    = "fleet"
 	OpTemplate = "template"
+	OpManage   = "manage"
 )
 
 // AllOps lists every RPC op a bus serves to local clients.
-var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys, OpSpawn, OpFriction, OpLogs, OpResume, OpFleet, OpTemplate}
+var AllOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpKeys, OpSpawn, OpFriction, OpLogs, OpResume, OpFleet, OpTemplate, OpManage}
 
 // DefaultRemoteOps are the ops a bus serves to other hosts unless configured otherwise.
-var DefaultRemoteOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpFriction, OpLogs, OpFleet, OpTemplate}
+var DefaultRemoteOps = []string{OpList, OpStatus, OpCapture, OpSend, OpRespond, OpFriction, OpLogs, OpFleet, OpTemplate, OpManage}
 
 // namePattern matches host and agent names. Both become subject tokens, so
 // they must not contain '.', '*', '>' or whitespace.

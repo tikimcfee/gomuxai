@@ -12,7 +12,7 @@ Usage:
 
 Examples:
   agent bus restart
-  agent bus restart --remote-ops list,status,capture,send,respond,friction,logs,fleet,template,resume
+  agent bus restart --remote-ops list,status,capture,send,respond,friction,logs,fleet,template,manage,resume
 
 Flags:
       --client-port int      Local client port (127.0.0.1) instead

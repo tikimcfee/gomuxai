@@ -1,0 +1,59 @@
+View shows, for this host and every peer its bus trusts (asked at once):
+its agents; every harness session (Claude Code, agy, Kimi Code; spawned by
+agent or started by a person) with its state and token usage; its friction
+box; its recent command history; and what its data takes on disk. Without
+--json it prints a summary per host; --json prints the whole view as one
+document (agent-manage's View).
+
+A session's STATE is decided from its status, as agent sessions resolves
+it, and whether its transcript is on disk:
+  running   a CLI holds it now (idle, processing, waiting, error; or agy
+            holds the conversation open)
+  dormant   not on right now, and nobody ended it: ended (gone), what a
+            reboot or a closed terminal leaves. It can be resumed.
+  ended     ended on purpose: quit, finished, closed, replaced, parent
+  missing   an agent's record names it, but its transcript isn't there
+  unknown   its status can't be told
+A session that isn't running and hasn't been written for --stale-days
+days (default 14) is also flagged stale.
+
+Tokens are counted from each transcript's own records of its model calls:
+input, output, cache read and cache write, and "context", the size of the
+latest call's prompt (no harness records the model's window, so it is a
+count, not a share). A subagent's session has its own count; the session
+that started it also carries the sum with its subagents. Counting reads
+whole transcripts, so the counts are cached in the store by path and a
+later view reads only what a transcript gained. --usage-budget limits how
+long one view spends counting (sessions it didn't reach come without
+usage, and "usage_pending" says how many); a peer is always asked with a
+budget of 2s, so its first answers fill in over a few views.
+
+Sessions a person stopped tracking (agent manage untrack) are left out
+unless --untracked. --host shows one host; --local this host only. A peer
+that doesn't answer (its bus is down, not linked, on an older agent, or
+doesn't list manage in its --remote-ops) is shown as unreachable, with why.
+
+Usage:
+  agent manage view [flags]
+
+Examples:
+  agent manage view
+  agent manage view --local --json
+  agent manage view --host hub --sessions 100
+
+Flags:
+  -h, --help                    help for view
+      --history int             The newest N commands of each host's history (0: none) (default 200)
+      --host string             Show only this host (default: this host and every trusted peer)
+      --json                    Print the view as one JSON document
+      --local                   This host only, asking no peer
+      --sessions int            Only the newest N sessions of each host, each with its subagents (0: all here, the newest 300 of a peer)
+      --stale-days int          Flag a session that isn't running and wasn't written for this many days as stale (0: never) (default 14)
+      --untracked               Include the sessions a person stopped tracking
+      --usage-budget duration   Spend at most this long counting tokens in transcripts not counted yet (2s, 500ms; default: as long as it takes) (default )
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

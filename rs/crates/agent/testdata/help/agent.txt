@@ -35,6 +35,7 @@ Fleet:
   fleet       Show the agents of this host and every linked peer, and what needs a look
   focus       Show, set or follow which agent has focus on a host
   template    Start agents from the templates a host agrees to run, from any host
+  manage      See every agent and session with its tokens and state, and manage the data: untrack, back up, prune
 
 Messages:
   send        Send a message to an agent: typed in now, or held while it's busy

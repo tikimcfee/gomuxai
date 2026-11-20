@@ -287,7 +287,7 @@ hub$ agent bus status
 hub: bus running (clients on tls://127.0.0.1:7420)
   hub, accepting peer links on 0.0.0.0:7422
   linked peers: 1; trusted: mac
-  remote ops allowed: list, status, capture, send, respond, friction, logs, fleet, template
+  remote ops allowed: list, status, capture, send, respond, friction, logs, fleet, template, manage
 ```
 
 Then address agents on the other machine as `name@host`:
@@ -320,7 +320,7 @@ is `<caller>@<caller-host>` so replies go back.
 Open `spawn` and `resume` are off for peers by default, since they start an
 arbitrary process on the host. To allow them too, add them on the hub: `agent
 bus restart --remote-ops
-list,status,capture,send,respond,friction,logs,fleet,template,spawn,resume`
+list,status,capture,send,respond,friction,logs,fleet,template,manage,spawn,resume`
 (`remote ops allowed` then lists them). The bus saves its settings, so a later
 `agent bus start`, after a reboot say, runs with the same ops. Then `agent
 spawn builder@hub --backend claude --cwd /home/user/project` starts one on the
@@ -401,7 +401,7 @@ add` found a similar entry (`agent run` exits with its script's exit code).
 | Bus on the Mac never links; `.gomuxai/bus/bus.log` says `no route to host` | macOS blocks LAN connections from `agent-busd` in a background daemon without its own Local Network permission | `make macos && make install` on the Mac, allow the alert on the first `agent bus start` |
 | `make macos` fails in `codesign` with `errSecInternalComponent` | The shell isn't in the Mac's GUI login session (where the login keychain is unlocked) | Build in a terminal on the Mac, or in a `g3d-termd` daemon started in the GUI session |
 | `no bus answering for host "X"` | X's bus is down, not linked to yours, or doesn't allow that op | `agent bus status` on both machines; check the firewall and the `--url` in the hub's bundle |
-| `agent fleet` shows a linked host as `unreachable` | Its bus doesn't list `fleet` in `--remote-ops` (settings saved before `fleet` existed win over the defaults) | On that host: `agent bus restart --remote-ops <its list>,fleet,template` |
+| `agent fleet` shows a linked host as `unreachable` | Its bus doesn't list `fleet` in `--remote-ops` (settings saved before `fleet` existed win over the defaults) | On that host: `agent bus restart --remote-ops <its list>,fleet,template,manage` |
 | `agent bus status` says not running, though `gomux-bus` exists | The session name is shared by every data dir; another copy of `agent` owns it | Use that copy, or stop its bus first |
 | Queued messages never arrive (aider, custom backends) | No `agent watch` is running (`queue` says so) | Run `agent watch` in a spare terminal, or `agent send` instead |
 | A held message hasn't arrived | The agent's turn (agy: its current step) is still running, or ended with no hook (Esc, Ctrl+C, deny), or something covers its input line (`it isn't on screen`) | `agent status NAME -v` shows `held:`; a deliverer types it 10s after the turn ends; `agent deliver NAME` (or `NAME@host`, over the bus) types it now if the agent is at its prompt; `agent capture NAME` shows what covers the input line |

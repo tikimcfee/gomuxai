@@ -148,7 +148,7 @@ fn flag_defaults() {
             "remote-ops",
             // agent_bus::DEFAULT_REMOTE_OPS: the Go's, and fleet and
             // template (docs/FLEET.md).
-            "[list,status,capture,send,respond,friction,logs,fleet,template]",
+            "[list,status,capture,send,respond,friction,logs,fleet,template,manage]",
         ),
     ];
     for (path, flag, want) in tests {

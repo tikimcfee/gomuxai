@@ -14,6 +14,7 @@ dependencies = [
  "agent-discovery",
  "agent-export",
  "agent-fleet",
+ "agent-manage",
  "agent-service",
  "agent-store",
  "agent-termd",
@@ -75,6 +76,7 @@ name = "agent-bus"
 version = "0.2.0"
 dependencies = [
  "agent-base",
+ "agent-manage",
  "anyhow",
  "async-nats",
  "chrono",
@@ -160,6 +162,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-manage"
+version = "0.2.0"
+dependencies = [
+ "agent-transcript",
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agent-service"
 version = "0.2.0"
 dependencies = [
@@ -169,6 +181,7 @@ dependencies = [
  "agent-bus",
  "agent-claudereg",
  "agent-discovery",
+ "agent-manage",
  "agent-store",
  "agent-termd",
  "agent-transcript",

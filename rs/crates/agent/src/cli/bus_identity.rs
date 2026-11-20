@@ -122,7 +122,7 @@ with the whole list peers may call. The settings it restarts with are
 saved, as agent bus start saves them, so a later agent bus start (after a
 reboot, say) runs the same way."#,
     example: r#"  agent bus restart
-  agent bus restart --remote-ops list,status,capture,send,respond,friction,logs,fleet,template,resume"#,
+  agent bus restart --remote-ops list,status,capture,send,respond,friction,logs,fleet,template,manage,resume"#,
     args: ArgRule::None,
     ..Doc::DEFAULT
 };

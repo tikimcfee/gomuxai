@@ -1,0 +1,27 @@
+Backup writes a consistent copy of this host's database (agents, state,
+messages, friction, history, jobs, everything agent stores) to
+backups/gomuxai-<date>-<time>.db in the data directory, while agents keep
+running. It prints the file. To restore one, stop the agents and the bus
+and copy it over gomuxai.db.
+
+Transcripts are the harnesses' files, and terminal logs are in logs/:
+neither is in the database, so neither is in a backup.
+
+--keep N then deletes all but the newest N backups this command made.
+
+Usage:
+  agent manage backup [flags]
+
+Examples:
+  agent manage backup
+  agent manage backup --keep 5
+
+Flags:
+  -h, --help       help for backup
+      --keep int   Afterwards, delete all but the newest N backups this command made (0: keep all)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

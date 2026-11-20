@@ -41,7 +41,8 @@ The data dir is `.gomuxai/` next to the `agent` binary
 │   ├── <name>.log           # terminal scrollback snapshot (written on cleanup)
 │   ├── <name>.transcripts   # "<backend>\t<path>" per CLI transcript (survives cleanup)
 │   └── hook-errors.log      # what `agent hook` failed at, one line each
-├── backups/                 # Claude Code's settings.json, copied before `agent hooks` edits it
+├── backups/                 # Claude Code's settings.json, copied before `agent hooks` edits it;
+│                            #   gomuxai-<date>-<time>.db, the database as `agent manage backup` copied it
 ├── agents/<name>/           # per-agent bundle, removed by cleanup
 │   ├── instructions.md      # the briefing
 │   ├── launch.sh            # the backend's full launch command
@@ -62,18 +63,20 @@ The Rust workspace lives in `rs/` (`rs/Cargo.toml`), with the Go bus sidecar in
 | Crate / dir | What it does |
 |---|---|
 | `rs/crates/agent` | `main.rs` (`cli::execute`, `cli::exit::exit_code`) and `cli/`: one module per command (or group), cobra-compatible command lookup and pflag-compatible flag parsing (`command.rs`, `flags.rs`, `help.rs`, `root.rs`), `Ctx`, remote routing (`remote.rs`, `remote_ops.rs`), output and exit codes (`output.rs`, `exit.rs`), and the command log (`history.rs`). |
+| `rs/manager` (`agent-manager`) | The manager GUI (Makepad), a Cargo workspace of its own so Makepad stays out of this one's lock file, tests and lints. It links `agent-manage` only: it runs the `agent` binary beside it for its data (`agent manage view --json`) and for every action. |
 | `rs/crates/agent-fleet` | Fleet features ([`docs/FLEET.md`](FLEET.md)): cross-host `fleet` view and baseline `--report` (`fleet.rs`), host `focus` and `--follow` (`focus.rs`), `templates.json` management (`templates.rs`) and `template` RPC handler (`template_op.rs`), handoff lookup, staleness, and re-brief (`handoff.rs`), heavy-job runner `run` with Linux systemd scopes (`run.rs`, `run/`), and `skill` installer/viewer (`skill.rs`). |
 | `rs/crates/agent-service` | `AgentService` (`service/`): spawn, adopt, resume, revive, send, handover, submit checks, held-message delivery, capture, cleanup, status resolution, reports, hooks, permission/trust/dialog answers, shared `skill_text` and agent briefing (`instructions.rs`), friction link helpers, and `RpcHandler` (`rpc.rs`); plus `watcher` (`watcher.rs`, the `agent watch` loop). |
 | `rs/crates/agent-export` | The tree `agent export` prints (`export.rs`): a snapshot across stores and hosts, kept current from agent events, sessions, and transcripts, opening stores read-only. |
+| `rs/crates/agent-manage` | The manager's view as types and rules, with no store, bus or service code (`lib.rs`): `View`, `HostView`, `AgentRow`, `SessionRow`, `SessionState` and `classify`, `is_stale`, `FrictionRow`, `HistoryRow`, `DataReport`, and the `human_*` formatters. What `agent manage view --json` prints, what op `manage` answers with, and what the GUI deserializes. |
 | `rs/crates/agent-bus` | Bus client and RPC server behind plain blocking functions (`tokio`, `async-nats`, and `rustls` stay internal): contract (`contract.rs`: subjects, ops, wire types), identity and pinned TLS (`identity.rs`), local client and `RpcClient` (`client.rs`), `RpcServer` (`rpc.rs`), status and focus events and `wait` (`events.rs`), and `agent-busd` child management (`daemon.rs`). |
 | `busd/` (`agent-busd`, Go) | Standalone Go module wrapping `nats-server/v2` and `nkeys` (`main.go`, `daemon.go`, `identity.go`, `contract.go`): runs the embedded NATS server for the local client port and TLS 1.3 SPKI-pinned hub/leaf links, started as a child by `agent bus run`. |
 | `rs/crates/agent-backend` | Backend traits (`Backend`, `Provider`, and optional capability traits in `provider.rs`), `Registry` (`registry.rs`), custom JSON backends (`generic.rs`), recorded session-name lookup (`session_name.rs`), and `namedagents/` (`claude.rs`, `claude_hooks.rs`, `claude_settings.rs`, `claude_dialog.rs`, `agy.rs`, `aider.rs`, `shell.rs`, `trust.rs`, `hooks.rs`). |
 | `rs/crates/agent-discovery` | `agent sessions` (`dirs.rs`, `index.rs`, `sessions.rs`, `resolve.rs`, `continue.rs`, `claude.rs`, `agy.rs`, `kimi.rs`, `lock_*.rs`): harness transcript directories, head/tail metadata scan, workgroup join, `continue` session picker, and `reconcile_native` / `resolve`. |
-| `rs/crates/agent-transcript` | Readers for Claude Code, agy, and Kimi Code session transcripts (`claude.rs`, `claude_rewind.rs`, `agy.rs`, `kimi.rs`, `meta.rs`, `tools.rs`, `final.rs`, `transcript.rs`) into one event stream (`events.rs`, [`docs/EVENTS.md`](EVENTS.md)). |
+| `rs/crates/agent-transcript` | Readers for Claude Code, agy, and Kimi Code session transcripts (`claude.rs`, `claude_rewind.rs`, `agy.rs`, `kimi.rs`, `meta.rs`, `tools.rs`, `final.rs`, `transcript.rs`) into one event stream (`events.rs`, [`docs/EVENTS.md`](EVENTS.md)), and the resumable count of a transcript's token usage (`usage.rs`). |
 | `rs/crates/agent-claudereg` | Reads Claude Code's session registry (`~/.claude/sessions/<pid>.json`; `registry.rs`), proves each entry against running processes (`proof.rs`, `proof_*.rs`), places terminal panes (`running.rs`), and follows `continued-in` chains (`continued.rs`). |
 | `rs/crates/agent-termd` | `Ops` and `Client` (`ops.rs`, `client.rs`, `wire.rs`, `chord.rs`, `paths.rs`) over `g3d-termd`'s Unix socket protocol (v1.5), built on the `g3d` and `g3d-wire` crates, in a dedicated namespace (`agents` by default, refusing `default` and `wall`); `testing.rs` isolates tests in private socket dirs. |
 | `rs/crates/agent-allowcmd` | `Checker` (`allowcmd.rs`): strict shell lexer deciding whether a command line is one plain run of a given binary with a safe subcommand, for `PreToolUse` approval. |
-| `rs/crates/agent-store` | `Store` over bundled SQLite (`rusqlite`): schema, column migrations, transactions, and queries (`sqlite.rs`, `tree.rs`, `models.rs`, `commands.rs`, `friction.rs`, `friction_links.rs`, `session_reports.rs`, `host_rename.rs`, `jobs.rs`, `host_state.rs`, `gotime.rs`, `gojson.rs`). |
+| `rs/crates/agent-store` | `Store` over bundled SQLite (`rusqlite`): schema, column migrations, transactions, and queries (`sqlite.rs`, `tree.rs`, `models.rs`, `commands.rs`, `friction.rs`, `friction_links.rs`, `session_reports.rs`, `host_rename.rs`, `jobs.rs`, `host_state.rs`, `manage.rs`, `gotime.rs`, `gojson.rs`). |
 | `rs/crates/agent-base` | Shared bottom layer: `config` (`Config`, defaults, paths, namespace rules), `types` (`Status`, `EndReason`, `STATUSES`, `END_REASONS`, `HookReport`, `PermissionResponse`, `resumable`), `macos` (`Info.plist` detection and disclaimed spawn), `buildinfo` (git revision, dirty flag, `rustc` version, platform), `await_` (condition polling), `util` (shell quoting/splitting, ANSI stripping/sanitizing, `terminal_lines`, `similar`, `read_proc_tree`, `proc_ancestors`, `proc_args`, `write_file_atomic`), and `gostd` (path cleaning, OS error wording, `%q` quoting, duration formatting). |
 
 ## Why g3d-termd
@@ -1730,6 +1733,54 @@ fleet` (`--host`, `--report`, `--json`), populates `Options::session_name` via
 `AgentService::cli_session_name`, and backs `RpcExtras::fleet` in
 `cli::remote_ops::bus_handler` (`rs/crates/agent/src/cli/remote_ops.rs`).
 
+### `agent manage`
+
+One document per host for a manager to draw (`agent_manage::HostView`), and the
+data management behind it. `cli::manage` (`rs/crates/agent/src/cli/manage.rs`)
+builds it in `local_host`, from what other commands already compute:
+
+- **agents**: `agent_fleet::fleet::local`'s tree, flattened (`parent` keeps the
+  tree), with `resumable` and `adopted`.
+- **sessions**: the `agent sessions` index (`new_index`, `select`, `resolve`),
+  each row given a `SessionState` by `agent_manage::classify` (a live status:
+  `running`; no transcript on disk: `missing`; `ended (gone)`: `dormant`; any
+  other `ended`: `ended`; `unknown` while agy holds the conversation open:
+  `running`, else `unknown`) and `stale` by `is_stale`. A listed transcript is
+  on disk by construction; only a transcript an agent's record names is
+  checked.
+- **usage**: `agent_transcript::usage::Scan` counts a transcript's model calls
+  line by line: Claude's `message.usage` on `assistant` records (one call is
+  several records with the same `message.id`: counted once, its newest counts
+  standing; `<synthetic>` messages skipped; `compact_boundary` records counted
+  as compactions), agy's `PLANNER_RESPONSE` steps, Kimi's `usage.record`s.
+  `context_tokens` is the last call's prompt (input + cache read + cache
+  write). A `Scan` remembers the byte it read up to and serializes, so
+  `count_usage` keeps one per transcript path in `session_usage` and reads only
+  what a transcript gained (a file shorter than the offset is counted again
+  from its start). The first view of a host reads every transcript once (about
+  13s for 2 GB in a debug build); `--usage-budget` stops counting at a
+  deadline, leaving the rest for the next view. `sum_subagents` adds each
+  subagent's tokens to every session above it.
+- **friction** (every open entry, the newest 50 closed), **history** (the
+  newest N of `command_log`), and **data**: file sizes of the database and
+  `logs/`, the logs of agents no longer recorded, rows per table
+  (`Store::table_counts`), transcripts per harness, and the backups.
+
+`run_view` adds every trusted peer's answer to op `manage`, asked at once on
+threads (`RpcClient::manage`, which sanitizes every string of the reply); a
+peer is asked for its newest 300 sessions, 100 commands, and a 2s usage budget,
+so the reply fits a bus message and the 10s RPC timeout. A peer that doesn't
+answer is `reachable: false` with why. Serving a view logs no command.
+
+`untrack` writes `untracked_sessions` rows (never for a running session unless
+it is named with `--force`; a subagent goes with its top session), and
+`local_host` drops those rows from the view unless asked. `backup` is SQLite's
+`VACUUM INTO` (`Store::backup_to`), safe beside writers. `prune` runs one
+transaction of `DELETE`s over the tables of finished things
+(`agent_store::manage::PRUNE`, times compared with `julianday`, so a row whose
+time can't be read stays), after a backup, then `VACUUM`s; `--logs` removes
+`<name>.log` and `<name>.transcripts` of unrecorded agents by file age.
+
 ### Name at launch
 
 `ClaudeBackend` implements `SessionNamer`
@@ -2006,7 +2057,7 @@ start with more than one. On the hub, each peer's leaf connection gets
 Each leaf also refuses, as `DenyImports`, requests for its own ops not in
 its `--remote-ops` and anything under its own `local.>`. The bus serves
 local clients every op (`ALL_OPS`); peers get `--remote-ops` (default
-`DEFAULT_REMOTE_OPS`: `list,status,capture,send,respond,friction,logs,fleet,template`;
+`DEFAULT_REMOTE_OPS`: `list,status,capture,send,respond,friction,logs,fleet,template,manage`;
 `keys`, `spawn` and `resume` are local-only unless listed, since `keys` types
 anything and `spawn` and `resume` start an arbitrary process on the host).
 `logs` and `fleet` only read, like `capture` and `list`. `template` is safe to
@@ -2047,6 +2098,7 @@ terminal.
 | `resume` | `ResumeRequest` (`agent`, `resumed_by`) → `ResumeResponse` (`name`, `session`, `backend`, `session_id`, `cwd`, `held`, `status`, `end_reason`) | `resume name@host` | no |
 | `friction` | `FrictionRequest` (`action`: `get` `ids`; `link`/`unlink`/`resolve` `id`, with `from` (required), `by`, `note`; resolve's `uid` and `status`; resolve closes only an entry linked to `from`) → `FrictionResponse` (`entries` with their `links` and `requested`, `missing`, `resolved`) | `friction show`/`list`/`links`/`link`/`unlink`/`resolve` | yes |
 | `fleet` | `FleetRequest` (`report`) → `FleetHost` (agent tree, flags, focus, running jobs, stale handoffs, friction, optional 7d `--report`) | `fleet`, `focus --host H` | yes |
+| `manage` | `agent_manage::Request` (`sessions`, `history`, `untracked`, `stale_days`, `usage_budget_ms`) → `agent_manage::HostView` | `manage view` | yes |
 | `template` | `TemplateRequest` (`action`: `list`/`start`/`resume`, `template`, `from`) → `TemplateResponse` (`templates`, `agent`) | `template list`/`start`/`resume` | yes |
 
 `rpc::tests::test_all_ops_matches_rpc_ops` (`rs/crates/agent-bus/src/rpc.rs`)
@@ -2354,6 +2406,8 @@ SQLite (`rs/crates/agent-store/src/sqlite.rs`). Each `Store` holds one
 | `friction_links` | `id`, `friction_id` (FK, cascade), `peer_host` (`COLLATE NOCASE`), `peer_id`, `peer_uid`, `linked_by`, `linked_at`, `note`, `confirmed_at`, `peer_*` (status, kind, summary, votes, resolved_by, resolution, checked_at); unique `(friction_id, peer_host, peer_id)` | this host's half of a link to another host's entry, and what was last seen of it |
 | `jobs` | `id`, `script`, `path`, `sha256`, `content`, `started_by`, `host`, `cwd`, `args` (JSON), `unit`, `memory_high`, `memory_max`, `memory_swap_max`, `note`, `started_at`, `ended_at`, `exit_code`, `pid`, `pid_start` | `agent run` job records (`rs/crates/agent-store/src/jobs.rs`); `ended_at` is `''` and `exit_code` `NULL` while running |
 | `scripts` | `name` PK, `sha256`, `source`, `promoted_by`, `promoted_at` | scripts promoted to `<data dir>/scripts/<name>` by `agent run --promote` |
+| `untracked_sessions` | `harness`, `session_id` (PK together), `path`, `title`, `by`, `at` | sessions a person told `agent manage` to stop tracking; the transcripts are untouched |
+| `session_usage` | `path` PK, `size`, `scan` (JSON), `at` | each transcript's token count and where the count stopped (`agent_transcript::usage::Scan`); a cache, rebuilt from the transcript when missing |
 | `host_state` | `key` PK, `value`, `updated_at` | host-scoped key-value entries (`rs/crates/agent-store/src/host_state.rs`): `focus` (`FocusEvent` JSON) and `run.protect_termd` |
 
 There is no logs table: logs are files (see
@@ -2645,8 +2699,13 @@ make fmt           # cargo fmt --all (in rs/)
   come only from `list`. An old binary writing into a store that has
   `agent_events` (a downgrade) records no events, and followers miss its
   changes.
-- `runs` are never pruned (one row per spawn), nor are `session_reports`
-  (one row per Claude session and subagent the global hook heard) or `jobs`.
+- `runs`, `session_reports` (one row per Claude session and subagent the
+  global hook heard) and `jobs` are pruned only by `agent manage prune`, which
+  a person runs; nothing prunes them on its own.
+- No harness records its model's context window, so `agent manage` reports
+  context as a token count, not a share of the window.
+- `agent manage`'s actions are local: op `manage` is read-only, so untracking,
+  backing up and pruning another host's data means running the command there.
 - Claude Code's session registry and hook payloads are its internal files,
   not a contract. A registry entry with a kind or status gomuxai doesn't
   know reads as `unknown` for that session until `agent-claudereg` learns it;

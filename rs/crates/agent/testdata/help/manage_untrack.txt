@@ -1,0 +1,43 @@
+Untrack makes agent manage leave sessions out of its view. Nothing is
+deleted: the transcript stays where its harness keeps it, the harness can
+still resume it, and agent sessions still lists it. "agent manage track"
+brings a session back, and "agent manage view --untracked" shows them.
+
+Name sessions as HARNESS:ID (claude:3f3a9c..., as the view's JSON keys
+them) or by an id or the start of one, if only one session has it. Or pick
+them by what they are, with any of:
+  --state S[,S]      running, dormant, ended, missing, unknown
+  --older-than WHEN  not written since: a duration back from now (30d, 2w,
+                     12h) or a local date (2026-11-01)
+  --harness H        claude, agy, kimi
+  --stale            flagged stale (see agent manage view)
+A subagent's session goes with the session that started it.
+
+A running session is never untracked unless it is named and --force is
+given. --dry-run lists what would be untracked and changes nothing.
+
+An agent's own record is a different thing: "agent cleanup <name>" removes
+an ended agent. Untracking its sessions doesn't.
+
+Usage:
+  agent manage untrack [session...] [flags]
+
+Examples:
+  agent manage untrack claude:3f3a9c12-88aa-4c0e-9a51-0f6f0c1d2e3f
+  agent manage untrack 3f3a9c
+  agent manage untrack --state ended,dormant --older-than 30d --dry-run
+
+Flags:
+      --dry-run             List what would be untracked; change nothing
+      --force               Untrack a named session even though it is running
+      --harness string      Only this harness's sessions: claude, agy, kimi
+  -h, --help                help for untrack
+      --older-than string   Only sessions not written since then: a duration back from now (30d, 2w) or a local date
+      --stale               Only sessions flagged stale (not running, not written for 14 days)
+      --state string        Only sessions in one of these states: running, dormant, ended, missing, unknown
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

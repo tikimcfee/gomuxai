@@ -15,11 +15,11 @@ use crate::contract::{
     CaptureRequest, CaptureResponse, DeliverResponse, FRICTION_ACTIONS, FRICTION_GET,
     FRICTION_RESOLVE, FleetHost, FleetRequest, FrictionRequest, FrictionResponse, KeysRequest,
     ListRequest, ListResponse, LogsRequest, LogsResponse, OP_CAPTURE, OP_FLEET, OP_FRICTION,
-    OP_KEYS, OP_LIST, OP_LOGS, OP_RESPOND, OP_RESUME, OP_SEND, OP_SPAWN, OP_STATUS, OP_TEMPLATE,
-    RESPONSE_DELIVER, RPCResponse, RespondRequest, ResumeRequest, ResumeResponse, SendRequest,
-    SendResponse, SpawnRequest, SpawnResponse, StatusRequest, StatusResponse, TEMPLATE_ACTIONS,
-    TEMPLATE_LIST, TemplateRequest, TemplateResponse, parse_agent_ref, subject_rpc, validate_agent,
-    validate_host,
+    OP_KEYS, OP_LIST, OP_LOGS, OP_MANAGE, OP_RESPOND, OP_RESUME, OP_SEND, OP_SPAWN, OP_STATUS,
+    OP_TEMPLATE, RESPONSE_DELIVER, RPCResponse, RespondRequest, ResumeRequest, ResumeResponse,
+    SendRequest, SendResponse, SpawnRequest, SpawnResponse, StatusRequest, StatusResponse,
+    TEMPLATE_ACTIONS, TEMPLATE_LIST, TemplateRequest, TemplateResponse, parse_agent_ref,
+    subject_rpc, validate_agent, validate_host,
 };
 use crate::runtime::{CancelFn, Context};
 
@@ -45,6 +45,13 @@ pub trait Handler: Send + Sync + 'static {
     fn template(&self, _ctx: &Context, _req: TemplateRequest) -> anyhow::Result<TemplateResponse> {
         anyhow::bail!("this host's bus doesn't serve {OP_TEMPLATE}")
     }
+    fn manage(
+        &self,
+        _ctx: &Context,
+        _req: agent_manage::Request,
+    ) -> anyhow::Result<agent_manage::HostView> {
+        anyhow::bail!("this host's bus doesn't serve {OP_MANAGE}")
+    }
 }
 
 type OpRunner = fn(&Context, &dyn Handler, &[u8]) -> anyhow::Result<Option<Box<RawValue>>>;
@@ -62,6 +69,7 @@ const RPC_OPS: &[(&str, OpRunner)] = &[
     (OP_FRICTION, run_friction),
     (OP_FLEET, run_fleet),
     (OP_TEMPLATE, run_template),
+    (OP_MANAGE, run_manage),
 ];
 
 fn find_op(op: &str) -> Option<(&'static str, OpRunner)> {
@@ -188,6 +196,15 @@ fn run_friction(
     let req: FrictionRequest = decode(OP_FRICTION, data)?;
     check_friction_request(&req)?;
     encode_opt(OP_FRICTION, h.friction(ctx, req)?)
+}
+
+fn run_manage(
+    ctx: &Context,
+    h: &dyn Handler,
+    data: &[u8],
+) -> anyhow::Result<Option<Box<RawValue>>> {
+    let req: agent_manage::Request = decode(OP_MANAGE, data)?;
+    encode_opt(OP_MANAGE, h.manage(ctx, req)?)
 }
 
 fn run_fleet(ctx: &Context, h: &dyn Handler, data: &[u8]) -> anyhow::Result<Option<Box<RawValue>>> {
