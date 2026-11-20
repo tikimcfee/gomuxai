@@ -6,13 +6,12 @@ the repository (it names people and machines); its Done list is quoted below.
 ## State
 
 **Done.** `agent` is the Rust tool (`rs/`) plus the Go bus server it starts
-(`busd/`, binary `agent-busd`). All three hosts of the fleet run build `0c2eab5`,
+(`busd/`, binary `agent-busd`). All three hosts of the fleet run build `b593166`,
 linked on one bus. The work is merged to `main` as one commit (`0c2eab5`); the
 branch it was built on, with its history, stays local.
 
 After that, the Go tool and what existed only for a mixed Go/Rust fleet were removed
-(see Decisions). That change is not installed anywhere: the hosts' `0c2eab5` builds
-work with it unchanged.
+(see Decisions): commit `b593166`, installed on all three hosts.
 
 Done list (from the brief), each shown in the lead's conversation with its command
 and output:
@@ -131,10 +130,10 @@ Nothing blocks. Left over, for whoever picks the lane up:
 - `Makefile`: `build`, `test`, `lint`, `install`, `macos`, `arm64`.
 - `docs/FLEET.md`: the design of fleet, focus, templates, run, skill, revive.
   `docs/RUST-PORT.md`: the porting rulebook, kept as the record.
-- The arm64 bundle for the phone: `bin/arm64-0c2eab5/` in this checkout on
+- The arm64 bundle for the phone: `bin/arm64-b593166/` in this checkout on
   the hub (`bin/` is not committed), with `SHA256SUMS`:
-  - `agent`: `d8f57c16317c1ffd491d1c4e298a90953a6584a9f5634fb1da3fb7d134437236`
-  - `agent-busd`: `a73c6ea539e043ef8f4b80715f0fb87dc9019e0e75f8db876c16a15c999346e9`
+  - `agent`: `ba369c223013b18b38b1e11ab50924d1fe34b11e42f9299e4d50a3daa2b478ba`
+  - `agent-busd`: `40a6e928034ca5c45626ae2899a5670f44b65ce84d8f6e94d25509efc076d057`
 - Rollback on each host: the Go binary is kept beside the installed one as
   `agent.go-84b9c94`, and the store as it was before the first Rust open is
   `.gomuxai/backups/gomuxai-before-rust-20261120.db`.
