@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.gomuxai.termd-agents</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@HOME@/.local/bin/g3d-termd</string>
+		<string>--ns</string>
+		<string>agents</string>
+		<string>--idle-exit</string>
+		<string>0</string>
+	</array>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>StandardErrorPath</key>
+	<string>/tmp/com.gomuxai.termd-agents.err</string>
+</dict>
+</plist>

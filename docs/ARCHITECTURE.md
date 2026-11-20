@@ -2043,12 +2043,15 @@ and `Background` over ssh; `make macos` prints it when codesign fails.
 
 Two things keep a Mac's daemon in the GUI session:
 
-- A LaunchAgent in the `gui/<uid>` domain that starts `g3d-termd --ns agents
-  --daemon` (`LimitLoadToSessionType` Aqua), loaded with `launchctl bootstrap
-  gui/<uid> <plist>` while no `agents` daemon runs: launchd starts the daemon
-  at login in the GUI session, and `g3d-termd` stays up across empty terminal
-  lists. The cost: any process running as the user can open a terminal there
-  and use the unlocked login keychain, as from an open terminal tab.
+- A LaunchAgent in the `gui/<uid>` domain that runs `g3d-termd --ns agents
+  --idle-exit 0` in the foreground (`LimitLoadToSessionType` Aqua; plist,
+  probe script, and headless build-keychain alternative in
+  [`tools/macsign/`](../tools/macsign/README.md)), loaded with
+  `launchctl bootstrap gui/<uid> <plist>` while no `agents` daemon runs:
+  launchd starts the daemon at login in the GUI session, and `--idle-exit 0`
+  keeps `g3d-termd` up across empty terminal lists. The cost: any process
+  running as the user can open a terminal there and use the unlocked login
+  keychain, as from an open terminal tab.
 - `agent bus restart` and `bus rename` keep the bus's session
   (`pauseBusSession`: Ctrl-C, then `RespawnPane` for a fresh shell under the
   same terminal id, preserving `cwd`, `env_base`, and request `env`, and the
@@ -2377,3 +2380,8 @@ make lint          # golangci-lint
   the probes behind the hook mapping, with payloads and firing order.
 - [`exploration/tmux-tui-connector-ideation.md`](../exploration/tmux-tui-connector-ideation.md):
   mechanisms for sharing a TUI between agents and people.
+- [`docs/DEVELOPMENT.md`](DEVELOPMENT.md): pre-commit checks, parallel
+  worktree worker setup, rolling fleet installs, and public-repo hygiene.
+- [`docs/SURVEY.md`](SURVEY.md): comparison with native CLI orchestration,
+  peer session managers and protocols, local-model setup via
+  `ANTHROPIC_BASE_URL`, and open design candidates.
