@@ -1,0 +1,19 @@
+Statuses prints every status an agent or session can have, and every end
+reason a status of ended carries, with what each means. agent status,
+agent list, agent wait, agent sessions and agent export all use these words;
+--json prints the end reason as "end_reason".
+
+Usage:
+  agent statuses [flags]
+
+Examples:
+  agent statuses
+
+Flags:
+  -h, --help   help for statuses
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -1,0 +1,21 @@
+Version prints one line: the module version ("devel" unless built from a
+tag), the VCS revision ("-dirty" if built with uncommitted changes), the
+commit time, the Go version, and the platform. Builds without VCS info (e.g.
+go test, or outside the checkout) say "(no VCS info)". "agent --version"
+prints the same line.
+
+Usage:
+  agent version [flags]
+
+Examples:
+  agent version
+  agent --version
+
+Flags:
+  -h, --help   help for version
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

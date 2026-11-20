@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: accepts 1 arg(s), received 0
+Usage: agent resume <name> | --all [--dry-run] [flags]
+Example: agent resume lead

@@ -1,0 +1,5 @@
+1
+--- stdout
+--- stderr
+Error: invalid argument "1x" for "--timeout" flag: time: unknown unit "x" in duration "1x"
+Usage: agent wait [name[@host]...] --for <status[,status...]> [flags]

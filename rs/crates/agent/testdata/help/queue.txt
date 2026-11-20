@@ -1,0 +1,38 @@
+Queue adds a message to the agent's inbox, for delivery when it is ready.
+
+For a Claude or agy agent, queue does what "agent send" does, and needs no
+watcher: the message is typed in if the agent is at its prompt, and
+otherwise held until a hook hands it over (Claude's Stop, agy's
+PostInvocation).
+
+For other agents, the watcher ("agent watch") delivers queued messages when
+the agent's status is idle, or error (a failed turn, back at its prompt). It
+holds them while the agent is processing or waiting, and fails them once
+the agent's session has ended. Without a running watcher, queued messages are never
+delivered: queue says so when it finds none.
+
+The agent must be on this host: name@<this host> works, while an agent on
+another host is refused, since queueing isn't served over the bus (use
+"agent send name@host").
+
+Use --from to specify the sender (defaults to AGENT_NAME env var or "user").
+Messages are marked with the sender as "agent send" marks them: an agent's
+address, or for "user", "[from a person on host]" (or "[from a Claude
+session on host]" from an AI CLI a person started).
+
+Usage:
+  agent queue <name> <message> [flags]
+
+Examples:
+  agent queue researcher "when you're free, check the test results"
+  agent queue builder --from coordinator "priority: fix the auth bug"
+
+Flags:
+      --from string   Sender ID (defaults to AGENT_NAME or 'user')
+  -h, --help          help for queue
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

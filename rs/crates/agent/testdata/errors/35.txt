@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: --attach opens one agent's session, and --all resumes several: agent attach <name> opens one once they're back
+Usage: agent resume <name> | --all [--dry-run] [flags]
+Example: agent resume lead

@@ -1,0 +1,5 @@
+1
+--- stdout
+--- stderr
+Error: flag needs an argument: --lines
+Usage: agent capture <name>[@host] [flags]

@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: accepts 2 arg(s), received 0
+Usage: agent state get <name> <key> [flags]
+Example: agent state get researcher status

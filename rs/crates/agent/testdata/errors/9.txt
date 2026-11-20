@@ -1,0 +1,4 @@
+1
+--- stdout
+--- stderr
+Error: unknown flag: --jsn; did you mean --json?

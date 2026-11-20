@@ -1,0 +1,83 @@
+Transcript prints one agent session's events as JSON lines, as
+docs/EVENTS.md describes them: a "session" line (the session as agent
+sessions --json lists it), then an "event" line for each prompt, thinking
+block, reply, tool call and harness record, in transcript order. An event
+that changes later (a tool's result lands) is sent again, whole, with the
+same id and "op":"update". Displays and scripts read this; agent logs is
+the view for a person.
+
+The session is one of:
+  - a workgroup agent's name: its current transcript (after cleanup, its
+    last one);
+  - a session id, or the start of one that only one session's id starts
+    with (agent sessions lists them, agent sessions --json their ids);
+  - a transcript's path; its harness is told from the path, or from its
+    first lines.
+
+--from <byte> resumes after the line that starts at that byte offset: pass
+the "at" of the last event you hold. That line's events and those before it
+aren't sent again. The ones after have the seq, line and turn a whole read
+gives them, and updates to earlier events still come (whole, so you needn't
+hold what they update). -1, the default, reads from the start.
+--until <byte> leaves out the lines that start at or after it, so --from A
+--until B reads the lines after A's and before B. The rest is still read,
+unsent: an event of the window that a prompt past it abandons (an edited
+prompt sent again) comes with "abandoned": true.
+
+--follow keeps reading as the transcript grows, until Ctrl-C or until the
+reader closes the pipe (both exit 0; a closed pipe is noticed within
+250ms even when there is nothing to write). It polls the file every
+250ms, and never reads a line that isn't whole yet. A transcript that is
+removed, replaced by another file, or rewritten in place ends it with an
+error. It goes on after the session ends: a resumed session writes on.
+A running session's transcript that isn't written yet (Claude Code writes
+it at the first prompt) is waited for, as tail -F does, and streamed once
+it is there; the wait ends with an error if the session exits first.
+
+A new session line comes whenever anything but the size and times
+changed. The title, model, version, branch and agent name come from the
+lines the stream read, so after the initial read a session line may
+correct what the opening one had from the transcript's head and tail; a
+known value never becomes empty. Status: for an agent of this store, its
+last report, read every 2s; otherwise, and to reconcile with the
+harness (Claude Code's session registry), a full check like agent sessions' every
+30s, backing off to 5 minutes while the transcript doesn't grow.
+
+Claude Code writes a turn's closing reply only after its Stop hook has run,
+and the hook has the text already. For a Claude agent of this store,
+transcript sends that reply at once, as a provisional say (id
+"<turn id>#final", "provisional":true, "at" where its line will land), and
+the transcript's own copy as an update of it once it lands. A provisional
+reply isn't in the transcript, so it takes no seq of its own: it has the
+seq of the event that comes next. Don't resume --from its "at", and drop
+the provisional replies you hold when you resume: one still waiting for
+its copy is sent again.
+
+--requests adds the request channel: what each model call was sent (Claude
+Code's api-request lines). Request events have their own seq, so the
+conversation's seq is the same with or without it.
+
+This host only; for another host's agent, agent capture name@host shows its
+screen.
+
+Usage:
+  agent transcript <name|session-id|path> [flags]
+
+Examples:
+  agent transcript lead-api
+  agent transcript lead-api --follow
+  agent transcript 3f3a9c --from 18342 --until 40960
+  agent transcript ~/.claude/projects/-home-user-shop/3f3a9c1e-7a2b-4c4d-9e0f-1a2b3c4d5e6f.jsonl --requests
+
+Flags:
+      --follow      Keep reading as the transcript grows, until interrupted
+      --from int    Resume after the line starting at this byte offset (the at of the last event you hold) (default -1)
+  -h, --help        help for transcript
+      --requests    Add the request channel: what each model call was sent
+      --until int   Leave out the lines starting at or after this byte offset (not with --follow) (default -1)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

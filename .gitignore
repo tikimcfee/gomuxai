@@ -1,10 +1,7 @@
-# Binary
-/agent
-
 # Data directory
 .gomuxai/
 
-# Build artifacts
+# Build artifacts (rs/target is in rs/.gitignore)
 bin/
 
 # IDE
@@ -12,8 +9,7 @@ bin/
 .vscode/
 *.swp
 
-# Test artifacts
-coverage.out
+# Test artifacts (go test -c in legacy/ and busd/)
 *.test
 
 # Agent worktrees

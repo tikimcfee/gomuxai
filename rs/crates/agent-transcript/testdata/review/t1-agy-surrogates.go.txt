@@ -1,0 +1,2 @@
+{"lines":19,"partial":false,"skipped":1}
+{"session_id":"t1-agy-surrogates","harness":"agy","path":"testdata/review/t1-agy-surrogates.jsonl","size":5031}

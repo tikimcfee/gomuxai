@@ -1,0 +1,23 @@
++1 records that an entry got in your way too, with an optional note, and
+your last failed agent command from the past 15 minutes (--no-command skips
+it). A vote on a duplicate goes to its original.
+
+Usage:
+  agent friction +1 <id> ["note"] [flags]
+
+Aliases:
+  +1, vote
+
+Examples:
+  agent friction +1 12
+  agent friction +1 12 "same with --next"
+
+Flags:
+  -h, --help         help for +1
+      --no-command   Don't attach your last failed command
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

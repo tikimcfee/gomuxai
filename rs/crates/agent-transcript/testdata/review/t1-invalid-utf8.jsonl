@@ -1,0 +1,20 @@
+{"type":"ÿþpermission-mode","permissionMode":"ÿþdefault","sessionId":"ÿþ00000000-0000-0000-0000-00000000c1a0"}
+{this is not json
+{"type":"ÿþuser","isSidechain":true,"cwd":"ÿþ/side/land","timestamp":"ÿþ2026-08-01T10:00:00.000Z","message":{"role":"user","content":"sidechain prompt"}}
+{"type":"ÿþassistant","isSidechain":true,"timestamp":"ÿþ2026-08-01T10:00:00.000Z","message":{"role":"ÿþassistant","content":[{"type":"tool_use","id":"tu-side","name":"Bash","input":{"command":"rm -rf /"}}]}}
+{"type":"ÿþuser","sessionId":"ÿþ00000000-0000-0000-0000-00000000c1a0","cwd":"ÿþ/home/user/proj","version":"2.1.400","gitBranch":"main","timestamp":"2026-08-01T10:00:00.000Z","message":{"role":"user","content":"run the tests"}}
+{"type":"ÿþai-title","aiTitle":"ÿþRun the tests","sessionId":"ÿþ00000000-0000-0000-0000-00000000c1a0"}
+{"type":"ÿþassistant","timestamp":"ÿþ2026-08-01T10:00:01.000Z","message":{"id":"ÿþm1","role":"assistant","model":"claude-test-1","content":[{"type":"thinking","thinking":"go test should do it"}]}}
+{"type":"ÿþassistant","timestamp":"ÿþ2026-08-01T10:00:01.000Z","message":{"id":"ÿþm1","role":"assistant","model":"claude-test-1","content":[{"type":"tool_use","id":"tu-bash","name":"Bash","input":{"command":"go test ./...","description":"Run tests"}}]}}
+{"type":"ÿþapi-request-blob","hash":"ÿþh1","sessionId":"ÿþ00000000-0000-0000-0000-00000000c1a0","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu-bash","name":"Bash","input":{"command":"go test ./..."}}]}}
+{"type":"ÿþapi-request-blob","hash":"ÿþh2","sessionId":"ÿþ00000000-0000-0000-0000-00000000c1a0","message":{"role":"user","content":"run the tests"}}
+{"type":"ÿþassistant","timestamp":"ÿþ2026-08-01T10:00:02.000Z","message":{"id":"ÿþm1","role":"assistant","content":[{"type":"text","text":"   \n  "},{"type":"tool_use","id":"tu-read","name":"Read","input":{"file_path":"/home/user/proj/go.mod"}}]}}
+{"type":"ÿþuser","timestamp":"ÿþ2026-08-01T10:00:05.000Z","toolUseResult":{"stdout":"ÿþok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s","stderr":"","interrupted":false},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-bash","content":"ok  \tpkg/a\t0.1s\nok  \tpkg/b\t0.2s","is_error":false}]}}
+{"type":"ÿþuser","timestamp":"ÿþ2026-08-01T10:00:06.000Z","toolUseResult":{"type":"ÿþtext","file":{"filePath":"/home/user/proj/go.mod","content":"module example.com/proj\n","numLines":1}},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-read","content":[{"type":"text","text":"1\tmodule example.com/proj"}]}]}}
+{"type":"ÿþassistant","timestamp":"ÿþ2026-08-01T10:00:07.000Z","message":{"id":"ÿþm2","role":"assistant","content":[{"type":"text","text":"All tests pass."}],"stop_reason":"end_turn"}}
+{"type":"ÿþuser","isMeta":true,"timestamp":"ÿþ2026-08-01T10:01:00.000Z","message":{"role":"ÿþuser","content":"<local-command-caveat>Caveat: not a prompt</local-command-caveat>"}}
+{"type":"ÿþuser","timestamp":"ÿþ2026-08-01T10:01:00.000Z","message":{"role":"ÿþuser","content":"<command-name>/review</command-name>\n<command-message>review</command-message>\n<command-args>high</command-args>"}}
+{"type":"ÿþassistant","timestamp":"ÿþ2026-08-01T10:01:02.000Z","message":{"id":"ÿþm3","role":"assistant","content":[{"type":"tool_use","id":"tu-fail","name":"Bash","input":{"command":"make lint"}}]}}
+{"type":"ÿþuser","timestamp":"ÿþ2026-08-01T10:01:03.000Z","toolUseResult":"ÿþError: Exit code 2\nlint: 1 issue","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-fail","content":"Exit code 2\nlint: 1 issue","is_error":true}]}}
+{"type":"ÿþuser","timestamp":"ÿþ2026-08-01T10:01:04.000Z","origin":{"kind":"ÿþtask-notification"},"promptSource":"system","message":{"role":"user","content":"<task-notification>background task finished</task-notification>"}}
+{"type":"ÿþassistant","timestamp":"ÿþ2026-08-01T10:01:05.000Z","message":{"id":"ÿþm4","role":"assistant","content":[{"type":"text","text":"One lint issue.\nSee above."},{"type":"tool_use","id":"tu-open","name":"Grep","input":{"pattern":"TODO"}}]}}

@@ -1,0 +1,1 @@
+      --kind string          Kind: other, help, error, missing, bug, docs (default "other")

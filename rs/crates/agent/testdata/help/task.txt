@@ -1,0 +1,30 @@
+Task manages reusable task definitions, stored in this host's database.
+
+Tasks exist independently of agents: several agents can be spawned with the
+same task ("agent spawn <name> --task <task>" sends its content as the
+agent's first message).
+
+Usage:
+  agent task [flags]
+  agent task [command]
+
+Examples:
+  agent task set review-auth -f tasks/review-auth.md
+  agent spawn reviewer --backend claude --task review-auth
+
+Available Commands:
+  set         Create or update a task
+  get         Print a task's content
+  list        List all tasks
+  clear       Remove a task
+
+Flags:
+  -h, --help   help for task
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent task [command] --help" for more information about a command.

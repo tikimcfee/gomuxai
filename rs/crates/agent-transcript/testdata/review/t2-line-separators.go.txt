@@ -1,0 +1,6 @@
+{"lines":2,"partial":false,"skipped":0}
+{"session_id":"s1","harness":"claude","path":"testdata/review/t2-line-separators.jsonl","size":403,"model":"m"}
+{"id":"u1#0","op":"add","seq":0,"at":0,"line":0,"ts":"t","turn":{"id":"p1","index":1,"derived":false},"kind":"prompt","prompt":{"text":"a\u2028b","origin":"human"}}
+{"id":"toolu_1","op":"add","seq":1,"at":139,"line":1,"ts":"t","turn":{"id":"p1","index":1,"derived":false},"kind":"tool","tool":{"name":"Bash","input":{"command":"x\u2028y \u2029 <&>"},"result":{"status":"pending"},"action":"bash","detail":"x\u2028y \u2029 <&>"}}
+{"id":"u1#0","op":"add","seq":0,"at":0,"line":0,"ts":"t","turn":{"id":"p1","index":1,"derived":false},"kind":"prompt","prompt":{"text":"a\u2028b","origin":"human"}}
+{"id":"toolu_1","op":"add","seq":1,"at":139,"line":1,"ts":"t","turn":{"id":"p1","index":1,"derived":false},"kind":"tool","tool":{"name":"Bash","input":{"command":"x\u2028y \u2029 <&>"},"result":{"status":"pending"},"action":"bash","detail":"x\u2028y \u2029 <&>"}}

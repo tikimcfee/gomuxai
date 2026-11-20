@@ -1,0 +1,27 @@
+Links lists this host's links to entries on other hosts, each checked
+with its host over the bus, and says which have gone stale (--dangling
+lists only those), with what to run:
+
+  out of step   one entry is closed and the other still open
+  one-sided     the other host has no link back
+  not found     the other host has no such entry, or a different one
+                under that id now
+  unreachable   the other host didn't answer; shows what was last seen
+
+Usage:
+  agent friction links [flags]
+
+Examples:
+  agent friction links
+  agent friction links --dangling
+
+Flags:
+      --dangling   Only links that are out of step, one-sided, not found, or unreachable
+  -h, --help       help for links
+      --json       Print as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: --ended picks the agents itself: name agents, or pass --ended, not both
+Usage: agent cleanup <name> [<name>...] | --ended [--dry-run] [flags]
+Example: agent cleanup researcher

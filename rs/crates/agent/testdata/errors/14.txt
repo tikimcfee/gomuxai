@@ -1,0 +1,5 @@
+1
+--- stdout
+--- stderr
+Error: invalid argument "maybe" for "-v, --verbose" flag: strconv.ParseBool: parsing "maybe": invalid syntax
+Usage: agent status <name>[@host] [flags]

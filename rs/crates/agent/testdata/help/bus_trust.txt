@@ -1,0 +1,30 @@
+Trust installs a peer's public bundle (from its "agent bus init",
+"agent bus export" or "agent bus rename"). Check the key and pin it prints
+against the peer's own output before relying on the link. Re-trusting a
+host replaces its bundle. Restart the bus to apply: agent bus restart.
+
+A peer renamed with "agent bus rename" keeps its keys: trust its new
+bundle with --renames <old name>. That checks the bundle has the old
+name's key and certificate pin, replaces the old bundle, rewrites this
+host's references to the old name (its agents' spawned_by, friction
+links, its ssh destination), keeps the old name as an alias, and restarts
+the bus (--no-restart skips that).
+
+Usage:
+  agent bus trust <bundle.json | -> [flags]
+
+Examples:
+  agent bus trust hub.pub.json
+  agent bus trust - < hub.pub.json
+  agent bus trust new-name.pub.json --renames old-name
+
+Flags:
+  -h, --help             help for trust
+      --no-restart       With --renames: don't restart the bus
+      --renames string   The peer's former name: its bundle has the same keys under a new name (agent bus rename)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

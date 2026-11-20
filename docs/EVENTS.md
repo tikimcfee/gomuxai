@@ -9,8 +9,8 @@ Events are one per thing that happened: a prompt, a thinking block, a reply, a t
 They are never pre-grouped. Each carries the turn (prompt) it belongs to, so a reader may
 group them; none has to.
 
-The Go types are in `internal/transcript/events.go`; the Session is
-`discovery.Session` (`internal/discovery/sessions.go`).
+The types are in `rs/crates/agent-transcript/src/events.rs`; the Session is
+`agent_discovery::Session` (`rs/crates/agent-discovery/src/sessions.rs`).
 
 ## Commands
 
@@ -116,7 +116,7 @@ never abandoned.
   meta.json `toolUseId`); absent for agy and Kimi.
 - `workgroup.parent` is absent when a person spawned the agent.
 - `status` and `end_reason` are the words `agent statuses` prints with their meanings
-  (`internal/backend/types/status.go`); `docs/ARCHITECTURE.md` ("Sessions") says where each
+  (`rs/crates/agent-base/src/types/status.rs`); `docs/ARCHITECTURE.md` ("Sessions") says where each
   session's comes from. `ended` always carries an `end_reason`: `quit` (the CLI ended it and
   said so), `gone` (its process isn't running and nothing recorded it ending), `replaced`
   (its agent went on in a newer session), `finished` (a subagent that finished its task),
@@ -185,8 +185,8 @@ never abandoned.
     call is added as `pending`, with any `meta` the table reads from its input (an edit's
     line counts); its result, and the `meta` read from that, arrive as an update.
   - `action`, `target`, `detail` and `meta` come from the one tool table,
-    `transcript.SummarizeTool` in `internal/transcript/tools.go`, whose doc lists each
-    action's `meta`. The Claude and agy hooks' status details and `agent logs` read the same table.
+    `summarize_tool` in `rs/crates/agent-transcript/src/tools.rs`, whose `ToolSummary`
+    doc lists each action's `meta`. The Claude and agy hooks' status details and `agent logs` read the same table.
   - `file` `{text, start, total?}` is the target's text as the call saw it (a read: the lines
     it read, from line `start`) or left it (a write: what it wrote; an edit: the whole file
     after it), taken from the result where the harness records it: Claude Code's Read and
@@ -251,6 +251,6 @@ never abandoned.
 - A subagent's transcript is its own session, linked both ways: `parent_session` on it, and
   `sub_sessions` on the call that started it.
 - No text field is ever truncated. Readers decide what to show.
-- `internal/transcript/testdata/corpus/` holds the conformance corpus: transcripts with the
+- `rs/crates/agent-transcript/testdata/corpus/` holds the conformance corpus: transcripts with the
   events they must produce. Every parser change passes it. Its README lists the cases and
   the decisions this page leaves open.

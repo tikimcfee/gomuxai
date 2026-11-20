@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: unknown command "x" for "agent version"
+Usage: agent version [flags]
+Example: agent version

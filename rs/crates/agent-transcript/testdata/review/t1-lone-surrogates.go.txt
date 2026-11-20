@@ -1,0 +1,8 @@
+{"lines":5,"partial":false,"skipped":0}
+{"session_id":"s1","harness":"claude","path":"testdata/review/t1-lone-surrogates.jsonl","size":811,"cwd":"/home/user/p","project":"p","title":"t �","model":"m"}
+{"id":"u1#0","op":"add","seq":0,"at":0,"line":0,"ts":"2026-10-20T09:00:00.000Z","turn":{"id":"p1","index":1,"derived":false},"kind":"prompt","prompt":{"text":"look at this �","origin":"human"}}
+{"id":"a0#0","op":"add","seq":1,"at":197,"line":1,"ts":"2026-10-20T09:00:01.000Z","turn":{"id":"p1","index":1,"derived":false},"kind":"think","think":{"text":"hmm �"}}
+{"id":"a2#0","op":"add","seq":2,"at":450,"line":2,"ts":"2026-10-20T09:00:03.000Z","turn":{"id":"p1","index":1,"derived":false},"kind":"say","say":{"text":"Done �","final":true}}
+{"id":"u1#0","op":"add","seq":0,"at":0,"line":0,"ts":"2026-10-20T09:00:00.000Z","turn":{"id":"p1","index":1,"derived":false},"kind":"prompt","prompt":{"text":"look at this �","origin":"human"}}
+{"id":"a0#0","op":"add","seq":1,"at":197,"line":1,"ts":"2026-10-20T09:00:01.000Z","turn":{"id":"p1","index":1,"derived":false},"kind":"think","think":{"text":"hmm �"}}
+{"id":"a2#0","op":"add","seq":2,"at":450,"line":2,"ts":"2026-10-20T09:00:03.000Z","turn":{"id":"p1","index":1,"derived":false},"kind":"say","say":{"text":"Done �","final":true}}

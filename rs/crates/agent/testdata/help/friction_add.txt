@@ -1,0 +1,32 @@
+Add files a friction entry: a one-line summary of what got in your way,
+optionally with a kind and more detail.
+
+If your last failed agent command (same AGENT_NAME, or for a person, same
+directory) ran in the past 15 minutes, it's copied into the entry, and add
+says so; --no-command skips it.
+
+If the summary is close to an open or accepted entry's, add doesn't file:
+it lists the matches and exits 3. "agent friction +1 ID" adds your vote to
+one of them; --new files yours anyway.
+
+Usage:
+  agent friction add "summary" [flags]
+
+Examples:
+  agent friction add "send's help doesn't say the message is typed into the terminal" --kind help
+  agent friction add "no way to wait for several agents at once" --kind missing --detail "..."
+  agent friction add "status says unknown for aider agents" --kind bug --detail-file notes.md --new
+
+Flags:
+      --detail string        More detail
+      --detail-file string   Read the detail from a file ("-" for stdin)
+  -h, --help                 help for add
+      --kind string          Kind: other, help, error, missing, bug, docs (default "other")
+      --new                  File even if it looks like an open entry
+      --no-command           Don't attach your last failed command
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

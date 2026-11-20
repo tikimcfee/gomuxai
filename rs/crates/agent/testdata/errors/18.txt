@@ -1,0 +1,5 @@
+1
+--- stdout
+--- stderr
+Error: invalid argument "nope" for "--raw" flag: strconv.ParseBool: parsing "nope": invalid syntax
+Usage: agent capture <name>[@host] [flags]

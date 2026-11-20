@@ -1,0 +1,34 @@
+Capture prints what an agent's terminal shows now: the screen plus up to
+--lines lines of scrollback above it. It takes an agent name, not a session
+name. For history older than the scrollback, or after cleanup, use
+"agent logs".
+
+By default it prints plain text. --raw prints the screen with its colors and
+styling as SGR escape codes: what tells a CLI's dim placeholder text from
+typed text. Print it to a terminal to see the styling, or pipe it to cat -v
+to read the codes.
+
+An agent on another host is addressed as name@host (needs a running bus).
+Its text is sanitized, since that host may be hostile: plain text keeps no
+control characters, and --raw keeps only the SGR codes (colors, bold, dim),
+never titles, clipboard writes, cursor moves, or mode changes.
+
+Usage:
+  agent capture <name>[@host] [flags]
+
+Examples:
+  agent capture researcher
+  agent capture builder --lines 100
+  agent capture builder --raw
+  agent capture builder@hub
+
+Flags:
+  -h, --help        help for capture
+      --lines int   Lines of scrollback above the screen to include (default 50)
+      --raw         Keep colors and styling, as SGR escape codes
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

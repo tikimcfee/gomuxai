@@ -1,0 +1,9 @@
+> [from lead@laptop] Run the tests and say how it went.
+
+● Running (cargo test) (ctrl+o to expand)
+⣟  Running command...
+
+────────────────────────────────────────────────────────────────────────────────
+> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)
+────────────────────────────────────────────────────────────────────────────────
+esc to cancel                                              Gemini 4 Argon · high

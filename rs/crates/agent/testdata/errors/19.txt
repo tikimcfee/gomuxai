@@ -1,0 +1,5 @@
+1
+--- stdout
+--- stderr
+Error: invalid argument "5" for "--timeout" flag: time: missing unit in duration "5"
+Usage: agent wait [name[@host]...] --for <status[,status...]> [flags]

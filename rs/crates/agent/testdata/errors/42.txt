@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: unknown command "x" for "agent statuses"
+Usage: agent statuses [flags]
+Example: agent statuses

@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: --dry-run goes with --ended: agent cleanup --ended --dry-run
+Usage: agent cleanup <name> [<name>...] | --ended [--dry-run] [flags]
+Example: agent cleanup researcher

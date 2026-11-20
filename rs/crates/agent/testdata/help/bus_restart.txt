@@ -1,0 +1,27 @@
+Restart stops the bus in session gomux-bus and starts it
+again with the --listen, --client-port and --remote-ops it was running
+with: what agent bus trust needs to apply.
+
+Give any of those flags to change just that setting, e.g. --remote-ops
+with the whole list peers may call. The settings it restarts with are
+saved, as agent bus start saves them, so a later agent bus start (after a
+reboot, say) runs the same way.
+
+Usage:
+  agent bus restart [flags]
+
+Examples:
+  agent bus restart
+  agent bus restart --remote-ops list,status,capture,send,respond,friction,logs,resume
+
+Flags:
+      --client-port int      Local client port (127.0.0.1) instead
+  -h, --help                 help for restart
+      --listen string        Accept peer links on this address instead ("" stops accepting them)
+      --remote-ops strings   The ops peers may call on this host instead: the whole list
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

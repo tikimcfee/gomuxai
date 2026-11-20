@@ -1,0 +1,70 @@
+The agent bus links hosts, so "name@host" commands, status events, and
+"agent wait" work across machines. Each host runs one bus; one host (the hub)
+accepts links from the others.
+
+Pairing works like SSH keys: each host has its own keys and certificate, and
+trusts a peer by installing the peer's public bundle. Nothing secret is copied.
+
+  # on both hosts
+  agent bus init                          # the hub adds: --url tls://<hub>:7422
+  # exchange the printed .pub.json files (e.g. with scp), then on each host
+  agent bus trust <peer>.pub.json
+  # start: the hub listens for peers, the others connect to it
+  agent bus start --listen 0.0.0.0:7422   # hub
+  agent bus start                         # other hosts
+
+Peers may only call the ops in --remote-ops on this host (default: list,
+status, capture, send, respond, friction, logs). keys, spawn and resume
+stay local-only unless listed: spawn lets every linked peer start agents
+here (agent spawn name@<this host>), and resume lets them start an ended
+agent again (agent resume name@<this host>), which amounts to letting them
+run commands
+as this user (start an agent, then approve its prompts); list them only
+for peers you'd give a shell. E.g. --remote-ops
+list,status,capture,send,respond,friction,logs,spawn,resume.
+
+Changing trust:
+
+  agent bus untrust <peer>       # drop a peer; restarts the bus
+  agent bus rename <new-name>    # rename this host, keeping its keys,
+                                 # and print what each peer runs:
+  agent bus trust <new>.pub.json --renames <old>
+  agent bus restart              # apply a trust, with the same settings
+
+nats-server can't reload trust, so a change applies when the bus restarts.
+
+Only reaching other hosts needs a bus: everything on one host works without.
+
+Usage:
+  agent bus [flags]
+  agent bus [command]
+
+Examples:
+  agent bus status
+  agent bus init && agent bus start
+  agent bus untrust old-laptop
+  agent bus rename studio
+
+Available Commands:
+  init        Create this host's bus keys and certificate
+  export      Print this host's public bundle
+  trust       Trust a peer host's public bundle
+  run         Run the bus in the foreground
+  start       Start the bus in the background (session gomux-bus)
+  stop        Stop the background bus
+  status      Show whether the bus is running and which peers are linked
+  untrust     Stop trusting a peer host
+  rename      Rename this host on the bus, keeping its keys
+  restart     Restart the background bus with the settings it runs with
+  ssh         Show or set where agent attach name@host runs ssh to
+
+Flags:
+  -h, --help   help for bus
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent bus [command] --help" for more information about a command.

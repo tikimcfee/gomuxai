@@ -1,0 +1,29 @@
+[package]
+name = "agent-bus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-base.workspace = true
+anyhow.workspace = true
+async-nats.workspace = true
+chrono.workspace = true
+data-encoding.workspace = true
+futures.workspace = true
+libc.workspace = true
+nkeys.workspace = true
+rcgen.workspace = true
+regex.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+x509-parser.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

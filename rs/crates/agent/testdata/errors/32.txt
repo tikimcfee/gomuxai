@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: --dry-run goes with --all: agent resume --all --dry-run
+Usage: agent resume <name> | --all [--dry-run] [flags]
+Example: agent resume lead

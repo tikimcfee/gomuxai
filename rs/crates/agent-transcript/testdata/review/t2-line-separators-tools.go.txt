@@ -1,0 +1,2 @@
+{"lines":18,"partial":false,"skipped":0}
+{"session_id":"3e00b64f-5d03-52b3-8f98-99ab05e4fc00\u2028<&>\u2029","harness":"claude","path":"testdata/review/t2-line-separators-tools.jsonl","size":17053,"cwd":"/home/user/src/widget\u2028<&>\u2029","project":"widget\u2028<&>\u2029"}

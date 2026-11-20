@@ -1,0 +1,75 @@
+Wait blocks until an agent's status is one of the given statuses, prints
+it, and exits 0. Statuses: idle, processing, waiting, error, ended, unknown
+("agent statuses" says what each means).
+
+With --timeout, wait gives up after that long and exits 2. It exits 1 on
+errors, including the agent exiting while you wait for another status.
+
+Several agents: wait watches them all at once and prints "name: status" for
+each as it gets there, so one that finishes early isn't missed. It returns
+when every one has (or, with --any, at the first). An agent that exits or
+can't be checked is reported on stderr and the others are still waited on;
+wait then exits 1. A waiting or error line says what the agent is asking or
+why, e.g. "helper: waiting (permission: Bash: rm -rf build)".
+
+No names: every agent on this host but yourself, with --any or --follow.
+"agent wait --any --for waiting" blocks until any of them needs a person and
+says which one and what it's asking.
+
+--follow keeps going: it prints a line each time one of the agents arrives
+at a status (each arrival once; an agent must leave and come back to be
+printed again), until Ctrl-C or --timeout. With no names it also picks up
+agents spawned while it runs. For a person in a spare terminal, or a script
+that reads lines.
+
+With an agent bus running, wait reacts to status events as soon as they are
+reported, and re-checks the status every 5s as a backstop for changes no hook
+reports (e.g. an interrupted permission prompt going back to idle). Without a
+bus it checks every 2s. --interval overrides either.
+
+A status reached after wait starts counts even if the agent has moved on by
+the time wait returns.
+
+An agent on another host is addressed as name@host (needs a running bus);
+its host's own status check confirms events, as for a local agent.
+
+Right after "agent send", the agent still looks idle from its previous turn
+until it picks the message up, so "--for idle" would return at once. Use
+--next: it waits for the turn the last send started. It ignores the given
+statuses until the agent has been seen in another one (e.g. processing), or
+until that turn has reported one of them, so a turn that ended before wait
+started still counts. Waiting again with --next and no new send returns that
+same turn's status at once; to see each new arrival, use --follow.
+
+An agent blocked on a permission prompt stays "waiting" until someone
+answers, so a coordinator usually waits with --for idle,waiting and checks
+which it got. Without "waiting" in --for, wait says on stderr when it sees
+the agent waiting, and keeps waiting.
+
+For a Claude agent, its reply is then in "agent state get <name> _result".
+
+Usage:
+  agent wait [name[@host]...] --for <status[,status...]> [flags]
+
+Examples:
+  agent send helper "review auth.go" && agent wait helper --for idle,waiting --next --timeout 30m
+  agent wait lead-api lead-db --for idle,waiting --next --timeout 30m
+  agent wait lead-api lead-db --any --for idle,waiting --next
+  agent wait --any --for waiting          # until any agent here needs a person
+  agent wait --follow --for waiting       # each prompt, as it comes, until Ctrl-C
+  agent wait helper@hub --for idle,waiting --timeout 10m
+
+Flags:
+      --any                 With several agents, return when the first one gets there
+      --follow              Print every arrival until Ctrl-C or --timeout
+      --for string          Status(es) to wait for, comma-separated (required)
+  -h, --help                help for wait
+      --interval duration   Status re-check interval (default: 5s with a bus, 2s without)
+      --next                Wait for the turn the last send started, not a status the agent is already in
+      --timeout duration    Give up after this long and exit 2 (default: wait forever)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

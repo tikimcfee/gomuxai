@@ -1,0 +1,20 @@
+Get prints a state value. It exits 1 if the key isn't set, printing nothing
+on stdout; a key that is set but empty (e.g. "_result" during a turn) prints
+an empty line and exits 0.
+
+Usage:
+  agent state get <name> <key> [flags]
+
+Examples:
+  agent state get researcher status
+  agent state get researcher _result --json
+
+Flags:
+  -h, --help   help for get
+      --json   Print as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

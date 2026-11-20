@@ -1,0 +1,32 @@
+State is a key-value store per agent, for coordination: an agent writes its
+progress or results, others read them.
+
+State is stored in this host's database, and belongs to an agent record:
+only agents spawned here have state, and cleanup deletes it. Keys starting
+with "_" are written by status reports; e.g. "_result" holds a Claude
+agent's latest reply (empty while a turn is running).
+
+Usage:
+  agent state [flags]
+  agent state [command]
+
+Examples:
+  agent state set helper progress "3/5 files done"
+  agent state get helper _result
+
+Available Commands:
+  set         Set a state entry for an agent
+  get         Print a state value
+  list        List all state entries for an agent
+  clear       Remove an agent's state entries, or one key
+
+Flags:
+  -h, --help   help for state
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent state [command] --help" for more information about a command.

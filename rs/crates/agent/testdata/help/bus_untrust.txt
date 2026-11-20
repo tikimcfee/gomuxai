@@ -1,0 +1,25 @@
+Untrust removes a peer's bundle (bus/peers/<host>.json) and its ssh
+destination (agent bus ssh), then restarts the bus so the peer is dropped
+at once (--no-restart leaves that to agent bus restart). Friction links
+and agents' spawned_by that name it stay, as history.
+
+Untrusting on one side is enough to cut the link: the hub refuses a peer
+it doesn't pin, and a leaf no longer dials a hub it doesn't trust. The
+other side keeps listing this host until it untrusts it too.
+
+Usage:
+  agent bus untrust <host> [flags]
+
+Examples:
+  agent bus untrust old-laptop
+  agent bus untrust hub --no-restart
+
+Flags:
+  -h, --help         help for untrust
+      --no-restart   Don't restart the bus; agent bus restart applies the change
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

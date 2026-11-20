@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: unknown command "x" for "agent list"
+Usage: agent list [flags]
+Example: agent list

@@ -1,0 +1,5 @@
+1
+--- stdout
+--- stderr
+Error: invalid argument "abc" for "-n, --lines" flag: strconv.ParseInt: parsing "abc": invalid syntax
+Usage: agent history [flags]

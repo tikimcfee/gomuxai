@@ -1,0 +1,4 @@
+1
+--- stdout
+--- stderr
+Error: unknown flag: --json (see agent state --help for its flags)

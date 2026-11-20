@@ -1,0 +1,28 @@
+History lists the agent commands run on this host, newest last, one per
+line: time, who ran it (an agent's name, or "-" for a person), exit code, the
+command line, and for a failure, its error after "#".
+
+Every run is recorded, help included, except hook reports and the bus daemon.
+The newest 20000 are kept.
+
+Usage:
+  agent history [flags]
+
+Examples:
+  agent history
+  agent history --agent lead --failed
+  agent history --agent - -n 50      # a person's commands
+  agent history --json
+
+Flags:
+      --agent string   Only this agent's commands ("-" for a person's)
+      --failed         Only commands that failed
+  -h, --help           help for history
+      --json           Print the commands as a JSON array
+  -n, --lines int      Number of commands to list (default 20)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

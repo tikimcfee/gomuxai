@@ -1,0 +1,43 @@
+Cleanup removes the named agents: for a spawned agent it asks an idle CLI to
+exit, snapshots its scrollback, and kills its session; for an adopted session
+(agent adopt) it leaves the pre-existing session running. In both cases it
+deletes the agent's record, queued messages, state, and files while keeping its
+log file and list of transcripts, for agent logs. It prints one line per name ("cleaned up",
+"refused", or "failed"), and exits 1 if any of them wasn't cleaned up.
+
+Inside an agent (AGENT_NAME set), you can clean up only your own helpers
+and their helpers, as "agent list" shows under PARENT, and not yourself:
+your session would be killed partway through the cleanup. Name a helper's
+own helpers along with it, or it is refused, since you couldn't reach them
+once it's gone. A person can clean up any agent. Given names, cleanup never
+removes an agent you didn't name: it says which helpers remain instead.
+
+--ended picks the agents instead of names: every agent on this host whose
+status is ended, as agent status resolves it (not just the last report), that
+you may clean up (inside an agent: your helpers and theirs). An ended agent's
+helpers that haven't ended stay; for a person cleanup says so, and inside an
+agent the ended one is skipped with them, since only a person could reach
+them once it's gone ("skipped"). It prints one line per agent, as for names,
+then a total, and exits 1 if any it picked wasn't cleaned up. --dry-run lists what it
+would clean up, why each is ended, what happens to its session, and how
+many held messages would be deleted with it, and changes nothing.
+
+Usage:
+  agent cleanup <name> [<name>...] | --ended [--dry-run] [flags]
+
+Examples:
+  agent cleanup researcher
+  agent cleanup lead-build lead-build-test
+  agent cleanup --ended --dry-run     # what --ended would clean up, and why
+  agent cleanup --ended
+
+Flags:
+      --dry-run   With --ended: list what it would clean up and why, changing nothing
+      --ended     Clean up every agent here whose status is ended (yours only, inside an agent)
+  -h, --help      help for cleanup
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
