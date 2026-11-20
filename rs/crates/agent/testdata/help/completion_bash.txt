@@ -1,0 +1,33 @@
+Generate the autocompletion script for the bash shell.
+
+This script depends on the 'bash-completion' package.
+If it is not installed already, you can install it via your OS's package manager.
+
+To load completions in your current shell session:
+
+	source <(agent completion bash)
+
+To load completions for every new session, execute once:
+
+#### Linux:
+
+	agent completion bash > /etc/bash_completion.d/agent
+
+#### macOS:
+
+	agent completion bash > $(brew --prefix)/etc/bash_completion.d/agent
+
+You will need to start a new shell for this setup to take effect.
+
+Usage:
+  agent completion bash
+
+Flags:
+  -h, --help              help for bash
+      --no-descriptions   disable completion descriptions
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

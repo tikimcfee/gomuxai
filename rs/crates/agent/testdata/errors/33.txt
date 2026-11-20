@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: --all picks the agents itself: name one agent, or pass --all, not both
+Usage: agent resume <name> | --all [--dry-run] [flags]
+Example: agent resume lead

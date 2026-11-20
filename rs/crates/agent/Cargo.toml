@@ -1,0 +1,43 @@
+[package]
+name = "agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The binary (Go: cmd/agent) over a library (Go: internal/cli), so tests reach the CLI's
+# internals and the help-diff script can run the binary.
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent"
+path = "src/main.rs"
+
+[dependencies]
+agent-base.workspace = true
+agent-store.workspace = true
+agent-termd.workspace = true
+agent-fleet.workspace = true
+agent-service.workspace = true
+agent-bus.workspace = true
+agent-backend.workspace = true
+agent-transcript.workspace = true
+agent-discovery.workspace = true
+agent-claudereg.workspace = true
+agent-allowcmd.workspace = true
+agent-export.workspace = true
+libc.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+# A private termd socket dir for the session and key tests (agent_termd::testing).
+agent-termd = { workspace = true, features = ["testing"] }
+tempfile.workspace = true

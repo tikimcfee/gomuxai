@@ -1,0 +1,61 @@
+Friction is this host's box of what got in the way of using agent. If agent
+confuses you, gets in your way, or lacks something you need, file it, then
+carry on with your work. The people working on the tool fix what's filed
+and resolve the entries, so resolved entries record what changed and who
+asked.
+
+Kinds (--kind): help (a command's help confused you or left something out),
+error (an error that didn't say what went wrong or what to do), missing (a
+feature you needed), bug, docs (README, briefing), other (the default).
+
+Lifecycle: open -> accepted (someone means to fix it) -> resolved (fixed;
+the note says how), wontfix, or duplicate (its votes count toward the
+original).
+
+Check "agent friction list" first, and +1 an entry that's already there.
+add won't file a summary close to an open or accepted entry's: it lists
+the matches and exits 3, and --new files it anyway. add and +1 attach your
+last failed agent command from the past 15 minutes; --no-command skips it.
+
+Each host has its own box. The same problem filed on two hosts is linked
+with "agent friction link 4 34@workstation": both entries stay open and count
+their own votes, show and list name the other, and resolving either
+resolves both, over the agent bus. "agent friction links" checks every link
+and says which have gone stale (one end resolved without the other, a
+missing entry, a host that doesn't answer), with what to run.
+
+Usage:
+  agent friction [flags]
+  agent friction [command]
+
+Examples:
+  agent friction list
+  agent friction add "wait --timeout doesn't say what status it last saw" --kind error
+  agent friction +1 12 "hit it again with --next"
+  agent friction show 12
+  agent friction link 12 34@workstation
+  agent friction resolve 12 --note "wait names the last status (abc1234)"
+  agent friction links --dangling
+
+Available Commands:
+  add         File a friction entry
+  +1          Add your vote to a friction entry
+  list        List friction entries
+  show        Show everything about a friction entry
+  accept      Mark an open friction entry as accepted
+  resolve     Close a friction entry: fixed, won't fix, or duplicate
+  export      Write the friction box as Markdown
+  link        Link a friction entry to the same problem filed on another host
+  unlink      Remove a link between friction entries on two hosts
+  links       Check every link to other hosts' friction entries
+
+Flags:
+  -h, --help   help for friction
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent friction [command] --help" for more information about a command.

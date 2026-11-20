@@ -1,0 +1,31 @@
+Hook is what Claude Code runs for every hook event of every session, once
+"agent hooks install" has registered it in Claude Code's user settings. It
+reads the event's payload on stdin and works out, from the running
+processes, which session fired it: the Claude Code CLI above it (proven by
+Claude's session registry: pid and start time), and the workgroup agent
+whose session runs that CLI, if any.
+
+Every session's report is recorded (agent sessions shows how each ended).
+An agent's session also gets the agent's report, as agent status reads it,
+and only there does hook print anything: held messages for Claude's Stop,
+and the approval of a safe agent command for PreToolUse. A session no agent
+owns, such as one a person started, never sees output from it.
+
+It always exits 0, so a reporting problem can't disturb a session; what went
+wrong goes to stderr and to logs/hook-errors.log in the data dir, which
+"agent hooks status" shows.
+
+Usage:
+  agent hook [flags]
+
+Examples:
+  agent hook < payload.json
+
+Flags:
+  -h, --help   help for hook
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

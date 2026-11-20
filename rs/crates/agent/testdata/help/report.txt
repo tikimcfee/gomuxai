@@ -1,0 +1,41 @@
+Report records an agent's status, so others don't have to infer it from
+terminal output. Statuses: idle, processing, waiting, error, ended (with an
+--end-reason, quit unless given), unknown. "agent statuses" says what each
+status and end reason means.
+
+Agents spawned with a hook-capable backend report automatically: a Claude
+agent through the hook Claude Code runs for every session ("agent hook",
+registered once by "agent hooks install"), an agy agent through the hooks
+spawn wires to "agent report --hook".
+
+With --hook, the backend's hook payload is read from stdin. Hook mode exits 0
+even if the report fails, so a reporting problem can't disturb the agent;
+errors go to stderr. (It still exits 1 if the tool can't start, e.g. its
+database can't be opened.) It writes to stdout only to hand the agent the
+messages held for it (see "agent send"), from the hook that can: Claude's
+Stop, agy's PostInvocation (which reports nothing else).
+
+The agent name defaults to AGENT_NAME.
+
+Usage:
+  agent report <status> [detail] [flags]
+
+Examples:
+  agent report idle
+  agent report processing "running test suite"
+  agent report --hook --as helper < payload.json
+  agent report --hook --as helper --event PreInvocation < payload.json
+
+Flags:
+      --as string           Agent name (defaults to AGENT_NAME)
+      --end-reason string   With ended: how the session ended (quit, gone, replaced, finished, parent, closed; default quit)
+      --event string        Hook event name (for backends whose payload omits it)
+  -h, --help                help for report
+      --hook                Read a backend hook payload from stdin
+      --spawn-id string     Drop the report unless the agent is still this spawn (set by spawn)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

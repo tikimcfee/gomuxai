@@ -1,0 +1,58 @@
+Status reports whether an agent is idle, processing, waiting (blocked on a
+human, e.g. a permission prompt), error (its last turn failed; it takes input
+again), ended (no CLI runs its session any more, with an end reason: quit,
+gone, replaced, ...), or unknown. "agent statuses" says what each means.
+
+-v adds what the status means, where it came from, the last event, its
+detail (for a permission prompt, the full tool call: what approve would
+allow), the tool,
+and how many messages are held for the agent while it's busy (see
+"agent send"). --json has the same fields.
+
+An "unsent:" line, with or without -v, means a message typed into a Claude
+agent's input box is still there because Enter didn't submit it: "agent key
+agent-<name> Enter" does. An "unchecked:" line means a message was typed in
+without that check (its input box couldn't be read) and no turn has started
+since: "agent capture <name>" shows whether it sits there.
+
+Sources, most authoritative first:
+  native  the backend CLI's own session status (Claude Code's session registry)
+  report  the last status reported by backend hooks or "agent report"
+  scrape  terminal output: for backends without hooks, and for an agy turn
+          that Esc or Ctrl+C ended, which fires no hook ("interrupted")
+
+When a Claude agent's session on record isn't running, status asks what its
+pane runs: a CLI a person started anew there becomes the agent's session
+(event "adopted"). If it runs none, a session last reported running is
+ended (gone).
+
+A Claude or agy agent started in a folder its CLI hasn't trusted waits at
+the CLI's workspace trust prompt, which runs no hook: status reads it off
+the screen as waiting, tool "trust", detail "trust: <folder>". agent approve
+trusts the folder; agent deny declines it, and the CLI exits.
+
+agy shows its permission and ask_question dialogs with no hook of their own,
+so a dialog on screen after the tool's PreToolUse makes it waiting, with
+"permission: ..." or "question: ..." as the detail.
+
+An agent on another host is addressed as name@host (needs a running bus).
+
+Usage:
+  agent status <name>[@host] [flags]
+
+Examples:
+  agent status researcher
+  agent status builder -v   # also show source, last event, and detail
+  agent status builder@hub  # an agent on host "hub"
+  agent status builder --json
+
+Flags:
+  -h, --help      help for status
+      --json      Print the status and its details as JSON
+  -v, --verbose   Show source, last event, and detail
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -1,0 +1,21 @@
+Set creates or updates a state entry for an agent spawned on this host.
+
+A coordinator that wasn't spawned with "agent spawn" has no agent record, so
+it can't have state: have it pass results through a helper's state or
+messages instead.
+
+Usage:
+  agent state set <name> <key> <value> [flags]
+
+Examples:
+  agent state set researcher status working
+  agent state set researcher progress "50%"
+
+Flags:
+  -h, --help   help for set
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

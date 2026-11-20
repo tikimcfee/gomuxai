@@ -1,0 +1,35 @@
+Deny rejects the permission prompt an agent is waiting on. For Claude this
+cancels the current turn; follow up with "agent send" to redirect it.
+
+Refuses unless the agent's status is "waiting" and the prompt is still on
+screen (override with --force): for Claude the deny key is Escape, which
+would cancel the turn if the prompt was answered in the meantime.
+
+At the CLI's workspace trust prompt, deny picks "No, exit": the CLI exits,
+and the agent is ended (quit).
+
+At a dialog Claude shows on its own (status shows tool "dialog"), deny
+presses Escape, which closes it (an offer takes it for "not now"); no turn
+is cancelled. Held messages go in once the agent has been at its prompt
+for 10s.
+
+Usage:
+  agent deny <name>[@host] [flags]
+
+Examples:
+  agent deny helper
+  agent deny helper --expect Bash
+  agent deny helper --expect trust   # decline its workspace trust prompt
+  agent deny helper --expect dialog  # close a dialog Claude showed on its own
+  agent deny helper@hub
+
+Flags:
+      --expect string   Refuse unless the pending prompt is for this tool (see status -v)
+      --force           Send even if the agent isn't waiting on a permission prompt
+  -h, --help            help for deny
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

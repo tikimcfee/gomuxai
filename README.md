@@ -16,32 +16,48 @@ What it adds over a pile of terminal windows:
   call: `agent status -v`, then `agent approve --expect <tool>`.
 - **A friction box.** Agents (and people) file what got in their way with
   `agent friction add`; resolved entries are the tool's changelog.
-- **A bus across machines.** Pair hosts like SSH keys and address an agent
-  on another host as `name@host`.
+- **A bus across machines, fleet view, and memory-scoped jobs.** Pair hosts
+  like SSH keys, address agents as `name@host`, start pre-approved cross-host
+  templates, see stuck agents and stale handoffs in `agent fleet`, and run
+  heavy builds in memory-limited scopes with `agent run`.
 
 Agents learn the tool from [`CLAUDE.md`](CLAUDE.md), the manual they read.
-How it works inside: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+How it works inside: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
+[`docs/FLEET.md`](docs/FLEET.md).
 
 ## Install
 
-Needs Go (the version in `go.mod`, currently 1.26) and `g3d-termd` (`g3d` for
-interactive `agent attach`). The CLIs you want to run (`claude`, `agy`,
-`aider`) must be on your `PATH`.
+Needs Rust 1.96+ (for `agent`), Go 1.26+ (for `agent-busd`, the embedded NATS
+server `agent bus run` starts), and `g3d-termd` (`g3d` for interactive `agent
+attach`). The CLIs you want to run (`claude`, `agy`, `aider`) must be on your
+`PATH`.
 
 ```bash
-make build                     # builds bin/agent
-make install                  # over the agent on PATH, else ~/.local/bin (BINDIR=… to choose)
+make build                     # builds bin/agent and bin/agent-busd
+make install                   # installs both over the agent on PATH, else ~/.local/bin (BINDIR=… to choose)
 ```
 
-All data lives next to the binary, in `.gomuxai/` (the database, logs,
-per-agent files, bus keys). Here that's `~/.local/bin/.gomuxai/`. Each copy
-of the binary has its own data, so use one copy per machine. Delete the
-folder to reset.
+All data lives next to the binary, in `.gomuxai/` (the database, templates,
+promoted scripts, logs, per-agent files, bus keys). Here that's
+`~/.local/bin/.gomuxai/`, with `agent-busd` beside `agent`. Each copy of the
+binary has its own data, so use one copy per machine. Delete the folder to
+reset.
 
-Release binaries: `make build-linux` and `make build-darwin` cross-compile
-into `bin/`. There is no Windows build; use the Linux one under WSL.
+Static `linux-arm64` binaries: `make arm64` builds `bin/linux-arm64/agent` and
+`bin/linux-arm64/agent-busd` (needs `cargo-zigbuild` and the
+`aarch64-unknown-linux-musl` target). There is no Windows build; use Linux
+under WSL.
 
-To run Claude agents, register the binary's hook with Claude Code once:
+Install the `agent` skill for the CLIs found on your machine (and register
+Claude Code's global hook in one step):
+
+```bash
+agent skill install            # installs SKILL.md for claude and/or agy, plus Claude's hook
+agent skill install --harness claude   # or agy: installs for that one, found or not
+agent skill show               # prints the concise skill text
+```
+
+Or manage Claude Code's hook directly:
 
 ```bash
 agent hooks install            # adds "<this binary> hook" to ~/.claude/settings.json
@@ -61,19 +77,23 @@ change up when restarted.
 
 ### macOS
 
-Build on the Mac with `make macos` if the Mac will link to another machine
-over the bus. macOS only lets a process reach the local network if it holds
-the Local Network permission, and processes inside a background `g3d-termd`
-daemon can't inherit one from your terminal: the bus link fails with `no
-route to host`, and macOS shows no alert. `make macos` embeds an Info.plist
-and signs the binary so it can hold the permission itself.
+Build on the Mac with `make macos`, then `make install`, if the Mac will link
+to another machine over the bus. macOS only lets a process reach the local
+network if it holds the Local Network permission, and processes inside a
+background `g3d-termd` daemon can't inherit one from your terminal: the bus
+link fails with `no route to host`, and macOS shows no alert. Because
+`agent-busd` is the process that dials the LAN, `make macos` embeds an
+`Info.plist` into and signs both `bin/agent` and `bin/agent-busd` so
+`agent-busd` holds the permission itself.
 
 - It signs with the first code-signing identity in your keychain; pick one
   with `make macos CODESIGN_IDENTITY=...`. An Apple Development or
   Developer ID certificate works; ad hoc signing doesn't keep the grant.
-- Over SSH the login keychain is locked and `codesign` fails
-  (`errSecInternalComponent`). Run `make macos` in a terminal on the Mac,
-  or `security unlock-keychain` first.
+- Signing needs the login keychain unlocked in the Mac's GUI login session
+  (over SSH, a `g3d-termd` daemon started over SSH fails in `codesign` with
+  `errSecInternalComponent`). Run `make macos` in a terminal on the Mac, or in
+  a `g3d-termd` daemon started from the GUI session (see
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#signing-over-ssh)).
 - On the first `agent bus start`, macOS asks to allow "gomuxai" to find
   devices on the local network: allow it. The grant survives rebuilds.
 
@@ -142,8 +162,8 @@ $ agent state get helper _result
 example.com answered `HTTP/2 200`; ...
 ```
 
-`_result` holds a Claude agent's latest reply; it is empty while a turn is
-running. When you're done:
+`_result` holds a Claude or agy agent's latest reply; it is empty while a turn
+is running. When you're done:
 
 ```console
 $ agent cleanup helper
@@ -175,6 +195,14 @@ Other ways in:
   running in it; `agent cleanup <name>` unregisters it and leaves the
   session running. `agent resume` refuses an adopted agent: if its CLI
   exits, start it there yourself (`claude -c` continues its conversation).
+- `agent spawn builder --backend claude --handoff docs/lanes/builder.md
+  tasks/build.md` records the agent's handoff doc; if it ends, `agent revive
+  builder` continues its session (or takes over a CLI you started in its pane)
+  and re-briefs it from that doc. A Claude session is named `<agent>` at
+  launch; an agy conversation is renamed after its first turn.
+- `agent run build.sh` runs a heavy build or test script in its own
+  memory-limited systemd scope (recording the script, sha256, limits, and exit
+  code in `jobs`) so an OOM kills the job instead of the agent's terminal.
 - Agents run these same commands. An agent's helpers show nested under their
   parent in `agent list`, and it can clean up only its own.
 
@@ -259,7 +287,7 @@ hub$ agent bus status
 hub: bus running (clients on tls://127.0.0.1:7420)
   hub, accepting peer links on 0.0.0.0:7422
   linked peers: 1; trusted: mac
-  remote ops allowed: list, status, capture, send, respond, friction
+  remote ops allowed: list, status, capture, send, respond, friction, logs, fleet, template
 ```
 
 Then address agents on the other machine as `name@host`:
@@ -275,23 +303,40 @@ agent capture builder@hub
 ```
 
 Peers may call only the ops in `--remote-ops`; raw `keys` stays local.
-`spawn` and `resume` are off for peers by default too, since they start a
-process on the host. To let other machines start agents on the hub, add
-them there: `agent bus restart --remote-ops
-list,status,capture,send,respond,friction,logs,spawn,resume` (`remote ops
-allowed` then lists them). The bus saves its settings, so a later `agent
-bus start`, after a reboot say, runs with the same ops. Then `agent spawn builder@hub --backend claude --cwd /home/me/project`
-starts one on the hub; `--cwd` and a task file are paths on the hub.
+To let other machines start or resume pre-approved agents on the hub without
+opening arbitrary remote spawn, define a template on the hub (stored locally in
+`.gomuxai/templates.json`; `add` requires `--backend` and `--cwd`, with
+optional `--brief` and `--model`):
+
+```bash
+hub$ agent template add builder --backend claude --cwd /home/user/project --brief docs/lanes/builder.md
+mac$ agent template list --host hub
+mac$ agent template start builder --host hub    # or: agent template resume builder --host hub
+```
+
+Started by a person, the agent has no parent; started by an agent, its parent
+is `<caller>@<caller-host>` so replies go back.
+
+Open `spawn` and `resume` are off for peers by default, since they start an
+arbitrary process on the host. To allow them too, add them on the hub: `agent
+bus restart --remote-ops
+list,status,capture,send,respond,friction,logs,fleet,template,spawn,resume`
+(`remote ops allowed` then lists them). The bus saves its settings, so a later
+`agent bus start`, after a reboot say, runs with the same ops. Then `agent
+spawn builder@hub --backend claude --cwd /home/user/project` starts one on the
+hub; `--cwd` and a task file are paths on the hub.
 Listing `spawn` lets every linked peer run commands on the hub as the bus's
 user (spawn an agent, then approve its prompts), so do it only if you'd
 give those machines a shell there. `agent resume builder@hub` starts an
 ended agent there again, and `agent logs builder@hub` prints what `agent
 logs` prints there. `agent attach builder@hub` opens its session in your
 terminal over ssh (the bus can't carry a terminal), so it needs `ssh hub`
-to work from here; `agent bus ssh hub me@hub.lan` sets where ssh goes. Clean it up on the hub. `state` and `queue` are per
-host: ask the agent to `send` you what you need, or `capture` its screen. The bus's security model (TLS 1.3 with
-pinned certificates, a key per host, no shared secrets) is described in
-[`CLAUDE.md`](CLAUDE.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+to work from here; `agent bus ssh hub user@hub.lan` sets where ssh goes. Clean
+it up on the hub. `state`, `queue`, and `revive` are per host: ask the agent
+to `send` you what you need, or `capture` its screen. The bus's security model
+(TLS 1.3 with pinned certificates, a key per host, no shared secrets) is
+described in [`CLAUDE.md`](CLAUDE.md) and
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 **Later changes.** `agent bus untrust <host>` drops a peer (its bundle and
 ssh destination) and restarts the bus; run it on both sides. `agent bus
@@ -322,6 +367,9 @@ bus prints a note about it in its `gomux-bus` session
 |---|---|
 | `agent` | Who you are, this host, your agents and their status (and held messages), the bus, messages held for you |
 | `agent list` | Every agent here in a nested tree with status, backend, parent, and session; `--host H` for another machine |
+| `agent fleet [--host H] [--json] [--report]` | Agent tree across this host and trusted peers with stuck flags, focus, running jobs, stale handoff docs, friction, and optional 7-day `--report` ([`docs/FLEET.md`](docs/FLEET.md)) |
+| `agent focus [NAME] [--clear] [--host H] [--follow] [--json]` | Show, set, or follow which agent has focus on a host (over the bus, or polling this host's store) |
+| `agent run --list [--all]` / `agent run --show ID` | Running (or finished) `agent run` jobs, limits, exit codes, and the exact script run |
 | `agent status NAME -v` | Status and what it means, where it came from, last event, and a pending prompt's full tool call |
 | `agent statuses` | Every status and end reason (`ended (quit)`, `ended (gone)`, ...) with what it means |
 | `agent hooks status` | Whether Claude Code runs this binary's hook on every event, and the hook's last errors |
@@ -344,21 +392,24 @@ $ agent logs helper --lines 3
 
 Most commands take `--json`. Results go to stdout, hints to stderr (`-q`
 drops them). Exit codes: 0 done, 1 failed, 2 `wait` timed out, 3 `friction
-add` found a similar entry.
+add` found a similar entry (`agent run` exits with its script's exit code).
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Bus on the Mac never links; `.gomuxai/bus/bus.log` says `no route to host` | macOS blocks LAN connections from processes in a background daemon without their own Local Network permission | `make macos` on the Mac, allow the alert on the first `agent bus start` |
-| `make macos` fails in `codesign` with `errSecInternalComponent` | Over SSH the login keychain is locked | Build in a terminal on the Mac, or `security unlock-keychain` first |
+| Bus on the Mac never links; `.gomuxai/bus/bus.log` says `no route to host` | macOS blocks LAN connections from `agent-busd` in a background daemon without its own Local Network permission | `make macos && make install` on the Mac, allow the alert on the first `agent bus start` |
+| `make macos` fails in `codesign` with `errSecInternalComponent` | The shell isn't in the Mac's GUI login session (where the login keychain is unlocked) | Build in a terminal on the Mac, or in a `g3d-termd` daemon started in the GUI session |
 | `no bus answering for host "X"` | X's bus is down, not linked to yours, or doesn't allow that op | `agent bus status` on both machines; check the firewall and the `--url` in the hub's bundle |
+| `agent fleet` shows a host as `partial` | That host runs an older `agent` (or doesn't list `fleet` in `--remote-ops`), so `fleet` fell back to `list` | Upgrade `agent` and `agent-busd` there and `agent bus restart` |
 | `agent bus status` says not running, though `gomux-bus` exists | The session name is shared by every data dir; another copy of `agent` owns it | Use that copy, or stop its bus first |
-| Queued messages never arrive (aider, agy, custom backends) | No `agent watch` is running (`queue` says so) | Run `agent watch` in a spare terminal, or `agent send` instead |
+| Queued messages never arrive (aider, custom backends) | No `agent watch` is running (`queue` says so) | Run `agent watch` in a spare terminal, or `agent send` instead |
 | A held message hasn't arrived | The agent's turn (agy: its current step) is still running, or ended with no hook (Esc, Ctrl+C, deny), or something covers its input line (`it isn't on screen`) | `agent status NAME -v` shows `held:`; a deliverer types it 10s after the turn ends; `agent deliver NAME` (or `NAME@host`, over the bus) types it now if the agent is at its prompt; `agent capture NAME` shows what covers the input line |
 | Agent stays `waiting` | A permission prompt, or a question for the user | `agent status NAME -v`, then `approve`/`deny`; for a question (e.g. AskUserQuestion), `agent capture NAME` and answer with `agent keys` |
-| `send` refused | The agent's session has ended, or it is at a dialog (the Enter would answer it) and the message can't be held (`--now`, or not a Claude or agy agent) | Answer the dialog first; for an ended agent, `agent logs NAME`, then `agent cleanup NAME` |
-| Status `ended (...)` or the session is gone | No CLI runs the agent's session any more: `quit` (it ended and said so), `gone` (it crashed, `g3d-termd` was stopped, or the machine rebooted), ... (`agent statuses` lists them all) | `agent resume NAME` continues its session (claude and agy), `agent resume --all` every one a reboot ended (`--dry-run` first); `agent logs NAME` shows how it ended; `agent cleanup NAME` removes the record, `agent cleanup --ended` every ended one (`--dry-run` first) |
+| `send` refused | The agent's session has ended, or it is at a dialog (the Enter would answer it) and the message can't be held (`--now`, or not a Claude or agy agent) | Answer the dialog first; for an ended agent, `agent revive NAME` or `agent resume NAME`, or `agent logs NAME` then `agent cleanup NAME` |
+| Status `ended (...)` or the session is gone | No CLI runs the agent's session any more: `quit` (it ended and said so), `gone` (it crashed, `g3d-termd` was stopped, or the machine rebooted), ... (`agent statuses` lists them all) | `agent resume NAME` continues its session (claude and agy), `agent revive NAME` continues it (or takes over a CLI restarted in its pane) and re-briefs from its handoff doc, `agent resume --all` every one a reboot ended (`--dry-run` first); `agent logs NAME` shows how it ended; `agent cleanup NAME` removes the record, `agent cleanup --ended` every ended one (`--dry-run` first) |
+| After `agent revive`, an agy agent says it runs without hooks | A person started `agy` by hand in its pane, without `agent`'s `--add-dir` hooks | Quit `agy` in its pane and run `agent revive NAME` again so `agent` launches it |
+| `agent run` says `runs without memory limits` or `couldn't ask systemd to spare g3d-termd's units` | On macOS or Linux without a user `systemd` manager, jobs run plainly with provenance only; where `systemd-oomd` watches the root-owned user slice, user `g3d-termd` units carry no `user.oomd_avoid` xattr | On Linux with a user `systemd`, the job's own `MemoryMax` + `MemorySwapMax=0` scope protects the terminal (`agent run --show ID` shows what applied) |
 | `spawn --backend claude` says Claude Code's settings don't run this binary's hook | The global hook isn't installed, or runs another copy of `agent` (one hook serves one binary: its store hears the sessions) | `agent hooks install`; for another copy, spawn with the copy the hook runs, or `agent hooks install --force` (that copy's agents then stop reporting) |
 | A Claude agent's status never changes, or held messages never arrive | Its CLI started before `agent hooks install`, or the hook is failing | `agent hooks status` shows the last errors; restart the agent's CLI to load the hook |
 | A session `agent-NAME` with no agent record | Leftover session | `agent session kill agent-NAME` |

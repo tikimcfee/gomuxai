@@ -1,0 +1,5 @@
+1
+--- stdout
+--- stderr
+Error: flag needs an argument: 'n' in -n
+Usage: agent history [flags]

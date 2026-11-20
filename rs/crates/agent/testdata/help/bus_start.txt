@@ -1,0 +1,27 @@
+Start runs the bus in background session gomux-bus.
+
+It saves the --listen, --client-port and --remote-ops it starts with (in
+bus/settings.json), and a later start without them uses the saved ones: on
+the hub, agent bus start after a reboot listens for peers again, and peers
+may call the same ops. A flag given changes just that setting, and is
+saved. agent bus restart takes the same flags.
+
+Usage:
+  agent bus start [flags]
+
+Examples:
+  agent bus start
+  agent bus start --listen 0.0.0.0:7422   # on the hub, once; saved after
+  agent bus start --remote-ops list,status,capture,send,respond,friction,logs,resume
+
+Flags:
+      --client-port int      Local client port (127.0.0.1) (default 7420)
+  -h, --help                 help for start
+      --listen string        Accept peer links on this address (makes this host the hub), e.g. 0.0.0.0:7422
+      --remote-ops strings   Ops peers may call on this host (default [list,status,capture,send,respond,friction,logs])
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

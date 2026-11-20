@@ -1,0 +1,110 @@
+Sessions lists the agent sessions this host can see, newest first: the
+transcripts Claude Code, agy and Kimi Code keep of their sessions, whether
+"agent spawn" started the session (a workgroup agent) or a person ran the
+CLI in a terminal. Both kinds have the same fields; WORKGROUP names the
+agent that owns a session, or is "-". A subagent's session (a Claude Task,
+an agy or Kimi subagent) is a session too, listed under the one that
+started it.
+
+  WHEN              HARNESS  PROJECT  STATUS  WORKGROUP  TITLE
+  2026-10-25 13:35  claude   gomuxai  idle    lead-api   Fix the auth tests
+  2026-10-25 13:30  claude   gomuxai  ended (quit)      -          Plan the export
+  └ 10-25 13:31     claude   gomuxai  ended (finished)  -          Explore internal/export
+
+The table shows the newest 25 sessions, each with its subagents, and a
+hint on stderr says how many older ones it left out: --limit N shows the
+newest N, --all every one. --json prints every session unless --limit
+says how many, so a script or display reading it is never cut short.
+
+Filters (they combine, and apply to --json too):
+  --since WHEN     written since then: a duration back from now (30m, 2h,
+                   3d, 1w) or a local date and time (2026-11-01,
+                   "2026-11-01 13:30", 2026-11-01T13:30:00Z)
+  --project P      a path (it has a slash, or is ., .. or ~): run in that
+                   directory or one inside it, symlinks resolved; anything
+                   else: PROJECT contains P, ignoring case
+  --harness H      claude, agy, kimi, or a workgroup agent's backend that
+                   keeps no transcript (aider)
+  --workgroup      owned by a workgroup agent; --local: not
+A filter and the limit pick sessions by the one at the top of their
+group: a subagent goes with the session that started it. A live agent's
+session with no transcript yet counts as written now.
+
+WHEN is the transcript's last write, in local time. PROJECT is the last
+part of the working directory the session recorded. TITLE is the newest
+title the harness recorded: for Claude, a custom title (/rename) over the
+AI-written one; agy's annotation title; Kimi's state.json title; a Claude
+subagent's description when it has none.
+
+STATUS (idle, processing, waiting, error, ended, unknown; an ended session
+shows its end reason, as in "ended (gone)"; "agent statuses" says what each
+means):
+  - a workgroup agent's current session: its last report, reconciled with
+    Claude Code's session registry for Claude by the rule agent status uses:
+    the registry's status when a running process holds the session (except
+    a "waiting" within 5s of a deny), ended (gone) when none does but the
+    report says it is alive. agy: ended (gone) once agy no longer holds the
+    conversation open. agent status also reads the screen; sessions doesn't;
+  - an agent's earlier sessions (before /clear, a resume, a respawn, or a
+    CLI started anew in its pane): ended (replaced); its last one, once
+    cleanup removed it: ended (closed);
+  - Claude, no workgroup: the registry's status, or ended (gone) if no
+    running process holds the session (unknown if the registry can't be
+    read);
+  - agy, no workgroup: unknown while agy holds the conversation open (its
+    presence lock; idle or busy can't be told), else ended (gone);
+  - Kimi, which records nothing about running: unknown if its transcript
+    changed in the last 10 minutes, else ended (gone);
+  - a subagent: ended (finished) if it recorded finishing, ended (parent)
+    if its parent session ended; else unknown.
+Subagents are listed under their parent, oldest last write first.
+
+Where it looks (each harness's own default dirs that exist):
+  claude  $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects
+  agy     ~/.gemini/antigravity/brain (desktop), ~/.gemini/antigravity-cli/brain (CLI)
+  kimi    ~/.kimi-code/sessions
+In the JSON app config (--backend-config), claude_projects_dir,
+agy_brain_dir and kimi_sessions_dir replace a harness's dirs with one path,
+and "" turns the harness off. A workgroup agent's transcript elsewhere is
+listed too. --dirs prints the directories it scans (with --json: each one's
+harness, path, origin, config or default, and whether it exists).
+
+It sorts by the files' last writes from directory listings, then reads
+only the transcripts it shows (their head and tail), and for --project the
+Claude ones whose project folder, named for the directory the session
+started in, could match.
+
+Workgroup agents come from this binary's store and the stores its termd
+sessions point at, live and departed, as agent export --all reads them.
+This host only. --json prints each session as docs/EVENTS.md describes a
+Session: the "session" line agent transcript opens with.
+
+Usage:
+  agent sessions [flags]
+
+Examples:
+  agent sessions
+  agent sessions --all
+  agent sessions --since 2h --project .
+  agent sessions --project gomuxai --limit 5
+  agent sessions --workgroup
+  agent sessions --local --harness claude
+  agent sessions --json --since 1d
+
+Flags:
+      --all              Every session, however many (the table shows the newest 25 without it)
+      --dirs             Print the directories sessions scans instead of the sessions (--json: harness, path, origin, exists)
+      --harness string   Only this harness's sessions: claude, agy, kimi, or the backend of a workgroup agent with no transcript (aider)
+  -h, --help             help for sessions
+      --json             Print the sessions as a JSON array
+  -n, --limit int        Only the newest N sessions, each with its subagents (the table's default: 25; --json's: all)
+      --local            Only sessions no workgroup agent owns
+      --project string   Only sessions run in this directory or inside it (a path: ., ~/src/app, /srv/x), or whose PROJECT contains this text, ignoring case
+      --since string     Only sessions written since then: a duration back from now (30m, 2h, 3d, 1w) or a local date and time (2026-11-01, "2026-11-01 13:30")
+      --workgroup        Only sessions a workgroup agent owns
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

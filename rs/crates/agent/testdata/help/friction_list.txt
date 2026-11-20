@@ -1,0 +1,31 @@
+List shows friction entries, one line each: id, status (unless open), kind,
+votes, age, who filed it, and the summary. Most votes first, then newest.
+By default it lists open and accepted entries.
+
+An entry linked to the same problem on another host ends with the links,
+checked over the bus: [= #34@workstation], and a stale one is flagged, e.g.
+[= #34@workstation !out of step] (agent friction show says what to run).
+
+--status takes open, accepted, resolved, wontfix, duplicate, or all, or
+several separated by commas.
+
+Usage:
+  agent friction list [flags]
+
+Examples:
+  agent friction list
+  agent friction list --status all --kind help
+  agent friction list --by lead --json
+
+Flags:
+      --by string       Only entries filed by this agent ("user" for people)
+  -h, --help            help for list
+      --json            Print as JSON
+      --kind string     Only this kind
+      --status string   open, accepted, resolved, wontfix, duplicate, all; comma-separated (default: list open,accepted; export all)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

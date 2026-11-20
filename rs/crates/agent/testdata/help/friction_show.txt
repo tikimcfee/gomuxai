@@ -1,0 +1,27 @@
+Show prints a friction entry in full: who filed it, where, and with which
+build, its detail, attached command, votes, duplicates, and resolution.
+
+Its links to the same problem on other hosts are checked over the bus and
+listed with that entry's kind (in parentheses), status and votes there, e.g.
+"#34@workstation (bug) open, +2 there: ...". A link that has gone stale is
+flagged with "!" and what to run: out of step (one end closed, the other
+open), one-sided (the other host has no link back), not found (no such
+entry there, or a different one under its id), or unreachable (what was
+last seen).
+
+Usage:
+  agent friction show <id> [flags]
+
+Examples:
+  agent friction show 12
+  agent friction show 12 --json
+
+Flags:
+  -h, --help   help for show
+      --json   Print as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

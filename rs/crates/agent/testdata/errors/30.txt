@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: accepts at most 1 arg(s), received 2
+Usage: agent events [name[@host]] [flags]
+Example: agent events                 # every agent on this host

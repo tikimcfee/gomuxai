@@ -1,0 +1,28 @@
+Key presses a special key or key combination in a g3d-termd session, by session
+name (agent "helper"'s session is "agent-helper").
+
+Supported keys include:
+  Enter, Escape, Tab, Space
+  c-c (Ctrl+C), c-d (Ctrl+D), c-z (Ctrl+Z), etc.
+  Up, Down, Left, Right
+  Home, End, PgUp, PgDn
+  F1-F24
+
+Unrecognized multi-character names are typed literally.
+
+Usage:
+  agent key <session> <key> [flags]
+
+Examples:
+  agent key my-session Enter
+  agent key agent-helper c-c
+  agent key my-session Escape
+
+Flags:
+  -h, --help   help for key
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

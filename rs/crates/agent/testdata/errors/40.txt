@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: accepts 2 arg(s), received 1
+Usage: agent friction link <id> <id@host> [flags]
+Example: agent friction link 4 34@workstation

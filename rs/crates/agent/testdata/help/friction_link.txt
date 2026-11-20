@@ -1,0 +1,26 @@
+Link records that an entry here and one on another host are the same
+problem. Both stay open and count their own votes; show and list name the
+other, and resolving either resolves both.
+
+The other host records its half over the bus (its bus must serve the
+friction op, which it does by default). If it can't be reached, the link
+is recorded here only, and link says what to run there.
+
+Same-host duplicates are closed with agent friction resolve ID --dup OTHER.
+
+Usage:
+  agent friction link <id> <id@host> [flags]
+
+Examples:
+  agent friction link 4 34@workstation
+  agent friction link 4 34@workstation --note "same trust prompt, seen with agy"
+
+Flags:
+  -h, --help          help for link
+      --note string   Why they're the same problem
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

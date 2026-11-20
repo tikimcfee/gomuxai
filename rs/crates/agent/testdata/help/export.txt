@@ -1,0 +1,63 @@
+Export prints every agent this binary's store records, with what a display
+needs: parent, backend, session and g3d-termd namespace (and whether the
+session exists), cwd, the last reported status, and the CLI transcript's path,
+size, and time. --json prints it as one JSON object; "agent list" is the view
+for a person.
+
+--follow then prints one JSON line per change until Ctrl-C: spawned,
+changed, and removed agents, read from the store's agent events (which
+spawn, cleanup, and every status report record), plus terminal sessions and
+transcripts checked every second. Each event line carries its id; --since
+<id> resumes after it, without a snapshot, if the store still keeps the
+events after it (the newest 20000). docs/ARCHITECTURE.md ("Export") has
+every line's shape.
+
+Status is the last report from the agent's hooks, not the resolved status
+"agent status" shows: export runs no backend CLI. An interrupted
+permission prompt stays "waiting", and a crashed CLI keeps its last status,
+until the next hook.
+
+Stores: an agent spawned with another agent binary (a worktree's
+./bin/agent) is recorded in that binary's store. Export finds those stores
+through the PATH of each agent-* session no store records, and reads
+them read-only; --store adds one. Sessions it still can't match are listed
+as unrecorded.
+
+Each agent says whether "agent resume" would continue it (resumable): a
+claude or agy agent, not adopted, with a session, that has ended.
+
+--all adds departed agents (cleaned up), with when they ended. --hosts adds
+other hosts' agents through the bus ("all" for every trusted peer): no
+store or transcript, and the status, detail, session id, cwd, attached and
+resumable that host works out. A host whose agent predates them leaves
+them out, and absent means unknown (not false). Following re-lists them
+every 30s.
+
+Export only reads, and records one row in the command log per run however
+long it follows.
+
+Usage:
+  agent export [flags]
+
+Examples:
+  agent export
+  agent export --json
+  agent export --json --follow
+  agent export --json --follow --since 1234
+  agent export --json --all --store ~/src/gomuxai/bin
+  agent export --json --hosts all
+
+Flags:
+      --all                 Include departed (cleaned up) agents
+      --follow              After the snapshot, print each change until Ctrl-C
+  -h, --help                help for export
+      --hosts string        Also list these hosts' agents over the bus: "all" (every trusted peer) or host,host
+      --json                Print JSON (with --follow, one object per line)
+      --since int           With --follow: resume after this event id, without a snapshot
+      --store stringArray   Also read this store (a .gomuxai dir, the dir holding one, or an agent binary); repeatable
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

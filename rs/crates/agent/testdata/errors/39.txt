@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: accepts 1 arg(s), received 0
+Usage: agent hooks <install|remove|status> [flags]
+Example: agent hooks install

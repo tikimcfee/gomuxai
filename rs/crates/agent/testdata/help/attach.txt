@@ -1,0 +1,38 @@
+Attach opens an agent's g3d-termd session in this terminal via "g3d attach
+--take": you see its screen and can type into it. Ctrl-\ twice detaches; the
+agent keeps running.
+
+agent attach name@host opens an agent on another host. The bus can't carry
+a terminal, so agent runs ssh: ssh -t <destination> <its agent binary>
+attach <name>, where the destination is the host's name unless agent bus
+ssh <host> <destination> set another, and the host says through the bus
+where its binary is. ssh is a separate trust path from the bus (your ssh
+keys and ~/.ssh/config, not the bus's pinned keys), so it needs "ssh
+<destination>" to work from here; if ssh fails, its error is what you see.
+
+Either way this process becomes g3d (or ssh): a signal to it reaches them
+directly, and nothing is left behind.
+
+An agent whose session is gone (it ended: a reboot, say) has nothing to
+attach to, and attach says so before running g3d or ssh; agent resume
+<name> --attach (or name@host) starts a claude or agy agent again and
+opens it.
+
+agent spawn --attach spawns an agent and attaches to it in one step.
+
+Usage:
+  agent attach <name> [flags]
+
+Examples:
+  agent attach helper
+  agent attach helper@hub
+  agent spawn helper --backend claude --attach
+
+Flags:
+  -h, --help   help for attach
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

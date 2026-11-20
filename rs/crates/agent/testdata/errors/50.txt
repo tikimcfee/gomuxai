@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: accepts 1 arg(s), received 0
+Usage: agent task get <name> [flags]
+Example: agent task get research-auth

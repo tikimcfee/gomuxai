@@ -1,0 +1,4 @@
+1
+--- stdout
+--- stderr
+Error: unknown flag: --version (see agent send --help for its flags)

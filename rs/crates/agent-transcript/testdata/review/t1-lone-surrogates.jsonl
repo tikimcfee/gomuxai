@@ -1,0 +1,5 @@
+{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"s1","cwd":"/home/user/p","timestamp":"2026-10-20T09:00:00.000Z","promptId":"p1","message":{"role":"user","content":"look at this \ud83d"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u1","sessionId":"s1","timestamp":"2026-10-20T09:00:01.000Z","message":{"model":"m","id":"msg0","role":"assistant","content":[{"type":"thinking","thinking":"hmm \ud83d","signature":"x"}],"stop_reason":null}}
+{"type":"assistant","uuid":"a2","parentUuid":"a0","sessionId":"s1","timestamp":"2026-10-20T09:00:03.000Z","message":{"model":"m","id":"msg2","role":"assistant","content":[{"type":"text","text":"Done \ud83d"}],"stop_reason":"end_turn"}}
+{"type":"custom-title","customTitle":"t \ud83d","sessionId":"s1"}
+{"type":"ai-title","aiTitle":"ai \ud83d","sessionId":"s1"}

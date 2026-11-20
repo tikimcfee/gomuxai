@@ -1,0 +1,72 @@
+
+spawn
+adopt
+resume
+attach
+list
+cleanup
+export
+sessions
+send
+queue
+deliver
+watch
+status
+statuses
+wait
+approve
+deny
+capture
+logs
+transcript
+events
+report
+hooks
+hook
+state
+state set
+state get
+state list
+state clear
+task
+task set
+task get
+task list
+task clear
+bus
+bus init
+bus export
+bus trust
+bus run
+bus start
+bus stop
+bus status
+bus untrust
+bus rename
+bus restart
+bus ssh
+friction
+friction add
+friction +1
+friction list
+friction show
+friction accept
+friction resolve
+friction export
+friction link
+friction unlink
+friction links
+history
+version
+session
+session new
+session kill
+session list
+keys
+key
+help
+completion
+completion bash
+completion zsh
+completion fish
+completion powershell

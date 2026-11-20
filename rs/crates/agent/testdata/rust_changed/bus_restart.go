@@ -1,0 +1,1 @@
+  agent bus restart --remote-ops list,status,capture,send,respond,friction,logs,resume

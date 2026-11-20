@@ -1,0 +1,35 @@
+The bus can't carry a terminal, so "agent attach name@host" (and
+"agent resume name@host --attach") runs ssh to that host, and runs the
+host's own agent binary there: ssh -t <destination> <its binary> attach
+<name>. The host says where its binary is, through the bus.
+
+The destination defaults to the host's name. Set one per host when ssh
+knows it by another name or needs a user: "me@hub.lan", or an alias from
+~/.ssh/config, which still applies (ports, keys, jump hosts). It is plain
+config, not a secret, kept in this host's bus/ssh.json; agent bus status
+shows it.
+
+ssh is a separate trust path from the bus: it uses your ssh keys, not the
+bus's pinned ones, so attaching to another host needs ssh to work there
+first ("ssh <destination>" logs in).
+
+With only a host, it prints the destination. --clear goes back to the
+default.
+
+Usage:
+  agent bus ssh <host> [<destination>] [flags]
+
+Examples:
+  agent bus ssh hub
+  agent bus ssh hub me@hub.lan
+  agent bus ssh hub --clear
+
+Flags:
+      --clear   Go back to the default destination: the host's name
+  -h, --help    help for ssh
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

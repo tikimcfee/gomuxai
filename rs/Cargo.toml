@@ -1,0 +1,60 @@
+# The Rust `agent`. One workspace; the binary is crates/agent. The crates mirror the Go
+# packages they were ported from (docs/RUST-PORT.md has the map and the porting rules).
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+agent-base = { path = "crates/agent-base" }
+agent-allowcmd = { path = "crates/agent-allowcmd" }
+agent-store = { path = "crates/agent-store" }
+agent-termd = { path = "crates/agent-termd" }
+agent-claudereg = { path = "crates/agent-claudereg" }
+agent-transcript = { path = "crates/agent-transcript" }
+agent-discovery = { path = "crates/agent-discovery" }
+agent-backend = { path = "crates/agent-backend" }
+agent-bus = { path = "crates/agent-bus" }
+agent-service = { path = "crates/agent-service" }
+agent-fleet = { path = "crates/agent-fleet" }
+agent-export = { path = "crates/agent-export" }
+
+# The termd client and protocol, from glyph3d-js (public), pinned by commit. To work against a
+# local checkout: [patch."https://github.com/tikimcfee/glyph3d-js"] in .cargo/config.toml.
+g3d = { git = "https://github.com/tikimcfee/glyph3d-js", rev = "0c7f64d3f746f4deaa9ecd20c3a401a26664ce77" }
+g3d-wire = { git = "https://github.com/tikimcfee/glyph3d-js", rev = "0c7f64d3f746f4deaa9ecd20c3a401a26664ce77" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+memchr = "2"
+sha2 = "0.11"
+base64 = "0.23"
+data-encoding = "2"
+uuid = { version = "1", features = ["v4"] }
+libc = "0.2"
+rustix = { version = "1", features = ["fs", "process", "net", "termios", "stdio"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros", "signal"] }
+async-nats = "0.53"
+futures = "0.3"
+rcgen = "0.14"
+nkeys = "0.4"
+x509-parser = "0.18"
+unicode-width = "0.2"
+tempfile = "3"
+
+[profile.release]
+opt-level = 2
+strip = true
+lto = "thin"

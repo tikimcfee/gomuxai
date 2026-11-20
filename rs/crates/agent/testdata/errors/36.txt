@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: requires at least 1 arg(s), only received 0
+Usage: agent cleanup <name> [<name>...] | --ended [--dry-run] [flags]
+Example: agent cleanup researcher

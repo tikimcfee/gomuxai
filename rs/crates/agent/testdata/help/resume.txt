@@ -1,0 +1,80 @@
+Resume starts an agent whose session has ended again, on that same
+session: after a reboot, a stopped g3d-termd daemon, or a CLI that quit. It keeps
+the agent's name, backend and parent (so its helpers stay its helpers),
+the model spawn --model started it on, its own state keys and its last
+_result, and delivers the messages held
+for it when it ended. It starts in the directory the session ran in.
+
+Only an ended claude or agy agent can be resumed ("agent list" shows
+"ended (...)"). A failed resume leaves it ended, to resume again or clean
+up.
+
+An adopted agent (agent adopt) is refused: its session is your own, so
+resume neither types a launch into your shell nor creates a session to
+replace it. Start the CLI there yourself (claude -c continues its last
+conversation) and adopt keeps tracking it. If that session is gone,
+agent cleanup <name>, then agent spawn <name> --continue (or --resume
+<session>) starts it in a session of gomuxai's own.
+
+Inside an agent (AGENT_NAME set), you can resume only your own helpers and
+theirs.
+
+--all resumes every agent on this host that a reboot or a stopped g3d-termd
+ended: status ended (gone), as agent status resolves it, and
+resumable (claude or agy, not adopted, with a session). Agents that ended
+any other way (quit, finished, closed, replaced, parent) were ended on
+purpose, so --all leaves them, listing each as skipped with how it ended;
+agent resume <name> still resumes one. Gone agents it can't resume (aider,
+adopted, no session) are listed as skipped with why. Parents come back
+before their helpers: one depth of the agent tree at a time, up to 4 at
+once within it, each launch half a second after the one before. It prints
+one line per ended agent (resumed, skipped, failed), parents first and
+then by name, then a total, and exits 1 if any resume failed. --dry-run
+says what it would resume (and checks each session as resume would) and
+skip, and why, and changes nothing. Inside an agent, --all covers only
+your own helpers and theirs. --skip-permissions and --trust-workspace
+apply to every agent it resumes; --attach, which opens one session, is
+refused. --all is this host's: run agent resume --all on another host to
+resume its agents.
+
+To continue a session that no agent owns (one you ran in a terminal, or a
+cleaned-up agent's), use agent spawn <name> --resume <session>.
+
+agent resume name@host resumes an agent on another host through the agent
+bus: that host runs its own resume, so the refusals are its own (not
+claude or agy, no session, not ended, adopted). Its bus must list resume
+in --remote-ops: resume is off for other hosts by default, since it starts
+a process as that host's user. Inside an agent, the other host lets you
+resume only your own helpers there. --skip-permissions and
+--trust-workspace are refused for another host's agent, as for agent spawn
+name@host: run agent resume on that host for those.
+
+agent resume name@host --attach runs ssh to that host instead, and its own
+agent resume <name> --attach there, as agent attach name@host does (see
+agent help attach): as you on that host, not through its resume op, and
+it needs ssh to work from here.
+
+Usage:
+  agent resume <name> | --all [--dry-run] [flags]
+
+Examples:
+  agent resume lead
+  agent resume --all --dry-run   # after a reboot: what --all would resume and skip
+  agent resume --all
+  agent resume lead --attach
+  agent resume lead@hub
+  agent resume lead@hub --attach
+
+Flags:
+      --all                Resume every agent here that a reboot or stopped g3d-termd ended (yours only, inside an agent)
+      --attach             Open the agent's session in this terminal once it starts
+      --dry-run            With --all: list what it would resume and skip, and why, changing nothing
+  -h, --help               help for resume
+      --skip-permissions   Pass --dangerously-skip-permissions to Claude or Agy (use with caution)
+      --trust-workspace    Confirm the CLI's workspace trust prompt on launch (use with caution)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

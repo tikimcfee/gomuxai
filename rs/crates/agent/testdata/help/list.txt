@@ -1,0 +1,31 @@
+List shows the agents recorded on this host as a nested list, with each
+agent's status, backend, parent, session, and creation time. --host lists
+another host's agents through the bus.
+
+Status is the same live status "agent status" shows (idle, processing,
+waiting, error, ended, unknown); "agent status <name> -v" says more, and
+"agent statuses" what each means. A host running an older agent sends none,
+shown as "-".
+
+Each agent's helpers (spawned with "agent spawn") are nested right under it,
+so a team reads as one tree. An agent can clean up only its own helpers and
+theirs.
+
+Usage:
+  agent list [flags]
+
+Examples:
+  agent list
+  agent list --host hub
+  agent list --json
+
+Flags:
+  -h, --help          help for list
+      --host string   Host whose agents to list (default: this host)
+      --json          Print the agents as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

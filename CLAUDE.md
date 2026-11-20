@@ -22,6 +22,9 @@ agent friction add "logs can't show just one turn" --kind missing
 ```
 
 People working on the tool fix what's filed and resolve the entries.
+`--kind` takes `help`, `error`, `missing`, `bug`, `docs`, `brief` (a brief was
+unclear), `handover` (a handover lost something), `skill` (the skill or
+briefing misled), or `other` (the default).
 
 Each host has its own friction box. When an entry is the same problem as
 one filed on another host, link them; both stay open and count their own
@@ -54,12 +57,14 @@ agent help wait          # one command's details and examples
 ```
 
 If `agent` isn't on your PATH, run it by full path. A spawned agent's
-briefing gives that path. In this repo, `make build` builds `bin/agent`.
+briefing gives that path. In this repo, `make build` builds `bin/agent` and
+`bin/agent-busd`.
 
 Results go to stdout; at most one hint about what to do next goes to stderr
 (`-q` drops it). Exit codes: `0` done, `1` failed, `2` `wait` timed out, `3`
-`friction add` found a similar entry and didn't file. Errors say what
-failed and what to try. Most read commands take `--json`.
+`friction add` found a similar entry and didn't file (`agent run` exits with
+its script's exit code). Errors say what failed and what to try. Most read
+commands take `--json`.
 
 ## How It Works
 
@@ -85,8 +90,10 @@ failed and what to try. Most read commands take `--json`.
   `agent statuses` says what each means) comes from the CLI itself for
   `claude` and `agy`, and from screen scraping for other backends. Claude
   reports through one hook every Claude Code session runs (`agent hooks
-  install` registers it in Claude Code's user settings; spawn refuses a
-  Claude agent until it is there), which finds its agent from the running
+  install` registers it in Claude Code's user settings, and `agent skill
+  install` installs the `agent` skill for every harness here plus Claude's
+  hook; spawn refuses a Claude agent until the hook is there),
+  which finds its agent from the running
   processes, and Claude Code's session registry (`~/.claude/sessions/`, each
   entry proven by pid and start time) says which session an agent's pane
   runs, including one a person started there by hand, and one Claude Code
@@ -106,33 +113,42 @@ failed and what to try. Most read commands take `--json`.
   report is read off its screen: a permission or `ask_question` dialog
   (`waiting`), and a turn that Esc or Ctrl+C ended, which fires no hook
   (`idle`, detail `interrupted; at its prompt`, source `scrape`).
-- Everything is per host and lives next to the binary, in `.gomuxai/`. Two
-  copies of `agent` (e.g. `bin/agent` and an installed one) see separate
-  agents. The agent bus links hosts; only reaching another host needs it.
+- Everything is per host and lives next to the binary, in `.gomuxai/`
+  (`agent-busd`, the embedded NATS server that `agent bus run` starts, sits
+  next to `agent`). Two copies of `agent` (e.g. `bin/agent` and an installed
+  one) see separate agents. The agent bus links hosts; only reaching another
+  host needs it.
 
 ### What a spawned Claude agent may run without asking
 
 Spawn pre-allows these for the agent's session: `send`, `deliver`, `list`,
-`status`, `wait`, `events`, `capture`, `logs`, `sessions`, `transcript`, `state get`,
-`history`, `friction add`, `friction +1`, `friction list`, `friction show`,
-`friction link`, `friction links`.
+`status`, `statuses`, `wait`, `events`, `capture`, `logs`, `sessions`,
+`transcript`, `state get`, `history`, `friction add`, `friction +1`, `friction
+list`, `friction show`, `friction link`, `friction links`.
 
-Everything else prompts the person, on purpose: `spawn` and `cleanup` start
-and stop agents; `approve`, `deny`, `keys`, and `send --force` would let one
-agent answer another's prompts; `state set` isn't on the list either, nor
-are `friction accept`, `resolve` and `unlink` (which erases a link on both
-hosts).
+Everything else prompts the person, on purpose: `spawn`, `resume`, `revive`,
+`template`, and `cleanup` start and stop agents; `run` runs a script; `approve`,
+`deny`, `keys`, and `send --force` would let one agent answer another's
+prompts; `state set` isn't on the list either, nor are `friction accept`,
+`resolve` and `unlink` (which erases a link on both hosts).
 
 Two things allow them. Spawn adds rules for `agent <cmd>` and the
 binary's full path, and gomuxai's own PreToolUse hook approves the same
 commands however the binary is reached: `./bin/agent status`, another
 relative path, a symlink, or `agent -q list`. The hook approves only one
-plain run of this binary with a safe subcommand. A chain (`;`, `&&`, a
-pipe), a variable or `$(...)`, an `env` or `A=1` prefix, a glob, or a
-redirection other than `2>&1` and `>/dev/null` gets the normal prompt, and
-so does `$A send ...`: the hook can't see the shell's variables, so run
-the binary by name or path. The hook never denies anything, and a
-settings `deny` rule still wins over it.
+plain run of this binary with a safe subcommand (one trailing `;` and a
+`\` + newline line continuation between words, after a space or tab, are
+accepted). Only `-q`/`--quiet` may come before the subcommand, and root flags
+(`--backend`, `--backend-config`, `--termd-ns`) are refused after the
+subcommand too. A chain (`;`, `&&`, `||`, `&`, a pipe), a variable or
+`$(...)`, an `env` or `A=1` prefix, a glob or brace, an unquoted `~` or `#`
+comment, a bare name resolved through a relative or `~` `PATH` entry, control
+characters other than newline and tab inside quotes, or any redirection other
+than `>/dev/null`, `2>/dev/null`, `&>/dev/null`, `>>/dev/null`,
+`2>>/dev/null`, `2>&1`, and `>&2` (`&>>` is refused) gets the normal prompt,
+and so does `$A send ...`: the hook can't see the shell's variables, so run
+the binary by name or path. The hook never denies anything, and a settings
+`deny` rule still wins over it.
 
 ## The Core Loop
 
@@ -142,6 +158,7 @@ settings `deny` rule still wins over it.
 agent list                                          # reuse an agent before spawning another
 agent spawn helper --backend claude                 # no first message
 agent spawn helper --backend claude tasks/build.md  # first message: read and execute that file
+agent spawn helper --backend claude --handoff docs/lanes/helper.md tasks/build.md
 agent spawn helper --backend claude --task review   # first message: a stored task's content
 ```
 
@@ -161,8 +178,13 @@ starts in the directory you run spawn from (`--cwd DIR` picks another),
 with that project's permission settings; `--skip-permissions` bypasses
 them (use with caution). `--model <model>` runs the CLI on that model
 (claude, agy and aider take one; other backends refuse it), over the bus
-too; `agent resume` relaunches on it, and `status -v` shows it. Inside an
-agent, name helpers `<yourname>-<role>`.
+too; `agent resume` relaunches on it, and `status -v` shows it. `--handoff
+<file>` stores the absolute path of the agent's handoff doc as its `handoff`
+state key, so `agent revive` knows what to re-brief it from and `agent fleet`
+flags it when commits outrun the doc. A spawned or resumed Claude agent gets
+`--name <agent>`, so its Claude session carries the agent's name; an agy
+agent's conversation is renamed (`/rename <agent>`) automatically once its
+first idle turn ends. Inside an agent, name helpers `<yourname>-<role>`.
 
 `--resume <session>` makes the new agent continue a Claude or agy session
 that has ended, in the directory it ran in; `-c`/`--continue` picks the
@@ -251,7 +273,7 @@ bus, and for spawn's first message; `wait --next` and `_result` cover the
 reply as usual. agy takes long typed messages as the request, unchanged.
 
 `agent queue helper "..."` delivers a message when the agent is idle. For a
-Claude agent it does what `send` does. For other backends it needs `agent
+Claude or agy agent it does what `send` does. For other backends it needs `agent
 watch` running on this host, and says so when no watcher is running. It's
 local only; use `send` for other hosts, which hold or type a message the
 same way.
@@ -292,15 +314,16 @@ read its lines from a script.
 ### 4. Read the result
 
 ```bash
-agent state get helper _result     # a Claude agent's final reply for its last turn
+agent state get helper _result     # a Claude or agy agent's final reply for its last turn
 agent logs helper                  # what it did: prompts, tool calls, replies
 agent capture helper --lines 100   # its screen now
 ```
 
-`_result` is emptied when a new prompt starts, so empty means the turn
-isn't done. A turn that leaves background work running stays `processing`
-and stores no result until that work finishes and Claude takes another
-turn. `logs` reads the CLI's own transcript for `claude` and `agy` agents
+`_result` is written by the Stop hook for both `claude` and `agy` agents
+(read from agy's transcript at Stop) and emptied when a new prompt starts, so
+empty means the turn isn't done. A turn that leaves background work running
+stays `processing` and stores no result until that work finishes and the CLI
+takes another turn. `logs` reads the CLI's own transcript for `claude` and `agy` agents
 (`--full` for whole text and tool output; `--terminal` for the terminal
 log, which other backends get), and survives cleanup. `capture` is the live
 screen, and the way to look at an agent on another host. It prints plain
@@ -404,6 +427,36 @@ only your helpers and theirs. `--skip-permissions` and `--trust-workspace`
 apply to each; `--attach` is refused, and so is a name: `--all` is this
 host's, so run it on the other host for that host's agents.
 
+### Continuing work from a handoff: revive
+
+```bash
+agent revive helper                             # resume (or take over its pane's CLI) + send re-brief
+agent revive helper --handoff docs/lanes/helper.md   # set its handoff doc and re-brief from it
+agent revive helper --no-brief                  # bring it back without sending a re-brief
+```
+
+Use `resume` (`resume --all` after a reboot) when an ended agent only needs
+its CLI started again where it stopped. Use `revive` when an ended `claude`
+or `agy` agent should read its handoff doc and carry on, or when a person
+already started its CLI again by hand in the agent's pane (say, after
+quitting to re-login):
+
+- If nothing runs in its pane, `revive` resumes its last session just as
+  `agent resume` does.
+- If a CLI of its backend is already running in its pane, `revive` takes that
+  running CLI as the agent's without launching a new process, so `status` and
+  `send` reach it again. (A hand-started `agy` lacks the hooks `agent` wires
+  at launch, so its status comes from its screen and messages are typed
+  rather than held until you quit it and run `agent revive <name>` again.)
+
+`revive` then sends a re-brief pointing at `--handoff <file>` (saved as state
+key `handoff`), else the existing `handoff` state key (from `spawn --handoff`
+or `state set`), else `docs/lanes/<name>.md` in the agent's directory when
+that file exists (with none, the re-brief says only that it was revived).
+Inside an agent, you may revive only your own helpers and theirs. `revive` is
+local to this host (`agent resume name@host` resumes remotely without the
+re-brief).
+
 ## Coordination Patterns
 
 ### Fan out, then collect
@@ -471,6 +524,61 @@ when it's done. Store a task once to spawn several agents with it:
 agent task set review -f tasks/review.md   # stores the content, not the path
 agent spawn reviewer --backend claude --task review
 ```
+
+### Heavy jobs: `agent run`
+
+```bash
+agent run build.sh                        # run in a memory-limited scope, wait, exit with its code
+agent run build.sh --release -j 4         # everything after the script goes to the script
+agent run --memory-max 24G --memory-high 20G build.sh
+agent run --list --all                    # running jobs (--all: finished ones too)
+agent run --show 17                       # job record, limits, exit code, and the exact script run
+agent run --promote build.sh --as nightly # copy to .gomuxai/scripts/nightly (sha256 checked)
+agent run nightly
+```
+
+Use `agent run` for builds, full test suites, benchmarks, and anything
+memory-hungry so an OOM kills the job instead of the `g3d-termd` terminal
+hosting your agent. Write a script file on disk (not `/tmp`) and pass it to
+`agent run`: before starting, it records the script's content, sha256, who
+started it, cwd, limits, and start time in `jobs`, then waits and exits with
+the script's exit code.
+
+On Linux it runs in `agent-job-<id>.scope` (`MemoryHigh` 75% and `MemoryMax`
+85% of RAM by default, `MemorySwapMax=0` so swap or zram doesn't keep a
+runaway build alive) and asks systemd to spare `g3d-termd` units first. Unless
+already set in your environment, jobs get `TMPDIR=/var/tmp` and
+`CARGO_BUILD_JOBS=12`; keep build directories (`CARGO_TARGET_DIR`) and scratch
+files on disk (`/var/tmp`), never `/tmp` (often RAM/`tmpfs`). Jobs run in
+parallel with no lock. On macOS (or if `systemd-run` can't start a user scope)
+the script runs without memory limits, and its record says so.
+
+### Fleet view and focus
+
+```bash
+agent fleet                           # tree, stuck flags, focus, jobs, stale handoffs, friction across hosts
+agent fleet --host hub                # one host
+agent fleet --json                    # one FleetView JSON document, for displays and scripts
+agent fleet --report                  # 7-day baseline and sessions > 3d with compactions
+
+agent focus                           # which agent has focus here (--json for JSON)
+agent focus helper                    # set focus here (local only; publishes on gomux.<host>.focus)
+agent focus --clear                   # clear focus here
+agent focus --host hub                # another host's focus, via its bus
+agent focus --follow --host hub --json # current focus, then one JSON line per change
+```
+
+`fleet` queries this host and every trusted peer at once (3s each; with no bus
+running here, this host only, said in a stderr hint) and flags what needs a
+look strictly from state: `stuck: waiting ...` (> 10m), `stuck: N held, oldest
+...` (3+ held messages, or oldest > 10m), `ended (...), still recorded`, `name
+mismatch: session is "..."`, running `agent run` jobs, handoff docs older than
+their repo's last commit, and open friction. A peer on an older `agent` answers
+via `list` (`partial: list only`). `focus` keeps one focused agent per host in
+this host's store (set or cleared only on its own host), carried in `fleet`;
+`--follow` announces what it follows on stderr (`-q` drops it), streams changes
+over the bus, or with no bus running here re-reads this host's store every
+second. Cleaning up the focused agent clears focus.
 
 ### Export, for displays and scripts
 
@@ -567,15 +675,16 @@ agent spawn helper@hub --backend claude --cwd /srv/project tasks/build.md
 `keys`, `spawn`, `resume` and `attach` take `name@host` (`spawn` also takes
 `--host hub`). Host names
 match ignoring case for this host and the peers it trusts (a hub trusts
-every peer): `@laptop-2` reaches `laptop-2`. A host known only through the
+every peer): `@mac-studio` reaches `Mac-Studio`. A host known only through the
 hub is reached by its exact name; a "no bus answering" error names the
 hosts this one knows. Not across hosts: `state` (ask the agent to send what
-you need, or `capture`), `queue` (use `send`), `cleanup` (clean up on that
-host).
+you need, or `capture`), `queue` (use `send`), `revive` (use `resume
+name@host`, or run `revive` on that host), `cleanup` (clean up on that host).
 The other host's bus serves only its `--remote-ops` (default
-`list,status,capture,send,respond,friction,logs`), so `keys`, `spawn` and
-`resume` to another host are refused unless it lists them. "no bus answering for host X" means that
-host's bus is down, not linked, or doesn't serve that op.
+`list,status,capture,send,respond,friction,logs,fleet,template`), so `keys`,
+`spawn` and `resume` to another host are refused unless it lists them. "no bus
+answering for host X" means that host's bus is down, not linked, or doesn't
+serve that op.
 
 A remote spawn's `--cwd` and task file are paths on that host (`--cwd`
 absolute; without it, the agent starts in that user's home directory);
@@ -603,6 +712,34 @@ off for peers unless the host lists it, and like a remote spawn it refuses
 `--skip-permissions` and `--trust-workspace` (run resume on that host for
 those). Inside an agent, the other
 host lets you resume only your own helpers there (`lead@laptop`'s).
+
+### Starting agents across hosts with templates
+
+```bash
+# on hub (local only: edits .gomuxai/templates.json):
+agent template add builder --backend claude --cwd /srv/project --brief docs/lanes/builder.md --model claude-opus-5-5
+agent template remove builder
+
+# from any linked host (served by default in --remote-ops; omit --host for this host):
+agent template list --host hub
+agent template start builder --host hub     # spawns builder@hub from hub's template
+agent template resume builder --host hub    # resumes builder@hub if it has ended
+```
+
+Templates let peers start or resume pre-approved agents on another host
+without adding open `spawn` or `resume` to its `--remote-ops`. `template add`
+requires `--backend` (`claude`, `agy`, `aider`, or `shell`) and `--cwd`
+(optional `--brief`, relative to `--cwd` or this directory, and `--model`). A
+`start` or `resume` request carries only the template's name and who asks: no
+command, `cwd`, model, or brief crosses the bus. The receiving host reads its
+own `.gomuxai/templates.json` and spawns the agent named after the template:
+started by an agent, `spawned_by` is that agent (`name@host` across the bus) so
+replies go back; started by a person, it has no parent. `start` refuses when
+the template's agent already exists (running, or ended and not cleaned up);
+`template resume` brings back an ended template agent regardless of which host
+or caller started it. A host with no `templates.json` starts nothing; `add` and
+`remove` are local only (`remove` leaves any running agent of that name
+untouched).
 
 ```bash
 agent attach helper@hub              # ssh -t hub '<hub's agent binary>' attach 'helper'
@@ -654,7 +791,7 @@ agent bus untrust old-laptop      # removes its bundle and ssh destination, rest
 agent bus rename studio           # this host is now "studio": same keys, the certificate
                                   # signed again under the new name, bus restarted as studio
 # copy the printed studio.pub.json to each peer, then on each:
-agent bus trust studio.pub.json --renames laptop-2
+agent bus trust studio.pub.json --renames Mac-Studio
 ```
 
 Untrusting on one side cuts the link (untrust prints what the other side
@@ -680,12 +817,13 @@ aren't signed in v1. Status events are hints that `wait` confirms with a
 real status check. Text from other hosts is stripped of terminal control
 sequences; `capture --raw` keeps only the SGR codes (colors, bold, dim).
 
-**macOS:** from inside a background `g3d-termd` daemon, the bus can't dial
-other machines on the LAN unless the binary holds its own Local Network
-permission. The link fails with `no route to host` in `.gomuxai/bus/bus.log`,
-with no alert. Build with `make macos` in a terminal on the Mac (it embeds an
-Info.plist and signs with an Apple Development or Developer ID identity;
-`CODESIGN_IDENTITY=...` picks one). Signing needs the login keychain, which
+**macOS:** from inside a background `g3d-termd` daemon, the bus (`agent-busd`)
+can't dial other machines on the LAN unless `agent-busd` holds its own Local
+Network permission. The link fails with `no route to host` in
+`.gomuxai/bus/bus.log`, with no alert. Build with `make macos` in a terminal
+on the Mac, then `make install` (`make macos` embeds `Info.plist` into and
+signs both `bin/agent` and `bin/agent-busd` with an Apple Development or
+Developer ID identity; `CODESIGN_IDENTITY=...` picks one). Signing needs the login keychain, which
 is unlocked only in the Mac's GUI login session. A `g3d-termd` terminal has
 the session of whoever started the `g3d-termd` *daemon*, so over SSH,
 `make macos` signs only in a `g3d-termd` daemon started from a terminal on
@@ -705,15 +843,18 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `send` says a dialog took the message, or `Typed into X without checking ...: its input box never showed the message` | A dialog came up as it typed (or the screen isn't one agent reads): `status -v` and `capture` show it; `deny` closes a dialog, then send again. |
 | `unknown` (non-hook backends) | `capture` to look; coordinate on state or messages instead. |
 | `error` | The last turn failed (e.g. rate limit); it takes input again. `capture` or `logs` shows why. |
-| `ended (...)` | The reason says how (`agent statuses`); `agent resume <name>` continues its session (claude, agy); `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
+| `ended (...)` | The reason says how (`agent statuses`); `agent resume <name>` continues its session (claude, agy), or `agent revive <name>` continues it (or takes over a CLI restarted in its pane) and sends its handoff re-brief; `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
 | Every agent `ended (gone)` after a reboot | `agent resume --all --dry-run`, then `agent resume --all`: it resumes each one the reboot ended, parents first, and leaves the ones ended on purpose. |
 | `wait` timed out | `status -v` and `capture`: still working, stuck, or missed the turn? |
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
-| Queued messages never arrive (not Claude) | Start `agent watch` (one per host is enough). |
+| Queued messages never arrive (not Claude or agy) | Start `agent watch` (one per host is enough). |
 | A held message hasn't arrived | `status -v` shows `held:` and what it waits for: the turn's (or agy's step's) end, 10s at the prompt after an Esc/deny, or an empty input line (clear what's typed there, or close what covers it: `agent capture`); `agent deliver <name>` (or `<name>@host`) types it now if the agent is at its prompt. |
 | `send` says the message is still in the input box; `status` shows `unsent:` | Enter didn't submit it: `agent key agent-<name> Enter` does. Don't send it again. |
 | Leftover session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
-| Spawn says the agent already exists | Pick another name, or clean up the old one; if it has ended, `agent resume <name>` continues it. |
+| Spawn says the agent already exists | Pick another name, or clean up the old one; if it has ended, `agent resume <name>` or `agent revive <name>` continues it. |
+| `agent fleet` shows a host as `partial` | That host runs an older `agent` (or doesn't list `fleet` in `--remote-ops`), so `fleet` fell back to `list`: upgrade `agent` and `agent-busd` there and `agent bus restart`. |
+| `agent run` says `runs without memory limits` or `couldn't ask systemd to spare g3d-termd's units` | On macOS or Linux without a user `systemd` manager, jobs run plainly with provenance only (`agent run --show <id>`); where `systemd-oomd` watches the root-owned user slice rather than user units, the job's own `MemoryMax` + `MemorySwapMax=0` scope is what protects the terminal (`--no-protect` skips the `g3d-termd` check). |
+| After `agent revive`, an agy agent says it runs without hooks | A person started `agy` by hand in its pane, without the `--add-dir` hooks `agent` wires at launch (status comes from its screen and messages are typed): quit `agy` there and run `agent revive <name>` again so `agent` launches it. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |
 
 Commands that change things print what they did, so read their output
@@ -774,12 +915,28 @@ Known gaps; `agent friction list` has the rest.
   last report. Only the auto-mode offer is prevented at spawn.
 - A message held for agy in the few milliseconds between its last
   PostInvocation and its Stop is typed by the deliverer, 10s later.
-- Messages held for an agent that exits are never delivered (`status -v`
-  says so); `cleanup` deletes them.
+- agy has no launch flag to name a conversation before its first prompt, so an
+  agy conversation stays unnamed until its first idle turn ends and the Stop
+  hook types `/rename <agent>` (deferred while messages are held, a dialog is
+  up, or text sits on the input line). If agy hasn't flushed its closing
+  transcript line within 200ms of Stop, `_result` for that turn stays empty
+  (`agent logs` still reads it once flushed).
+- An agy CLI started by hand in an agent's pane and taken over by `agent
+  revive` runs without spawn hooks until restarted through `agent`: status
+  comes from its screen and messages are typed rather than held.
+- On Linux systems where `systemd-oomd` monitors the root-owned user slice, it
+  ignores `ManagedOOMPreference=avoid` on user `g3d-termd` units (`agent run`
+  says so once; the job's own `MemoryMax` and `MemorySwapMax=0` scope is what
+  protects the terminal). On macOS, `agent run` records provenance without
+  memory limits.
+- Messages held for an agent that exits stay pending while it is ended, and go
+  out if `agent resume` or `agent revive` brings it back; `cleanup` deletes
+  them.
 - `queue` needs `agent watch` running on this host, except for Claude and
   agy agents.
 - Pre-allowed commands still prompt when run through a variable
-  (`$A send`), chained, or piped; see "What a spawned Claude agent may run
+  (`$A send`), chained, piped, or given root flags (`--backend-config`,
+  `--termd-ns`, `--backend`); see "What a spawned Claude agent may run
   without asking".
 - Bus replies are unsigned (see trust, above).
 - `export` shows the last reported status: an interrupted permission
@@ -788,9 +945,10 @@ Known gaps; `agent friction list` has the rest.
   events: `--follow` re-reads it when it changes, so its spawns and
   cleanups arrive as a whole-store update, not as events.
 - `export --hosts` lists other hosts through `list` only: no store or
-  transcript for them, and `--follow` re-lists them every 30s. A host on an
-  older `agent` sends no `detail`, `session_id`, `cwd`, `attached` or
-  `resumable`: absent means unknown.
+  transcript for them, and `--follow` re-lists them every 30s (`agent fleet`
+  queries full host snapshots). A host on an older `agent` sends no `detail`,
+  `session_id`, `cwd`, `attached` or `resumable` (and shows as `partial` in
+  `agent fleet`): absent means unknown.
 
 ## Custom Backends
 
@@ -805,11 +963,14 @@ scraping with the two patterns.
 
 ## Data
 
-Everything lives in `.gomuxai/` next to the binary:
+Everything lives in `.gomuxai/` next to the binary (`agent-busd` sits next to
+`agent`):
 
 ```
 .gomuxai/
-├── gomuxai.db        # agents, runs, agent events, messages, tasks, state, command log, friction
+├── gomuxai.db        # agents, runs, agent events, messages, tasks, state, command log, friction, jobs, scripts, host_state
+├── templates.json    # optional: agent templates peers may start or resume on this host
+├── scripts/          # scripts saved by agent run --promote
 ├── logs/             # <name>.log (terminal) and <name>.transcripts; survive cleanup
 ├── agents/<name>/    # launch.sh, instructions.md (the briefing), deliver.log
 │                     #   and deliver.lock (the held-message deliverer)
@@ -820,10 +981,11 @@ Everything lives in `.gomuxai/` next to the binary:
 
 State keys starting with `_` are written by status reports (`_status`,
 `_detail`, `_tool`, `_tool_input`, `_result`, `_transcript`, `_turn_at`,
-...) and by `send` (`_sent_at`, `_unsubmitted`, `_unchecked`). Delete
+`_named`, ...) and by `send` (`_sent_at`, `_unsubmitted`, `_unchecked`). Delete
 the folder to reset that binary's agents.
 
 ## Working on gomuxai
 
-Architecture, status detection, the bus, and the macOS internals are in
-`docs/ARCHITECTURE.md`. User setup is in `README.md`.
+Architecture, status detection, fleet internals, the bus, and macOS signing
+are in `docs/ARCHITECTURE.md` and `docs/FLEET.md`. Build and contributor
+checks are in `docs/DEVELOPMENT.md`; user setup is in `README.md`.

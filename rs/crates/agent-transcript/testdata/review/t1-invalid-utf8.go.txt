@@ -1,0 +1,2 @@
+{"lines":20,"partial":false,"skipped":1}
+{"session_id":"��00000000-0000-0000-0000-00000000c1a0","harness":"claude","path":"testdata/review/t1-invalid-utf8.jsonl","size":4046,"cwd":"��/home/user/proj","project":"proj"}

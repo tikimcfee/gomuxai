@@ -1,0 +1,84 @@
+0
+--- stdout
+agent spawns AI agents (claude, aider, agy) in g3d-termd sessions and
+coordinates them: messages, status, permission prompts, and shared state, on
+this host or across hosts linked by the agent bus.
+
+Run "agent" alone for a short orientation (who you are, your agents, the bus);
+"agent help <command>" has each command's details and examples.
+
+Results go to stdout; a hint about what to do next may follow on stderr
+(-q drops it). Exit codes: 0 done, 1 failed; wait exits 2 when it times out,
+and friction add exits 3 when it finds a similar entry instead of filing.
+
+If agent gets in your way, "agent friction add" tells the people who fix it.
+
+Usage:
+  agent [flags]
+  agent [command]
+
+Examples:
+  agent spawn helper --backend claude
+  agent send helper "summarize README.md" && agent wait helper --for idle --next
+  agent state get helper _result
+
+Agents:
+  spawn       Start a new agent in its own g3d-termd session
+  adopt       Create a bus entry for an existing g3d-termd session
+  resume      Start an ended agent again, continuing its last session; --all: every one a reboot ended
+  attach      Open an agent's session in this terminal
+  list        List the agents on this host (or another)
+  cleanup     Stop agents and delete their records
+  export      Print the agent tree for a program to read, and follow its changes
+  sessions    List the agent sessions on this host, spawned by agent or not: the newest 25, or filtered
+
+Messages:
+  send        Send a message to an agent: typed in now, or held while it's busy
+  queue       Queue a message, delivered when the agent is idle
+  deliver     Type an agent's held messages in once it's at its prompt (send starts this)
+  watch       Deliver queued messages as agents become idle (runs until Ctrl-C)
+
+Status and waiting:
+  status      Show whether an agent is idle, processing, waiting, ...
+  statuses    Say what each status and end reason means
+  wait        Block until agents reach a status (exit 2 on timeout)
+  approve     Answer yes to an agent's permission prompt
+  deny        Answer no to an agent's permission prompt
+  capture     Print an agent's screen and recent scrollback
+  logs        Print what an agent did (prompts, replies, tool calls), even after cleanup
+  transcript  Print one session's events as JSON lines; --follow streams them as they happen
+  events      Stream agent status events from the bus (runs until Ctrl-C)
+  report      Record an agent's status by hand (claude/agy agents report automatically)
+  hooks       Register gomuxai's hook with Claude Code for every session
+  hook        The hook Claude Code runs on each event (installed by agent hooks install)
+
+State and tasks:
+  state       Read and write agents' key-value state
+  task        Save reusable tasks, to spawn agents with
+
+Machines (bus):
+  bus         Run and pair this host's agent bus
+
+About this tool:
+  friction    File what got in your way using agent, and read what others filed
+  history     List recent agent commands run on this host
+  version     Print which build of agent this is
+
+Low-level sessions (session names, not agent names):
+  session     Create, kill, and list raw g3d-termd sessions
+  keys        Type text into a session (then Enter)
+  key         Press a special key (Enter, Escape, c-c, ...) in a session
+
+Additional Commands:
+  help        Help about any command
+
+Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -h, --help                    help for agent
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+      --version                 Print which build of agent this is
+
+Use "agent [command] --help" for more information about a command.
+--- stderr

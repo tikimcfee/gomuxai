@@ -1,0 +1,4 @@
+1
+--- stdout
+--- stderr
+Error: unknown command "sett" for "agent state"; did you mean set? (see agent help state)

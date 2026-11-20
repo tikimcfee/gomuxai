@@ -1,0 +1,53 @@
+bogus
+lsit
+help bogus
+help lsit
+help state sett
+help send extra
+help friction vote
+help --bogus
+list --jsn
+list --zzzzzz
+list -x
+list x
+status x -qx
+status x -v=maybe
+capture x --lines
+capture x --lines abc
+capture x --lines=abc
+capture x --raw=nope
+wait x --timeout 5
+wait x --timeout 1x
+history -n
+history -n abc
+bus start --client-port 99999999999999999999
+send helper
+send --version x y
+state get
+spawn
+spawn a b c
+key s
+events a b
+resume
+resume --dry-run x
+resume --all x
+resume --all x@hub
+resume --all --attach
+cleanup
+cleanup --dry-run x
+cleanup --ended x
+hooks
+friction link 1
+version x
+statuses x
+-h send
+send -h
+-q --backend claude state set -h
+friction vote --help
+completion
+completion foo
+state --json
+task get
+session kill
+bus trust
+keys s

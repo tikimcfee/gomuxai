@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: requires at least 2 arg(s), only received 1
+Usage: agent keys <session | name@host> <text> [flags]
+Example: agent keys my-session "ls -la"

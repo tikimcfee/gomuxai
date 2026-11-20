@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: accepts 1 arg(s), received 0
+Usage: agent bus trust <bundle.json | -> [flags]
+Example: agent bus trust hub.pub.json

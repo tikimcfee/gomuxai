@@ -1,0 +1,4 @@
+1
+--- stdout
+--- stderr
+Error: 'x' in -x (see agent status --help for its flags)

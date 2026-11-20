@@ -1,0 +1,35 @@
+Adopt gives an existing g3d-termd session a seat on the agent bus under <name>,
+so other agents and hosts can reach it with agent send, status, capture, and
+wait without restarting or interrupting what is running in the session.
+
+Run "agent adopt <name>" inside a g3d terminal in the target namespace
+(default "agents", or --termd-ns <ns>; "default" and "wall" are refused), or
+pass --session <session> to adopt another terminal in that namespace.
+If Claude Code is running in the session (or started there later), its session
+and status are tracked automatically; otherwise the session uses the "shell"
+backend (status is "unknown", and messages are typed immediately).
+
+Cleaning up an adopted session ("agent cleanup <name>") unregisters it from the
+bus while leaving the pre-existing session running.
+
+gomuxai never launches anything in an adopted session: agent resume refuses an
+adopted agent. If its CLI exits, start it again there yourself (claude -c
+continues its last conversation); adopt keeps tracking it.
+
+Usage:
+  agent adopt <name> [flags]
+
+Examples:
+  agent adopt helper
+  agent adopt helper --session dev
+  agent adopt helper --session dev --backend agy
+
+Flags:
+  -h, --help             help for adopt
+      --session string   Existing g3d-termd session id to adopt (defaults to $G3D_TERMD_ID)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

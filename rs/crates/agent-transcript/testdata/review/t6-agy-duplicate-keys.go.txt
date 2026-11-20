@@ -1,0 +1,2 @@
+{"lines":19,"partial":false,"skipped":1}
+{"session_id":"t6-agy-duplicate-keys","harness":"agy","path":"testdata/review/t6-agy-duplicate-keys.jsonl","size":4923}

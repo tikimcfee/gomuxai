@@ -1,0 +1,4 @@
+1
+--- stdout
+--- stderr
+Error: unknown flag: --bogus (see agent help --help for its flags)

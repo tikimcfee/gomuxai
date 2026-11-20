@@ -1,0 +1,35 @@
+Generate the autocompletion script for the zsh shell.
+
+If shell completion is not already enabled in your environment you will need
+to enable it.  You can execute the following once:
+
+	echo "autoload -U compinit; compinit" >> ~/.zshrc
+
+To load completions in your current shell session:
+
+	source <(agent completion zsh)
+
+To load completions for every new session, execute once:
+
+#### Linux:
+
+	agent completion zsh > "${fpath[1]}/_agent"
+
+#### macOS:
+
+	agent completion zsh > $(brew --prefix)/share/zsh/site-functions/_agent
+
+You will need to start a new shell for this setup to take effect.
+
+Usage:
+  agent completion zsh [flags]
+
+Flags:
+  -h, --help              help for zsh
+      --no-descriptions   disable completion descriptions
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

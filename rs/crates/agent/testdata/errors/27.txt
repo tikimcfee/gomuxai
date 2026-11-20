@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: accepts between 1 and 2 arg(s), received 0
+Usage: agent spawn <name>[@host] [task-file] [flags]
+Example: agent spawn researcher --backend claude

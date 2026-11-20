@@ -1,0 +1,21 @@
+Set creates or updates a task in the repository.
+
+Content can be provided directly as an argument or read from a file using -f.
+When using -f, the content is stored in the database (not just the path).
+
+Usage:
+  agent task set <name> [content] [flags]
+
+Examples:
+  agent task set research-auth "Analyze the authentication patterns in internal/auth"
+  agent task set research-auth -f tasks/research-auth.md
+
+Flags:
+  -f, --file string   Read content from file
+  -h, --help          help for set
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

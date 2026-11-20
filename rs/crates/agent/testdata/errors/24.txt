@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: requires at least 2 arg(s), only received 1
+Usage: agent send <name>[@host] <message> [flags]
+Example: agent send researcher "analyze the codebase structure"

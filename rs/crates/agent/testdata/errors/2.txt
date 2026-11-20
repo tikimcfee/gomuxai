@@ -1,0 +1,4 @@
+1
+--- stdout
+--- stderr
+Error: unknown command "lsit" for "agent"; did you mean list? (see agent help)

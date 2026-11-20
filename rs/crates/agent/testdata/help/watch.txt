@@ -1,0 +1,29 @@
+Watch runs in the foreground, delivering queued messages ("agent queue"),
+until interrupted.
+
+Every --interval it checks each agent that has a queued message, and delivers
+the oldest one when the agent is idle, or back at its prompt after a failed
+turn (error). It holds messages while an agent is processing or waiting, and
+fails them once the agent's session has ended. Deliveries and failures are logged on
+stderr.
+
+Several watchers can run at once (each delivery is checked against the
+agent's status), but one per host is enough. Each running watcher holds
+.gomuxai/watch.lock, which is how queue knows whether one is running.
+
+Usage:
+  agent watch [flags]
+
+Examples:
+  agent watch
+  agent watch --interval 5s
+
+Flags:
+  -h, --help                help for watch
+      --interval duration   Check interval (default 2s)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

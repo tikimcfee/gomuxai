@@ -1,0 +1,6 @@
+1
+--- stdout
+--- stderr
+Error: resume --all resumes this host's agents: run agent resume --all on hub to resume its own, or agent resume x@hub for that one
+Usage: agent resume <name> | --all [--dry-run] [flags]
+Example: agent resume lead

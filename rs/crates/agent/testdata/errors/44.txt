@@ -1,0 +1,97 @@
+0
+--- stdout
+Send delivers a message to an agent, and says what it did with it and what
+status it found the agent in.
+
+An agent at its prompt gets the message typed into its terminal. A Claude or
+agy agent that is busy (processing, or waiting on a prompt or question)
+holds it instead (a Claude agent once "agent hook" has reported its current
+session: a CLI started without the hook gets messages typed in), and a hook hands over every message held for it, oldest
+first:
+  claude  when its turn ends, from its Stop hook: Claude goes on with them as
+          its next step (its screen shows them as "Stop hook feedback").
+  agy     when its current step ends (a model call and its tools), from its
+          PostInvocation hook: each shows as a prompt of its own, and the
+          model answers them in the same turn.
+If the turn ends without that hook (Esc, a deny, a failed turn), the held
+messages are typed in once it has sat at its prompt for 10s, or ahead of the
+next message sent to it. Messages are never typed into an agent's input line
+while it has text in it (a person typing there): they're held until it's
+empty. "agent status <name> -v" shows how many are held and what they wait
+for.
+
+--now types the message in even while the agent is busy (Claude takes it at
+its next tool boundary, agy queues it for its turn's end), as send always
+does for other backends. Typing is refused while the agent is at a dialog (a
+permission, question, or workspace trust prompt), where the Enter would
+answer the dialog instead; answer permission prompts with approve/deny, and
+questions with agent key. Send is also refused once the agent's session has
+ended, since the message would run in the shell left behind. --force types the message in
+without these checks, for a local agent, and only works for a person at a
+terminal. An agent on another host is addressed as name@host (needs a
+running bus); its host holds or types the message the same way.
+
+A message sent by an agent (AGENT_NAME set) starts with "[from name@host]",
+so the recipient knows where to reply. One sent without AGENT_NAME starts
+with "[from a person on host]", or "[from a Claude session on host]" from an
+AI CLI a person started (AI_AGENT or CLAUDECODE=1 set): neither has an agent
+record to reply to. A slash command ("/compact", "/model claude-fable-5-1")
+is left unmarked whoever sends it, so the CLI runs it (agent history
+still records who sent it), and is never held: a hook can't run it, so it
+is typed in now. A path ("/tmp/out.txt is ready") isn't a slash command.
+Claude's /model also saves the model as the default for every new session
+in the user's settings; to run one agent on another model, spawn it with
+--model.
+
+"Sent" means the message was typed into the agent's terminal, not that the
+agent has read it: right after a send, the agent still looks idle until it
+picks the message up. To wait for the turn it starts (or, for a held
+message, until the agent is done with it too), use
+"agent wait <name> --for idle,waiting --next".
+
+Typing into Claude waits for its input box to show the message before
+pressing Enter (a busy Claude reads an Enter that arrives with the text as
+a newline), then checks that the box emptied, pressing Enter again while it
+still shows the message, 3 times in all. If it is still there, send fails
+saying so: don't send it again; "agent key agent-<name> Enter" submits it,
+and "agent status <name>" shows it as unsent until then. If the input box
+can't be read (not on screen), send types the message and presses Enter
+without checking, and says so; status shows it as unchecked until a turn
+starts.
+
+A message is typed as a bracketed paste when the CLI asks for one (Claude
+does), so it arrives whole however the terminal splits it. Claude takes a
+typed message over 800 characters, or with 3 or more line breaks, as a
+paste, which it gives the model as pasted material rather than as the
+request. So such a message to a Claude agent whose hook reaches it is typed
+as one short line instead (its first line, cut short, and "[gomuxai message
+#N, ...]"), and the hook the prompt runs (UserPromptSubmit) hands the model
+the whole message with it, as it does held messages. Up to 10,000
+characters, the model gets it inline; beyond that, Claude saves it to a file
+and gives the model a preview and the file's path. If the hook doesn't take
+it within 3 SubmitWaits (9s), send says the agent got only the line. agy
+takes long typed messages as the request itself, and gets them typed whole.
+A held message arrives whole, however long (agy gets one over 64 KB in
+labeled parts, since it cuts longer ones; Claude, one over 10,000 characters
+as a file, as above).
+
+Usage:
+  agent send <name>[@host] <message> [flags]
+
+Examples:
+  agent send researcher "analyze the codebase structure"
+  agent send builder "run the tests" && agent wait builder --for idle,waiting --next
+  agent send builder --now "stop: the tests are already fixed"
+  agent send builder@hub "run the tests"
+
+Flags:
+      --force   Send even if the agent is at a dialog or its session has ended (local agents, people only)
+  -h, --help    help for send
+      --now     Type it in now even if the agent is busy, instead of holding it until its turn ends
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+--- stderr

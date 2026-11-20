@@ -1,9 +1,13 @@
 # macOS Code Signing Over SSH (`tools/macsign`)
 
-`make macos` embeds `cmd/agent/Info.plist` and signs `bin/agent` with an Apple
-code-signing identity so `agent bus run` can hold macOS's Local Network
-permission inside a background `g3d-termd` session (Apple TN3179; see
+`make macos` builds the two binaries, `bin/agent` (the Rust CLI) and
+`bin/agent-busd` (the Go bus server it starts), embeds
+`packaging/macos/Info.plist` in both, and signs both with an Apple
+code-signing identity. `agent-busd` is the process that dials peers on the
+LAN, so it is the one that needs the Local Network permission inside a
+background `g3d-termd` session (Apple TN3179; see
 [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md#macos-local-network)).
+The two share a bundle identifier, which is what macOS keys the grant on.
 
 When builds are triggered over SSH, `codesign` succeeds in some sessions and
 fails with `errSecInternalComponent` in others even while a user is logged in
@@ -30,9 +34,10 @@ LaunchAgent recipe for unattended builds over SSH.
   `CSSMERR_CSP_NO_USER_INTERACTION` (`-25308`) because no GUI prompt can be
   shown, and `codesign` exits with `errSecInternalComponent`.
 - **Local Network permission does not depend on daemon origin.** Once
-  `bin/agent` is signed and installed, `agent bus run` works from either an
-  `Aqua` or `Background` daemon because `responsibility_spawnattrs_setdisclaim`
-  makes the signed binary its own responsible process.
+  `bin/agent` and `bin/agent-busd` are signed and installed, the bus works
+  from either an `Aqua` or `Background` daemon because
+  `responsibility_spawnattrs_setdisclaim` makes the signed `agent-busd` its
+  own responsible process.
 
 ## Diagnose the current shell
 

@@ -1,0 +1,4 @@
+1
+--- stdout
+--- stderr
+Error: unknown flag: --zzzzzz (see agent list --help for its flags)

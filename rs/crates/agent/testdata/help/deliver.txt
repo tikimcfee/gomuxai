@@ -1,0 +1,40 @@
+Deliver types the messages held for an agent (see "agent send") into its
+terminal, oldest first, as one prompt, if the agent is at its prompt.
+
+Held messages normally reach the agent from a hook: Claude's Stop when its
+turn ends, agy's PostInvocation when its current step ends. A turn that
+ends without that hook (Esc, Ctrl+C, a deny, a failed turn) leaves
+them held, so send starts "agent deliver --wait <name>" in the background
+when it holds a message. That checks every 2s and types the held messages
+once the agent has sat at its prompt, with nothing typed in its input line,
+for 10s (time for a person who pressed Esc to type first; it never types
+into their half-written input). It exits once nothing is held, or when the
+agent's session has ended or the agent is gone. One runs per agent at a time; it logs to
+.gomuxai/agents/<name>/deliver.log.
+
+Without --wait, deliver checks once: it types the held messages now if the
+agent is at its prompt with an empty input line, and otherwise says why not. To type into a busy
+agent, use "agent send <name> --now".
+
+An agent on another host (name@host) goes over the bus, as send does: that
+host checks once and types them, if its bus serves the respond op (the
+default; it also answers approve and deny). --wait runs only on the
+agent's host.
+
+Usage:
+  agent deliver <name> [flags]
+
+Examples:
+  agent deliver helper
+  agent deliver helper@hub
+  agent deliver --wait helper
+
+Flags:
+  -h, --help   help for deliver
+      --wait   Keep checking until nothing is held (what send starts)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

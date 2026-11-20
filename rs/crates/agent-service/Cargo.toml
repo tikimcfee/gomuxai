@@ -1,0 +1,30 @@
+[package]
+name = "agent-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-base.workspace = true
+agent-allowcmd.workspace = true
+agent-store.workspace = true
+agent-termd.workspace = true
+agent-claudereg.workspace = true
+agent-transcript.workspace = true
+agent-backend.workspace = true
+agent-discovery.workspace = true
+agent-bus.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+regex.workspace = true
+uuid.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+agent-termd = { workspace = true, features = ["testing"] }
+tempfile.workspace = true

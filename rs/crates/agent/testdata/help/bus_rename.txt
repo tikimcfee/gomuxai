@@ -1,0 +1,32 @@
+Rename binds this host's bus identity to a new name. The keys stay:
+peers pin the certificate's public key and the nkey, neither of which
+names the host, so they can check the renamed host is the same machine.
+The certificate is signed again under the new name with the same key,
+the old name is kept in bus/host.previous, and bus/<new>.pub.json
+replaces bus/<old>.pub.json (its url is --url, else the old bundle's).
+
+A running bus is stopped, and started again as the new name with the
+same settings. Agents spawned before the rename keep AGENT_HOST=<old>,
+which now means the new name, and replies to <name>@<old> stay here.
+
+Each peer then re-trusts this host: agent bus trust <new>.pub.json
+--renames <old>, which rename prints. Until the hub has, this host's link
+comes up (its keys are the same), but requests to <name>@<new> don't
+reach it.
+
+Usage:
+  agent bus rename <new-name> [flags]
+
+Examples:
+  agent bus rename studio
+  agent bus rename hub2 --url tls://hub2.lan:7422   # on the hub
+
+Flags:
+  -h, --help         help for rename
+      --url string   Where this host accepts peer links, if it is the hub (default: the old bundle's)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

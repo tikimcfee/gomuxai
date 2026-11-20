@@ -1,0 +1,66 @@
+Logs prints an agent's last events, oldest first, one per line:
+
+  12:04:31 prompt run the tests
+  12:04:40 tool   Bash: go test ./... → ok (34 lines)
+  12:05:02 say    All tests pass.
+  12:05:02 system turn took 31.2s
+
+Kinds: prompt (a message it got; one that didn't come from a person
+typing says where it came from: queued, delivered, task-notification,
+peer, command, system), think (its reasoning; a bare "think" where the CLI
+kept none of its text), say (text it wrote), tool (a call and its result:
+ok, error, interrupted, running in the background, or no result yet),
+system (a record of the CLI's own: turn timing, compaction, API errors,
+interrupts). Times are local. Text longer than a line is cut and marked
+"…", a command or path in its middle so its end shows; --full prints it
+whole, with each tool's output.
+
+--json prints the events as docs/EVENTS.md describes them, one JSON
+object per line: for each transcript, a session line, then its events
+(a tool's result is an update of its call, sent again whole).
+
+The events come from the transcript the agent's CLI keeps of its session,
+whose path the CLI's hooks report (claude and agy agents):
+  claude: ~/.claude/projects/<project>/<session id>.jsonl
+  agy:    ~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript_full.jsonl
+Each path an agent used is listed in <name>.transcripts beside its terminal
+log, so logs finds them after cleanup, and across /clear and respawns under
+the same name (a line "--- session <id>" marks where one begins).
+
+--terminal prints the terminal log instead, as does logs when there is no
+transcript to read (another backend, no hook has fired yet, the file is
+gone or unparseable; a hint says which). That log is everything the
+agent's terminal showed, cleaned into text: escapes dropped, blank lines
+and screen redraws left out; it has no timestamps. Log files are in the
+data dir next to the agent binary, not in the working directory; here:
+  <data dir>/logs/<name>.log
+
+For an agent on another host, agent logs name@host prints what agent logs
+prints there, with the same flags, through the agent bus (its logs op,
+which a host serves to peers by default). A bus message holds at most
+512 KB: a longer answer keeps the newest events (whole events, whole JSON
+lines) and says on stderr how much was left out; --lines asks for fewer.
+Terminal controls are stripped from the text, as capture's are. For the
+live screen, use agent capture.
+
+Usage:
+  agent logs <name> [flags]
+
+Examples:
+  agent logs researcher
+  agent logs researcher@hub --lines 20
+  agent logs researcher --lines 10 --full
+  agent logs researcher --terminal --lines 100
+
+Flags:
+      --full        Print each event's text and tool output whole
+  -h, --help        help for logs
+      --json        Print the sessions and their events as JSON lines
+      --lines int   Number of events (or terminal lines) to print (default 50)
+      --terminal    Print the terminal log instead of the transcript
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -1,0 +1,8 @@
+{"lines":3,"partial":false,"skipped":0}
+{"session_id":"s1","harness":"claude","path":"testdata/review/t7-unicode-spaces.jsonl","size":526}
+{"id":"u1#0","op":"add","seq":0,"at":0,"line":0,"ts":"t","turn":{"id":"p1","index":1,"derived":false},"kind":"prompt","prompt":{"text":"/compact now please","origin":"human"}}
+{"id":"u2#0","op":"add","seq":1,"at":170,"line":1,"ts":"t","turn":{"id":"p2","index":2,"derived":false},"kind":"prompt","prompt":{"text":"٣ messages arrived while you were working: hi","origin":"human"}}
+{"id":"u3#0","op":"add","seq":2,"at":366,"line":2,"ts":"t","turn":{"id":"p3","index":3,"derived":false},"kind":"prompt","prompt":{"text":"/model x","origin":"human"}}
+{"id":"u1#0","op":"add","seq":0,"at":0,"line":0,"ts":"t","turn":{"id":"p1","index":1,"derived":false},"kind":"prompt","prompt":{"text":"/compact now please","origin":"human"}}
+{"id":"u2#0","op":"add","seq":1,"at":170,"line":1,"ts":"t","turn":{"id":"p2","index":2,"derived":false},"kind":"prompt","prompt":{"text":"٣ messages arrived while you were working: hi","origin":"human"}}
+{"id":"u3#0","op":"add","seq":2,"at":366,"line":2,"ts":"t","turn":{"id":"p3","index":3,"derived":false},"kind":"prompt","prompt":{"text":"/model x","origin":"human"}}

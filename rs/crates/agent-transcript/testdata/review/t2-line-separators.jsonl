@@ -1,0 +1,2 @@
+{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"s1","timestamp":"t","promptId":"p1","message":{"role":"user","content":"a b"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"s1","timestamp":"t","message":{"model":"m","id":"msg1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"x y \u2029 <&>"}}],"stop_reason":"tool_use"}}
