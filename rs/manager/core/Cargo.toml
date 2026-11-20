@@ -1,0 +1,15 @@
+# The agent manager's state and logic, with no UI: filtering, sorting, the agent tree, joining
+# agents to their sessions, selection, and the `agent` command lines an action runs. The
+# desktop GUI (the package above) draws it with Makepad; a phone UI can draw the same model.
+[package]
+name = "agent-manager-core"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+publish = false
+
+[dependencies]
+agent-manage = { path = "../../crates/agent-manage" }
+chrono = { version = "0.4", features = ["serde"] }
+serde_json = "1"

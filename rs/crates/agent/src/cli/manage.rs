@@ -198,6 +198,7 @@ pub fn run_view(ctx: &Ctx, args: &ViewArgs) -> anyhow::Result<()> {
     }
     let view = View {
         at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        host: ctx.cfg().host.clone(),
         hosts,
     };
     if args.json {

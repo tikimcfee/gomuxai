@@ -58,6 +58,10 @@ pub const DEFAULT_STALE_DAYS: i64 = 14;
 pub struct View {
     #[serde(default)]
     pub at: String,
+    /// The host that made the view: the one whose data the `agent manage`
+    /// commands act on.
+    #[serde(default)]
+    pub host: String,
     #[serde(default)]
     pub hosts: Vec<HostView>,
 }
@@ -77,7 +81,8 @@ pub struct HostView {
     /// Every recorded agent, flat; `parent` makes the tree.
     #[serde(default)]
     pub agents: Vec<AgentRow>,
-    /// Sessions, newest first, a subagent's after the session that started it.
+    /// Sessions, newest first by last write. A subagent's is wherever its own
+    /// last write puts it: group them by `parent_session`.
     #[serde(default)]
     pub sessions: Vec<SessionRow>,
     /// Sessions left out by `Request::sessions`.
