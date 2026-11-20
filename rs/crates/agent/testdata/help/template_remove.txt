@@ -1,0 +1,18 @@
+Remove takes a template out of this host's templates.json, so no host can
+start it here any more. Its agent, if there is one, is left as it is
+(agent cleanup removes it). It edits this host's file only.
+
+Usage:
+  agent template remove <template> [flags]
+
+Examples:
+  agent template remove builder
+
+Flags:
+  -h, --help   help for remove
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

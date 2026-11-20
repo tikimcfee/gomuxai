@@ -1,10 +1,8 @@
-.PHONY: all build test install macos arm64 clean lint fmt legacy
+.PHONY: all build test install macos arm64 clean lint fmt
 
 # `agent` is two programs: the Rust CLI (rs/, binary `agent`) and the bus server it starts
 # (busd/, Go, binary `agent-busd`: the embedded nats-server). They are built, installed and
 # signed together, and live side by side: `agent` looks for `agent-busd` beside itself.
-# legacy/ is the Go implementation the Rust CLI replaced, kept for the Go/Rust compatibility
-# tests (legacy/README.md); nothing here builds it but `make legacy`.
 
 BUILD_DIR = bin
 # Build output goes on disk, never in /tmp (RAM on some hosts).
@@ -33,12 +31,6 @@ lint:
 
 fmt:
 	cd rs && $(CARGO) fmt --all
-
-# Builds and vets the old Go tool in legacy/, which the Go/Rust compatibility tests in rs/
-# build against (they skip when legacy/ is gone). `test` doesn't need it: those tests
-# compile what they use themselves. Builds nothing into bin/.
-legacy:
-	cd legacy && go build ./... && go vet ./...
 
 # Install over the agent this machine runs: the one on PATH, through any symlink to the real
 # file (its store, .gomuxai/, lives beside the real file, so a second install location would

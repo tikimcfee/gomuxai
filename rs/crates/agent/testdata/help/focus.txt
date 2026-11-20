@@ -1,0 +1,41 @@
+Focus is one agent per host that has a person's attention: a display (a
+wall, a status bar) shows it, and agent fleet carries it. It is kept in
+this host's store. Setting or clearing it also publishes the change on the
+bus, for whoever follows it.
+
+  agent focus               # which agent has focus here
+  agent focus helper        # give it to an agent of this host
+  agent focus --clear       # nothing has focus
+  agent focus --host hub    # another host's, asked through its bus
+
+Only this host's focus is set or cleared here: run agent focus on the
+other host for its own. Cleaning up the focused agent clears focus.
+
+--follow prints the current focus, then a line for each change, until
+Ctrl-C. The changes come over the bus; with no bus running here, it reads
+this host's store again every second instead. What it follows is said once
+on stderr (-q drops it), so stdout holds only focus lines (JSON lines with
+--json).
+
+Usage:
+  agent focus [name] [flags]
+
+Examples:
+  agent focus
+  agent focus helper
+  agent focus --clear
+  agent focus --host hub
+  agent focus --follow --host hub --json
+
+Flags:
+      --clear         Clear this host's focus: nothing has focus
+      --follow        Print the focus, then each change, until Ctrl-C
+  -h, --help          help for focus
+      --host string   Host whose focus to show or follow (default: this host)
+      --json          Print as JSON (with --follow, a JSON line each)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

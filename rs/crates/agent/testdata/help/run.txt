@@ -1,0 +1,81 @@
+Run runs a script on disk as a job and waits for it, its output in this
+terminal, then exits with the script's exit code. It takes a file, not a
+command line, so every job leaves a record: the script's path, sha256 and
+content as it was read, who started it (an agent's name, or "user"), the
+host, the directory, its arguments, when it started and ended, and its exit
+code. Everything after the script goes to it as its arguments, flags
+included.
+
+What runs is the job's own copy of what was read,
+<data dir>/jobs/<id>/script, in the directory run was started in, so the
+record is what ran even if the file changes meanwhile. The script sees that
+copy as $0; AGENT_RUN_SCRIPT holds the original's path, and AGENT_JOB_ID
+the job's id. A script with a #! line runs with the interpreter it names,
+an executable binary as itself, anything else with sh.
+
+On Linux the job runs in its own systemd user scope
+(agent-job-<store>-<id>.scope, <store> naming this data dir) with
+MemoryHigh and MemoryMax (by default 75% and 85% of RAM) and MemorySwapMax
+0, so when memory runs out the job is what gets killed, not the terminal
+that started it. Sizes are as systemd takes them: bytes, a K, M, G or T
+suffix (24G), a percentage of RAM (80%), or infinity. The limits shown and
+recorded are the ones systemd reports for the scope, checked before the
+script starts. A limit given with --memory-high, --memory-max or
+--memory-swap-max that can't be applied (no scope, or systemd or the
+kernel not holding it) is an error, and nothing runs, unless
+--no-limit-ok; the default limits that can't be applied are said, and
+where no scope can be created the job runs without limits, its record
+saying so. On macOS it always runs that way: only the record is kept. A
+job runs once. It gets TMPDIR=/var/tmp and CARGO_BUILD_JOBS=12 unless they
+are set (even to empty). Jobs run in parallel: there is no lock.
+
+Ctrl-C reaches the job, which decides what to do with it. SIGTERM or SIGHUP
+to run stops the job (its scope, or its process) and records the end.
+
+Before each run it also asks systemd to kill g3d-termd's units last
+(ManagedOOMPreference=avoid), and says once if it can't; --no-protect skips
+that.
+
+--promote copies a script to <data dir>/scripts/<name> (--as names it, else
+the file's name does) and records its sha256, so "agent run <name>" runs it
+from any directory. A different script than the one recorded under that
+name replaces it only with --force, and a promoted script whose file has
+changed since is refused until it is promoted again.
+
+--list shows the running jobs (--all: finished ones too), and --show <id>
+one job's record, with the script as it ran. A job whose runner was killed
+shows as ended at a time not known, its exit code unknown.
+
+Usage:
+  agent run <file|name> [args...] [flags]
+
+Examples:
+  agent run build.sh
+  agent run build.sh --release -j 4     # everything after the script is its own
+  agent run --memory-max 24G --memory-high 20G build.sh
+  agent run --memory-max 24G --no-limit-ok build.sh   # run even where 24G can't be applied
+  agent run --list --all
+  agent run --show 17
+  agent run --promote build.sh --as nightly
+  agent run nightly
+
+Flags:
+      --all                      With --list: finished jobs too
+      --as string                With --promote: the name to run it by (default: the file's name)
+      --force                    With --promote: replace a different script promoted under that name
+  -h, --help                     help for run
+      --json                     With --list or --show: print as JSON
+      --list                     List the running jobs
+      --memory-high string       MemoryHigh for the job's scope: throttled above it (default: 75% of RAM)
+      --memory-max string        MemoryMax for the job's scope: killed above it (default: 85% of RAM)
+      --memory-swap-max string   MemorySwapMax for the job's scope (default: 0, no swap)
+      --no-limit-ok              Run the job even where a limit given can't be applied (saying so)
+      --no-protect               Don't ask systemd to kill g3d-termd's units last
+      --promote                  Copy the script to the shared scripts dir, to run by name
+      --show int                 Print one job's record, with the script as it ran
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

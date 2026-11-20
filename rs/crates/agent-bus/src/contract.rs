@@ -854,8 +854,6 @@ pub struct FleetHost {
     pub build: String,
     #[serde(default)]
     pub reachable: bool,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub partial: bool,
     #[serde(
         default,
         deserialize_with = "null_default",

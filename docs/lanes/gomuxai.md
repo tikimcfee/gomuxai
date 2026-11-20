@@ -10,12 +10,15 @@ the repository (it names people and machines); its Done list is quoted below.
 linked on one bus. The work is merged to `main` as one commit (`0c2eab5`); the
 branch it was built on, with its history, stays local.
 
+After that, the Go tool and what existed only for a mixed Go/Rust fleet were removed
+(see Decisions). That change is not installed anywhere: the hosts' `0c2eab5` builds
+work with it unchanged.
+
 Done list (from the brief), each shown in the lead's conversation with its command
 and output:
 
-- [x] 1. `cargo test --workspace`: 990 passed, 0 failed, 5 ignored (the ignored ones
-      are opt-in: the allowlist differential, a real-store comparison, a live oomd
-      probe, a guard probe, and one the Go skipped too). Every Go test is ported or
+- [x] 1. `cargo test --workspace`: 990 passed, 0 failed, 5 ignored at the merge (985
+      and 3 since the Go comparison tests were removed). Every Go test was ported or
       accounted for, and every Parity command is run end to end as a subprocess.
 - [x] 2. The Rust `agent` is installed on the hub and on the Mac (signed, with the
       embedded Info.plist, built in the Mac's GUI-session termd daemon). `agent
@@ -51,9 +54,19 @@ Decisions, and why:
   run of the binary. It is stricter than the Go's, on purpose (see Traps).
 - **termd client**: the `g3d` and `g3d-wire` crates from glyph3d-js, as git
   dependencies pinned by commit in `rs/Cargo.toml`.
-- **The Go code moved to `legacy/`** rather than being deleted: four tests build
-  against it to prove a Go host and a Rust host agree (the shared store, the mixed
-  bus, bus identities, export output), plus the opt-in allowlist differential.
+- **The Go code is gone from the tree.** It was kept in `legacy/` through the
+  rollout, for four tests proving a Go host and a Rust host agree (the shared store,
+  the mixed bus, bus identities, export output) and an allowlist differential. Once
+  all three hosts ran Rust, the owner had it removed with those tests; commit
+  `0c2eab5` is the last that has them.
+- **No fallback for a peer that doesn't serve `fleet`.** `agent fleet` used to show
+  such a host from its `list` reply (`partial: list only`). Now it is `unreachable`,
+  with the error, and `FleetHost` has no `partial` field.
+- **Help fixtures are the Rust tool's own snapshots** (they were the Go's output plus
+  a list of allowed differences). `UPDATE_HELP_FIXTURES=1 cargo test -p agent --test
+  help_fixtures` rewrites them; a test fails if a listed command has no fixture.
+- **`agent_base::gostd` stays.** It is the format of what is on disk and on the wire,
+  not a compatibility layer: replacing it would mean a store migration.
 - **Mixed team**: three agy Carbon helpers on the wall (termd, transcript/docs, bus)
   and Opus subagents; every crate was reviewed by the other model, and each review's
   findings were fixed with regression tests. Reports are in `rs/reports/` (local).
@@ -68,9 +81,6 @@ Nothing blocks. Left over, for whoever picks the lane up:
   on `/userdata` by hand, which its boot script leaves alone. Its image still pins
   the Go build. The phone's image lane should pin the bundle under
   Where things are when it next builds an image, and add `agent-busd` beside `agent`.
-- **Delete `legacy/`** once nobody needs the Go/Rust compatibility tests: every host
-  now runs Rust, so that is a judgement call, not a wait. The five tests skip with a
-  message when it is gone.
 - **glyph3d lead**: tell them `agent` depends on their `g3d` and `g3d-wire` crates by
   git commit (their agent was ended when this was decided), and that `agent-termd`
   carries checks their client lacks (socket dir owner and mode, peer uid, scrubbed
@@ -95,7 +105,7 @@ Nothing blocks. Left over, for whoever picks the lane up:
 
 - **The Go allowlist approved `agent list \` + CR + LF + `<another command>`** as one
   safe command, and the shell ran the second line. The Rust refuses it. Any host put
-  back on a Go build gets the hole back.
+  back on a Go build (the `agent.go-84b9c94` rollback binary) gets the hole back.
 - **Tests never touch the live fleet.** `agent-termd` refuses, at run time, any
   connection from a Rust test binary that isn't inside a private socket dir. Don't
   weaken it; `docs/DEVELOPMENT.md` says how tests get a private termd and bus.
@@ -116,9 +126,9 @@ Nothing blocks. Left over, for whoever picks the lane up:
 ## Where things are
 
 - `rs/`: the Cargo workspace (`rs/crates/agent` is the binary; one crate per area,
-  mapped in `docs/ARCHITECTURE.md`). `busd/`: the Go bus server. `legacy/`: the Go
-  tool this replaced. `packaging/macos/Info.plist`: embedded in both macOS binaries.
-- `Makefile`: `build`, `test`, `lint`, `install`, `macos`, `arm64`, `legacy`.
+  mapped in `docs/ARCHITECTURE.md`). `busd/`: the Go bus server.
+  `packaging/macos/Info.plist`: embedded in both macOS binaries.
+- `Makefile`: `build`, `test`, `lint`, `install`, `macos`, `arm64`.
 - `docs/FLEET.md`: the design of fleet, focus, templates, run, skill, revive.
   `docs/RUST-PORT.md`: the porting rulebook, kept as the record.
 - The arm64 bundle for the phone: `bin/arm64-0c2eab5/` in this checkout on

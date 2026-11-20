@@ -1,0 +1,66 @@
+Revive is resume plus the handover. It brings back an agent whose CLI has
+ended ("agent list" shows "ended (...)") on its own conversation, keeping
+its name, backend, parent, model and state, and then sends it the
+re-brief: where its handoff doc is, and that it should read it and carry
+on.
+
+How it comes back depends on its pane:
+  - Nothing runs there (its session is gone, or its shell sits at its
+    prompt with nothing running under it): revive continues its last
+    session exactly as agent resume does (claude and agy, with resume's
+    refusals), in a new session of gomuxai's own.
+  - A CLI of its backend runs there again, because a person started one in
+    the agent's own pane (say, after it quit to log in again): revive takes
+    that running CLI as the agent's, launching nothing, so status reads it
+    again and agent send reaches it. Only a CLI revive identifies counts:
+    run under the pane's shell by you, the backend's CLI on PATH (resolved,
+    not by name), in an interactive session, not a one-shot command (agy
+    changelog, claude -p); for claude, a session Claude Code's session
+    registry proves. An agy started by hand runs without the hooks agent
+    wires at launch: its status comes from its screen, and messages held
+    for it go in once it is at its prompt, until it is restarted through
+    gomuxai (quit it, then run agent revive <name> once more).
+  - Anything else runs there, or the pane can't be read: revive refuses,
+    naming the process, and kills nothing. Look with agent capture <name>,
+    quit it, and revive again; agent resume <name> replaces it knowingly.
+
+The handoff doc is, in order: --handoff FILE (a relative path is taken
+from where you run revive; stored as the agent's state key handoff, so
+the next revive uses it too), the state key handoff (set by agent spawn
+--handoff, or agent state set <name> handoff <file>; a relative path is
+taken from the agent's directory), or docs/lanes/<name>.md in the agent's
+directory when that file exists. It must be a regular file; a state key
+naming one that isn't there is an error, checked before anything happens.
+With none, the re-brief says only that it was revived. The re-brief names
+the doc's path, never its content. It waits up to 15s for the agent to be
+at its prompt with an empty input line, then goes in as agent send sends
+(after any messages held for it); otherwise it is held, and goes in once
+it is (an agent at its workspace trust prompt gets it once the prompt is
+approved). --no-brief sends none.
+
+An agent that hasn't ended is left as it is: revive says what it is doing,
+and agent send re-briefs it as it runs. An adopted agent is refused, as
+agent resume refuses it. Inside an agent (AGENT_NAME set), you can revive
+only your own helpers and theirs. Revive works on this host's agents: run
+it on another host for that host's.
+
+Usage:
+  agent revive <name> [flags]
+
+Examples:
+  agent revive helper
+  agent revive helper --handoff docs/lanes/helper.md
+  agent revive helper --no-brief
+
+Flags:
+      --handoff string     Handoff doc to re-brief it from; stored as its state key handoff
+  -h, --help               help for revive
+      --no-brief           Bring it back without sending the re-brief
+      --skip-permissions   Pass --dangerously-skip-permissions to Claude or Agy, if it is launched (use with caution)
+      --trust-workspace    Confirm the CLI's workspace trust prompt, if it is launched (use with caution)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

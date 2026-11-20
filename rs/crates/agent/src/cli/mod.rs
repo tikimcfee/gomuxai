@@ -119,7 +119,6 @@ macro_rules! commands {
 commands! {
     // revive is new in the Rust build, like run below.
     agents "Agents:" { spawn adopt resume revive attach list cleanup export sessions }
-    // New in the Rust build too (docs/FLEET.md), allowed by name like run.
     fleet "Fleet:" { fleet focus template }
     messages "Messages:" { send queue deliver watch }
     status "Status and waiting:" {
@@ -127,8 +126,6 @@ commands! {
         hooks [hooks::hook_def]
     }
     state "State and tasks:" { state task }
-    // New in the Rust build: help_fixtures.rs and help_diff.sh allow it by name
-    // in the root help they compare with the Go's.
     jobs "Jobs:" { run }
     bus "Machines (bus):" { bus }
     tool "About this tool:" { friction history skill version }

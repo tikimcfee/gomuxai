@@ -29,10 +29,9 @@ Each flag is decided from the store and the CLIs' own records:
   ended (quit), still recorded    ended, and not cleaned up
   name mismatch: session is "x"   the CLI's session name or title isn't the agent's name
 
-A peer on an older agent, which doesn't serve fleet, is shown from what
-its list answers ("partial: list only"); one that doesn't answer is shown
-as unreachable, with why. With no bus running here, fleet shows this host
-only. --host shows one host.
+A peer that doesn't answer (its bus is down, not linked, or doesn't list
+fleet in its --remote-ops) is shown as unreachable, with why. With no bus
+running here, fleet shows this host only. --host shows one host.
 
 --report prints a baseline per host instead: agents by status and by
 backend, sessions in the last 7 days by harness, messages sent per day

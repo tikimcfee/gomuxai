@@ -39,14 +39,6 @@ pub fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The Go module the Rust tool replaced (legacy/README.md), when this checkout
-/// still has it: the mixed Go/Rust tests build a helper against its
-/// internal/natsbus, and skip without it.
-pub fn legacy_go_root() -> Option<PathBuf> {
-    let root = repo_root().join("legacy");
-    root.join("internal/natsbus").is_dir().then_some(root)
-}
-
 pub fn has_go() -> bool {
     Command::new("go")
         .arg("version")

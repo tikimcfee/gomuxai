@@ -1,7 +1,8 @@
 # Porting `agent` to Rust: the map and the rules
 
-**The port is done (2026-11-20).** The Go this page refers to is under `legacy/`
-([`legacy/README.md`](../legacy/README.md)), and the rules that outlive the port are in
+**The port is done (2026-11-20).** The Go this page refers to was removed from the tree
+once every host ran the Rust build (it is in git history, last at commit `0c2eab5` under
+`legacy/`, with the tests that compared the two), and the rules that outlive the port are in
 [`docs/DEVELOPMENT.md`](DEVELOPMENT.md); the rest of this page is the record.
 
 For everyone working on the rewrite. The Go code

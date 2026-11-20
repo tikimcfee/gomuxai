@@ -573,8 +573,8 @@ running here, this host only, said in a stderr hint) and flags what needs a
 look strictly from state: `stuck: waiting ...` (> 10m), `stuck: N held, oldest
 ...` (3+ held messages, or oldest > 10m), `ended (...), still recorded`, `name
 mismatch: session is "..."`, running `agent run` jobs, handoff docs older than
-their repo's last commit, and open friction. A peer on an older `agent` answers
-via `list` (`partial: list only`). `focus` keeps one focused agent per host in
+their repo's last commit, and open friction. A peer that doesn't answer `fleet`
+is shown as `unreachable`, with why. `focus` keeps one focused agent per host in
 this host's store (set or cleared only on its own host), carried in `fleet`;
 `--follow` announces what it follows on stderr (`-q` drops it), streams changes
 over the bus, or with no bus running here re-reads this host's store every
@@ -852,7 +852,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `send` says the message is still in the input box; `status` shows `unsent:` | Enter didn't submit it: `agent key agent-<name> Enter` does. Don't send it again. |
 | Leftover session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one; if it has ended, `agent resume <name>` or `agent revive <name>` continues it. |
-| `agent fleet` shows a host as `partial` | That host runs an older `agent` (or doesn't list `fleet` in `--remote-ops`), so `fleet` fell back to `list`: upgrade `agent` and `agent-busd` there and `agent bus restart`. |
+| `agent fleet` shows a linked host as `unreachable` | Its bus doesn't list `fleet` in `--remote-ops` (settings saved before `fleet` existed win over the defaults): on that host, `agent bus restart --remote-ops <its list>,fleet,template`. |
 | `agent run` says `runs without memory limits` or `couldn't ask systemd to spare g3d-termd's units` | On macOS or Linux without a user `systemd` manager, jobs run plainly with provenance only (`agent run --show <id>`); where `systemd-oomd` watches the root-owned user slice rather than user units, the job's own `MemoryMax` + `MemorySwapMax=0` scope is what protects the terminal (`--no-protect` skips the `g3d-termd` check). |
 | After `agent revive`, an agy agent says it runs without hooks | A person started `agy` by hand in its pane, without the `--add-dir` hooks `agent` wires at launch (status comes from its screen and messages are typed): quit `agy` there and run `agent revive <name>` again so `agent` launches it. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |
@@ -947,8 +947,7 @@ Known gaps; `agent friction list` has the rest.
 - `export --hosts` lists other hosts through `list` only: no store or
   transcript for them, and `--follow` re-lists them every 30s (`agent fleet`
   queries full host snapshots). A host on an older `agent` sends no `detail`,
-  `session_id`, `cwd`, `attached` or `resumable` (and shows as `partial` in
-  `agent fleet`): absent means unknown.
+  `session_id`, `cwd`, `attached` or `resumable`: absent means unknown.
 
 ## Custom Backends
 

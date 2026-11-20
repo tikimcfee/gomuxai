@@ -1,0 +1,45 @@
+Fleet shows one view across this host and every peer its bus trusts,
+asked at once (3s each). For each host: which agent has focus (agent
+focus), its agents as a tree (as agent list nests them) with flags on the
+ones that need a look, its running jobs (agent run), handoff docs older
+than their repo's last commit, and its open friction. Sections with
+nothing in them are left out.
+
+Each flag is decided from the store and the CLIs' own records:
+  stuck: waiting 14m              waiting on a person for over 10 minutes
+  stuck: 3 held, oldest 12m       3 or more held messages, or one older than 10 minutes
+  ended (quit), still recorded    ended, and not cleaned up
+  name mismatch: session is "x"   the CLI's session name or title isn't the agent's name
+
+A peer that doesn't answer (its bus is down, not linked, or doesn't list
+fleet in its --remote-ops) is shown as unreachable, with why. With no bus
+running here, fleet shows this host only. --host shows one host.
+
+--report prints a baseline per host instead: agents by status and by
+backend, sessions in the last 7 days by harness, messages sent per day
+over 7 days, friction open and resolved by kind, and sessions running for
+over 3 days with how often each was compacted.
+
+--json prints the view as one JSON document: {"at", "hosts": [...]}, each
+host as docs/FLEET.md describes (with its "report" under --report).
+
+Usage:
+  agent fleet [flags]
+
+Examples:
+  agent fleet
+  agent fleet --host hub
+  agent fleet --report
+  agent fleet --json
+
+Flags:
+  -h, --help          help for fleet
+      --host string   Show only this host (default: this host and every trusted peer)
+      --json          Print the view as one JSON document
+      --report        Print each host's baseline numbers instead of its tree
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

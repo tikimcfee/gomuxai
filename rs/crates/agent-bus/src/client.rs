@@ -112,8 +112,8 @@ pub fn is_timeout(err: &anyhow::Error) -> bool {
 
 /// Reports whether `err` means `host` did not answer the op at all
 /// ([`NoRespondersError`] or [`TimeoutError`]), as opposed to a [`RemoteError`]
-/// returned by the handler or a local bus failure. Callers such as `fleet` use
-/// this to recognize an older or non-serving host and fall back to `list`.
+/// returned by the handler or a local bus failure: the host is down, not linked,
+/// or its bus doesn't serve the op.
 pub fn is_unanswered(err: &anyhow::Error) -> bool {
     is_no_responders(err) || is_timeout(err)
 }
@@ -845,7 +845,7 @@ impl RpcClient {
     }
 
     /// Queries `host`'s `fleet` view (3s default timeout), sanitizing remote text.
-    /// When `host` is an older Go build or doesn't allow `fleet`, fails with
+    /// When `host` doesn't allow `fleet`, fails with
     /// [`NoRespondersError`] or [`TimeoutError`] (see [`is_unanswered`]).
     pub fn fleet(&self, ctx: &Context, host: &str, req: FleetRequest) -> anyhow::Result<FleetHost> {
         let client = self.with_fleet_timeout();

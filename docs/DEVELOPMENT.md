@@ -8,10 +8,8 @@ internal design, read [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) and
 ## Build environment
 
 `gomuxai` builds two binaries that live side by side: the Rust CLI `agent`
-(`rs/`) and the Go bus server `agent-busd` (`busd/`). `legacy/` is the Go `agent`
-the Rust one replaced, kept only for the Go/Rust compatibility tests and the one
-host still on the Go build ([`legacy/README.md`](../legacy/README.md)); `make
-legacy` builds and vets it, and nothing else depends on it.
+(`rs/`) and the Go bus server `agent-busd` (`busd/`). The Go `agent` the Rust
+one replaced is gone from the tree; its last commit is `0c2eab5` (`legacy/`).
 
 Keep build artifacts and scratch files on disk, never in `/tmp` (which is
 `tmpfs`/RAM on Linux hosts):
@@ -47,8 +45,11 @@ cargo test -p <crate>
 - Every CLI command's `short`, task group, and `example` lines are enforced by
   `help_layout` and `help_examples_parse` (`rs/crates/agent/src/cli/commands_test.rs`).
   When adding or changing flags or arguments, update the command's `example` in
-  the same commit (and update `rs/crates/agent/testdata/` if help or usage
-  fixtures in `rs/crates/agent/tests/help_fixtures.rs` apply).
+  the same commit. Help and usage errors are snapshots in
+  `rs/crates/agent/testdata/` (`rs/crates/agent/tests/help_fixtures.rs`): after
+  changing them on purpose, run `UPDATE_HELP_FIXTURES=1 cargo test -p agent
+  --test help_fixtures` and read the diff. A new command needs a line in
+  `testdata/help/paths.txt`.
 - Errors should state what failed, what was found, and what to try next; action
   commands must never succeed silently with empty stdout. Wrap causes with
   `anyhow::Context` (`.context("...")`) and print errors with `{:#}` for

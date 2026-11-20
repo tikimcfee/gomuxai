@@ -173,7 +173,7 @@ fn test_focus_remote_hint_only_for_a_host_that_answers() {
     res.unwrap_err();
     assert_eq!(
         h.hub.take_err(),
-        "hint: old serves focus from an agent built with it, and only if its bus allows fleet (agent bus status there shows what it allows; agent list --host old lists its agents)\n"
+        "hint: old serves focus only if its bus allows fleet (agent bus status there shows what it allows; agent list --host old lists its agents)\n"
     );
 }
 

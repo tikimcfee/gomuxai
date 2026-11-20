@@ -136,7 +136,7 @@ pub fn run_remote_logs(ctx: &Ctx, r: &AgentRef, req: LogsRequest) -> anyhow::Res
         Err(e) => {
             if is_no_responders(&e) {
                 ctx.hint(format!(
-                    "{} serves logs from an agent built with it; an older one doesn't (agent capture {} shows its screen)",
+                    "{} serves logs only if its bus allows them (agent bus status there shows what it allows; agent capture {} shows its screen)",
                     r.host, r
                 ));
             }

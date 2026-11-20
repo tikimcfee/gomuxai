@@ -70,3 +70,16 @@ completion bash
 completion zsh
 completion fish
 completion powershell
+revive
+fleet
+focus
+template
+template list
+template start
+template resume
+template add
+template remove
+run
+skill
+skill install
+skill show

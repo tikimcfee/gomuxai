@@ -991,7 +991,7 @@ fn local_tree_sections_render_and_baseline_report() {
             .unwrap();
 
             assert_eq!(fh.host, "hub-main");
-            assert!(fh.reachable && !fh.partial);
+            assert!(fh.reachable);
             assert!(!fh.build.is_empty());
             assert_eq!(fh.focus.as_ref().unwrap().agent, "helper-a");
 
@@ -1125,12 +1125,12 @@ fn single_view(h: FleetHost) -> FleetView {
     }
 }
 
-/// Minimal handler standing in for an older Go peer that serves only `list`.
-struct LegacyListOnlyHandler {
+/// Minimal handler for a peer whose bus serves `list` but not `fleet`.
+struct ListOnlyHandler {
     agents: Vec<AgentInfo>,
 }
 
-impl Handler for LegacyListOnlyHandler {
+impl Handler for ListOnlyHandler {
     fn list(&self, _ctx: &Context) -> anyhow::Result<ListResponse> {
         Ok(ListResponse {
             agents: self.agents.clone(),
@@ -1198,14 +1198,14 @@ impl Handler for LegacyListOnlyHandler {
 }
 
 #[test]
-fn gather_with_rust_peer_legacy_list_peer_and_unreachable_peer() {
+fn gather_with_rust_peer_list_list_peer_and_unreachable_peer() {
     with_hard_deadline(
-        "gather_with_rust_peer_legacy_list_peer_and_unreachable_peer",
+        "gather_with_rust_peer_list_list_peer_and_unreachable_peer",
         HARD_TEST_DEADLINE,
         || {
             let hub = TestHost::new("hub-g");
             let peer_rust = TestHost::new("peer-rust");
-            let peer_legacy = TestHost::new("peer-legacy");
+            let peer_list = TestHost::new("peer-list");
             let peer_dead = TestHost::new("peer-dead");
 
             let builder_session = peer_rust.cfg.session_name("builder");
@@ -1224,17 +1224,17 @@ fn gather_with_rust_peer_legacy_list_peer_and_unreachable_peer() {
 
             let hub_id = init_identity(hub.bus_dir(), "hub-g").unwrap();
             let rust_id = init_identity(peer_rust.bus_dir(), "peer-rust").unwrap();
-            let legacy_id = init_identity(peer_legacy.bus_dir(), "peer-legacy").unwrap();
+            let list_id = init_identity(peer_list.bus_dir(), "peer-list").unwrap();
             let dead_id = init_identity(peer_dead.bus_dir(), "peer-dead").unwrap();
 
             let hub_leaf_port = free_local_port();
             let hub_tls_url = format!("tls://127.0.0.1:{hub_leaf_port}");
 
-            for peer in [&rust_id, &legacy_id, &dead_id] {
+            for peer in [&rust_id, &list_id, &dead_id] {
                 trust_peer(hub.bus_dir(), peer.public_bundle("")).unwrap();
             }
             trust_peer(peer_rust.bus_dir(), hub_id.public_bundle(&hub_tls_url)).unwrap();
-            trust_peer(peer_legacy.bus_dir(), hub_id.public_bundle(&hub_tls_url)).unwrap();
+            trust_peer(peer_list.bus_dir(), hub_id.public_bundle(&hub_tls_url)).unwrap();
 
             let rust_handler = Arc::new(new_rpc_handler_with(
                 Arc::clone(&peer_rust.service),
@@ -1248,7 +1248,7 @@ fn gather_with_rust_peer_legacy_list_peer_and_unreachable_peer() {
                 },
             )) as Arc<dyn Handler>;
 
-            let legacy_handler = Arc::new(LegacyListOnlyHandler {
+            let list_handler = Arc::new(ListOnlyHandler {
                 agents: vec![
                     AgentInfo {
                         name: "old-lead".into(),
@@ -1276,23 +1276,23 @@ fn gather_with_rust_peer_legacy_list_peer_and_unreachable_peer() {
                 0,
                 Some((rust_handler, ALL_OPS.to_vec())),
             );
-            let _legacy_bus = start_bus_daemon(
-                &peer_legacy.bus_dir(),
-                "peer-legacy",
+            let _list_bus = start_bus_daemon(
+                &peer_list.bus_dir(),
+                "peer-list",
                 0,
-                Some((legacy_handler, vec![OP_LIST])),
+                Some((list_handler, vec![OP_LIST])),
             );
 
             let rpc = RpcClient::new(hub_bus.conn.clone(), DEFAULT_RPC_TIMEOUT);
             wait_until_peer_reachable(&rpc, "peer-rust");
-            wait_until_peer_reachable(&rpc, "peer-legacy");
+            wait_until_peer_reachable(&rpc, "peer-list");
 
             let local_snap =
                 fleet::local(&hub.service, &hub.store, &hub.cfg, &FleetOptions::default()).unwrap();
 
             let peers = vec![
                 "peer-rust".to_string(),
-                "peer-legacy".to_string(),
+                "peer-list".to_string(),
                 "peer-dead".to_string(),
             ];
             let view = fleet::gather(
@@ -1304,27 +1304,23 @@ fn gather_with_rust_peer_legacy_list_peer_and_unreachable_peer() {
             assert_eq!(view.hosts.len(), 4);
 
             assert_eq!(view.hosts[0].host, "hub-g");
-            assert!(view.hosts[0].reachable && !view.hosts[0].partial);
+            assert!(view.hosts[0].reachable);
 
             let h_rust = &view.hosts[1];
             assert_eq!(h_rust.host, "peer-rust");
-            assert!(h_rust.reachable && !h_rust.partial);
+            assert!(h_rust.reachable);
             assert!(!h_rust.build.is_empty());
             assert_eq!(h_rust.focus.as_ref().unwrap().agent, "builder");
             assert_eq!(h_rust.agents.len(), 1);
             assert_eq!(h_rust.agents[0].name, "builder");
 
-            let h_legacy = &view.hosts[2];
-            assert_eq!(h_legacy.host, "peer-legacy");
-            assert!(h_legacy.reachable && h_legacy.partial);
-            assert_eq!(h_legacy.agents.len(), 1);
-            assert_eq!(h_legacy.agents[0].name, "old-lead");
-            assert_eq!(h_legacy.agents[0].children.len(), 1);
-            assert_eq!(h_legacy.agents[0].children[0].name, "old-helper");
-            assert_eq!(
-                h_legacy.agents[0].children[0].flags,
-                vec!["ended (quit), still recorded"]
-            );
+            let h_list = &view.hosts[2];
+            assert_eq!(h_list.host, "peer-list");
+            // A peer that doesn't serve fleet is unreachable for it: no
+            // falling back to its list.
+            assert!(!h_list.reachable);
+            assert!(!h_list.error.is_empty());
+            assert!(h_list.agents.is_empty());
 
             let h_dead = &view.hosts[3];
             assert_eq!(h_dead.host, "peer-dead");
@@ -1333,7 +1329,7 @@ fn gather_with_rust_peer_legacy_list_peer_and_unreachable_peer() {
 
             let rendered = fleet::render(&view);
             assert!(rendered.contains("peer-rust (build "));
-            assert!(rendered.contains("peer-legacy (partial: list only)"));
+            assert!(rendered.contains("peer-list: unreachable ("));
             assert!(rendered.contains("peer-dead: unreachable ("));
 
             let local_only = fleet::gather(local_snap, None, &peers, &FleetOptions::default());
