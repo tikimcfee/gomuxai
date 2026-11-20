@@ -1,0 +1,24 @@
+Install writes the agent skill for each harness found on this machine (its
+CLI on PATH, or its config dir): Claude Code gets
+<config dir>/skills/agent/SKILL.md ($CLAUDE_CONFIG_DIR, else ~/.claude)
+and gomuxai's hook in its user settings (as agent hooks install; the
+settings file is copied to backups/ in the data dir first), and agy gets
+~/.gemini/config/skills/agent/SKILL.md. --harness installs for that one,
+found or not. Files that already say the same are left as they are.
+
+Usage:
+  agent skill install [flags]
+
+Examples:
+  agent skill install
+  agent skill install --harness agy
+
+Flags:
+      --harness string   Harness to install for: claude or agy (default: every one found)
+  -h, --help             help for install
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

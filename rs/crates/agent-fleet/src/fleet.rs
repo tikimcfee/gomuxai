@@ -16,9 +16,8 @@ use agent_base::buildinfo;
 use agent_base::config::Config;
 use agent_base::gostd::strconv;
 use agent_bus::{
-    AgentInfo, Context, FLEET_TIMEOUT, FleetAgent, FleetFriction, FleetHost, FleetJob,
-    FleetLongSession, FleetReport, FleetRequest, FleetView, ListResponse, OP_FLEET, RpcClient,
-    Time, is_unanswered,
+    Context, FLEET_TIMEOUT, FleetAgent, FleetFriction, FleetHost, FleetJob, FleetLongSession,
+    FleetReport, FleetRequest, FleetView, RpcClient, Time,
 };
 use agent_discovery::{Overrides as DiscoveryOverrides, dirs as discovery_dirs, new_index};
 use agent_service::{
@@ -251,7 +250,6 @@ pub fn local(
         host: cfg.host.clone(),
         build: buildinfo::id(),
         reachable: true,
-        partial: false,
         error: String::new(),
         agents,
         focus: focus_ev,
@@ -306,41 +304,8 @@ pub fn agent_flags(agent: &FleetAgent, now: Time) -> Vec<String> {
     flags
 }
 
-/// Builds a partial [`FleetHost`] from an older host's `list` reply.
-pub fn from_list_response(host: &str, list: ListResponse, now: Time) -> FleetHost {
-    let flat: Vec<FleetAgent> = list
-        .agents
-        .into_iter()
-        .map(|a: AgentInfo| {
-            let mut fa = FleetAgent {
-                name: a.name,
-                session: a.session,
-                spawned_by: a.spawned_by,
-                backend: a.backend,
-                status: a.status,
-                end_reason: a.end_reason,
-                detail: a.detail,
-                session_id: a.session_id,
-                cwd: a.cwd,
-                ..Default::default()
-            };
-            fa.flags = agent_flags(&fa, now);
-            fa
-        })
-        .collect();
-
-    FleetHost {
-        host: host.to_string(),
-        reachable: true,
-        partial: true,
-        agents: build_agent_tree(flat),
-        ..Default::default()
-    }
-}
-
-/// Queries a single remote `host` over `rpc` (3s timeout), falling back to
-/// `list` (`partial: true`) when `fleet` is unanswered/unserved, or returning
-/// `reachable: false` with `error` when neither succeeds.
+/// Queries a single remote `host` over `rpc` (3s timeout), returning
+/// `reachable: false` with `error` when it doesn't answer `fleet`.
 pub fn query_host(rpc: &RpcClient, host: &str, opts: &Options) -> FleetHost {
     try_query_host(rpc, host, opts).unwrap_or_else(|err| FleetHost {
         host: host.to_string(),
@@ -351,33 +316,23 @@ pub fn query_host(rpc: &RpcClient, host: &str, opts: &Options) -> FleetHost {
 }
 
 /// [`query_host`] for one host asked on its own (`agent fleet --host`): the
-/// error itself when neither `fleet` nor `list` answered, for the caller to
+/// error itself when `fleet` wasn't answered, for the caller to
 /// report (an unknown or offline host is a failed command there, not a row
 /// in a view).
 pub fn try_query_host(rpc: &RpcClient, host: &str, opts: &Options) -> Result<FleetHost> {
-    let now = opts.now.unwrap_or_else(Time::now);
     let ctx = Context::background();
-    match rpc.fleet(
+    let mut fh = rpc.fleet(
         &ctx,
         host,
         FleetRequest {
             report: opts.report,
         },
-    ) {
-        Ok(mut fh) => {
-            if fh.host.is_empty() {
-                fh.host = host.to_string();
-            }
-            fh.reachable = true;
-            Ok(fh)
-        }
-        Err(fleet_err) if is_unanswered(&fleet_err) || is_fleet_unserved(&fleet_err) => {
-            let (list_ctx, _cancel) = Context::with_timeout(&ctx, GATHER_TIMEOUT);
-            let list = rpc.list_host(&list_ctx, host)?;
-            Ok(from_list_response(host, list, now))
-        }
-        Err(err) => Err(err),
+    )?;
+    if fh.host.is_empty() {
+        fh.host = host.to_string();
     }
+    fh.reachable = true;
+    Ok(fh)
 }
 
 /// Queries `local` plus every peer in `hosts` concurrently (3s budget each).
@@ -596,9 +551,6 @@ pub fn render_report(view: &FleetView) -> String {
             continue;
         }
         let Some(ref rep) = host.report else {
-            if host.partial {
-                out.push_str("  (no report: older agent)\n");
-            }
             continue;
         };
 
@@ -690,9 +642,6 @@ fn write_host_header(out: &mut String, host: &FleetHost) {
     let mut notes = Vec::new();
     if !host.build.is_empty() {
         notes.push(format!("build {}", host.build));
-    }
-    if host.partial {
-        notes.push("partial: list only".to_string());
     }
     if notes.is_empty() {
         let _ = writeln!(out, "{name}");
@@ -1044,11 +993,6 @@ fn count_compactions(path: &str) -> i64 {
     } else {
         summaries
     }
-}
-
-fn is_fleet_unserved(err: &anyhow::Error) -> bool {
-    let msg = format!("{err:#}");
-    msg.contains(&format!("doesn't serve {OP_FLEET}"))
 }
 
 fn elapsed_between(now: Time, then: Time) -> Duration {

@@ -81,18 +81,23 @@ pass it again to status, wait, and watch for that agent.
 On another host: name@host (or --host) starts the agent on that host
 through the agent bus, as status, send and wait reach it there. That host's
 bus must allow it: spawn is off for other hosts unless its --remote-ops lists
-it (agent bus start --remote-ops list,status,capture,send,respond,friction,logs,spawn).
+it (agent bus start --remote-ops list,status,capture,send,respond,friction,logs,fleet,template,spawn).
 Paths are that host's: --cwd must be absolute there, and without it the
 agent starts in the home directory of the user its bus runs as; a task file
 is a path there, relative to --cwd. --task is read from this host's tasks
 and sent as the first message. --resume, --attach, --skip-permissions,
---trust-workspace and --backend-config only work on the agent's own host:
-run spawn there for those (so --cwd must be a directory the CLI already
-trusts there, or a person there confirms its trust prompt). An agent
+--trust-workspace, --handoff and --backend-config only work on the agent's
+own host: run spawn there for those (so --cwd must be a directory the CLI
+already trusts there, or a person there confirms its trust prompt). An agent
 spawned by agent lead on host laptop is recorded on the other host as a
 helper of lead@laptop, so it can reply with agent send lead@laptop; the
 other host takes that name on trust. cleanup doesn't reach other hosts:
 clean the agent up on its host.
+
+--handoff names the agent's handoff doc, the file that says where its work
+stands: spawn stores its absolute path as the agent's state key handoff,
+and agent revive re-briefs the agent from it (without one, revive looks
+for docs/lanes/<name>.md in the agent's directory).
 
 Usage:
   agent spawn <name>[@host] [task-file] [flags]
@@ -114,6 +119,7 @@ Flags:
       --attach             Open the agent's session in this terminal once it starts
   -c, --continue           Continue the session the CLI's own --continue would pick here (claude, agy): its most recent one in this directory, or --cwd's
       --cwd string         Directory the agent starts in (on another host: an absolute path there)
+      --handoff string     The agent's handoff doc, stored as its state key handoff (agent revive re-briefs it from there)
   -h, --help               help for spawn
       --host string        Start the agent on this host, through the agent bus (same as name@host)
       --model string       Model the CLI runs on, passed as its --model (claude, agy, aider); resume keeps it

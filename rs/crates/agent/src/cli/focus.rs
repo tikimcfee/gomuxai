@@ -168,7 +168,7 @@ fn remote_focus(ctx: &Ctx, host: &str) -> anyhow::Result<FocusEvent> {
         Err(e) => {
             if answers_list.get() {
                 ctx.hint(format!(
-                    "{host} serves focus from an agent built with it, and only if its bus allows fleet (agent bus status there shows what it allows; agent list --host {host} lists its agents)"
+                    "{host} serves focus only if its bus allows fleet (agent bus status there shows what it allows; agent list --host {host} lists its agents)"
                 ));
             }
             Err(e)
@@ -346,7 +346,7 @@ fn follow(ctx: &Ctx, host: &str, remote: bool, json: bool) -> anyhow::Result<()>
         Err(e) => {
             if answers_list {
                 ctx.hint(format!(
-                    "{host} serves focus from an agent built with it, and only if its bus allows fleet (agent bus status there shows what it allows)"
+                    "{host} serves focus only if its bus allows fleet (agent bus status there shows what it allows)"
                 ));
             }
             Err(e)

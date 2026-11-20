@@ -26,11 +26,17 @@ Agents:
   spawn       Start a new agent in its own g3d-termd session
   adopt       Create a bus entry for an existing g3d-termd session
   resume      Start an ended agent again, continuing its last session; --all: every one a reboot ended
+  revive      Bring an ended agent back on its own conversation and re-brief it from its handoff doc
   attach      Open an agent's session in this terminal
   list        List the agents on this host (or another)
   cleanup     Stop agents and delete their records
   export      Print the agent tree for a program to read, and follow its changes
   sessions    List the agent sessions on this host, spawned by agent or not: the newest 25, or filtered
+
+Fleet:
+  fleet       Show the agents of this host and every linked peer, and what needs a look
+  focus       Show, set or follow which agent has focus on a host
+  template    Start agents from the templates a host agrees to run, from any host
 
 Messages:
   send        Send a message to an agent: typed in now, or held while it's busy
@@ -56,12 +62,16 @@ State and tasks:
   state       Read and write agents' key-value state
   task        Save reusable tasks, to spawn agents with
 
+Jobs:
+  run         Run a script as a job in its own memory-limited scope, and keep its record
+
 Machines (bus):
   bus         Run and pair this host's agent bus
 
 About this tool:
   friction    File what got in your way using agent, and read what others filed
   history     List recent agent commands run on this host
+  skill       Teach Claude Code and agy how to use agent (a skill)
   version     Print which build of agent this is
 
 Low-level sessions (session names, not agent names):

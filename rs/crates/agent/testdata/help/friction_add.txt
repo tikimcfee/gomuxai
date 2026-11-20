@@ -21,7 +21,7 @@ Flags:
       --detail string        More detail
       --detail-file string   Read the detail from a file ("-" for stdin)
   -h, --help                 help for add
-      --kind string          Kind: other, help, error, missing, bug, docs (default "other")
+      --kind string          Kind: other, help, error, missing, bug, docs, brief, handover, skill (default "other")
       --new                  File even if it looks like an open entry
       --no-command           Don't attach your last failed command
 

@@ -5,9 +5,9 @@ through all of it: **decide from state, never from log lines.** State means the 
 (SQLite), the CLIs' own session registries and transcripts' metadata, systemd, git, and
 replies from other hosts' buses.
 
-Everything here is additive on the bus. A host on the Go build doesn't serve the new
-ops; callers treat "no reply" from such a host as "older agent" and fall back to
-`list`, saying so.
+Everything here is additive on the bus. A host whose bus doesn't serve one of the new
+ops (left out of its `--remote-ops`) doesn't answer it, and the caller says so: there
+is no falling back to `list`.
 
 ## Bus additions
 
@@ -38,7 +38,7 @@ agent fleet --report       # the baseline numbers
 
 | Field | From |
 |---|---|
-| `host`, `build`, `reachable`, `partial` | the reply; `partial` (`partial: list only` in text) when only `list` answered (older agent), `reachable: false` with `error` when nothing did |
+| `host`, `build`, `reachable` | the reply; `reachable: false` with `error` when the host didn't answer `fleet` |
 | `agents[]` | the store's agents, as a tree by `spawned_by`: `name`, `session`, `spawned_by`, `backend`, `model`, `status`, `end_reason`, `detail`, `since` (when the status began), `held`, `oldest_held`, `session_id`, `session_name`, `cwd`, `flags[]`, `children[]` |
 | `focus` | the host's focus (below) |
 | `jobs[]` | running `agent run` jobs: `id`, `script`, `by`, `started_at`, `unit`, `memory_max` |

@@ -1722,8 +1722,9 @@ repo's latest git commit, open friction counts, and 7-day / long-session
 (`rs/crates/agent-fleet/src/fleet.rs`: `local`, `query_host`, `gather`,
 `render`, `render_report`, `rpc_handler`) builds each host's `FleetHost` and
 queries peers in parallel (`FLEET_TIMEOUT` = 3s, `RpcClient::fleet` in
-`rs/crates/agent-bus/src/client.rs`), falling back to `list` (`partial: true`)
-when an older or restricted peer returns `is_unanswered`. `cli::fleet`
+`rs/crates/agent-bus/src/client.rs`); a peer that doesn't answer `fleet` (down,
+not linked, or `fleet` left out of its `--remote-ops`) is `reachable: false`
+with the error. `cli::fleet`
 (`rs/crates/agent/src/cli/fleet.rs`: `run`, `local_host`) implements `agent
 fleet` (`--host`, `--report`, `--json`), populates `Options::session_name` via
 `AgentService::cli_session_name`, and backs `RpcExtras::fleet` in
@@ -2540,8 +2541,8 @@ make fmt           # cargo fmt --all (in rs/)
     (`rs/crates/agent-bus/tests/natsbus/`, `busd/busd_test.go`).
   - `agent-backend`, `agent-transcript` (against fixtures in
     `rs/crates/agent-transcript/testdata/`), `agent-discovery`, `agent-export`,
-    `agent-claudereg`, `agent-allowcmd`, `agent-termd`, `agent-store` (including
-    schema/encoding checks in `tests/compat_test.rs`), and `agent-base`.
+    `agent-claudereg`, `agent-allowcmd`, `agent-termd`, `agent-store`, and
+    `agent-base`.
 - **`g3d-termd`** is used by `agent-termd`, `agent-service`, and CLI tests that
   open terminals (`require_termd!()` skips when `g3d-termd` isn't installed).
   No test needs `claude` or `agy` installed, and temp dirs go under `/var/tmp`
@@ -2681,16 +2682,13 @@ the `agent-busd` sidecar (`busd/`) because `nats-server/v2` (leafnode hub/spoke
 routing with SPKI-pinned TLS and per-peer nkey accounts) has no pure-Rust
 server equivalent.
 
-The Go implementation the Rust tool replaced is kept, as its own Go module,
-under `legacy/` ([`legacy/README.md`](../legacy/README.md)), for two reasons
-only: the Rust tests that prove a Go host and a Rust host still work together
-(the mixed Go/Rust bus fleet and bus identity tests in `agent-bus`, the shared
-database test in `agent-store`, the export JSON parity test in
-`agent-export`, and `agent-allowcmd`'s ignored differential test) build against
-its sources, and one host of the fleet (the phone image) still runs the Go
-build. Nothing else builds or reads it, and each of those tests skips, saying
-so, without it; delete the directory once no host runs the Go build and those
-tests are retired.
+The Go implementation the Rust tool replaced was removed once every host ran
+the Rust build, along with the tests that proved a Go host and a Rust host work
+together (a mixed bus, bus identities, a shared database, export JSON parity,
+an allowlist differential). Both are in git history: commit `0c2eab5` is the
+last with `legacy/`. What stays from the Go is the formats: the store's
+schema, the bus's subjects and payloads, and the Go-style JSON, time and path
+encoding in `agent_base::gostd`, which is what is on disk and on the wire.
 
 - [`docs/FLEET.md`](FLEET.md): design of `fleet`, `focus`, `template`, `run`,
   `skill`, `revive`, session naming at launch, and `_result` for agy.

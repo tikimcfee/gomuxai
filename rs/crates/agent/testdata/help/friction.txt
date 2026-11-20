@@ -6,7 +6,9 @@ asked.
 
 Kinds (--kind): help (a command's help confused you or left something out),
 error (an error that didn't say what went wrong or what to do), missing (a
-feature you needed), bug, docs (README, briefing), other (the default).
+feature you needed), bug, docs (README, briefing), brief (a brief was
+unclear), handover (a handover lost something), skill (the skill or
+briefing misled), other (the default).
 
 Lifecycle: open -> accepted (someone means to fix it) -> resolved (fixed;
 the note says how), wontfix, or duplicate (its votes count toward the

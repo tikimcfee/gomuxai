@@ -1,18 +1,15 @@
-//! Port of `tests/natsbus/identity_test.go`, plus `canonical_host` and
-//! bidirectional Go <-> Rust identity compatibility tests.
+//! Bus identities: init, trust, untrust, rename, and `canonical_host`.
 
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
 
 use agent_bus::{
-    DaemonConfig, OP_STATUS, PeerBundle, SameKeysError, canonical_host, load_identity, load_peers,
-    previous_hosts, rename_identity, rename_peer, trust_peer, untrust_peer,
+    OP_STATUS, SameKeysError, canonical_host, load_identity, load_peers, previous_hosts,
+    rename_identity, rename_peer, trust_peer, untrust_peer,
 };
 use x509_parser::extensions::GeneralName;
 
 use crate::common::{
-    BusHost, has_go, legacy_go_root, request, request_once, require_busd, serve, test_temp_root,
-    test_tempdir, wait_interest, wait_linked, wait_log,
+    BusHost, request, request_once, require_busd, serve, wait_interest, wait_linked, wait_log,
 };
 
 #[test]
@@ -266,164 +263,4 @@ fn test_bus_untrust_cuts_the_link() {
             assert_eq!(hub_d.linked_peers(), 0, "links after untrusting on leaf");
         }
     }
-}
-
-/// Verifies both directions required by `bus.md`:
-/// 1. An identity written (and renamed) by Rust loads in Go (`agent-busd` and
-///    `internal/natsbus.LoadIdentity`).
-/// 2. An identity written by Go (`internal/natsbus.InitIdentity`, which writes
-///    SEC 1 `EC PRIVATE KEY`) loads and renames in Rust, with identical public
-///    nkey and `spkiSHA256` pin, and links over TLS 1.3 with a Rust-initialized
-///    hub.
-#[test]
-fn test_identity_rust_and_go_bidirectional_compat() {
-    let Some(legacy) = legacy_go_root() else {
-        eprintln!("skipping Go <-> Rust identity interop test: no legacy/ Go source here");
-        return;
-    };
-    if !has_go() || require_busd().is_none() {
-        eprintln!("skipping Go <-> Rust identity interop test: `go` is missing");
-        return;
-    }
-
-    let tmp = test_tempdir();
-    let go_dir = tmp.path().join("go-init");
-    let rust_dir = tmp.path().join("rust-init");
-    let helper_src = tmp.path().join("compat_helper.go");
-
-    agent_bus::init_identity(&rust_dir, "rustbox").expect("rust init_identity");
-
-    // Rust must write tls.key as SEC 1 ("EC PRIVATE KEY") matching Go, so Go's
-    // `natsbus.RenameIdentity` (`x509.ParseECPrivateKey`) succeeds on it.
-    let rust_key_pem = std::fs::read_to_string(rust_dir.join("tls.key")).unwrap();
-    assert!(
-        rust_key_pem.starts_with("-----BEGIN EC PRIVATE KEY-----\n"),
-        "expected SEC 1 EC PRIVATE KEY header, got:\n{rust_key_pem}"
-    );
-
-    // Small Go program run inside the legacy Go module (legacy/) that:
-    // 1) Loads rust_dir with Go's internal/natsbus.LoadIdentity, then renames it
-    //    with Go's internal/natsbus.RenameIdentity (which calls x509.ParseECPrivateKey)
-    //    and renames back to "rustbox", printing its PublicBundle JSON.
-    // 2) Initializes go_dir with Go's internal/natsbus.InitIdentity and prints its PublicBundle JSON.
-    std::fs::write(
-        &helper_src,
-        r#"package main
-
-import (
-	"encoding/json"
-	"fmt"
-	"os"
-
-	"github.com/tikimcfee/gomuxai/internal/natsbus"
-)
-
-func main() {
-	rustDir, goDir := os.Args[1], os.Args[2]
-	if _, err := natsbus.LoadIdentity(rustDir, "rustbox"); err != nil {
-		fmt.Fprintf(os.Stderr, "Go LoadIdentity on Rust dir failed: %v\n", err)
-		os.Exit(1)
-	}
-	if _, err := natsbus.RenameIdentity(rustDir, "rustbox", "rustbox_tmp"); err != nil {
-		fmt.Fprintf(os.Stderr, "Go RenameIdentity on Rust tls.key failed: %v\n", err)
-		os.Exit(1)
-	}
-	rid, err := natsbus.RenameIdentity(rustDir, "rustbox_tmp", "rustbox")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Go RenameIdentity back failed: %v\n", err)
-		os.Exit(1)
-	}
-	gid, err := natsbus.InitIdentity(goDir, "gobox")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Go InitIdentity failed: %v\n", err)
-		os.Exit(1)
-	}
-	out, _ := json.Marshal([]natsbus.PeerBundle{rid.PublicBundle(""), gid.PublicBundle("")})
-	os.Stdout.Write(out)
-}
-"#,
-    )
-    .unwrap();
-
-    let root = legacy;
-    let virtual_main = root
-        .join("internal")
-        .join("natsbus_compat_helper")
-        .join("main.go");
-    let overlay_path = tmp.path().join("overlay.json");
-    let overlay_json = serde_json::json!({
-        "Replace": {
-            virtual_main.to_string_lossy().to_string(): helper_src.to_string_lossy().to_string(),
-        }
-    });
-    std::fs::write(&overlay_path, serde_json::to_vec(&overlay_json).unwrap()).unwrap();
-
-    let out = Command::new("go")
-        .arg("run")
-        .arg("-overlay")
-        .arg(&overlay_path)
-        .arg("./internal/natsbus_compat_helper")
-        .arg(&rust_dir)
-        .arg(&go_dir)
-        .current_dir(&root)
-        .env("TMPDIR", test_temp_root())
-        .output()
-        .expect("running Go identity compat helper");
-    assert!(
-        out.status.success(),
-        "Go compat helper failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let bundles: Vec<PeerBundle> = serde_json::from_slice(&out.stdout).unwrap();
-    let go_saw_rust = &bundles[0];
-    let go_created = &bundles[1];
-
-    // Direction 1: Rust-initialized identity loaded in Go has the exact same pin & nkey.
-    let rust_loaded = load_identity(&rust_dir, "rustbox").unwrap();
-    assert_eq!(rust_loaded.public_bundle(""), *go_saw_rust);
-
-    // Direction 2: Go-initialized identity loaded in Rust has the exact same pin & nkey,
-    // can be renamed by Rust, and links over TLS 1.3 via agent-busd!
-    let go_loaded_in_rust = load_identity(&go_dir, "gobox").expect("Rust load_identity on Go dir");
-    assert_eq!(go_loaded_in_rust.public_bundle(""), *go_created);
-
-    let go_renamed =
-        rename_identity(&go_dir, "gobox", "gobox2").expect("Rust rename_identity on Go SEC1 key");
-    assert_eq!(go_renamed.cert_sha, go_created.cert_sha);
-    assert_eq!(go_renamed.host_public_key(), go_created.nkey);
-
-    // Link rustbox (hub) and gobox2 (leaf) through agent-busd and pass an RPC!
-    let bin = require_busd().unwrap();
-    trust_peer(&rust_dir, go_renamed.public_bundle("")).unwrap();
-    let hub_d = agent_bus::start_daemon(DaemonConfig {
-        dir: rust_dir.clone(),
-        host: "rustbox".to_string(),
-        client_port: -1,
-        leaf_listen: "127.0.0.1:-1".to_string(),
-        remote_ops: None,
-        busd_path: Some(bin.clone()),
-    })
-    .unwrap();
-    trust_peer(
-        &go_dir,
-        rust_loaded.public_bundle(&format!("tls://{}", hub_d.leaf_addr())),
-    )
-    .unwrap();
-    let _leaf_d = agent_bus::start_daemon(DaemonConfig {
-        dir: go_dir.clone(),
-        host: "gobox2".to_string(),
-        client_port: -1,
-        leaf_listen: String::new(),
-        remote_ops: None,
-        busd_path: Some(bin),
-    })
-    .unwrap();
-    wait_linked(&hub_d, 1);
-
-    let hub_conn = agent_bus::connect_local(&rust_dir, "rustbox").unwrap();
-    let leaf_conn = agent_bus::connect_local(&go_dir, "gobox2").unwrap();
-    let _srv = serve(&leaf_conn, "gobox2");
-    let got = request(&hub_conn, "gobox2", OP_STATUS).unwrap();
-    assert_eq!(got, "ran gomux.gobox2.rpc.status");
 }

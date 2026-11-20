@@ -9,7 +9,7 @@ bin/
 .vscode/
 *.swp
 
-# Test artifacts (go test -c in legacy/ and busd/)
+# Test artifacts (go test -c in busd/)
 *.test
 
 # Agent worktrees

@@ -1,0 +1,20 @@
+List prints the templates in a host's templates.json: each one's name,
+backend, model, directory and brief. --host asks another host.
+
+Usage:
+  agent template list [flags]
+
+Examples:
+  agent template list
+  agent template list --host hub
+
+Flags:
+  -h, --help          help for list
+      --host string   Host whose templates to list (default: this host)
+      --json          Print the templates as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

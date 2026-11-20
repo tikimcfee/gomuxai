@@ -89,7 +89,7 @@ impl Leaf {
 
 /// A hub (TestEnv, host "hub") and a leaf (host "leaf") on one test bus,
 /// trusting each other; the hub also trusts "old" (the leaf's handler
-/// serving only list, as an older agent would) and "gone" (nothing serves
+/// serving only list, so not fleet) and "gone" (nothing serves
 /// it). Fields drop in order: the leaf before the hub's termd guard.
 pub(crate) struct TwoHosts {
     _servers: Vec<RpcServer>,
@@ -206,7 +206,7 @@ fn test_fleet_across_hosts() {
         "  gone-one: ended (gone) (claude)\n    detail: its session rpc-cli-gone-one is gone".to_string(),
         "    flags:  ended (gone), still recorded\n".to_string(),
         format!("leaf (build {build})\n  w: "),
-        "old (partial: list only)\n  w: ".to_string(),
+        "old: unreachable (".to_string(),
         "gone: unreachable (".to_string(),
     ] {
         assert!(out.contains(&want), "want {want:?} in:\n{out}");
@@ -218,15 +218,12 @@ fn test_fleet_across_hosts() {
     let (out, res) = h.hub.run(&["fleet", "--json"]);
     res.unwrap();
     let view: FleetView = serde_json::from_str(&out).unwrap();
-    let mut hosts: Vec<(&str, bool, bool)> = view
-        .hosts
-        .iter()
-        .map(|x| (x.host.as_str(), x.reachable, x.partial))
-        .collect();
+    let mut hosts: Vec<(&str, bool)> =
+        view.hosts.iter().map(|x| (x.host.as_str(), x.reachable)).collect();
     hosts.sort();
     assert_eq!(
         hosts,
-        [("gone", false, false), ("hub", true, false), ("leaf", true, false), ("old", true, true)]
+        [("gone", false), ("hub", true), ("leaf", true), ("old", false)]
     );
     let hub = &view.hosts[0];
     assert_eq!(hub.focus.as_ref().map(|f| f.agent.as_str()), Some("lead"));
@@ -242,7 +239,7 @@ fn test_fleet_across_hosts() {
         out.contains("hub (build ")
             && out.contains("  agents by status: ended: 1, idle: 1, waiting: 1\n")
             && out.contains("  agents by backend: claude: 3\n")
-            && out.contains("old (partial: list only)\n  (no report: older agent)\n"),
+            && out.contains("old: unreachable ("),
         "{out}"
     );
 
@@ -250,10 +247,10 @@ fn test_fleet_across_hosts() {
     let (out, res) = h.hub.run(&["fleet", "--host", "LEAF"]);
     res.unwrap();
     assert!(out.starts_with("leaf (build ") && !out.contains("hub"), "{out}");
-    // An older agent's: from its list.
+    // One whose bus doesn't serve fleet is an error too: no falling back to
+    // its list.
     let (out, res) = h.hub.run(&["fleet", "--host", "old"]);
-    res.unwrap();
-    assert!(out.starts_with("old (partial: list only)\n"), "{out}");
+    assert!(res.is_err() && out.is_empty(), "{out}");
     // review-4 D1: one that answers nothing, or a host nobody knows, is an
     // error naming the hosts this one knows, as for agent status name@host.
     for host in ["gone", "typo"] {

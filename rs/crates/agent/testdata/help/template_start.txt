@@ -1,0 +1,23 @@
+Start spawns the agent a host's template describes, on that host, with
+what the template says and nothing else: the agent is named after the
+template, and is a helper of whoever started it. A template whose agent is
+already there (running, or ended and not cleaned up) isn't started again:
+template resume brings back an ended one. --host starts it on another
+host.
+
+Usage:
+  agent template start <template> [flags]
+
+Examples:
+  agent template start builder
+  agent template start builder --host hub
+
+Flags:
+  -h, --help          help for start
+      --host string   Host whose template it is (default: this host)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
