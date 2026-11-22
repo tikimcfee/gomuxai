@@ -2057,7 +2057,7 @@ start with more than one. On the hub, each peer's leaf connection gets
 Each leaf also refuses, as `DenyImports`, requests for its own ops not in
 its `--remote-ops` and anything under its own `local.>`. The bus serves
 local clients every op (`ALL_OPS`); peers get `--remote-ops` (default
-`DEFAULT_REMOTE_OPS`: `list,status,capture,send,respond,friction,logs,fleet,template,manage`;
+`DEFAULT_REMOTE_OPS`: `list,status,capture,send,respond,friction,logs,fleet,template,manage,roster`;
 `keys`, `spawn` and `resume` are local-only unless listed, since `keys` types
 anything and `spawn` and `resume` start an arbitrary process on the host).
 `logs` and `fleet` only read, like `capture` and `list`. `template` is safe to

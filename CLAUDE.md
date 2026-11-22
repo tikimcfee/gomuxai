@@ -726,7 +726,7 @@ hosts this one knows. Not across hosts: `state` (ask the agent to send what
 you need, or `capture`), `queue` (use `send`), `revive` (use `resume
 name@host`, or run `revive` on that host), `cleanup` (clean up on that host).
 The other host's bus serves only its `--remote-ops` (default
-`list,status,capture,send,respond,friction,logs,fleet,template,manage`), so `keys`,
+`list,status,capture,send,respond,friction,logs,fleet,template,manage,roster`), so `keys`,
 `spawn` and `resume` to another host are refused unless it lists them. "no bus
 answering for host X" means that host's bus is down, not linked, or doesn't
 serve that op.
@@ -897,7 +897,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `send` says the message is still in the input box; `status` shows `unsent:` | Enter didn't submit it: `agent key agent-<name> Enter` does. Don't send it again. |
 | Leftover session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one; if it has ended, `agent resume <name>` or `agent revive <name>` continues it. |
-| `agent fleet` shows a linked host as `unreachable` | Its bus doesn't list `fleet` in `--remote-ops` (settings saved before `fleet` existed win over the defaults): on that host, `agent bus restart --remote-ops <its list>,fleet,template,manage`. |
+| `agent fleet` shows a linked host as `unreachable` | Its bus doesn't list `fleet` in `--remote-ops` (settings saved before `fleet` existed win over the defaults): on that host, `agent bus restart --remote-ops <its list>,fleet,template,manage,roster`. |
 | `agent run` says `runs without memory limits` or `couldn't ask systemd to spare g3d-termd's units` | On macOS or Linux without a user `systemd` manager, jobs run plainly with provenance only (`agent run --show <id>`); where `systemd-oomd` watches the root-owned user slice rather than user units, the job's own `MemoryMax` + `MemorySwapMax=0` scope is what protects the terminal (`--no-protect` skips the `g3d-termd` check). |
 | After `agent revive`, an agy agent says it runs without hooks | A person started `agy` by hand in its pane, without the `--add-dir` hooks `agent` wires at launch (status comes from its screen and messages are typed): quit `agy` there and run `agent revive <name>` again so `agent` launches it. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |
