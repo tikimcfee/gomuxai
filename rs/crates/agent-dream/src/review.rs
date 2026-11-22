@@ -11,7 +11,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::gather::{KIND_COMMIT, KIND_FRICTION, KIND_SESSION};
+use crate::gather::{KIND_COMMIT, KIND_DREAM, KIND_FRICTION, KIND_SESSION};
 use crate::memory;
 
 /// The session harnesses a citation can name (`claude:<session-id>`).
@@ -45,6 +45,9 @@ pub fn citation_item(citation: &str) -> Option<(&'static str, String)> {
     match kind {
         "friction" => Some((KIND_FRICTION, id.to_string())),
         "commit" => Some((KIND_COMMIT, id.to_string())),
+        // A committed dream (the global dream cites the project dreams it
+        // learned from).
+        "dream" => Some((KIND_DREAM, id.to_string())),
         _ => None,
     }
 }
@@ -120,6 +123,7 @@ mod tests {
             Some(("friction", "h-1".into()))
         );
         assert_eq!(citation_item("commit:abc"), Some(("commit", "abc".into())));
+        assert_eq!(citation_item("dream:7"), Some(("dream", "7".into())));
         assert_eq!(citation_item("doc:README"), None);
         assert!(commit_matches("abcdef1", "/srv/app@abcdef1234"));
         assert!(!commit_matches("abc", "/srv/app@abcdef1234"), "too short");

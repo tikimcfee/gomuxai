@@ -228,13 +228,28 @@ impl AgentService {
         goos::mkdir_all(&dir, 0o700).context("creating agent dir")?;
         let path = filepath::abs(&filepath::join(&[dir.as_str(), "instructions.md"]))?;
         let mut text = self.agent_instructions(name, spawned_by, backend_name);
-        let start = self.start_here_section(cwd);
-        if !start.is_empty() {
-            text.push('\n');
-            text.push_str(&start);
+        for section in [self.machine_section(), self.start_here_section(cwd)] {
+            if !section.is_empty() {
+                text.push('\n');
+                text.push_str(&section);
+            }
         }
         goos::write_file(&path, text.as_bytes(), 0o600).context("writing instructions")?;
         Ok(path)
+    }
+
+    /// The machine note (`<data dir>/memory/start_here.md`, which the global
+    /// dream keeps) as a briefing section, or "" when there is none. It goes
+    /// before the project's start-here note, whatever the harness.
+    pub(crate) fn machine_section(&self) -> String {
+        if self.cfg.database_path.is_empty() {
+            return String::new();
+        }
+        let data_dir = filepath::dir(&self.cfg.database_path);
+        match agent_dream::start_here::machine_note(&data_dir) {
+            Some((path, text)) => agent_dream::start_here::machine_section(&path, &text),
+            None => String::new(),
+        }
     }
 
     /// The start-here note (agent_dream::start_here) of the project an agent
@@ -431,6 +446,53 @@ mod tests {
             "not through a shell variable",
         ] {
             assert!(brief.contains(want), "briefing lacks {want}");
+        }
+    }
+
+    // The machine note goes in before the project's start-here note, for any
+    // harness.
+    #[test]
+    fn test_briefing_puts_the_machine_note_before_the_projects() {
+        let tmp = tempfile::Builder::new()
+            .prefix("svc-machine")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        let root = tmp.path().to_string_lossy().into_owned();
+        let data = format!("{root}/data");
+        let projects = format!("{root}/projects");
+        let cwd = format!("{root}/app");
+        std::fs::create_dir_all(format!("{data}/memory")).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        let mem = format!(
+            "{projects}/{}/memory",
+            agent_dream::start_here::project_folder(&cwd)
+        );
+        std::fs::create_dir_all(&mem).unwrap();
+        std::fs::write(format!("{mem}/start_here.md"), "Run make test.\n").unwrap();
+        let s = svc(Config {
+            host: "h".into(),
+            database_path: format!("{data}/gomuxai.db"),
+            claude_projects_dir: Some(projects.clone()),
+            ..Default::default()
+        });
+        for backend in ["claude", "agy"] {
+            let path = s.write_instructions("a", "", backend, &cwd).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(!text.contains("## This machine"), "no machine note yet");
+            assert!(text.contains("## Start here"), "{text}");
+        }
+        std::fs::write(
+            format!("{data}/memory/start_here.md"),
+            "---\nname: start-here\n---\nBuild in /var/tmp.\n",
+        )
+        .unwrap();
+        for backend in ["claude", "agy"] {
+            let path = s.write_instructions("a", "", backend, &cwd).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let machine = text.find("## This machine").expect("the machine note");
+            let project = text.find("## Start here").expect("the project's note");
+            assert!(machine < project, "{backend}: {text}");
+            assert!(text.contains("Build in /var/tmp."), "{text}");
         }
     }
 
