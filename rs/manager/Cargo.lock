@@ -668,7 +668,7 @@ dependencies = [
  "makepad-zune-jpeg",
  "makepad-zune-png",
  "relax-attr",
- "smallvec 1.15.1",
+ "smallvec",
 ]
 
 [[package]]
@@ -1051,7 +1051,7 @@ dependencies = [
  "bitflags",
  "bytemuck",
  "makepad-error-log",
- "smallvec 1.15.1",
+ "smallvec",
  "ttf-parser",
  "unicode-bidi-mirroring",
  "unicode-ccc",
@@ -1135,12 +1135,6 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 name = "smallvec"
 version = "1.15.1"
 source = "git+https://github.com/tikimcfee/makepad?rev=433a690091407fbd3379398e20fcc8e5120b51c2#433a690091407fbd3379398e20fcc8e5120b51c2"
-
-[[package]]
-name = "smallvec"
-version = "1.16.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3244542535d5de959d90ec55d1b5ff0fd2bb7b1310223907d5f11932847f7b59"
 
 [[package]]
 name = "syn"
@@ -1276,7 +1270,7 @@ source = "git+https://github.com/tikimcfee/makepad?rev=433a690091407fbd3379398e2
 dependencies = [
  "downcast-rs",
  "scoped-tls",
- "smallvec 1.16.6",
+ "smallvec",
  "wayland-sys",
 ]
 

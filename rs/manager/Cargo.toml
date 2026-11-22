@@ -23,3 +23,11 @@ makepad-widgets = { git = "https://github.com/tikimcfee/makepad", rev = "433a690
 [profile.release]
 opt-level = 2
 strip = true
+
+# For `makepad run` (Makepad's JIT, which runs the manager live): the JIT refuses a program whose
+# Makepad crates build against other dependencies than its own build did. Makepad's workspace
+# patches crates.io smallvec to its in-tree copy, which a git dependent doesn't inherit, so on
+# Linux its wayland crates would otherwise take crates.io smallvec. Keep the rev in step with
+# makepad-widgets above.
+[patch.crates-io]
+smallvec = { git = "https://github.com/tikimcfee/makepad", rev = "433a690091407fbd3379398e20fcc8e5120b51c2" }
