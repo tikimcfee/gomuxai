@@ -87,8 +87,8 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
     };
     let svc = ctx.service()?;
     if svc.holds_messages_named(name) {
-        // Send already holds a message until the agent is free, and needs no
-        // watcher to deliver it.
+        // Queue holds until the agent's current turn finishes (`later`), even
+        // on backends whose default `send` delivers mid-turn.
         let res = svc.send(
             &Context::background(),
             name,
@@ -96,6 +96,8 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
             SendOptions {
                 now: false,
                 from: sender.clone(),
+                urgency: "later".to_string(),
+                ..Default::default()
             },
         )?;
         return print_sent(ctx, name, &res);

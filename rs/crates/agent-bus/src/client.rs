@@ -688,6 +688,7 @@ impl RpcClient {
                 agent: String::new(),
                 message: message.to_string(),
                 now: false,
+                ..Default::default()
             },
         )?;
         Ok(())
@@ -715,6 +716,7 @@ impl RpcClient {
         resp.held_until = clean(&resp.held_until);
         resp.input_blocked = clean(&resp.input_blocked);
         resp.unchecked = clean(&resp.unchecked);
+        resp.already_delivered_via = clean(&resp.already_delivered_via);
         Ok(Some(resp))
     }
 

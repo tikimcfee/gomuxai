@@ -506,3 +506,46 @@ fn test_agy_question_prompt_visible() {
         "idle prompt taken for a question"
     );
 }
+
+#[test]
+fn test_agy_coalesced_batch_and_interrupt_output() {
+    let b = namedagents::new_agy_backend();
+    let batch = [
+        CoalescedMessage {
+            id: 10,
+            sender: "lead".into(),
+            content: "[from lead@h] keep Option<T>".into(),
+            age_secs: 30,
+            urgency: "soon".into(),
+            superseded_by: 11,
+            topic: String::new(),
+        },
+        CoalescedMessage {
+            id: 11,
+            sender: "lead".into(),
+            content: "[from lead@h] also log errors".into(),
+            age_secs: 5,
+            urgency: "interrupt".into(),
+            superseded_by: 0,
+            topic: String::new(),
+        },
+    ];
+    let out: serde_json::Value =
+        serde_json::from_slice(&b.delivery_output_for("PostInvocation", &batch)).unwrap();
+    let steps = out["injectSteps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(out["terminationBehavior"], "force_continue");
+    let text = steps[0]["userMessage"].as_str().unwrap();
+    assert!(text.contains("keep Option<T>") && text.contains("URGENT INTERRUPT"));
+
+    let pre = HookReport {
+        event: "PreToolUse".into(),
+        ..Default::default()
+    };
+    let deny: serde_json::Value =
+        serde_json::from_slice(&b.interrupt_output(&pre, "stop now").unwrap()).unwrap();
+    assert_eq!(
+        deny,
+        serde_json::json!({"decision": "deny", "reason": "stop now"})
+    );
+}

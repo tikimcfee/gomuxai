@@ -610,13 +610,56 @@ impl AgentService {
                     Err(e) => (None, Err(e)),
                 }
             }
+            Some(hd) if deliver && is_agy_idle_stop && self.has_pending_later(name) => {
+                // `--later` messages skipped PostInvocation so the current turn
+                // could finish first; deliver them as the turn closes.
+                match self.report_delivering_filtered(
+                    name,
+                    &r,
+                    hd,
+                    false,
+                    agent_store::ClaimFilter::All,
+                ) {
+                    Ok(out) => (out, Ok(())),
+                    Err(e) => (None, Err(e)),
+                }
+            }
             _ if hr.delivery_only => return (None, Ok(())),
             _ => {
+                let mut r = r;
                 let mut out = approval;
+                let mut kick_deliverer = false;
+                if deliver
+                    && hr.event == "PreToolUse"
+                    && let Some(hd) = provider.as_hook_deliverer()
+                    && let Ok(Some(urgent)) = self.storage.has_interrupt_pending(name)
+                {
+                    let reason = format!(
+                        "[gomuxai] Tool blocked by urgent message #{} from {} — check incoming messages.",
+                        urgent.id, urgent.sender_id
+                    );
+                    if let Some(deny) = hd.interrupt_output(&hr, &reason) {
+                        out = Some(deny);
+                        // Claude's PreToolUse interrupt sets `continue: false`,
+                        // halting the turn without firing Stop: mark the turn
+                        // idle/interrupted so deliver_held types at 0s grace
+                        // even when native registry status is unavailable.
+                        if provider.as_global_hooker().is_some() {
+                            r.status = super::agent_service::AGENT_STATUS_IDLE;
+                            r.event = "interrupted".to_string();
+                            r.detail = reason;
+                            kick_deliverer = true;
+                        }
+                    }
+                }
                 if deliver && let Some(h) = self.handover_output(name, provider.as_ref(), &hr) {
                     out = Some(h);
                 }
-                (out, self.report(name, r))
+                let rep_res = self.report(name, r);
+                if kick_deliverer {
+                    let _ = self.start_deliverer(name);
+                }
+                (out, rep_res)
             }
         };
         if res.is_err() {

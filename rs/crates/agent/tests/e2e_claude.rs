@@ -19,7 +19,7 @@ fn install_hooks(h: &Host) {
     assert_eq!(
         o.stdout,
         format!(
-            "Installed in {}: 13 event(s) added, 0 pointed at this binary (was: none). Backup: none\n",
+            "Installed in {}: 14 event(s) added, 0 pointed at this binary (was: none). Backup: none\n",
             settings.display()
         )
     );
@@ -134,6 +134,7 @@ fn e2e_claude_hooks_drive_status_and_prompts() {
         "PermissionRequest",
         "PostToolUse",
         "PostToolUseFailure",
+        "PostToolBatch",
         "PreCompact",
         "Notification",
         "SubagentStart",
@@ -240,7 +241,7 @@ fn e2e_claude_hooks_drive_status_and_prompts() {
     let o = h.run(&["send", "c", "also check the docs"]).ok("send");
     assert_eq!(
         o.stdout,
-        "Held for c until its turn ends (it was processing).\n"
+        "Held for c until its next tool batch or turn ends (it was processing; #1).\n"
     );
     let o = h.run(&["status", "c", "-v"]).ok("status -v");
     assert!(o.stdout.contains("  held:   1 message"), "{}", o.stdout);

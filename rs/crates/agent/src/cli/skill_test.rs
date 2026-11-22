@@ -25,7 +25,7 @@ fn test_skill_install_and_show() {
     let settings = claude.join("settings.json");
     assert!(
         out.starts_with(&format!(
-            "Installed the agent skill for claude: {}\n  its hook in {}: 13 event(s) added, 0 pointed at this binary",
+            "Installed the agent skill for claude: {}\n  its hook in {}: 14 event(s) added, 0 pointed at this binary",
             claude_skill.display(),
             settings.display()
         )) && out.ends_with(&format!("Installed the agent skill for agy: {}\n", agy_skill.display())),

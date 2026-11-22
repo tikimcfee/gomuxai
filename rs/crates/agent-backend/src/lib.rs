@@ -9,6 +9,7 @@
 //! `if let Some(h) = p.as_hook_provider() { ... }`.
 
 pub mod backend;
+pub mod coalesce;
 pub mod generic;
 mod gojson;
 pub mod namedagents;
@@ -17,6 +18,9 @@ pub mod registry;
 pub mod session_name;
 
 pub use backend::Backend;
+pub use coalesce::{
+    CLAUDE_INLINE_SOFT_CAP, CoalescedMessage, format_coalesced_batch, mid_turn_banner,
+};
 pub use generic::{GenericBackend, GenericConfig, new_generic_backend};
 pub use provider::*;
 pub use registry::{ErrNotFound, ProviderConfig, ProviderFactory, Registry, new_registry};

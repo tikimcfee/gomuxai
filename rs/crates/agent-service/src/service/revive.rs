@@ -497,6 +497,7 @@ impl AgentService {
                     SendOptions {
                         now: false,
                         from: from.to_string(),
+                        ..Default::default()
                     },
                 );
             }
@@ -530,6 +531,7 @@ impl AgentService {
                     SendOptions {
                         now: false,
                         from: from.to_string(),
+                        ..Default::default()
                     },
                 );
             }

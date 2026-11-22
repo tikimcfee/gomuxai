@@ -79,12 +79,30 @@ impl rusqlite::ToSql for MessageStatus {
 }
 
 pub const MESSAGE_STATUS_PENDING: MessageStatus = MessageStatus(Cow::Borrowed("pending"));
+pub const MESSAGE_STATUS_SUPERSEDED: MessageStatus = MessageStatus(Cow::Borrowed("superseded"));
 pub const MESSAGE_STATUS_DELIVERED: MessageStatus = MessageStatus(Cow::Borrowed("delivered"));
 pub const MESSAGE_STATUS_FAILED: MessageStatus = MessageStatus(Cow::Borrowed("failed"));
 /// MESSAGE_STATUS_HANDOVER is a message typed into the agent as one short
 /// line, whose whole text the hook of the prompt that line starts hands
 /// over (see service/handover.go). Nothing else delivers it.
 pub const MESSAGE_STATUS_HANDOVER: MessageStatus = MessageStatus(Cow::Borrowed("handover"));
+
+/// Delivery urgency levels stored in `messages.urgency`.
+pub const URGENCY_LATER: &str = "later";
+pub const URGENCY_SOON: &str = "soon";
+pub const URGENCY_NOW: &str = "now";
+pub const URGENCY_INTERRUPT: &str = "interrupt";
+
+/// Selects which pending messages a delivery point may claim.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClaimFilter {
+    /// Claim every pending message (`Stop`, idle typing, `deliver`, `--now`, `--interrupt`).
+    #[default]
+    All,
+    /// Skip `later` messages so mid-turn hooks (`PostToolBatch`, `PostInvocation`)
+    /// leave `--later` / `agent queue` messages for the end of the turn.
+    NonLater,
+}
 
 /// Message represents a queued message between agents.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -95,6 +113,18 @@ pub struct Message {
     pub content: String,
     pub status: MessageStatus,
     pub created_at: Time,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub urgency: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub topic: String,
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub superseded_by: i64,
+    #[serde(default, skip_serializing_if = "gotime::is_zero")]
+    pub delivered_at: Time,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub delivery_via: String,
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub delivery_batch: i64,
 }
 
 /// Task represents a reusable task definition.

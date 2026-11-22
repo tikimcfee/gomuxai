@@ -8,7 +8,7 @@ use agent_backend::*;
 use common::*;
 use serde_json::Value;
 
-const AGY_PREFIX: &str = r#"env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --settings '{"showFeedbackSurvey":false}'"#;
+const AGY_PREFIX: &str = r#"env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --settings '{"queuedMessages":"send-immediately","showFeedbackSurvey":false}'"#;
 
 /// Payloads trimmed from real Antigravity CLI (agy) hook invocations (see
 /// exploration/agy-hooks-findings.md).
@@ -264,7 +264,7 @@ fn test_agy_launch_command_with_hooks() {
         args,
         [
             "--settings",
-            r#"{"showFeedbackSurvey":false}"#,
+            r#"{"queuedMessages":"send-immediately","showFeedbackSurvey":false}"#,
             "--add-dir",
             agent_dir.as_str()
         ]

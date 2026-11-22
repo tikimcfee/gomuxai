@@ -5,18 +5,20 @@
 //! messages table instead of being typed into its input box mid-turn. Who
 //! delivers it:
 //!
-//!   - the hook that ends the turn (Claude's Stop): it claims every held
-//!     message and prints them as its output, and the agent goes on with
+//!   - the hook at the next tool-batch/step boundary or turn end (Claude's
+//!     PostToolBatch and Stop, agy's PostInvocation): it claims held messages
+//!     and prints them coalesced as its output, and the agent goes on with
 //!     them (report_delivering);
 //!   - send itself, if that hook ran between send's status check and the
 //!     store (hold);
 //!   - the deliverer, `agent deliver --wait`, which send starts for turns
-//!     that end with no hook at all (Esc, a deny, a failed turn): it types
-//!     the held messages once the agent has sat at its prompt for a while
+//!     that end with no hook at all (Esc, a deny, a failed turn, or Claude's
+//!     PreToolUse interrupt stop): it types the held messages once the agent
+//!     has sat at its prompt for a while, or immediately for an interrupt
 //!     (deliver_held);
-//!   - the next send that finds the agent at its prompt, which types the
-//!     held messages ahead of its own;
-//!   - `agent watch`, if one runs, as for any queued message.
+//!   - the next send that finds the agent at its prompt (or `send --now` when
+//!     the input line is empty), which types the held messages ahead of its own;
+//!   - `agent watch`, if one runs, coalescing all pending messages per idle tick.
 //!
 //! Each claims the rows atomically before delivering, so a message is
 //! delivered once.
@@ -25,10 +27,15 @@ use std::os::unix::process::CommandExt;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
+use serde::Serialize;
 
-use agent_backend::HookDeliverer;
+use agent_backend::{CoalescedMessage, HookDeliverer, format_coalesced_batch};
 use agent_base::gostd::filepath;
-use agent_store::{Agent, MESSAGE_STATUS_PENDING, Message, StateUpdate, Time};
+use agent_store::{
+    Agent, ClaimFilter, MESSAGE_STATUS_DELIVERED, MESSAGE_STATUS_FAILED, MESSAGE_STATUS_PENDING,
+    MESSAGE_STATUS_SUPERSEDED, Message, StateUpdate, Time, URGENCY_INTERRUPT, URGENCY_LATER,
+    URGENCY_NOW, URGENCY_SOON,
+};
 
 use super::agent_service::{
     AGENT_STATUS_ENDED, AGENT_STATUS_ERROR, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING,
@@ -50,11 +57,40 @@ pub const EVENT_DELIVERED: &str = "delivered";
 #[derive(Debug, Clone, Default)]
 pub struct SendOptions {
     /// Now types the message even while the agent is busy (Claude takes it
-    /// at its next tool boundary), instead of holding it for the turn's end.
+    /// at its next tool boundary; agy with `queuedMessages: "send-immediately"`
+    /// takes it at its next step), sweeping and coalescing held messages first
+    /// when the input box is empty.
     pub now: bool,
-    /// From is the sender recorded with a held message: an agent's name,
-    /// "user", or "remote" for a send from another host.
+    /// From is the sender recorded with a held message: an agent's name
+    /// (or `name@host` across hosts), "user", or "remote".
     pub from: String,
+    /// Delivery urgency: "" / "soon" (default), "later", "now", or "interrupt".
+    pub urgency: String,
+    /// Replace any earlier pending held messages from the same sender
+    /// (scoped to `topic` when non-empty) with this message.
+    pub replace: bool,
+    /// Explicitly supersede pending message ID (non-zero). If it was
+    /// already delivered, this message is still sent and `already_delivered_id`
+    /// is set on SendResult.
+    pub supersede: i64,
+    /// Optional coalescing topic/key (e.g. "pr-42"). Automatically supersedes
+    /// earlier pending messages from the same sender with the same topic.
+    pub topic: String,
+}
+
+impl SendOptions {
+    /// Canonical urgency level (`"later"`, `"soon"`, `"now"`, or `"interrupt"`).
+    pub fn effective_urgency(&self) -> &'static str {
+        if self.urgency == URGENCY_INTERRUPT {
+            URGENCY_INTERRUPT
+        } else if self.now || self.urgency == URGENCY_NOW {
+            URGENCY_NOW
+        } else if self.urgency == URGENCY_LATER {
+            URGENCY_LATER
+        } else {
+            URGENCY_SOON
+        }
+    }
 }
 
 /// SendResult says what send did with a message.
@@ -64,23 +100,59 @@ pub struct SendResult {
     pub status: AgentStatus,
     /// the status detail, e.g. the prompt a waiting agent is at
     pub detail: String,
-    /// Held: stored, to be delivered when the agent's turn ends (or, per
-    /// held_until, its next step). held_count is how many messages are held
-    /// for it now, this one included.
+    /// Held: stored, to be delivered when the agent's step/turn ends.
+    /// held_count is how many active messages are held for it now.
     pub held: bool,
     pub held_count: usize,
-    /// when the hook that delivers it runs, e.g. "its turn ends"
+    /// when the hook that delivers it runs, e.g. "its next tool batch or turn ends"
     pub held_until: String,
     /// InputBlocked, for a message held although the agent was at its
     /// prompt, says why: its input line isn't empty (see InputBlockedError).
     pub input_blocked: String,
-    /// Typed is how many messages were typed in: this one, after any held
-    /// ones it overtook (oldest first, as one prompt).
+    /// Typed is how many active messages were typed in: this one, after any
+    /// held ones it overtook (oldest first, as one prompt).
     pub typed: usize,
     /// Unchecked, for messages typed into a CLI whose Enter can turn into a
     /// newline (Claude), says why send couldn't check they were submitted,
     /// e.g. its input box isn't on screen (see submit.rs).
     pub unchecked: String,
+    /// Stored message id in SQLite.
+    pub message_id: i64,
+    /// Pending message IDs marked superseded by this send.
+    pub superseded_ids: Vec<i64>,
+    /// Non-zero when `--supersede` or `--replace` missed a message that was
+    /// already delivered.
+    pub already_delivered_id: i64,
+    /// Delivery channel that delivered `already_delivered_id`, if known.
+    pub already_delivered_via: String,
+    /// True when the send armed or triggered an interrupt.
+    pub interrupted: bool,
+}
+
+/// Receipt for a previously sent message (`agent status <name> --receipt <id>`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct MessageReceipt {
+    pub id: i64,
+    pub sender_id: String,
+    pub receiver_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub urgency: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub topic: String,
+    #[serde(skip_serializing_if = "is_zero_i64")]
+    pub superseded_by: i64,
+    pub created_at: Time,
+    #[serde(skip_serializing_if = "agent_store::gotime::is_zero")]
+    pub delivered_at: Time,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub delivery_via: String,
+    #[serde(skip_serializing_if = "is_zero_i64")]
+    pub delivery_batch: i64,
+}
+
+fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
 }
 
 /// turnOver reports whether the last report says the agent's turn is over
@@ -105,6 +177,9 @@ const HELD_UNTIL_DIALOG: &str = "its dialog is gone and it has been at its promp
 
 /// maxHeldCount bounds how many held messages are counted.
 pub(crate) const MAX_HELD_COUNT: i64 = 1000;
+
+/// Fast poll interval used by `deliver_held` when an interrupt message is waiting.
+const INTERRUPT_DELIVER_POLL: Duration = Duration::from_millis(200);
 
 /// InputBlockedError is type_held's error when the agent's input line isn't
 /// known to be empty: typed messages would mix into what a person is typing.
@@ -156,9 +231,22 @@ pub(crate) fn plural(n: usize, noun: &str) -> String {
     format!("{n} {noun}s")
 }
 
-/// contents returns the messages' texts, each with its "[from ...]" tag.
-fn contents(msgs: &[Message]) -> Vec<String> {
-    msgs.iter().map(|m| m.content.clone()).collect()
+/// Maps claimed store messages into backend coalescing inputs.
+pub(crate) fn to_coalesced(msgs: &[Message], now: &Time) -> Vec<CoalescedMessage> {
+    msgs.iter()
+        .map(|m| {
+            let age_secs = (now.0.timestamp() - m.created_at.0.timestamp()).max(0);
+            CoalescedMessage {
+                id: m.id,
+                sender: m.sender_id.clone(),
+                content: m.content.clone(),
+                age_secs,
+                urgency: m.urgency.clone(),
+                superseded_by: m.superseded_by,
+                topic: m.topic.clone(),
+            }
+        })
+        .collect()
 }
 
 fn rfc3339_now() -> String {
@@ -166,9 +254,9 @@ fn rfc3339_now() -> String {
 }
 
 impl AgentService {
-    /// holdsMessages reports whether messages to agent can be held for the end
-    /// of its turn: its backend takes text from a hook, and spawn wired its
-    /// hooks to this binary (only spawn sets _spawn_id).
+    /// holdsMessages reports whether messages to agent can be held for a hook:
+    /// its backend takes text from a hook, and spawn wired its hooks to this
+    /// binary (only spawn sets _spawn_id).
     pub(crate) fn holds_messages(&self, agent: &Agent) -> bool {
         let Ok(p) = self.provider(agent) else {
             return false;
@@ -198,13 +286,13 @@ impl AgentService {
     }
 
     /// HoldsMessages reports whether a message to name that finds it busy is
-    /// held for the end of its turn rather than typed (see send).
+    /// held rather than typed (see send).
     pub fn holds_messages_named(&self, name: &str) -> bool {
         self.get_agent(name).is_ok_and(|a| self.holds_messages(&a))
     }
 
     /// DeliveryPoint says when the hook that hands name its held messages runs,
-    /// e.g. "its turn ends" (see backend.HookDeliverer).
+    /// e.g. "its next tool batch or turn ends" (see backend.HookDeliverer).
     pub fn delivery_point(&self, name: &str) -> String {
         match self.get_agent(name) {
             Ok(agent) => self.delivery_point_of(&agent),
@@ -213,8 +301,18 @@ impl AgentService {
     }
 
     pub(crate) fn delivery_point_of(&self, agent: &Agent) -> String {
+        self.delivery_point_for_urgency(agent, URGENCY_SOON)
+    }
+
+    pub(crate) fn delivery_point_for_urgency(&self, agent: &Agent, urgency: &str) -> String {
         if self.typed_by_deliverer(agent) {
             return super::revive::HELD_UNTIL_PROMPT.to_string();
+        }
+        if urgency == URGENCY_INTERRUPT {
+            return "its next tool call or step (interrupt)".to_string();
+        }
+        if urgency == URGENCY_LATER {
+            return "its turn ends".to_string();
         }
         if let Ok(p) = self.provider(agent)
             && let Some(hd) = p.as_hook_deliverer()
@@ -224,18 +322,127 @@ impl AgentService {
         "its turn ends".to_string()
     }
 
+    /// Inserts a pending message in SQLite, atomically applying `--replace` /
+    /// `--supersede` / `--key`.
+    pub(crate) fn insert_pending_message(
+        &self,
+        receiver_id: &str,
+        message: &str,
+        opts: &SendOptions,
+        urgency: &str,
+    ) -> Result<(i64, Vec<i64>, Option<Message>)> {
+        let from = if opts.from.is_empty() {
+            "user"
+        } else {
+            opts.from.as_str()
+        };
+        let mut msg = Message {
+            sender_id: from.to_string(),
+            receiver_id: receiver_id.to_string(),
+            content: message.to_string(),
+            status: MESSAGE_STATUS_PENDING,
+            created_at: Time::now(),
+            urgency: urgency.to_string(),
+            topic: opts.topic.clone(),
+            ..Default::default()
+        };
+        let (superseded_ids, already_delivered) = self
+            .storage
+            .create_message_replacing(&mut msg, opts.replace, opts.supersede)
+            .context("storing message")?;
+        Ok((msg.id, superseded_ids, already_delivered))
+    }
+
+    /// Records a message that was typed directly onto a non-hook backend so
+    /// receipts and `--supersede` / `--replace` still work consistently.
+    pub(crate) fn record_direct_delivery(
+        &self,
+        receiver_id: &str,
+        message: &str,
+        opts: &SendOptions,
+        via: &str,
+    ) -> Result<(i64, Vec<i64>, Option<Message>)> {
+        let (id, sup, prev) =
+            self.insert_pending_message(receiver_id, message, opts, opts.effective_urgency())?;
+        let _ = self.storage.claim_single_message_batch(id, via)?;
+        Ok((id, sup, prev))
+    }
+
+    /// `send --now`: inserts into SQLite first (recording a real `message_id`
+    /// and applying `--replace` / `--supersede`), claims and coalesces all
+    /// pending rows ahead of `--now` when the input box is empty (so held
+    /// messages never arrive out-of-order after `--now`), or claims only this
+    /// message when a human has draft text in the input box so held messages
+    /// keep waiting for the line to clear.
+    pub(crate) fn send_now(
+        &self,
+        ctx: &Ctx,
+        agent: &Agent,
+        message: &str,
+        opts: &SendOptions,
+    ) -> Result<SendResult> {
+        let status = self.check_can_send(agent)?;
+        let mut res = SendResult {
+            status,
+            ..Default::default()
+        };
+        let (msg_id, superseded_ids, already_delivered) =
+            self.insert_pending_message(&agent.name, message, opts, URGENCY_NOW)?;
+        res.message_id = msg_id;
+        res.superseded_ids = superseded_ids;
+        if let Some(prev) = already_delivered {
+            res.already_delivered_id = prev.id;
+            res.already_delivered_via = prev.delivery_via;
+        }
+
+        let sweep_all = self.holds_messages(agent) && self.input_blocked_of(agent).is_empty();
+        let claimed = if sweep_all {
+            self.storage
+                .claim_pending_batch_matching(&agent.name, ClaimFilter::All, "now", None)?
+        } else {
+            self.storage.claim_single_message_batch(msg_id, "now")?
+        };
+        let active_count = claimed
+            .iter()
+            .filter(|m| m.status != MESSAGE_STATUS_SUPERSEDED)
+            .count();
+        let text = if claimed.is_empty() {
+            message.to_string()
+        } else {
+            let now = Time::now();
+            format_coalesced_batch(&to_coalesced(&claimed, &now), false)
+        };
+        match self.send_message(ctx, &agent.name, &text, true) {
+            Ok(unchecked) => {
+                res.typed = active_count.max(1);
+                res.unchecked = unchecked;
+                Ok(res)
+            }
+            Err(err) => {
+                if err.downcast_ref::<UnsubmittedError>().is_none()
+                    && err.downcast_ref::<HandoverError>().is_none()
+                {
+                    let _ = self.storage.requeue_batch(&claimed);
+                }
+                Err(err)
+            }
+        }
+    }
+
     /// sendHeld is send for an agent that holds messages: it holds the message
-    /// while the agent is mid-turn or at a prompt, and otherwise types it, after
-    /// any messages still held.
+    /// while the agent is mid-turn or at a prompt, and otherwise records and
+    /// types it, coalesced after any messages still held.
     pub(crate) fn send_held(
         &self,
         ctx: &Ctx,
         agent: &Agent,
         message: &str,
-        from: &str,
+        opts: &SendOptions,
     ) -> Result<SendResult> {
+        let urgency = opts.effective_urgency();
         let mut res = SendResult {
             status: AGENT_STATUS_UNKNOWN,
+            interrupted: urgency == URGENCY_INTERRUPT,
             ..Default::default()
         };
         let mut dialog = false;
@@ -249,8 +456,8 @@ impl AgentService {
         }
         if dialog {
             // No turn runs, so no hook will deliver it: the deliverer types
-            // it once the dialog is gone.
-            let mut res = self.hold(ctx, agent, res, message, from)?;
+            // it once the dialog is gone (never touch the dialog).
+            let mut res = self.hold(ctx, agent, res, message, opts)?;
             if res.held {
                 res.held_until = HELD_UNTIL_DIALOG.to_string();
             }
@@ -258,19 +465,34 @@ impl AgentService {
         }
         if res.status == AGENT_STATUS_PROCESSING || res.status == AGENT_STATUS_WAITING {
             // Waiting too: a held message never goes near the dialog, and once
-            // the prompt is answered, the turn's end delivers it.
-            return self.hold(ctx, agent, res, message, from);
+            // the prompt is answered, the turn's next boundary delivers it.
+            return self.hold(ctx, agent, res, message, opts);
         }
-        let (n, unchecked, err) = self.type_held(ctx, agent, message);
+
+        // At its prompt (idle, error, or unknown): verify no dialog is on
+        // screen before recording in SQLite so refused sends leave no pending row.
+        self.check_screen(agent)?;
+        let (msg_id, superseded_ids, already_delivered) =
+            self.insert_pending_message(&agent.name, message, opts, urgency)?;
+        res.message_id = msg_id;
+        res.superseded_ids = superseded_ids;
+        if let Some(prev) = already_delivered {
+            res.already_delivered_id = prev.id;
+            res.already_delivered_via = prev.delivery_via;
+        }
+
+        let (n, unchecked, err) = self.type_held(ctx, agent, "");
         if let Err(err) = err {
             if let Some(blocked) = err.downcast_ref::<InputBlockedError>() {
-                let why = blocked.why.clone();
-                // A person may be typing: hold this one (behind any held), for
-                // the deliverer to type once the input line is empty.
-                let mut res = self.hold(ctx, agent, res, message, from)?;
-                if res.held {
-                    res.input_blocked = why;
-                }
+                // A person may be typing: `msg_id` is already pending in SQLite
+                // behind any earlier held messages, for the deliverer to type
+                // once the input line is empty.
+                self.mark_sent(&agent.name);
+                res.held = true;
+                res.input_blocked = blocked.why.clone();
+                res.held_until = self.delivery_point_for_urgency(agent, urgency);
+                res.held_count = self.held_count(&agent.name).max(1);
+                let _ = self.start_deliverer(&agent.name);
                 return Ok(res);
             }
             return Err(err);
@@ -280,28 +502,25 @@ impl AgentService {
         Ok(res)
     }
 
-    /// hold stores message for delivery at the end of the agent's turn, unless
-    /// the last report says the turn is already over.
+    /// hold stores message for delivery at the next hook boundary (or end of
+    /// turn), unless the last report says the turn is already over.
     fn hold(
         &self,
         ctx: &Ctx,
         agent: &Agent,
         mut res: SendResult,
         message: &str,
-        from: &str,
+        opts: &SendOptions,
     ) -> Result<SendResult> {
-        let from = if from.is_empty() { "user" } else { from };
-        let mut msg = Message {
-            sender_id: from.to_string(),
-            receiver_id: agent.name.clone(),
-            content: message.to_string(),
-            status: MESSAGE_STATUS_PENDING,
-            created_at: Time::now(),
-            ..Default::default()
-        };
-        self.storage
-            .create_message(&mut msg)
-            .context("holding message")?;
+        let urgency = opts.effective_urgency();
+        let (msg_id, superseded_ids, already_delivered) =
+            self.insert_pending_message(&agent.name, message, opts, urgency)?;
+        res.message_id = msg_id;
+        res.superseded_ids = superseded_ids;
+        if let Some(prev) = already_delivered {
+            res.already_delivered_id = prev.id;
+            res.already_delivered_via = prev.delivery_via;
+        }
         // For wait --next: the turn that takes this message starts later.
         self.mark_sent(&agent.name);
 
@@ -327,7 +546,7 @@ impl AgentService {
         }
 
         res.held = true;
-        res.held_until = self.delivery_point_of(agent);
+        res.held_until = self.delivery_point_for_urgency(agent, urgency);
         res.held_count = 1;
         if let Ok(held) = self
             .storage
@@ -340,12 +559,91 @@ impl AgentService {
         Ok(res)
     }
 
-    /// HeldCount returns how many messages are held for name.
+    /// HeldCount returns how many active messages are held for name.
     pub fn held_count(&self, name: &str) -> usize {
         self.storage
             .get_pending_messages(name, MAX_HELD_COUNT)
             .map(|h| h.len())
             .unwrap_or(0)
+    }
+
+    /// Returns whether `name` has at least one pending message with `urgency = 'later'`.
+    pub(crate) fn has_pending_later(&self, name: &str) -> bool {
+        self.storage
+            .get_pending_messages(name, MAX_HELD_COUNT)
+            .is_ok_and(|msgs| msgs.iter().any(|m| m.urgency == URGENCY_LATER))
+    }
+
+    /// Checks that `from` is allowed to interrupt `target`: a person ("",
+    /// "user"), or an agent in `target`'s host-aware `spawned_by` ancestor chain.
+    pub(crate) fn check_can_interrupt(&self, target: &Agent, from: &str) -> Result<()> {
+        if from.is_empty() || from == "user" {
+            return Ok(());
+        }
+        let my_host = self.cfg.host.as_str();
+        let (caller_name, caller_host) = split_agent_host(from, my_host);
+        if caller_name == target.name && caller_host.eq_ignore_ascii_case(my_host) {
+            anyhow::bail!("agent {from} cannot interrupt itself");
+        }
+        let mut cur = target.spawned_by.clone();
+        for _ in 0..64 {
+            if cur.is_empty() {
+                break;
+            }
+            let (parent_name, parent_host) = split_agent_host(&cur, my_host);
+            if parent_name == caller_name && parent_host.eq_ignore_ascii_case(caller_host) {
+                return Ok(());
+            }
+            // Only walk further in this host's store when the parent lives on
+            // this host: a local agent sharing a bare name with a remote parent
+            // (`lead` here vs `lead@other-host`) is a different agent.
+            if !parent_host.eq_ignore_ascii_case(my_host) {
+                break;
+            }
+            let Ok(Some(parent)) = self.storage.get_agent(parent_name) else {
+                break;
+            };
+            cur = parent.spawned_by;
+        }
+        anyhow::bail!(
+            "agent {from} cannot interrupt {}: only a person or an ancestor in {}'s spawned_by chain may interrupt",
+            target.name,
+            target.name
+        )
+    }
+
+    /// Looks up a stored message's delivery/superseding receipt for `receiver`
+    /// ("" matches any receiver).
+    pub fn message_receipt(&self, receiver: &str, id: i64) -> Result<MessageReceipt> {
+        let Some(msg) = self.storage.get_message(id)? else {
+            anyhow::bail!("no message #{id} on record");
+        };
+        if !receiver.is_empty() && msg.receiver_id != receiver {
+            anyhow::bail!(
+                "message #{id} was addressed to {}, not {receiver}",
+                msg.receiver_id
+            );
+        }
+        let mut status = msg.status.to_string();
+        if msg.status == MESSAGE_STATUS_PENDING
+            && let Ok(info) = self.status_info(&msg.receiver_id)
+            && info.status == AGENT_STATUS_ENDED
+        {
+            status = MESSAGE_STATUS_FAILED.to_string();
+        }
+        Ok(MessageReceipt {
+            id: msg.id,
+            sender_id: msg.sender_id,
+            receiver_id: msg.receiver_id,
+            status,
+            urgency: msg.urgency,
+            topic: msg.topic,
+            superseded_by: msg.superseded_by,
+            created_at: msg.created_at,
+            delivered_at: msg.delivered_at,
+            delivery_via: msg.delivery_via,
+            delivery_batch: msg.delivery_batch,
+        })
     }
 
     /// inputBlocked returns why typing into the agent would land in a person's
@@ -388,14 +686,9 @@ impl AgentService {
     }
 
     /// typeHeld types the agent's held messages, oldest first, then extra if
-    /// set, as one prompt. It claims them first, so the agent's hook (or
-    /// another sender) can't deliver them too, and holds them again if typing
-    /// fails. It refuses (InputBlockedError) unless the agent's input line is
-    /// empty or unreadable. It returns how many messages it typed, and why it
-    /// couldn't check they were submitted (see send_unchecked).
-    ///
-    /// As in the Go, the count comes with an UnsubmittedError or a
-    /// HandoverError too: those messages were typed.
+    /// set (e.g. `revive`'s re-brief), as one coalesced prompt. It claims them
+    /// first, so the agent's hook (or another sender) can't deliver them too,
+    /// and requeues them if typing fails.
     pub(crate) fn type_held(
         &self,
         ctx: &Ctx,
@@ -423,53 +716,88 @@ impl AgentService {
                 .into()),
             );
         }
-        let claimed = match self.storage.claim_pending_messages(&agent.name, None) {
+        let mut extra_row: Option<Message> = None;
+        if !extra.is_empty() {
+            let mut m = Message {
+                sender_id: "user".to_string(),
+                receiver_id: agent.name.clone(),
+                content: extra.to_string(),
+                status: MESSAGE_STATUS_PENDING,
+                created_at: Time::now(),
+                urgency: URGENCY_SOON.to_string(),
+                ..Default::default()
+            };
+            if let Err(e) = self.storage.create_message(&mut m) {
+                return (0, String::new(), Err(e));
+            }
+            extra_row = Some(m);
+        }
+        let claimed = match self.storage.claim_pending_batch(&agent.name, "typed", None) {
             Ok(c) => c,
             Err(e) => return (0, String::new(), Err(e)),
         };
-        let mut texts = contents(&claimed);
-        if !extra.is_empty() {
-            texts.push(extra.to_string());
-        }
-        if texts.is_empty() {
+        let active_count = claimed
+            .iter()
+            .filter(|m| m.status != MESSAGE_STATUS_SUPERSEDED)
+            .count();
+        if active_count == 0 {
             return (0, String::new(), Ok(()));
         }
-        match self.send_message(ctx, &agent.name, &texts.join("\n\n"), true) {
-            Ok(unchecked) => (texts.len(), unchecked, Ok(())),
+        let now = Time::now();
+        let batch = to_coalesced(&claimed, &now);
+        let text = format_coalesced_batch(&batch, false);
+        match self.send_message(ctx, &agent.name, &text, true) {
+            Ok(unchecked) => (active_count, unchecked, Ok(())),
             Err(err) => {
                 if err.downcast_ref::<UnsubmittedError>().is_some() {
-                    return (texts.len(), String::new(), Err(err)); // typed: they sit in its input box
+                    return (active_count, String::new(), Err(err)); // typed: they sit in its input box
                 }
                 if err.downcast_ref::<HandoverError>().is_some() {
                     // Typed as a short line the agent took, and kept in the failed
                     // message: holding them again would have the deliverer type
                     // that line over and over.
-                    return (texts.len(), String::new(), Err(err));
+                    return (active_count, String::new(), Err(err));
                 }
-                for m in &claimed {
-                    let _ = self
-                        .storage
-                        .update_message_status(m.id, MESSAGE_STATUS_PENDING);
-                }
+                let to_requeue: Vec<Message> = match &extra_row {
+                    Some(ex) => {
+                        let _ = self
+                            .storage
+                            .update_message_status(ex.id, MESSAGE_STATUS_FAILED);
+                        claimed.into_iter().filter(|m| m.id != ex.id).collect()
+                    }
+                    None => claimed,
+                };
+                let _ = self.storage.requeue_batch(&to_requeue);
                 (0, String::new(), Err(err))
             }
         }
     }
 
-    /// reportDelivering records r, the report of a hook that can hand the agent
-    /// its held messages, and claims them in the same transaction (see hold for
-    /// why). With messages claimed, the agent goes on with them: the report says
-    /// processing (event "delivered") and starts a turn, for wait --next, and
-    /// r's result, the reply to a step that wasn't the last, isn't stored. With
-    /// none claimed, r is recorded unless delivery_only (the hook says nothing
-    /// else; see backend.HookReport). It returns the hook output that hands the
-    /// messages over, None if none.
     pub(crate) fn report_delivering(
         &self,
         name: &str,
         r: &StatusReport,
         hd: &dyn HookDeliverer,
         delivery_only: bool,
+    ) -> Result<Option<Vec<u8>>> {
+        let filter = if r.event == "PostToolBatch"
+            || r.event == "PostInvocation"
+            || r.event == "PreInvocation"
+        {
+            ClaimFilter::NonLater
+        } else {
+            ClaimFilter::All
+        };
+        self.report_delivering_filtered(name, r, hd, delivery_only, filter)
+    }
+
+    pub(crate) fn report_delivering_filtered(
+        &self,
+        name: &str,
+        r: &StatusReport,
+        hd: &dyn HookDeliverer,
+        delivery_only: bool,
+        filter: ClaimFilter,
     ) -> Result<Option<Vec<u8>>> {
         let now = Time::now();
         let ended = self.report_update(name, r, &now)?;
@@ -482,13 +810,25 @@ impl AgentService {
 
         let mut detail = String::new();
         let mut update = |claimed: &[Message]| -> StateUpdate {
-            if claimed.is_empty() {
+            let active = claimed
+                .iter()
+                .filter(|m| m.status != MESSAGE_STATUS_SUPERSEDED)
+                .count();
+            let superseded = claimed.len() - active;
+            if active == 0 {
                 if delivery_only {
                     return StateUpdate::default();
                 }
                 return ended.clone();
             }
-            detail = format!("{} delivered", plural(claimed.len(), "held message"));
+            detail = if superseded > 0 {
+                format!(
+                    "{} delivered ({superseded} superseded)",
+                    plural(active, "held message")
+                )
+            } else {
+                format!("{} delivered", plural(active, "held message"))
+            };
             let mut going = going.clone();
             for e in &mut going.entries {
                 if e.key == STATE_KEY_DETAIL {
@@ -500,29 +840,30 @@ impl AgentService {
             }
             going
         };
-        let claimed = self
-            .storage
-            .claim_pending_messages(name, Some(&mut update))?;
+        let claimed =
+            self.storage
+                .claim_pending_batch_matching(name, filter, &r.event, Some(&mut update))?;
         if claimed.is_empty() {
             if !delivery_only {
                 self.publish_status(name, r, &now);
             }
             return Ok(None);
         }
+        let _ = MESSAGE_STATUS_DELIVERED;
         delivering.detail = detail;
         self.publish_status(name, &delivering, &now);
-        Ok(Some(hd.delivery_output(&contents(&claimed))))
+        let batch = to_coalesced(&claimed, &now);
+        let out = hd.delivery_output_for(&r.event, &batch);
+        if out.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(out))
     }
 
     /// DeliverHeld types the messages held for name once the agent is at its
     /// prompt with them still held, which happens when its turn ended without a
-    /// hook that delivers them: Esc, a deny, a failed turn. It returns how many
-    /// it typed, ErrNothingHeld if none were held to begin with, and an error if
-    /// the agent has exited or is gone. Without wait, it checks once (ignoring
-    /// grace) and returns with any messages still held while the agent is busy.
-    ///
-    /// As in the Go, the count comes with the error too: messages typed before
-    /// a failure were typed.
+    /// hook that delivers them: Esc, a deny, a failed turn, or Claude's
+    /// PreToolUse interrupt stop.
     pub fn deliver_held(
         &self,
         ctx: &Ctx,
@@ -548,6 +889,7 @@ impl AgentService {
                 return (typed, Ok(()));
             }
             first = false;
+            let urgent = held.iter().any(|m| m.urgency == URGENCY_INTERRUPT);
             let info = match self.status_info(name) {
                 Ok(i) => i,
                 Err(e) => return (typed, Err(e)),
@@ -571,7 +913,8 @@ impl AgentService {
                     at_prompt_since = None;
                 } else {
                     let since = *at_prompt_since.get_or_insert_with(Instant::now);
-                    if !opts.wait || since.elapsed() >= opts.grace {
+                    let grace = if urgent { Duration::ZERO } else { opts.grace };
+                    if !opts.wait || since.elapsed() >= grace {
                         let (n, unchecked, err) = self.type_held(ctx, &agent, "");
                         let err = err.err();
                         typed += n;
@@ -602,7 +945,12 @@ impl AgentService {
             if !opts.wait {
                 return (typed, Ok(()));
             }
-            if let Err(e) = ctx.sleep(opts.interval) {
+            let poll = if urgent && opts.interval > INTERRUPT_DELIVER_POLL {
+                INTERRUPT_DELIVER_POLL
+            } else {
+                opts.interval
+            };
+            if let Err(e) = ctx.sleep(poll) {
                 return (typed, Err(e.into()));
             }
         }
@@ -704,5 +1052,13 @@ impl AgentService {
     /// DelivererLockPath is the file a running deliverer for name holds locked.
     pub fn deliverer_lock_path(&self, name: &str) -> String {
         filepath::join(&[self.cfg.agent_dir(name).as_str(), "deliver.lock"])
+    }
+}
+
+fn split_agent_host<'a>(s: &'a str, default_host: &'a str) -> (&'a str, &'a str) {
+    match s.split_once('@') {
+        Some((name, host)) if !host.is_empty() => (name, host),
+        Some((name, _)) => (name, default_host),
+        None => (s, default_host),
     }
 }

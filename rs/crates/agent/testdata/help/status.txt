@@ -47,9 +47,10 @@ Examples:
   agent status builder --json
 
 Flags:
-  -h, --help      help for status
-      --json      Print the status and its details as JSON
-  -v, --verbose   Show source, last event, and detail
+  -h, --help          help for status
+      --json          Print the status and its details as JSON
+      --receipt int   Show the delivery or superseding receipt for message ID (local agents)
+  -v, --verbose       Show source, last event, and detail
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

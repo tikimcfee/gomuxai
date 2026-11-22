@@ -21,23 +21,31 @@ status it found the agent in.
 An agent at its prompt gets the message typed into its terminal. A Claude or
 agy agent that is busy (processing, or waiting on a prompt or question)
 holds it instead (a Claude agent once "agent hook" has reported its current
-session: a CLI started without the hook gets messages typed in), and a hook hands over every message held for it, oldest
-first:
-  claude  when its turn ends, from its Stop hook: Claude goes on with them as
-          its next step (its screen shows them as "Stop hook feedback").
+session: a CLI started without the hook gets messages typed in), and a hook hands over every message held for it, coalesced oldest
+first with newest last:
+  claude  when its next tool batch finishes (PostToolBatch) or when its turn
+          ends (Stop): Claude receives all held messages coalesced oldest-first
+          as hook context and continues in the same turn.
   agy     when its current step ends (a model call and its tools), from its
-          PostInvocation hook: each shows as a prompt of its own, and the
-          model answers them in the same turn.
+          PostInvocation hook: all held messages arrive coalesced into one
+          prompt, and the model answers them in the same turn.
 If the turn ends without that hook (Esc, a deny, a failed turn), the held
 messages are typed in once it has sat at its prompt for 10s, or ahead of the
-next message sent to it. Messages are never typed into an agent's input line
-while it has text in it (a person typing there): they're held until it's
-empty. "agent status <name> -v" shows how many are held and what they wait
-for.
+next message sent to it. Use --later to hold until the entire turn ends,
+--replace to supersede your earlier pending messages (scoped to --key when
+given; keeping superseded text as context), --supersede <id> to supersede a
+specific pending message ID (with a note if it was already delivered), or
+--interrupt (people and spawning ancestors) to block the agent's next tool
+call via PreToolUse and deliver urgently. Messages are never typed into an
+agent's input line while it has text in it (a person typing there): they're
+held until it's empty. "agent status <name> -v" shows how many are held and
+what they wait for, and "agent status <name> --receipt <id>" inspects a
+message's delivery receipt.
 
---now types the message in even while the agent is busy (Claude takes it at
-its next tool boundary, agy queues it for its turn's end), as send always
-does for other backends. Typing is refused while the agent is at a dialog (a
+--now types the message in even while the agent is busy (sweeping any held
+messages ahead of it when the input line is empty; Claude takes it at its
+next tool boundary, agy at its next step), as send always does for other
+backends. Typing is refused while the agent is at a dialog (a
 permission, question, or workspace trust prompt), where the Enter would
 answer the dialog instead; answer permission prompts with approve/deny, and
 questions with agent key. Send is also refused once the agent's session has
@@ -98,7 +106,7 @@ as a file, as above)."#,
 };
 
 /// The flags and arguments of `agent send`.
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct Args {
     #[arg(
         long = "force",
@@ -106,10 +114,53 @@ pub struct Args {
     )]
     pub force: bool,
     #[arg(
+        long = "interrupt",
+        help = "Block the next tool call via PreToolUse and deliver urgently (people or spawning ancestors)",
+    )]
+    pub interrupt: bool,
+    #[arg(long = "json", help = "Print the send result and receipt as JSON")]
+    pub json: bool,
+    #[arg(
+        long = "key",
+        value_name = "string",
+        default_value = "",
+        help = "Topic key for coalescing and auto-superseding earlier pending messages with the same key",
+    )]
+    pub key: String,
+    #[arg(
+        long = "later",
+        help = "Hold until the current turn ends completely, even on backends that deliver between steps",
+    )]
+    pub later: bool,
+    #[arg(
         long = "now",
-        help = "Type it in now even if the agent is busy, instead of holding it until its turn ends",
+        help = "Type it in now even if the agent is busy, sweeping held messages first when the input line is empty",
     )]
     pub now: bool,
+    #[arg(
+        long = "replace",
+        help = "Supersede earlier pending held messages from you to <name> (scoped to --key if set)",
+    )]
+    pub replace: bool,
+    #[arg(
+        long = "soon",
+        help = "Deliver at the next tool batch or step boundary (default)",
+    )]
+    pub soon: bool,
+    #[arg(
+        long = "supersede",
+        value_name = "int",
+        default_value_t = 0,
+        help = "Mark pending message ID superseded by this message (warns if already delivered)",
+    )]
+    pub supersede: i64,
+    #[arg(
+        long = "urgency",
+        value_name = "string",
+        default_value = "",
+        help = "Delivery urgency: later, soon, now, or interrupt",
+    )]
+    pub urgency: String,
     /// The positional arguments, checked against DOC.args.
     #[arg(hide = true)]
     pub args: Vec<String>,
@@ -122,6 +173,8 @@ pub fn def() -> Def {
 pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
     let name = &args.args[0];
     let message = args.args[1..].join(" ");
+    let urgency = resolve_urgency(args)?;
+    let now = args.now || urgency == "now";
 
     let (r, remote) = parse_target(ctx, name)?;
     let message = from_agent(ctx, &message);
@@ -138,10 +191,21 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         anyhow::bail!("--force only applies to local agents");
     }
     if remote {
+        let local_sender = sender_id(ctx);
+        let remote_from = if local_sender == "user" {
+            "user".to_string()
+        } else {
+            format!("{local_sender}@{}", ctx.cfg().host)
+        };
         let req = SendRequest {
             agent: String::new(),
             message,
-            now: args.now,
+            now,
+            from: remote_from,
+            urgency,
+            replace: args.replace,
+            supersede: args.supersede,
+            topic: args.key.clone(),
         };
         let resp = call_remote(ctx, &r.host, |c| {
             c.send_message(&Context::background(), &r, req)
@@ -159,7 +223,15 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
             typed: usize::try_from(resp.typed).unwrap_or(0),
             input_blocked: resp.input_blocked,
             unchecked: resp.unchecked,
+            message_id: resp.message_id,
+            superseded_ids: resp.superseded_ids,
+            already_delivered_id: resp.already_delivered_id,
+            already_delivered_via: resp.already_delivered_via,
+            interrupted: resp.interrupted,
         };
+        if args.json {
+            return print_sent_json(ctx, name, &res);
+        }
         return print_sent(ctx, name, &res);
     }
     let svc = ctx.service()?;
@@ -173,11 +245,66 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         &r.name,
         &message,
         SendOptions {
-            now: args.now,
+            now,
             from: sender_id(ctx),
+            urgency,
+            replace: args.replace,
+            supersede: args.supersede,
+            topic: args.key.clone(),
         },
     )?;
+    if args.json {
+        return print_sent_json(ctx, name, &res);
+    }
     print_sent(ctx, name, &res)
+}
+
+fn resolve_urgency(args: &Args) -> anyhow::Result<String> {
+    let shorthand_count = usize::from(args.later)
+        + usize::from(args.soon)
+        + usize::from(args.now)
+        + usize::from(args.interrupt);
+    if shorthand_count > 1 {
+        anyhow::bail!("choose at most one of --later, --soon, --now, and --interrupt");
+    }
+    let raw = args.urgency.trim().to_ascii_lowercase();
+    let explicit = match raw.as_str() {
+        "" => "",
+        "normal" | "soon" => "soon",
+        "later" => "later",
+        "now" => "now",
+        "interrupt" => "interrupt",
+        _ => {
+            anyhow::bail!(
+                "invalid --urgency {:?}: want later, soon, now, or interrupt",
+                args.urgency
+            );
+        }
+    };
+    let shorthand = if args.later {
+        "later"
+    } else if args.soon {
+        "soon"
+    } else if args.now {
+        "now"
+    } else if args.interrupt {
+        "interrupt"
+    } else {
+        ""
+    };
+    if !explicit.is_empty() && !shorthand.is_empty() && explicit != shorthand {
+        anyhow::bail!(
+            "cannot combine --{shorthand} with --urgency {}",
+            args.urgency.trim()
+        );
+    }
+    if !shorthand.is_empty() {
+        Ok(shorthand.to_string())
+    } else if !explicit.is_empty() {
+        Ok(explicit.to_string())
+    } else {
+        Ok("soon".to_string())
+    }
 }
 
 /// An environment variable, "" if unset (Go: os.Getenv): one that isn't UTF-8
@@ -186,11 +313,75 @@ fn env(key: &str) -> String {
     super::root::getenv(key)
 }
 
+#[derive(serde::Serialize)]
+struct SendJsonOut<'a> {
+    agent: &'a str,
+    status: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    detail: &'a str,
+    #[serde(skip_serializing_if = "is_zero_i64")]
+    id: i64,
+    held: bool,
+    #[serde(skip_serializing_if = "is_zero_usize")]
+    held_count: usize,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    held_until: &'a str,
+    #[serde(skip_serializing_if = "is_zero_usize")]
+    typed: usize,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    input_blocked: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    unchecked: &'a str,
+    #[serde(skip_serializing_if = "<[i64]>::is_empty")]
+    superseded: &'a [i64],
+    #[serde(skip_serializing_if = "is_zero_i64")]
+    already_delivered_id: i64,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    already_delivered_via: &'a str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    interrupted: bool,
+}
+
+fn is_zero_i64(n: &i64) -> bool {
+    *n == 0
+}
+
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
+}
+
+fn print_sent_json(ctx: &Ctx, name: &str, res: &SendResult) -> anyhow::Result<()> {
+    ctx.print_json(&SendJsonOut {
+        agent: name,
+        status: res.status.as_str(),
+        detail: &res.detail,
+        id: res.message_id,
+        held: res.held,
+        held_count: res.held_count,
+        held_until: &res.held_until,
+        typed: res.typed,
+        input_blocked: &res.input_blocked,
+        unchecked: &res.unchecked,
+        superseded: &res.superseded_ids,
+        already_delivered_id: res.already_delivered_id,
+        already_delivered_via: &res.already_delivered_via,
+        interrupted: res.interrupted,
+    })
+}
+
 /// Says what send did with a message, and what it found the agent doing.
 pub(crate) fn print_sent(ctx: &Ctx, name: &str, res: &SendResult) -> anyhow::Result<()> {
     let mut found = format!("it was {}", res.status);
     if res.status == AGENT_STATUS_UNKNOWN {
         found = "its status is unknown".to_string();
+    }
+    let mut meta = String::new();
+    if res.message_id > 0 {
+        meta.push_str(&format!("; #{}", res.message_id));
+        if !res.superseded_ids.is_empty() {
+            let ids: Vec<String> = res.superseded_ids.iter().map(|id| format!("#{id}")).collect();
+            meta.push_str(&format!(", superseded {}", ids.join(", ")));
+        }
     }
     if res.held {
         let mut behind = String::new();
@@ -204,17 +395,18 @@ pub(crate) fn print_sent(ctx: &Ctx, name: &str, res: &SendResult) -> anyhow::Res
             // At its prompt, but its input line isn't empty: a person may be
             // typing there.
             ctx.write_out(&format!(
-                "Held for {name} until its input line is empty{behind} ({found}; its input line: {}).\n",
+                "Held for {name} until its input line is empty{behind} ({found}; its input line: {}{meta}).\n",
                 res.input_blocked
             ))?;
-            return Ok(());
+            return print_already_delivered(ctx, res);
         }
         let until = if res.held_until.is_empty() {
             "its turn ends" // a host that predates HeldUntil
         } else {
             &res.held_until
         };
-        ctx.write_out(&format!("Held for {name} until {until}{behind} ({found}).\n"))?;
+        ctx.write_out(&format!("Held for {name} until {until}{behind} ({found}{meta}).\n"))?;
+        print_already_delivered(ctx, res)?;
         if dialog_title(&res.status, &res.detail).is_some() {
             ctx.hint(format!(
                 "agent deny {name} closes the dialog (Esc); agent approve {name} picks its highlighted option (Enter)"
@@ -225,14 +417,43 @@ pub(crate) fn print_sent(ctx: &Ctx, name: &str, res: &SendResult) -> anyhow::Res
             ));
         }
     } else if res.typed > 1 {
+        let sup_meta = if res.superseded_ids.is_empty() {
+            ""
+        } else {
+            meta.as_str()
+        };
         ctx.write_out(&format!(
-            "Sent to {name}, after {} held for it ({found}).\n",
+            "Sent to {name}, after {} held for it ({found}{sup_meta}).\n",
             plural(res.typed - 1, "message")
         ))?;
+        print_already_delivered(ctx, res)?;
     } else {
-        ctx.write_out(&format!("Sent to {name} ({found}).\n"))?;
+        let sup_meta = if res.superseded_ids.is_empty() {
+            ""
+        } else {
+            meta.as_str()
+        };
+        ctx.write_out(&format!("Sent to {name} ({found}{sup_meta}).\n"))?;
+        print_already_delivered(ctx, res)?;
     }
     print_unchecked(ctx, name, &res.unchecked)
+}
+
+fn print_already_delivered(ctx: &Ctx, res: &SendResult) -> anyhow::Result<()> {
+    if res.already_delivered_id <= 0 {
+        return Ok(());
+    }
+    if res.already_delivered_via.is_empty() {
+        ctx.write_out(&format!(
+            "Note: message #{} was already delivered; this message was sent as a follow-up.\n",
+            res.already_delivered_id
+        ))
+    } else {
+        ctx.write_out(&format!(
+            "Note: message #{} was already delivered (via {}); this message was sent as a follow-up.\n",
+            res.already_delivered_id, res.already_delivered_via
+        ))
+    }
 }
 
 /// Says, when why is set, that a message was typed into a Claude agent without

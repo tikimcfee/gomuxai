@@ -59,9 +59,31 @@ pub trait HookDeliverer {
     /// where Go returns nil.
     fn delivery_output(&self, messages: &[String]) -> Vec<u8>;
 
-    /// Says, for people, when that hook runs: "its turn ends" (Claude's
-    /// Stop), "its current step ends" (agy's PostInvocation).
+    /// Says, for people, when that hook runs: "its next tool batch or turn ends"
+    /// (Claude's PostToolBatch/Stop), "its current step ends" (agy's PostInvocation).
     fn delivery_point(&self) -> String;
+
+    /// Coalesced batch hook output for `event` (`PostToolBatch`, `Stop`,
+    /// `PostInvocation`, ...). Defaults to `delivery_output` over active
+    /// message contents for backends that don't customize event framing.
+    fn delivery_output_for(&self, _event: &str, batch: &[crate::CoalescedMessage]) -> Vec<u8> {
+        let texts: Vec<String> = batch
+            .iter()
+            .filter(|m| !m.is_superseded())
+            .map(|m| m.content.clone())
+            .collect();
+        if texts.is_empty() {
+            return Vec::new();
+        }
+        self.delivery_output(&texts)
+    }
+
+    /// Hook output that blocks an upcoming tool call (`PreToolUse`) when an
+    /// interrupt-urgency message is waiting. `None` if this event/backend
+    /// cannot block the tool call.
+    fn interrupt_output(&self, _r: &HookReport, _reason: &str) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// Implemented by hook backends whose CLI takes typed text that is long or

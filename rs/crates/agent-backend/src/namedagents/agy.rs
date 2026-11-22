@@ -68,12 +68,10 @@ pub fn new_agy_backend_with_config(cfg: AgyConfig) -> AgyBackend {
 /// from an SSH connection inherits them, so spawned agents would too.
 const AGY_ENV: &str = "env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY ";
 
-/// Session-only settings (--settings, never saved): no feedback survey. agy
-/// (1.5.x) shows one after a turn now and then ("How's the CLI experience so
-/// far?"), in place of its input box, and keys typed then answer it:
-/// messages to the agent waited behind it while its status said idle
-/// (friction #44).
-const AGY_SETTINGS: &str = r#"{"showFeedbackSurvey":false}"#;
+/// Session-only settings (--settings, never saved): no feedback survey, and
+/// mid-turn typed messages (`send --now`, or a person typing) deliver at the
+/// next step boundary instead of agy's turn-end `"queue"` default.
+const AGY_SETTINGS: &str = r#"{"queuedMessages":"send-immediately","showFeedbackSurvey":false}"#;
 
 fn lock(m: &Mutex<String>) -> String {
     m.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -748,6 +746,20 @@ struct AgyPostInvocationOutput {
     termination_behavior: String,
 }
 
+/// PreToolUse's deny output for interrupt-urgency messages. Strict two-field
+/// schema matching agy's protojson contract.
+#[derive(Serialize)]
+struct AgyPreToolDenyOutput<'a> {
+    decision: &'a str,
+    reason: &'a str,
+}
+
+#[derive(Serialize)]
+struct AgyStopContinueOutput<'a> {
+    decision: &'a str,
+    reason: &'a str,
+}
+
 impl HookDeliverer for AgyBackend {
     /// agy's PostInvocation, which fires after every model call and its
     /// tools, including the turn's last one. With injectSteps and
@@ -781,6 +793,44 @@ impl HookDeliverer for AgyBackend {
             inject_steps: steps,
             termination_behavior: "force_continue".to_string(),
         })
+    }
+
+    /// Coalesces the entire held batch into ONE `userMessage` (still split
+    /// cleanly at 64 KB via `agy_message_parts` so agy never truncates it),
+    /// with `force_continue` on `PostInvocation`, or `decision: "continue"` on
+    /// `Stop` for `--later` messages.
+    fn delivery_output_for(&self, event: &str, batch: &[crate::CoalescedMessage]) -> Vec<u8> {
+        let text = crate::format_coalesced_batch(batch, false);
+        if text.is_empty() {
+            return Vec::new();
+        }
+        if event == "Stop" {
+            return marshal(&AgyStopContinueOutput {
+                decision: "continue",
+                reason: &text,
+            });
+        }
+        let steps: Vec<AgyInjectStep> = agy_message_parts(&text)
+            .into_iter()
+            .map(|part| AgyInjectStep { user_message: part })
+            .collect();
+        marshal(&AgyPostInvocationOutput {
+            inject_steps: steps,
+            termination_behavior: "force_continue".to_string(),
+        })
+    }
+
+    /// On PreToolUse with an interrupt-urgency message waiting, denies the
+    /// tool call cleanly so agy falls straight into PostInvocation and
+    /// receives the coalesced urgent message with `force_continue`.
+    fn interrupt_output(&self, r: &HookReport, reason: &str) -> Option<Vec<u8>> {
+        if r.event != "PreToolUse" {
+            return None;
+        }
+        Some(marshal(&AgyPreToolDenyOutput {
+            decision: "deny",
+            reason,
+        }))
     }
 }
 

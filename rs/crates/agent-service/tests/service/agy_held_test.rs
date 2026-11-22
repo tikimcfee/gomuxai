@@ -176,11 +176,16 @@ fn test_agy_held_until_post_invocation_delivers() {
     .expect("delivery output");
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     let steps = v["injectSteps"].as_array().cloned().unwrap_or_default();
+    let step_msg = steps
+        .first()
+        .and_then(|s| s["userMessage"].as_str())
+        .unwrap_or_default();
     assert!(
-        steps.len() == 2
+        steps.len() == 1
             && v["terminationBehavior"] == "force_continue"
-            && steps[0]["userMessage"] == "[from lead@h] first"
-            && steps[1]["userMessage"] == "[from a person on h] second",
+            && step_msg.contains("[from lead@h] first")
+            && step_msg.contains("[from a person on h] second")
+            && step_msg.find("[from lead@h] first") < step_msg.find("[from a person on h] second"),
         "delivery output {}",
         String::from_utf8_lossy(&out)
     );
@@ -222,6 +227,121 @@ fn test_agy_held_until_post_invocation_delivers() {
         "idle",
         "after Stop"
     );
+}
+
+// On agy, `--later` skips PostInvocation and delivers at Stop, while
+// `--interrupt` blocks PreToolUse with strict `{"decision":"deny"}` and
+// delivers coalesced (with full superseded text) on PostInvocation.
+#[test]
+fn test_agy_later_and_interrupt_pre_tool_use_into_post_invocation() {
+    require_termd!();
+    let mut env = setup_test_env();
+    spawn_agy_holding(&mut env, "agyint");
+    let mut a = env.store.get_agent("agyint").unwrap().unwrap();
+    a.spawned_by = "lead".into();
+    env.store.replace_agent(&a).unwrap();
+
+    let later = env
+        .service
+        .send(
+            &bg(),
+            "agyint",
+            "[from peer@h] check docs when done",
+            SendOptions {
+                from: "peer".into(),
+                urgency: "later".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(later.held && later.held_until == "its turn ends");
+    assert!(
+        agy_hook(
+            &env,
+            "agyint",
+            "PostInvocation",
+            r#"{"conversationId":"c1","invocationNum":0}"#
+        )
+        .is_none(),
+        "PostInvocation must skip --later"
+    );
+
+    let r1 = env
+        .service
+        .send(
+            &bg(),
+            "agyint",
+            "[from lead@h] deploy v1\nwith feature flag X",
+            SendOptions {
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let r2 = env
+        .service
+        .send(
+            &bg(),
+            "agyint",
+            "[from lead@h] STOP: abort deploy, keep flag X only",
+            SendOptions {
+                from: "lead".into(),
+                replace: true,
+                urgency: "interrupt".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(r2.superseded_ids, vec![r1.message_id]);
+
+    let pre = agy_hook(
+        &env,
+        "agyint",
+        "PreToolUse",
+        r#"{"conversationId":"c1","toolCall":{"name":"run_command","args":{"CommandLine":"deploy.sh"}}}"#,
+    )
+    .expect("PreToolUse interrupt deny");
+    let pv: serde_json::Value = serde_json::from_slice(&pre).unwrap();
+    assert_eq!(pv["decision"], "deny");
+
+    let post = agy_hook(
+        &env,
+        "agyint",
+        "PostInvocation",
+        r#"{"conversationId":"c1","invocationNum":1}"#,
+    )
+    .expect("PostInvocation coalesced delivery");
+    let v: serde_json::Value = serde_json::from_slice(&post).unwrap();
+    let steps = v["injectSteps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1);
+    let msg = steps[0]["userMessage"].as_str().unwrap();
+    assert!(msg.contains("URGENT INTERRUPT"));
+    assert!(
+        msg.contains("with feature flag X"),
+        "full superseded body kept:\n{msg}"
+    );
+    assert_eq!(
+        env.service.held_count("agyint"),
+        1,
+        "--later still held for Stop"
+    );
+
+    let stop_out = agy_hook(
+        &env,
+        "agyint",
+        "Stop",
+        r#"{"conversationId":"c1","fullyIdle":true,"terminationReason":"NO_TOOL_CALL"}"#,
+    )
+    .expect("Stop delivers --later");
+    let sv: serde_json::Value = serde_json::from_slice(&stop_out).unwrap();
+    assert_eq!(sv["decision"], "continue");
+    assert!(
+        sv["reason"]
+            .as_str()
+            .unwrap()
+            .contains("check docs when done")
+    );
+    assert_eq!(env.service.held_count("agyint"), 0);
 }
 
 // Esc and Ctrl+C fire no hook: once the last report has stood a while and

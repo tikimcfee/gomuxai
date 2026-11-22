@@ -72,7 +72,8 @@ fn test_rpc_all_ops_round_trip() {
         Some(RecordedReq::Send(SendRequest {
             agent: "worker".to_string(),
             message: "hello there".to_string(),
-            now: false
+            now: false,
+            ..Default::default()
         }))
     );
 

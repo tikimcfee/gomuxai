@@ -112,3 +112,78 @@ fn test_sender_is_the_agent_the_processes_show() {
     stand_under(&env, Some(1));
     assert_eq!(from_agent(&env.ctx, "hi"), "[from lead@local] hi", "outside the panes");
 }
+
+#[test]
+fn test_cli_send_replace_supersede_json_and_status_receipt() {
+    crate::require_termd!();
+    let mut env = TestEnv::setup_cli_private();
+    let session = env.ctx.cfg().session_name("busy-worker");
+    env.create_live_agent(&Agent {
+        name: "busy-worker".into(),
+        session_name: session,
+        backend: "agy".into(),
+        spawned_by: "lead".into(),
+        created_at: Time::now(),
+        ..Default::default()
+    });
+    env.ctx
+        .store()
+        .unwrap()
+        .set_state(&agent_store::StateEntry {
+            agent_name: "busy-worker".into(),
+            key: "_spawn_id".into(),
+            value: "sp1".into(),
+            updated_at: Time::now(),
+        })
+        .unwrap();
+    let svc = env.ctx.service().unwrap();
+    svc.report(
+        "busy-worker",
+        agent_service::StatusReport {
+            status: agent_service::AGENT_STATUS_PROCESSING,
+            event: "PreInvocation".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    stand_under(&env, Some(1));
+    env.set_env("AGENT_NAME", "lead");
+
+    let (out1, res1) = env.run(&[
+        "send",
+        "--key",
+        "plan",
+        "--json",
+        "busy-worker",
+        "first draft",
+    ]);
+    res1.expect("first send");
+    let v1: serde_json::Value = serde_json::from_str(&out1).unwrap();
+    let id1 = v1["id"].as_i64().unwrap();
+    assert!(id1 > 0 && v1["held"] == true);
+
+    let (out2, res2) = env.run(&[
+        "send",
+        "--replace",
+        "--key",
+        "plan",
+        "busy-worker",
+        "revised instruction",
+    ]);
+    res2.expect("replace send");
+    assert!(
+        out2.contains(&format!("superseded #{id1}")),
+        "expected superseded note in output: {out2}"
+    );
+
+    let (rec_out, rec_res) = env.run(&["status", "busy-worker", "--receipt", &id1.to_string()]);
+    rec_res.expect("status --receipt");
+    assert!(
+        rec_out.contains(&format!(
+            "message #{id1} to busy-worker (from lead): superseded, superseded by #"
+        )),
+        "unexpected receipt output: {rec_out}"
+    );
+    env.set_env("AGENT_NAME", "");
+}

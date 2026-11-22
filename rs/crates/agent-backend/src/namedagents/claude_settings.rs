@@ -24,6 +24,7 @@ pub const CLAUDE_HOOK_EVENTS: &[&str] = &[
     "PermissionRequest",
     "PostToolUse",
     "PostToolUseFailure",
+    "PostToolBatch",
     "PreCompact",
     "Notification",
     "SubagentStart",

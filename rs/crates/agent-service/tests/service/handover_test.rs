@@ -164,8 +164,12 @@ fn test_handover_held_messages_typed_together() {
     let got = term.got();
     assert!(
         got.len() == 1
-            && got[0].ends_with("\n\n[from a@h] one\n\n[from b@h] two\n\n[from c@h] three"),
-        "the model got {got:?}; want all three, oldest first"
+            && got[0].contains("[from a@h] one")
+            && got[0].contains("[from b@h] two")
+            && got[0].contains("[from c@h] three")
+            && got[0].find("[from a@h] one") < got[0].find("[from b@h] two")
+            && got[0].find("[from b@h] two") < got[0].find("[from c@h] three"),
+        "the model got {got:?}; want all three coalesced, oldest first"
     );
 }
 
