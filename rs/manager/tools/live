@@ -34,6 +34,19 @@
 #   LIVE_PATH='$HOME/.cargo/bin'   put before PATH on the target (single quotes: expanded there)
 #   LIVE_BRANCH=manager            the approved branch
 #   LIVE_SCAN='regex'              approve refuses a diff or message matching this (grep -E -i)
+#   LIVE_LAUNCHER='$HOME/.local/bin/agent-manager-live'   where setup writes the launcher (expanded there)
+#   LIVE_JIT=1                     run the live window under Makepad's JIT (below); default off
+#   LIVE_JIT_DIR=/var/tmp/makepad-jit   where the JIT loader is built, once per Makepad commit
+#
+# JIT mode (LIVE_JIT=1): the live window runs from the live checkout's source under
+# `makepad run` (Makepad's JIT), which patches the running window as the source changes, Rust
+# and `script_mod!` alike, so a push builds nothing. `setup` builds the JIT loader for the
+# Makepad commit the manager's Cargo.lock pins (from the target's cargo checkout, offline;
+# minutes, once) and writes the launcher; its output goes to live.log in LIVE_TARGET. `push`
+# waits for the JIT's verdict and reports it: applied live; not applied because it doesn't
+# compile (the compiler's errors, exit 1; the window keeps the previous code); or restart
+# waiting (a struct's or enum's layout changed, or Cargo files did), in which case it
+# relaunches the window, which comes back in its saved state.
 set -eu
 
 conf=${AGENT_MANAGER_LIVE_CONF:-$HOME/.config/agent-manager/live.conf}
@@ -44,6 +57,9 @@ LIVE_TARGET=/var/tmp/agent-manager-live-target
 LIVE_PATH=
 LIVE_BRANCH=manager
 LIVE_SCAN=
+LIVE_LAUNCHER=
+LIVE_JIT=
+LIVE_JIT_DIR=/var/tmp/makepad-jit
 # shellcheck disable=SC1090
 [ -f "$conf" ] && . "$conf"
 [ -n "$LIVE_REPO" ] || { echo "live: set LIVE_REPO in $conf (see the top of $0)" >&2; exit 1; }
@@ -66,6 +82,10 @@ case \$live in /*) ;; *) live="\$HOME/\$live" ;; esac
 approved=origin/\$branch
 note="\$tdir/live-note"
 relaunch="\$tdir/relaunch"
+jit='$LIVE_JIT' jitdir='$LIVE_JIT_DIR' launcher="$LIVE_LAUNCHER"
+[ "\$jit" = 0 ] && jit=
+case \$launcher in '') launcher="\$HOME/.local/bin/agent-manager-live" ;; /*) ;; *) launcher="\$HOME/\$launcher" ;; esac
+log="\$tdir/live.log" pidfile="\$tdir/live.pid"
 ${1:-}
 EOF
         cat <<'EOF'
@@ -134,6 +154,162 @@ write_note() {
         echo "$n unapproved, newest: $(git -C "$live" log -1 --format=%s | cut -c1-48)" >"$note"
     fi
 }
+
+# --- JIT mode ---
+# The Makepad commit that commit $1's Cargo.lock pins (HEAD: the live checkout's).
+makepad_rev() {
+    git -C "$live" show "${1:-HEAD}:rs/manager/Cargo.lock" 2>/dev/null |
+        sed -n 's/^source = "git+[^"]*makepad[^"#]*#\([0-9a-f]\{40\}\)"$/\1/p' | head -1
+}
+# Sets the JIT loader's paths for the Makepad the live checkout pins. The loader refuses an
+# app whose Makepad sources differ from those it was built from, and takes a path with
+# /.cargo/git/ in it for cargo's own unchanging copy: so its source is a copy of cargo's
+# checkout under such a path (never the checkout itself).
+loader_paths() {
+    mrev=$(makepad_rev)
+    [ -n "$mrev" ] || { echo "live: the live checkout's Cargo.lock pins no Makepad git commit" >&2; return 1; }
+    mshort=$(printf %.7s "$mrev")
+    lsrc="$jitdir/.cargo/git/makepad-$mshort"
+    lbuild="$jitdir/target-$mshort"
+    loader="$lbuild/host/makepad"
+}
+# Builds the loader once per Makepad commit, offline: the commit comes from cargo's checkout
+# (made from its git database if missing), the lock file from cargo's cache.
+build_loader() {
+    loader_paths || return 1
+    if [ -x "$loader" ] && [ -e "$lbuild/built" ]; then
+        echo "JIT loader for Makepad $mshort: built already ($loader)"
+        return 0
+    fi
+    mkdir -p "$jitdir/.cargo/git" "$lbuild"
+    llog="$lbuild/build.log"
+    checkout() { ls -d "${CARGO_HOME:-$HOME/.cargo}"/git/checkouts/makepad-*/"$mshort" 2>/dev/null | head -1; }
+    if [ ! -e "$lsrc/Cargo.toml" ]; then
+        co=$(checkout)
+        if [ -z "$co" ]; then
+            (cd "$live/rs/manager" && cargo metadata --offline --format-version 1 >/dev/null 2>&1) || true
+            co=$(checkout)
+        fi
+        [ -n "$co" ] || { echo "live: no cargo checkout of Makepad $mshort on the target, and cargo can't make one offline" >&2; return 1; }
+        rm -rf "$lsrc.part"
+        cp -R "$co" "$lsrc.part"
+        mv "$lsrc.part" "$lsrc"
+    fi
+    echo "building the JIT loader for Makepad $mshort (minutes, once; log: $llog)"
+    # In its own folder: cargo reads the config of the folder it runs in.
+    if { [ -e "$lsrc/Cargo.lock" ] || (cd "$lsrc" && cargo generate-lockfile --offline); } >"$llog" 2>&1 &&
+        (cd "$lsrc" && CARGO_TARGET_DIR="$lbuild" cargo build --offline --profile host -p makepad-run --bin makepad) >>"$llog" 2>&1; then
+        : >"$lbuild/built"
+        echo "JIT loader built: $loader"
+    else
+        tail -25 "$llog" >&2
+        echo "live: building the JIT loader failed (above)" >&2
+        return 1
+    fi
+}
+# The pid of the running JIT live window's run (it keeps it across a relaunch), or nothing.
+jit_pid() {
+    p=$(cat "$pidfile" 2>/dev/null) || return 0
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null && ps -p "$p" -o command= | grep -q 'host/makepad run'; then
+        echo "$p"
+    fi
+}
+# The app's own process, which `makepad inspect` talks to: the newest the log names.
+app_pid() { sed -n 's/^makepad-remote: pid \([0-9]*\) .*/\1/p' "$log" | tail -1; }
+# The log since byte $1.
+log_since() { tail -c +$(($1 + 1)) "$log" 2>/dev/null; }
+# The JIT's verdicts on edits: "<files>: patched ...", "<files>: patched in part ...",
+# "<files>: NOT applied ..." (the details follow, indented).
+verdicts() { log_since "$1" | grep -E '^relax live: [^ ].*: (patched|NOT applied)' || true; }
+# "none", "live", "restart" (Cargo files: a new run) or "loader" (another Makepad): what
+# going from commit $1 to $2 takes under the JIT.
+jit_effect() {
+    e=none
+    if [ "$(makepad_rev "$1")" != "$(makepad_rev "$2")" ]; then
+        echo loader
+        return
+    fi
+    for f in $(git -C "$live" diff --name-only "$1" "$2" -- rs); do
+        case $f in
+        rs/manager/tools/* | rs/manager/fixtures/* | rs/tasks/* | *.md) ;;
+        */Cargo.toml | */Cargo.lock | */build.rs) e=restart ;;
+        rs/manager/* | rs/crates/*) [ $e = none ] && e=live ;;
+        esac
+    done
+    echo $e
+}
+# Waits for the JIT's verdict on what changed since byte $1 of the log, until it settles
+# (no new verdict for 2s); prints "applied", "failed" or "restart", or "silent" when it said
+# nothing in 20s.
+jit_verdict() {
+    i=0
+    while [ -z "$(verdicts "$1")" ]; do
+        [ $i -ge 100 ] && { echo silent; return; }
+        sleep 0.2
+        i=$((i + 1))
+    done
+    n=0 still=0
+    while [ $still -lt 10 ]; do
+        m=$(verdicts "$1" | wc -l)
+        if [ "$m" = "$n" ]; then still=$((still + 1)); else n=$m still=0; fi
+        sleep 0.2
+    done
+    case $(verdicts "$1" | tail -1) in
+    *": NOT applied"*) echo failed ;;
+    *": patched in part"*) echo restart ;;
+    *) echo applied ;;
+    esac
+}
+# The details of the last verdict since byte $1 (the compiler's errors, what waits for a
+# restart), without the JIT's prefix.
+verdict_details() {
+    log_since "$1" | awk '/^relax live: [^ ].*: (patched|NOT applied)/ {d = ""; next}
+        /^relax live:   / {sub(/^relax live:   /, ""); d = d $0 "\n"} END {printf "%s", d}'
+}
+# Whether the JIT faulted in the run since byte $1 (watching 6s more for one): Makepad's JIT
+# can crash or leave the window hung right after it installs a patch (seen on macOS arm64,
+# the first patch of a run, now and then). Prints the fault's line.
+jit_fault() {
+    i=0
+    while [ $i -lt 30 ]; do
+        f=$(log_since "$1" | grep -m1 -E '^relax: POISONED|^makepad: segfault') && {
+            echo "$f" | sed 's/^relax: //; s/^makepad: //; s/ (the frames.*//; s/ on thread .* in / in /'
+            return 0
+        }
+        sleep 0.2
+        i=$((i + 1))
+    done
+    return 1
+}
+# After a fault since byte $1: kills the run if it still hangs on, and waits up to 90s for
+# the launcher to start it again (on the current code, in the saved state).
+jit_recover() {
+    p=$(jit_pid)
+    if [ -n "$p" ] && ! log_since "$1" | grep -q 'agent-manager-live: the run ended'; then
+        a=$(app_pid)
+        kill -9 "$p" ${a:+"$a"} 2>/dev/null || true
+    fi
+    i=0
+    until log_since "$1" | awk '/agent-manager-live: the run ended/ {r = 1} r && /first frame at/ {f = 1} END {exit !f}'; do
+        [ $i -ge 450 ] && return 1
+        sleep 0.2
+        i=$((i + 1))
+    done
+}
+# Restarts the JIT window (the app saves its state first and comes back in it); waits up
+# to 60s for its first frame.
+jit_relaunch() {
+    from=$(wc -c <"$log")
+    p=$(app_pid)
+    [ -n "$p" ] && "$loader" inspect "$p" session relaunch >/dev/null 2>&1 || return 1
+    i=0
+    until log_since "$from" | grep -q -E 'first frame at|before the first present'; do
+        [ $i -ge 300 ] && return 1
+        log_since "$from" | grep -q -E '^relax: POISONED|^makepad: segfault' && return 1
+        sleep 0.2
+        i=$((i + 1))
+    done
+}
 EOF
         cat
     } | if [ -n "$LIVE_SSH" ]; then $LIVE_SSH sh -s; else sh -s; fi
@@ -171,10 +347,45 @@ if [ ! -e "$live/.git" ]; then
     git -C "$repo" worktree add -q --detach "$live" "$approved"
     echo "made the live checkout $live at $(git -C "$live" rev-parse --short HEAD)"
 fi
-build
 write_note
-bin="$HOME/.local/bin/agent-manager-live"
-mkdir -p "$HOME/.local/bin"
+# Written beside it and moved over it: a launcher that runs now goes on reading its own file.
+bin=$launcher.new
+mkdir -p "$(dirname "$bin")"
+if [ -n "$jit" ]; then
+    build_loader
+    cat >"$bin" <<LAUNCH
+#!/bin/sh
+# Written by rs/manager/tools/live setup (LIVE_JIT=1): the manager run from the live
+# checkout's source by Makepad's JIT, which patches the running window as the source
+# changes, Rust and script_mod! alike. Its output goes to the log, where tools/live push
+# reads what the JIT made of each change; for one it can't patch in (a layout change),
+# push relaunches the window in place, and it comes back in its saved state.
+# A run the JIT itself ends with a fault (or push kills, when a fault left it hung) starts
+# again here, on the current code and in the saved state; closing the window, Ctrl-C, or a
+# run that ends within 5s of its start ends this.
+export AGENT_MANAGER_LIVE='$note'
+export AGENT_MANAGER_STATE="\${AGENT_MANAGER_STATE:-$tdir/state.json}"
+export AGENT_MANAGER_AGENT="\${AGENT_MANAGER_AGENT:-\$HOME/.local/bin/agent}"
+cd '$live/rs/manager' || exit 1
+mkdir -p '$tdir'
+echo "agent-manager-live (JIT): its output goes to $log"
+while :; do
+    start=\$(date +%s)
+    # (sh -c notes the run's pid, which exec keeps)
+    CARGO_TARGET_DIR='$tdir/jit' sh -c 'echo \$\$ >"\$0"; exec "\$@"' '$pidfile' \\
+        '$loader' run agent-manager -- "\$@" >>'$log' 2>&1
+    status=\$?
+    case \$status in 0 | 130 | 143) exit \$status ;; esac
+    [ \$((\$(date +%s) - start)) -ge 5 ] || exit \$status
+    echo "agent-manager-live: the run ended with status \$status; starting it again" | tee -a '$log'
+done
+LAUNCH
+    chmod 755 "$bin"
+    mv -f "$bin" "$launcher"
+    echo "start it with: $launcher (a live window running now keeps its build until it is closed)"
+    exit 0
+fi
+build
 cat >"$bin" <<LAUNCH
 #!/bin/sh
 # Written by rs/manager/tools/live setup: the manager built from the live checkout,
@@ -194,7 +405,8 @@ while :; do
 done
 LAUNCH
 chmod 755 "$bin"
-echo "start it with: $bin"
+mv -f "$bin" "$launcher"
+echo "start it with: $launcher"
 EOF
     ;;
 push)
@@ -216,6 +428,66 @@ if [ -n "$drift" ] && [ -z "$force" ]; then
     exit 3
 fi
 old=$(git -C "$live" rev-parse HEAD)
+if [ -n "$jit" ]; then
+    e=$(jit_effect "$old" "$rev")
+    pid=$(jit_pid)
+    from=$(cat "$log" 2>/dev/null | wc -c)
+    git -C "$live" checkout -q --force --detach "$rev"
+    write_note
+    short=$(git -C "$live" rev-parse --short HEAD)
+    at="live checkout at $short"
+    status=0
+    if [ $e = loader ]; then
+        echo "$at: it pins another Makepad: run tools/live setup (builds that JIT loader), then restart agent-manager-live"
+    elif [ $e = none ]; then
+        echo "$at: nothing the manager draws changed"
+    elif [ -z "$pid" ]; then
+        echo "$at: the live manager isn't running, and starts on this code"
+    else
+        loader_paths
+        if [ $e = restart ]; then
+            v=restart
+            why="Cargo files changed"
+        else
+            v=$(jit_verdict "$from")
+            # "<path>:<line>:<col>: struct `X` changed its layout, and the running code ..."
+            why=$(verdict_details "$from" | grep -m1 'held for a restart' |
+                sed 's/^held for a restart: //; s#^[^ ]*/rs/manager/##; s/, and the running code.*//; s/ -- restart the app.*//' | cut -c1-160)
+        fi
+        if [ $v = applied ] || [ $v = silent ]; then
+            fault=$(jit_fault "$from") && v=fault
+        fi
+        case $v in
+        applied) echo "$at: applied live to the running window" ;;
+        fault)
+            if jit_recover "$from"; then
+                echo "$at: the JIT faulted as it applied this ($fault: a Makepad JIT bug), so the live window started again, on this code and in its saved state"
+            else
+                echo "live: $at: the JIT faulted as it applied this ($fault: a Makepad JIT bug), and the window didn't come back within 90s: start agent-manager-live (after tools/live setup, if its launcher predates this)" >&2
+                status=1
+            fi
+            ;;
+        silent) echo "$at: the JIT reported no change in 20s (formatting or comments only?); see $log" ;;
+        failed)
+            verdict_details "$from" >&2
+            echo "live: $at: NOT applied, it doesn't compile (above): the live window keeps the previous code" >&2
+            status=1
+            ;;
+        restart)
+            if jit_relaunch; then
+                echo "$at: restart waiting ($why): the live window relaunched itself on it, in its saved state"
+            elif fault=$(jit_fault "$from") && jit_recover "$from"; then
+                echo "$at: restart waiting ($why), and the JIT faulted ($fault: a Makepad JIT bug), so the live window started again, on this code and in its saved state"
+            else
+                echo "live: $at: restart waiting ($why), and the relaunch didn't come back within 60s: see $log" >&2
+                status=1
+            fi
+            ;;
+        esac
+    fi
+    cat "$note"
+    exit $status
+fi
 e=$(effect "$old" "$rev")
 git -C "$live" checkout -q --force --detach "$rev"
 write_note
@@ -258,7 +530,13 @@ cat "$note"
 git -C "$live" log --format='  %h %s' "$approved..HEAD"
 drift=$(git -C "$live" status --porcelain --untracked-files=no)
 [ -z "$drift" ] || { echo "edited on the target, in no commit:"; echo "$drift"; }
-if running; then
+if [ -n "$jit" ]; then
+    if [ -n "$(jit_pid)" ]; then
+        echo "the live manager is running under the JIT (output: $log)"
+    else
+        echo "the live manager isn't running (agent-manager-live starts it, under the JIT)"
+    fi
+elif running; then
     echo "the live manager is running"
 else
     echo "the live manager isn't running (agent-manager-live starts it)"

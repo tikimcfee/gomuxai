@@ -169,6 +169,34 @@ build leaves the old window running (`push` prints cargo's errors and exits 1), 
 closing the window by hand ends the loop. A
 proposal is a commit ahead of `origin/<branch>`; to reject one, drop it and push again.
 
+With `LIVE_JIT=1` in the live conf, the live window runs under Makepad's JIT instead
+(`makepad run`, from the live checkout's source), which patches the running window as
+the source changes, Rust and `script_mod!` alike, so a push builds nothing and the
+window stays. `setup` then builds the JIT loader for the Makepad commit the manager's
+`Cargo.lock` pins (from the target's cargo checkout, offline, into `LIVE_JIT_DIR`,
+default `/var/tmp/makepad-jit`; minutes, once per Makepad commit) and writes
+`agent-manager-live` (or `LIVE_LAUNCHER`) to run it, its output going to `live.log` in
+`LIVE_TARGET`. `push` waits for the JIT's verdict and says which it was:
+
+- applied live (a change to code, Rust in `core/` or `src/`, or the UI): about half a
+  second after the checkout, with the page, selections, sorts and splitters as they were;
+- not applied because it doesn't compile: it prints the errors and exits 1, and the window
+  keeps the previous code;
+- restart waiting (a struct's or enum's layout changed, or a Cargo file did): `push`
+  relaunches the window in place (`makepad inspect <pid> session relaunch`); the manager
+  saves its state as the JIT asks to restart (`can_restart`) and comes back in it.
+
+Makepad's JIT has a bug that shows here: the first patch into a run that started with a
+cold JIT cache (after a push changed the code it starts from) often crashes the window,
+or leaves it hung, right after it is installed (`relax: POISONED ... segfault at 0x0` in
+`live.log`; seen on Linux x86_64 and macOS arm64). `push` watches for it, and the launcher
+starts the run again on the new code in the saved state (it kills a hung one first), and
+says so; the change still lands, a few seconds later. The JIT loader needs its source under a
+path with `/.cargo/git/` in it, which it trusts as cargo's own copy, and the manager's
+`Cargo.toml` patches `smallvec` as Makepad's workspace does, so the JIT accepts its
+dependency graph on Linux. The JIT window takes 1.5 to 2 GB of memory, against about 200 MB
+for the release build.
+
 Every manager keeps its UI state across a restart: the page, each list's order, filters
 and selection, the folded sidebar, detail panes, sections and Data hosts, the splitters,
 auto refresh, and the window's size and place. It is written once a change has settled
