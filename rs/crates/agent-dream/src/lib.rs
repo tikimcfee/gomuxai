@@ -3,6 +3,7 @@
 
 pub mod gather;
 pub mod memory;
+pub mod schedule;
 pub mod scrub;
 
 /// The fixed brief a dream agent gets, with `{digest}` standing for the
