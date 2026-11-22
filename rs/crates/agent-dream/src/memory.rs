@@ -743,17 +743,76 @@ pub enum Finding {
     IndexMissingFile { line: usize, file: String },
     /// A file the index doesn't name.
     Unindexed { file: String },
+    /// A backticked path that exists in none of the repos (`check --repo`).
+    StalePath {
+        file: String,
+        line: usize,
+        token: String,
+        why: String,
+    },
+    /// `make <target>` that no repo's Makefile defines.
+    StaleMake {
+        file: String,
+        line: usize,
+        token: String,
+        why: String,
+    },
+    /// `agent <sub>` this binary doesn't know, or a flag its command doesn't take.
+    StaleAgent {
+        file: String,
+        line: usize,
+        token: String,
+        why: String,
+    },
 }
 
 impl Finding {
-    fn order(&self) -> (u8, &str, &str, usize) {
+    pub(crate) fn stale_path(file: String, line: usize, token: String, why: String) -> Finding {
+        Finding::StalePath {
+            file,
+            line,
+            token,
+            why,
+        }
+    }
+
+    pub(crate) fn stale_make(file: String, line: usize, token: String, why: String) -> Finding {
+        Finding::StaleMake {
+            file,
+            line,
+            token,
+            why,
+        }
+    }
+
+    pub(crate) fn stale_agent(file: String, line: usize, token: String, why: String) -> Finding {
+        Finding::StaleAgent {
+            file,
+            line,
+            token,
+            why,
+        }
+    }
+
+    /// Sort key: the kind first (stale ones as one kind, by file and line), then
+    /// the file, line and token.
+    pub(crate) fn order(&self) -> (u8, &str, usize, &str, u8) {
         match self {
-            Finding::BadFile { file, error } => (0, file, error, 0),
-            Finding::ExactDuplicate { file, other } => (1, file, other, 0),
-            Finding::NearDuplicate { file, other, .. } => (2, file, other, 0),
-            Finding::BrokenLink { file, link } => (3, file, link, 0),
-            Finding::IndexMissingFile { line, file } => (4, file, "", *line),
-            Finding::Unindexed { file } => (5, file, "", 0),
+            Finding::BadFile { file, error } => (0, file, 0, error, 0),
+            Finding::ExactDuplicate { file, other } => (1, file, 0, other, 0),
+            Finding::NearDuplicate { file, other, .. } => (2, file, 0, other, 0),
+            Finding::BrokenLink { file, link } => (3, file, 0, link, 0),
+            Finding::IndexMissingFile { line, file } => (4, file, *line, "", 0),
+            Finding::Unindexed { file } => (5, file, 0, "", 0),
+            Finding::StalePath {
+                file, line, token, ..
+            } => (6, file, *line, token, 0),
+            Finding::StaleMake {
+                file, line, token, ..
+            } => (6, file, *line, token, 1),
+            Finding::StaleAgent {
+                file, line, token, ..
+            } => (6, file, *line, token, 2),
         }
     }
 }
@@ -777,6 +836,24 @@ impl std::fmt::Display for Finding {
                 write!(f, "{INDEX}:{line}: names {file}, which doesn't exist")
             }
             Finding::Unindexed { file } => write!(f, "{file}: not in {INDEX}"),
+            Finding::StalePath {
+                file,
+                line,
+                token,
+                why,
+            }
+            | Finding::StaleMake {
+                file,
+                line,
+                token,
+                why,
+            }
+            | Finding::StaleAgent {
+                file,
+                line,
+                token,
+                why,
+            } => write!(f, "{file}:{line}: `{token}`: {why}"),
         }
     }
 }
@@ -822,6 +899,12 @@ pub fn dice(a: &[String], b: &[String]) -> f64 {
 /// memory, index lines naming no file, and files the index doesn't name. Changes
 /// nothing; the findings are sorted.
 pub fn check(dir: &Path) -> Result<Vec<Finding>> {
+    check_with(dir, None)
+}
+
+/// [`check`], plus, given repos, what the memory says about them that they no
+/// longer bear out ([`crate::stale`]).
+pub fn check_with(dir: &Path, repos: Option<&crate::stale::Repos>) -> Result<Vec<Finding>> {
     let md = parse_dir(dir)?;
     let mut out = Vec::new();
     for f in &md.files {
@@ -882,6 +965,9 @@ pub fn check(dir: &Path) -> Result<Vec<Finding>> {
                 file: f.file.clone(),
             });
         }
+    }
+    if let Some(repos) = repos {
+        out.extend(crate::stale::check(dir, repos)?);
     }
     out.sort_by(|a, b| a.order().cmp(&b.order()));
     Ok(out)
