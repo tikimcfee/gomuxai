@@ -25,12 +25,12 @@ pub const DOC: Doc = Doc {
     short: "Start agents from the templates a host agrees to run, from any host",
     long: r#"Template starts agents on a host from the templates that host lists in
 its own <data dir>/templates.json: each names an agent and what it runs
-(backend, model, directory, and a brief: the file it is asked to read
+(backend, model, effort, directory, and a brief: the file it is asked to read
 first). A host starts only what its file lists, so other hosts can start
 its agents without being able to choose what runs there.
 
 A request names a template and who asks, nothing else: no command,
-directory, brief or model. The agent is named after its template, and is a
+directory, brief, model or effort. The agent is named after its template, and is a
 helper of whoever started it (name@host for an agent on another host, so
 its replies go back there; none for a person). A template whose agent is
 already there isn't started again: template resume brings back one that
@@ -157,7 +157,7 @@ pub const TEMPLATE_LIST_DOC: Doc = Doc {
     use_line: "list",
     short: "List the templates a host agrees to start",
     long: r#"List prints the templates in a host's templates.json: each one's name,
-backend, model, directory and brief. --host asks another host."#,
+backend, model, effort, directory and brief. --host asks another host."#,
     example: r#"  agent template list
   agent template list --host hub"#,
     args: ArgRule::None,
@@ -219,6 +219,9 @@ fn template_text(t: &WireTemplate) -> String {
     let mut b = format!("{}: {}", t.name, t.backend);
     if !t.model.is_empty() {
         b += &format!(", model {}", t.model);
+    }
+    if !t.effort.is_empty() {
+        b += &format!(", effort {}", t.effort);
     }
     b += &format!("\n  cwd: {}\n", t.cwd);
     if !t.brief.is_empty() {
@@ -371,7 +374,8 @@ asked to read first (relative to --cwd, or to this directory); both must
 exist. A template already listed under the name is refused: remove it
 first. It edits this host's file only."#,
     example: r#"  agent template add builder --backend claude --cwd /srv/project --brief docs/lanes/builder.md
-  agent template add reviewer --backend claude --model claude-opus-5-5 --cwd /srv/project"#,
+  agent template add reviewer --backend claude --model claude-opus-5-5 --cwd /srv/project
+  agent template add deep --backend agy --effort xhigh --cwd /srv/project"#,
     args: ArgRule::Exact(1),
     required: &["cwd"],
     ..Doc::DEFAULT
@@ -395,6 +399,13 @@ pub struct TemplateAddArgs {
         help = "Directory the agent runs in",
     )]
     pub cwd: String,
+    #[arg(
+        long = "effort",
+        value_name = "string",
+        default_value = "",
+        help = "Reasoning effort the CLI runs at (claude, agy): low, medium, high, xhigh or max",
+    )]
+    pub effort: String,
     /// Refused: templates are edited on their own host.
     #[arg(long = "host", value_name = "string", default_value = "", hide = true)]
     pub host: String,
@@ -459,12 +470,18 @@ pub fn run_template_add(ctx: &Ctx, args: &TemplateAddArgs) -> anyhow::Result<()>
             args.brief.clone()
         }
     };
-    let t = templates::Template::new(name, &backend, &args.model, &cwd, &brief);
+    let t = templates::Template {
+        effort: args.effort.clone(),
+        ..templates::Template::new(name, &backend, &args.model, &cwd, &brief)
+    };
     let dir = template_op::data_dir(ctx.cfg());
     templates::add(&dir, t.clone())?;
     let mut b = format!("Added template {name}: {}", t.backend);
     if !t.model.is_empty() {
         b += &format!(", model {}", t.model);
+    }
+    if !t.effort.is_empty() {
+        b += &format!(", effort {}", t.effort);
     }
     b += &format!(", in {cwd}");
     if let Some(p) = t.brief_path() {

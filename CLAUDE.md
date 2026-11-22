@@ -180,7 +180,11 @@ starts in the directory you run spawn from (`--cwd DIR` picks another),
 with that project's permission settings; `--skip-permissions` bypasses
 them (use with caution). `--model <model>` runs the CLI on that model
 (claude, agy and aider take one; other backends refuse it), over the bus
-too; `agent resume` relaunches on it, and `status -v` shows it. `--handoff
+too; `agent resume` relaunches on it, and `status -v` shows it.
+`--effort low|medium|high|xhigh|max` (the roster's efforts) does the same
+for the CLI's reasoning effort: claude and agy take one, others refuse it,
+and resume, revive, `status -v`, `fleet` and `template add --effort` carry
+it. `--handoff
 <file>` stores the absolute path of the agent's handoff doc as its `handoff`
 state key, so `agent revive` knows what to re-brief it from and `agent fleet`
 flags it when commits outrun the doc. A spawned or resumed Claude agent gets
@@ -809,7 +813,8 @@ agent template resume builder --host hub    # resumes builder@hub if it has ende
 Templates let peers start or resume pre-approved agents on another host
 without adding open `spawn` or `resume` to its `--remote-ops`. `template add`
 requires `--backend` (`claude`, `agy`, `aider`, or `shell`) and `--cwd`
-(optional `--brief`, relative to `--cwd` or this directory, and `--model`). A
+(optional `--brief`, relative to `--cwd` or this directory, `--model` and
+`--effort`). A
 `start` or `resume` request carries only the template's name and who asks: no
 command, `cwd`, model, or brief crosses the bus. The receiving host reads its
 own `.gomuxai/templates.json` and spawns the agent named after the template:

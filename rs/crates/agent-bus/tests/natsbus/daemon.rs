@@ -138,6 +138,7 @@ fn test_bus_spawn_round_trips_across_the_link() {
         task_content: String::new(),
         spawned_by: "lead@leaf".to_string(),
         model: String::new(),
+        effort: String::new(),
     };
     let mut res: Option<anyhow::Result<_>> = None;
     await_::poll(Duration::from_secs(5), || {

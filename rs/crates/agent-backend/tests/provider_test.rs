@@ -178,6 +178,43 @@ fn test_with_model() {
 }
 
 #[test]
+fn test_with_effort() {
+    let claude = namedagents::new_claude_backend();
+    let ec = claude.as_effort_chooser().expect("claude takes --effort");
+    assert_eq!(
+        ec.with_effort(&claude.launch_command_with_session("s1"), "high"),
+        format!(
+            "claude --settings {} --session-id 's1' --effort 'high'",
+            shell_quote(namedagents::CLAUDE_SPAWN_SETTINGS)
+        )
+    );
+    // aider takes a model but no effort.
+    assert!(
+        namedagents::new_aider_backend()
+            .as_effort_chooser()
+            .is_none()
+    );
+    // agy's goes ahead of the report of its exit, as its model does.
+    let dir = common::temp_dir();
+    let agy = namedagents::new_agy_backend_with_config(AgyConfig {
+        agent_dir: dir.path().to_str().unwrap().to_string(),
+        ..Default::default()
+    });
+    let launch = agy
+        .as_effort_chooser()
+        .expect("agy takes --effort")
+        .with_effort(
+            &agy.launch_command_with_hooks("/bin/agent report --hook --as a", "sp1"),
+            "xhigh",
+        );
+    let (before, after) = launch.split_once("; ").expect("an exit report");
+    assert!(
+        before.ends_with(" --effort 'xhigh'") && !after.contains("--effort"),
+        "agy: {launch}"
+    );
+}
+
+#[test]
 fn test_with_session_name() {
     let claude = namedagents::new_claude_backend();
     assert_eq!(

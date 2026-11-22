@@ -1,5 +1,5 @@
 List prints the templates in a host's templates.json: each one's name,
-backend, model, directory and brief. --host asks another host.
+backend, model, effort, directory and brief. --host asks another host.
 
 Usage:
   agent template list [flags]

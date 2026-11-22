@@ -373,6 +373,12 @@ pub struct StatusResponse {
         skip_serializing_if = "String::is_empty"
     )]
     pub model: String,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub effort: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -526,6 +532,14 @@ pub struct SpawnRequest {
         skip_serializing_if = "String::is_empty"
     )]
     pub model: String,
+    /// The CLI's --effort; a host that predates it ignores it, and its
+    /// SpawnResponse then says none.
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub effort: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -556,6 +570,12 @@ pub struct SpawnResponse {
         skip_serializing_if = "String::is_empty"
     )]
     pub model: String,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub effort: String,
     #[serde(default, deserialize_with = "null_default")]
     pub status: String,
     #[serde(
@@ -928,6 +948,12 @@ pub struct FleetAgent {
         deserialize_with = "null_default",
         skip_serializing_if = "String::is_empty"
     )]
+    pub effort: String,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
     pub status: String,
     #[serde(
         default,
@@ -1123,6 +1149,12 @@ pub struct Template {
         skip_serializing_if = "String::is_empty"
     )]
     pub model: String,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub effort: String,
     #[serde(
         default,
         deserialize_with = "null_default",

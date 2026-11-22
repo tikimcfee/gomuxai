@@ -69,6 +69,12 @@ agent resume relaunches it on the same model, and agent status -v shows it.
 A model switched inside the session (Claude's /model, which agent send
 types in as a command) lasts for that run only.
 
+--effort runs the CLI at that reasoning effort (its --effort): low, medium,
+high, xhigh or max, the roster's efforts. claude and agy take one; other
+backends refuse it. Like the model, the agent remembers it: agent resume
+and agent revive relaunch at it, and agent status -v and agent fleet show
+it.
+
 --attach opens the new agent's session in this terminal once it
 starts, as agent attach does (Ctrl-\ twice detaches; the agent keeps running).
 
@@ -110,6 +116,7 @@ Examples:
   agent spawn auto-worker --backend claude --skip-permissions
   agent spawn reviewer --backend agy --trust-workspace
   agent spawn quick --backend claude --model claude-fable-5-1
+  agent spawn deep --backend claude --model claude-opus-5-5 --effort xhigh
   agent spawn lead --backend claude --resume 3f34adff --attach
   agent spawn lead --backend claude --continue
   agent spawn builder@hub --backend claude --cwd /srv/repo tasks/build.md
@@ -119,6 +126,7 @@ Flags:
       --attach             Open the agent's session in this terminal once it starts
   -c, --continue           Continue the session the CLI's own --continue would pick here (claude, agy): its most recent one in this directory, or --cwd's
       --cwd string         Directory the agent starts in (on another host: an absolute path there)
+      --effort string      Reasoning effort the CLI runs at, passed as its --effort (claude, agy): low, medium, high, xhigh or max; resume keeps it
       --handoff string     The agent's handoff doc, stored as its state key handoff (agent revive re-briefs it from there)
   -h, --help               help for spawn
       --host string        Start the agent on this host, through the agent bus (same as name@host)

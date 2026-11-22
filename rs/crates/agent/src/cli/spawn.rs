@@ -7,7 +7,7 @@ use agent_discovery::{HARNESS_AGY, HARNESS_CLAUDE, STATUS_ENDED, Session};
 use agent_service::{
     AGENT_STATUS_ENDED, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_WAITING,
     AgentStatus, SpawnOptions, dialog_title, one_line, trust_backend_name, trust_prompt_folder,
-    validate_model,
+    validate_effort, validate_model,
 };
 use agent_fleet::handoff;
 use agent_store::{Agent, StateEntry, Time};
@@ -98,6 +98,12 @@ agent resume relaunches it on the same model, and agent status -v shows it.
 A model switched inside the session (Claude's /model, which agent send
 types in as a command) lasts for that run only.
 
+--effort runs the CLI at that reasoning effort (its --effort): low, medium,
+high, xhigh or max, the roster's efforts. claude and agy take one; other
+backends refuse it. Like the model, the agent remembers it: agent resume
+and agent revive relaunch at it, and agent status -v and agent fleet show
+it.
+
 --attach opens the new agent's session in this terminal once it
 starts, as agent attach does (Ctrl-\ twice detaches; the agent keeps running).
 
@@ -134,6 +140,7 @@ for docs/lanes/<name>.md in the agent's directory)."#,
   agent spawn auto-worker --backend claude --skip-permissions
   agent spawn reviewer --backend agy --trust-workspace
   agent spawn quick --backend claude --model claude-fable-5-1
+  agent spawn deep --backend claude --model claude-opus-5-5 --effort xhigh
   agent spawn lead --backend claude --resume 3f34adff --attach
   agent spawn lead --backend claude --continue
   agent spawn builder@hub --backend claude --cwd /srv/repo tasks/build.md
@@ -160,6 +167,13 @@ pub struct Args {
         help = "Directory the agent starts in (on another host: an absolute path there)",
     )]
     pub cwd: String,
+    #[arg(
+        long = "effort",
+        value_name = "string",
+        default_value = "",
+        help = "Reasoning effort the CLI runs at, passed as its --effort (claude, agy): low, medium, high, xhigh or max; resume keeps it",
+    )]
+    pub effort: String,
     #[arg(
         long = "handoff",
         value_name = "string",
@@ -306,6 +320,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         resume: resume.clone(),
         cwd: session_dir,
         model: args.model.clone(),
+        effort: args.effort.clone(),
         ..Default::default()
     };
 
@@ -323,9 +338,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         format!("in {cwd}")
     };
     let mut out = spawn_summary(&agent, &where_, &args.task, &task_file, &resume);
-    if !args.model.is_empty() {
-        out += &format!("It runs on model {}.\n", args.model);
-    }
+    out += &runs_on(&args.model, &args.effort);
     if !handoff_doc.is_empty() {
         ctx.store()?.set_state(&StateEntry {
             agent_name: name.clone(),
@@ -493,10 +506,14 @@ fn run_remote_spawn(ctx: &Ctx, args: &Args, r: &AgentRef, rest: &[String]) -> an
         // Checked here too, so a bad name fails before it crosses the bus.
         validate_model(&args.model)?;
     }
+    if !args.effort.is_empty() {
+        validate_effort(&args.effort)?;
+    }
     let mut req = SpawnRequest {
         backend: ctx.cfg().backend.clone(),
         cwd: args.cwd.clone(),
         model: args.model.clone(),
+        effort: args.effort.clone(),
         ..Default::default()
     };
     let me = ctx.non_interactive_caller_agent();
@@ -544,18 +561,34 @@ fn run_remote_spawn(ctx: &Ctx, args: &Args, r: &AgentRef, rest: &[String]) -> an
         &resp.task_file,
         "",
     );
-    if !resp.model.is_empty() {
-        out += &format!("It runs on model {}.\n", resp.model);
-    } else if !args.model.is_empty() {
-        // A host that predates --model ignores it.
+    out += &runs_on(&resp.model, &resp.effort);
+    // A host that predates --model or --effort ignores it.
+    if resp.model.is_empty() && !args.model.is_empty() {
         out += &format!(
             "{} didn't take --model (its agent predates it): {r} runs on its CLI's default model.\n",
+            r.host
+        );
+    }
+    if resp.effort.is_empty() && !args.effort.is_empty() {
+        out += &format!(
+            "{} didn't take --effort (its agent predates it): {r} runs at its CLI's default effort.\n",
             r.host
         );
     }
     out += &remote_spawn_readiness(r, &resp, !args.task.is_empty() || !resp.task_file.is_empty());
     out.push('\n');
     ctx.write_out(&out)
+}
+
+/// Says the model and effort the agent runs on, if spawn named either ("" if
+/// neither).
+pub fn runs_on(model: &str, effort: &str) -> String {
+    match (model.is_empty(), effort.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!("It runs on model {model}.\n"),
+        (true, false) => format!("It runs at effort {effort}.\n"),
+        (false, false) => format!("It runs on model {model} at effort {effort}.\n"),
+    }
 }
 
 /// spawn_readiness for an agent on another host, where logs don't reach (Go:

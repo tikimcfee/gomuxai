@@ -140,6 +140,7 @@ fn handle_start(
             name: tmpl.name.clone(),
             backend: tmpl.backend.clone(),
             model: tmpl.model.clone(),
+            effort: tmpl.effort.clone(),
             cwd: tmpl.cwd.clone(),
             task_file,
             task_content: String::new(),

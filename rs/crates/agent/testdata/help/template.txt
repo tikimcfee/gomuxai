@@ -1,11 +1,11 @@
 Template starts agents on a host from the templates that host lists in
 its own <data dir>/templates.json: each names an agent and what it runs
-(backend, model, directory, and a brief: the file it is asked to read
+(backend, model, effort, directory, and a brief: the file it is asked to read
 first). A host starts only what its file lists, so other hosts can start
 its agents without being able to choose what runs there.
 
 A request names a template and who asks, nothing else: no command,
-directory, brief or model. The agent is named after its template, and is a
+directory, brief, model or effort. The agent is named after its template, and is a
 helper of whoever started it (name@host for an agent on another host, so
 its replies go back there; none for a person). A template whose agent is
 already there isn't started again: template resume brings back one that

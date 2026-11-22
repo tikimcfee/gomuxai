@@ -12,12 +12,14 @@ Usage:
 Examples:
   agent template add builder --backend claude --cwd /srv/project --brief docs/lanes/builder.md
   agent template add reviewer --backend claude --model claude-opus-5-5 --cwd /srv/project
+  agent template add deep --backend agy --effort xhigh --cwd /srv/project
 
 Flags:
-      --brief string   File the agent is asked to read first (relative to --cwd)
-      --cwd string     Directory the agent runs in
-  -h, --help           help for add
-      --model string   Model the CLI runs on (default: its own default)
+      --brief string    File the agent is asked to read first (relative to --cwd)
+      --cwd string      Directory the agent runs in
+      --effort string   Reasoning effort the CLI runs at (claude, agy): low, medium, high, xhigh or max
+  -h, --help            help for add
+      --model string    Model the CLI runs on (default: its own default)
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

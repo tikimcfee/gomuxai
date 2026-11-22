@@ -152,6 +152,19 @@ saved pick on its own host. `roster` is added to the default remote ops, but hos
 saved bus settings need `agent bus restart --remote-ops <list>,roster`;
 that is a person's call on each host.
 
+## spawn --effort
+
+**built**. `agent spawn NAME --backend claude|agy --effort LEVEL` runs the
+CLI at that reasoning effort (both take `--effort
+low|medium|high|xhigh|max`). The levels are the roster's own
+(`agent_roster::EFFORTS`; `agent_service::validate_effort` checks against
+it), so an entry's `@EFFORT` is always one spawn takes. Like `--model`, it
+is refused for backends that take none (aider, shell, custom), kept on the
+agent (state key `_effort`) so `resume` and `revive` relaunch at it, shown
+by `status -v` and `fleet` (`claude opus@high`), carried over the bus on a
+remote spawn (a host that predates it says so), and taken by `template add
+--effort`.
+
 ## Teaching it
 
 The briefing and the `agent` skill get a short section, "Choosing a
@@ -172,6 +185,5 @@ with the dreaming lead before dreams write anything.
 ## Later
 
 - Usage limits in availability (above).
-- `spawn --effort` where the harness takes it.
 - Automatic routing: `spawn --pick TASK` resolving through `pick`.
 - A Roster view in the manager.

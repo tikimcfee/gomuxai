@@ -236,6 +236,7 @@ finds:
 | `PromptFlagProvider`: first message on the command line | — | `-i '<task>'` | — |
 | `PromptHandover`: a long message typed as a short line, its text handed over by `UserPromptSubmit` | yes | — | — |
 | `ModelChooser`: `spawn --model` | `--model '<model>'` | `--model '<model>'`, ahead of the exit wrapper | `--model '<model>'` |
+| `EffortChooser`: `spawn --effort` (one of `agent_roster::EFFORTS`) | `--effort '<level>'` | `--effort '<level>'`, ahead of the exit wrapper | — |
 | `SessionNamer`: names the CLI session after the agent | `--name '<agent>'` | — | — |
 | `TrustPrompter`: reads and answers the trust prompt | moves to "Yes, I trust this folder" first (the default is "No, exit") | Enter ("Yes" is the default) | — |
 | `NativeStatusProvider` | Claude Code's session registry | — | — |
@@ -437,8 +438,9 @@ The service then:
    a new run (a `spawned` event). The record is updated, not deleted:
    deleting it would cascade to the agent's state.
 4. Deletes the reserved keys that described the ended run, keeping
-   `_result`, `_transcript` and `_model` (the model `spawn --model` chose,
-   which the relaunch passes again); the agent's own keys stay. The launch then
+   `_result`, `_transcript`, `_model` and `_effort` (the model and effort
+   `spawn --model` and `--effort` chose, which the relaunch passes again);
+   the agent's own keys stay. The launch then
    writes a new `_spawn_id` and `_session_id`.
 5. Starts a deliverer if messages were held for it: they never went out
    while it was ended.
@@ -1087,6 +1089,7 @@ two concurrent reports:
 | `_session_id` | the CLI's session id; spawn sets it, hooks update it (`/clear`, `/resume`, agy's conversation id), and pane adoption or revive sets the session the pane runs |
 | `_spawn_id` | agy only: the spawn's uuid, set once by spawn (cleared when `revive` takes over a hand-started agy without spawn hooks) |
 | `_model` | the model `spawn --model` started the agent on; resume keeps it and relaunches on it; unset for the CLI's default |
+| `_effort` | the effort `spawn --effort` started the agent at; resume keeps it and relaunches at it; unset for the CLI's default |
 | `_hooked_session` | Claude: the session the global hook last reported for the agent's main session; while it equals `_session_id`, the agent holds messages |
 | `_turn_at` | when the last turn started: written with a report that is `processing` and clears `_result` (Claude `UserPromptSubmit`, agy's first `PreInvocation`) |
 | `_sent_at` | when a message was last typed in; written by `send` (and queued deliveries and spawn's first message), not by `report` |

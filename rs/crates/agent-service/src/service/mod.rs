@@ -38,7 +38,7 @@ pub use handover::*;
 pub use held::*;
 pub use hook::*;
 pub use instructions::skill_text;
-pub use model::validate_model;
+pub use model::{validate_effort, validate_model};
 pub use resume::*;
 pub use rpc::*;
 pub use slash::*;

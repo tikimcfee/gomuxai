@@ -84,14 +84,14 @@ session's own metadata and flags a mismatch; it never renames a running session.
 agent template list [--host hub] [--json]
 agent template start builder [--host hub]    # spawn agent "builder" from its template
 agent template resume builder [--host hub]   # resume it if it has ended
-agent template add builder --backend claude --cwd DIR [--brief FILE] [--model M]   # local only
+agent template add builder --backend claude --cwd DIR [--brief FILE] [--model M] [--effort E]   # local only
 agent template remove builder                                                      # local only
 ```
 
 `template add` takes `--backend` (`claude`, `agy`, `aider`, or `shell`) from the global
 `--backend` flag and requires `--cwd` (an existing directory, stored absolute);
-`--brief` (relative to `--cwd` or this directory, must exist) and `--model` are
-optional, and a duplicate template name is refused until removed.
+`--brief` (relative to `--cwd` or this directory, must exist), `--model` and
+`--effort` (claude and agy only) are optional, and a duplicate template name is refused until removed.
 
 A `start` or `resume` request carries a template's name and who asks, nothing else: no
 command, `cwd`, brief, or model. The host reads its own file and runs its own spawn. The

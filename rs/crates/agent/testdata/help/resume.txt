@@ -1,7 +1,8 @@
 Resume starts an agent whose session has ended again, on that same
 session: after a reboot, a stopped g3d-termd daemon, or a CLI that quit. It keeps
 the agent's name, backend and parent (so its helpers stay its helpers),
-the model spawn --model started it on, its own state keys and its last
+the model and effort spawn --model and --effort started it on, its own
+state keys and its last
 _result, and delivers the messages held
 for it when it ended. It starts in the directory the session ran in.
 

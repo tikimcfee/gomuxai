@@ -381,6 +381,13 @@ impl ModelChooser for AgyBackend {
     }
 }
 
+impl EffortChooser for AgyBackend {
+    /// Runs agy at `effort` (--effort).
+    fn with_effort(&self, launch_cmd: &str, effort: &str) -> String {
+        self.insert_before_exit(launch_cmd, &format!(" --effort {}", shell_quote(effort)))
+    }
+}
+
 /// Holds the camelCase fields delivered by agy hooks on stdin. Payload
 /// shapes and firing order are documented in
 /// exploration/agy-hooks-findings.md.
@@ -850,6 +857,9 @@ impl Provider for AgyBackend {
         Some(self)
     }
     fn as_model_chooser(&self) -> Option<&dyn ModelChooser> {
+        Some(self)
+    }
+    fn as_effort_chooser(&self) -> Option<&dyn EffortChooser> {
         Some(self)
     }
     fn as_prompt_flag_provider(&self) -> Option<&dyn PromptFlagProvider> {

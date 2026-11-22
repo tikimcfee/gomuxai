@@ -21,10 +21,12 @@ use super::dialog::{dialog_from_detail, dialog_send_err};
 use super::events::EventPublisher;
 use super::handover::HandoverError;
 use super::held::{SendOptions, SendResult};
-use super::model::{model_refusal, validate_model};
+use super::model::{effort_refusal, model_refusal, validate_effort, validate_model};
 use super::remove_all;
 use super::slash::is_slash_command;
-use super::status::{STATE_KEY_MODEL, STATE_KEY_SENT_AT, STATE_KEY_SESSION_ID, STATE_KEY_SPAWN_ID};
+use super::status::{
+    STATE_KEY_EFFORT, STATE_KEY_MODEL, STATE_KEY_SENT_AT, STATE_KEY_SESSION_ID, STATE_KEY_SPAWN_ID,
+};
 use super::submit::{STARTUP_POLL, UnsubmittedError};
 use super::trust::{same_folder, trust_backend_name};
 
@@ -173,6 +175,10 @@ pub struct SpawnOptions {
     /// Model is the model the CLI runs on (its --model), "" for its
     /// default; backends that take one only (backend.ModelChooser).
     pub model: String,
+    /// Effort is the reasoning effort the CLI runs at (its --effort, one of
+    /// agent_roster::EFFORTS), "" for its default; backends that take one
+    /// only (backend.EffortChooser).
+    pub effort: String,
     /// Cwd is the absolute directory the agent starts in; "" for this
     /// process's working directory.
     pub cwd: String,
@@ -325,6 +331,9 @@ impl AgentService {
         if !opts.model.is_empty() {
             validate_model(&opts.model)?;
         }
+        if !opts.effort.is_empty() {
+            validate_effort(&opts.effort)?;
+        }
 
         // A fresh provider, configured for this agent. Custom JSON backends
         // (--backend-config) have no factory, and spawn from their Backend.
@@ -347,11 +356,17 @@ impl AgentService {
                 if !opts.model.is_empty() {
                     return Err(model_refusal(&opts.backend));
                 }
+                if !opts.effort.is_empty() {
+                    return Err(effort_refusal(&opts.backend));
+                }
                 return self.spawn_with_backend(ctx, &opts, be.as_ref());
             }
         };
         if !opts.model.is_empty() && provider.as_model_chooser().is_none() {
             return Err(model_refusal(&opts.backend));
+        }
+        if !opts.effort.is_empty() && provider.as_effort_chooser().is_none() {
+            return Err(effort_refusal(&opts.backend));
         }
         self.spawn_with_provider(ctx, &opts, &internal, provider.as_ref())
     }
@@ -726,6 +741,14 @@ impl AgentService {
             self.set_state(name, STATE_KEY_MODEL, &opts.model)
                 .with_context(|| format!("storing {STATE_KEY_MODEL}"))?;
             cmd = mc.with_model(&cmd, &opts.model);
+        }
+        if let Some(ec) = provider.as_effort_chooser()
+            && !opts.effort.is_empty()
+        {
+            // Recorded for resume, which relaunches at it.
+            self.set_state(name, STATE_KEY_EFFORT, &opts.effort)
+                .with_context(|| format!("storing {STATE_KEY_EFFORT}"))?;
+            cmd = ec.with_effort(&cmd, &opts.effort);
         }
         if let Some(ip) = provider.as_instructions_provider() {
             let path = self.write_instructions(name, &opts.spawned_by, provider.name())?;

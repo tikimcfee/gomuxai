@@ -30,7 +30,7 @@ pub const DOC: Doc = Doc {
     short: "Bring an ended agent back on its own conversation and re-brief it from its handoff doc",
     long: r#"Revive is resume plus the handover. It brings back an agent whose CLI has
 ended ("agent list" shows "ended (...)") on its own conversation, keeping
-its name, backend, parent, model and state, and then sends it the
+its name, backend, parent, model, effort and state, and then sends it the
 re-brief: where its handoff doc is, and that it should read it and carry
 on.
 
