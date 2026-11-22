@@ -463,11 +463,11 @@ mod tests {
     #[test]
     fn what_this_build_doesnt_know_is_skipped() {
         let s = parse(
-            r#"{"version": 1, "page": "Usage", "unknown_field": [1, 2],
+            r#"{"version": 1, "page": "Elsewhere", "unknown_field": [1, 2],
                 "sort": {"agents": [{"column": "gone"}, {"column": "tokens", "reversed": true}],
-                         "usage": [{"column": "x"}]},
-                "details_folded": ["Usage", "Agents"],
-                "sections_folded": ["UsageChart", "AgentLogs"]}"#,
+                         "elsewhere": [{"column": "x"}]},
+                "details_folded": ["Elsewhere", "Agents"],
+                "sections_folded": ["ElsewhereChart", "AgentLogs"]}"#,
         )
         .unwrap();
         let mut m = Model::new();
