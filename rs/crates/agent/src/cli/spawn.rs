@@ -101,7 +101,13 @@ types in as a command) lasts for that run only.
 
 --effort runs the CLI at that reasoning effort (its --effort): low, medium,
 high, xhigh or max, the roster's efforts. claude and agy take one; other
-backends refuse it. Like the model, the agent remembers it: agent resume
+backends refuse it. agy names each effort of a model as its own id, so
+with --model it launches on <model>-<effort> (--model gemini-4-carbon
+--effort high runs gemini-4-carbon-high, the id its transcripts record),
+and a model that already ends in an effort is refused with --effort.
+agy runs its default model when --model names one it doesn't know, so an
+agy spawn with --model or --effort says what agy's footer shows it
+running ("agy reports running: auto · Gemini 4 Carbon · high."). Like the model, the agent remembers it: agent resume
 and agent revive relaunch at it, and agent status -v and agent fleet show
 it.
 
@@ -408,6 +414,9 @@ fn spawn_as(ctx: &Ctx, args: &Args, backend: &str) -> anyhow::Result<()> {
     };
     let mut out = spawn_summary(&agent, &where_, &args.task, &task_file, &resume);
     out += &runs_on(&args.model, &args.effort);
+    if agent.backend == HARNESS_AGY && !(args.model.is_empty() && args.effort.is_empty()) {
+        out += &agy_reports(&name, svc.capture(&name, 0, false).ok().as_deref());
+    }
     if !handoff_doc.is_empty() {
         ctx.store()?.set_state(&StateEntry {
             agent_name: name.clone(),
@@ -650,6 +659,10 @@ fn run_remote_spawn(
             r.host
         );
     }
+    if resp.backend == HARNESS_AGY && !(args.model.is_empty() && args.effort.is_empty()) {
+        let screen = call_remote(ctx, &r.host, |c| c.capture(&Context::background(), r, 0, false));
+        out += &agy_reports(&r.to_string(), screen.ok().as_deref());
+    }
     out += &remote_spawn_readiness(r, &resp, !args.task.is_empty() || !resp.task_file.is_empty());
     out.push('\n');
     ctx.write_out(&out)
@@ -663,6 +676,19 @@ pub fn runs_on(model: &str, effort: &str) -> String {
         (false, true) => format!("It runs on model {model}.\n"),
         (true, false) => format!("It runs at effort {effort}.\n"),
         (false, false) => format!("It runs on model {model} at effort {effort}.\n"),
+    }
+}
+
+/// Says the model agy's footer shows it running, read off its screen: agy
+/// runs its default model when --model names one it doesn't know, with only
+/// a warning in its own log, so this is what spawn can check. Before agy
+/// draws its footer (at a trust or sign-in prompt), says where to look.
+pub fn agy_reports(name: &str, screen: Option<&str>) -> String {
+    match screen.and_then(agent_backend::namedagents::agy_footer_model) {
+        Some(m) => format!("agy reports running: {m}.\n"),
+        None => format!(
+            "agy hasn't shown the model it runs yet: its footer will (agent capture {name}).\n"
+        ),
     }
 }
 

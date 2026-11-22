@@ -11,7 +11,9 @@ mod hooks;
 mod shell;
 mod trust;
 
-pub use agy::{AgyBackend, AgyConfig, new_agy_backend, new_agy_backend_with_config};
+pub use agy::{
+    AgyBackend, AgyConfig, agy_footer_model, new_agy_backend, new_agy_backend_with_config,
+};
 pub use aider::{AiderBackend, new_aider_backend};
 pub use claude::{
     CLAUDE_RESTART_BLOCKING_FLAGS, CLAUDE_SPAWN_SETTINGS, ClaudeBackend, ClaudeConfig,

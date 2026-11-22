@@ -33,6 +33,23 @@ fn setup() -> TestEnv {
     env
 }
 
+// After an agy spawn with a model or effort, spawn says what agy's footer
+// shows it running, since agy falls back to its default on a model it
+// doesn't know.
+#[test]
+fn agy_reports_its_footer_model() {
+    let screen = "────\n>\n────\n? for shortcuts        auto · Gemini 4 Carbon · high\n";
+    assert_eq!(
+        super::spawn::agy_reports("a", Some(screen)),
+        "agy reports running: auto · Gemini 4 Carbon · high.\n"
+    );
+    assert_eq!(
+        super::spawn::agy_reports("a", Some(" Select login method:\n")),
+        "agy hasn't shown the model it runs yet: its footer will (agent capture a).\n"
+    );
+    assert!(super::spawn::agy_reports("a@hub", None).contains("agent capture a@hub"));
+}
+
 #[test]
 fn pick_flag_help_names_the_kinds() {
     let cmd = super::spawn::def().clap_command();

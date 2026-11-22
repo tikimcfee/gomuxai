@@ -382,9 +382,18 @@ impl ModelChooser for AgyBackend {
 }
 
 impl EffortChooser for AgyBackend {
-    /// Runs agy at `effort` (--effort).
+    /// Runs agy at `effort` (--effort), on the model it would pick.
     fn with_effort(&self, launch_cmd: &str, effort: &str) -> String {
         self.insert_before_exit(launch_cmd, &format!(" --effort {}", shell_quote(effort)))
+    }
+
+    /// agy names each effort of a model as its own id, `<model>-<effort>`
+    /// (gemini-4-carbon-high, gemini-4-neon-xhigh): the id its transcripts
+    /// record, and one --model takes as is. A base name with --effort is
+    /// documented to pick the same variant, but an id agy doesn't know only
+    /// warns and runs its default model, so spawn passes the id it records.
+    fn model_at_effort(&self, model: &str, effort: &str) -> Option<String> {
+        Some(format!("{model}-{effort}"))
     }
 }
 
@@ -637,6 +646,24 @@ impl QuestionPrompter for AgyBackend {
         }
         AGY_QUESTION_DIALOG.is_match(&tail.join("\n"))
     }
+}
+
+/// The model agy says it runs, from the right of its footer (the screen's
+/// last line): "Gemini 4 Argon · high", or with its mode first, "auto ·
+/// Gemini 4 Carbon · high". None if the footer shows no "model · effort".
+/// agy runs its default model when --model names one it doesn't know, with
+/// only a warning in its log, so this is how spawn tells what it got.
+pub fn agy_footer_model(screen: &str) -> Option<String> {
+    let footer = screen.lines().rev().find(|l| !l.trim().is_empty())?;
+    let footer = footer.trim_end();
+    let right = match footer.rfind("  ") {
+        Some(i) => footer[i..].trim(),
+        None => footer.trim(),
+    };
+    if !right.contains(" · ") || right.starts_with('>') {
+        return None;
+    }
+    Some(right.to_string())
 }
 
 /// How far a footer's text must start from the left for its left part to

@@ -37,6 +37,26 @@ pub fn validate_effort(effort: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refuses a model that already names an effort (gemini-4-carbon-high)
+/// given with --effort too, for a backend whose model ids carry the effort:
+/// the two would name different variants, or the same one twice.
+pub(crate) fn check_model_names_no_effort(
+    backend_name: &str,
+    model: &str,
+    effort: &str,
+) -> anyhow::Result<()> {
+    if let Some(named) = agent_roster::EFFORTS
+        .iter()
+        .find(|e| model.ends_with(&format!("-{e}")))
+    {
+        let base = &model[..model.len() - named.len() - 1];
+        anyhow::bail!(
+            "model {model} already names effort {named}, and --effort says {effort}: for {backend_name}, give the model without it (--model {base} --effort {effort})"
+        );
+    }
+    Ok(())
+}
+
 /// The error for spawn --effort on a backend that takes none.
 pub(crate) fn effort_refusal(backend_name: &str) -> anyhow::Error {
     anyhow::anyhow!("backend {backend_name} takes no --effort: claude and agy do")

@@ -178,6 +178,32 @@ fn test_with_model() {
 }
 
 #[test]
+fn test_agy_footer_model() {
+    let idle = include_str!("../testdata/agy-1.5-idle.txt");
+    assert_eq!(
+        namedagents::agy_footer_model(idle).as_deref(),
+        Some("Gemini 4 Argon · high")
+    );
+    let busy = include_str!("../testdata/agy-1.5-busy.txt");
+    assert_eq!(
+        namedagents::agy_footer_model(busy).as_deref(),
+        Some("Gemini 4 Argon · high")
+    );
+    let with_mode = "────\n>\n────\n? for shortcuts            auto · Gemini 4 Carbon · high\n";
+    assert_eq!(
+        namedagents::agy_footer_model(with_mode).as_deref(),
+        Some("auto · Gemini 4 Carbon · high")
+    );
+    for none in [
+        "",
+        "? for shortcuts\n",
+        " Select login method:\n > 1. Google OAuth\n",
+    ] {
+        assert_eq!(namedagents::agy_footer_model(none), None, "{none:?}");
+    }
+}
+
+#[test]
 fn test_with_effort() {
     let claude = namedagents::new_claude_backend();
     let ec = claude.as_effort_chooser().expect("claude takes --effort");
@@ -188,6 +214,9 @@ fn test_with_effort() {
             shell_quote(namedagents::CLAUDE_SPAWN_SETTINGS)
         )
     );
+    // claude takes a model and --effort as they are; agy's model ids carry
+    // the effort.
+    assert_eq!(ec.model_at_effort("opus", "high"), None);
     // aider takes a model but no effort.
     assert!(
         namedagents::new_aider_backend()
@@ -211,6 +240,13 @@ fn test_with_effort() {
     assert!(
         before.ends_with(" --effort 'xhigh'") && !after.contains("--effort"),
         "agy: {launch}"
+    );
+    assert_eq!(
+        agy.as_effort_chooser()
+            .unwrap()
+            .model_at_effort("gemini-4-carbon", "high")
+            .as_deref(),
+        Some("gemini-4-carbon-high")
     );
 }
 

@@ -166,6 +166,22 @@ by `status -v` and `fleet` (`claude opus@high`), carried over the bus on a
 remote spawn (a host that predates it says so), and taken by `template add
 --effort`. A pick's spawn line carries the entry's `--effort`.
 
+agy names each effort of a model as its own id, `<model>-<effort>`
+(`gemini-4-carbon-high`, `gemini-4-neon-xhigh`): what its transcripts
+record and what `--model` takes as is. A base name alone resolves to the
+model's default variant (`gemini-4-neon` → `gemini-4-neon-high` in agy's
+log), and agy's changelog says `--effort` selects a variant, but an id agy
+doesn't recognize only warns and runs its default model. So an agy entry
+is written with the effort apart, `agy/gemini-4-carbon@high`, and spawn
+launches it as `--model gemini-4-carbon-high` (the backend's
+`model_at_effort`), keeping `_model gemini-4-carbon` and `_effort high`;
+effort without a model passes `--effort`. A model that already ends in an
+effort is refused alongside `--effort`. Since a wrong id falls back
+silently, an agy spawn with `--model` or `--effort` ends by saying what
+agy's footer shows it running (`agy reports running: auto · Gemini 4
+Carbon · high.`, `namedagents::agy_footer_model`), or that the footer
+isn't drawn yet.
+
 ## spawn --pick
 
 **built** (`rs/crates/agent/src/cli/spawn_pick.rs`). Opt-in routing:
