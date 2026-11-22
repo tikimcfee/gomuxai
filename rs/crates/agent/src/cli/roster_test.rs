@@ -156,6 +156,15 @@ fn roster_note_checks_the_session() {
         &["roster", "note", "sh/m", "--task", "fix", "--verdict", "good", "--session", "claude:3f3a", "x"],
     );
     assert!(e.contains("\"fix\" isn't a task kind: use edit, bugfix"), "{e}");
+    // Only a dream's own agent writes as a dream, through agent dream roster note.
+    let e = fails(
+        &mut env,
+        &[
+            "roster", "note", "sh/m", "--task", "edit", "--verdict", "good", "--session",
+            "claude:3f3a", "--by", "dream-7", "x",
+        ],
+    );
+    assert!(e.contains("agent dream roster note"), "{e}");
 
     // A note on a harness and model with no entry is kept, and listed.
     let out = must(
