@@ -1,0 +1,18 @@
+Remove deletes an entry. Its notes stay, listed under the roster as notes
+on a harness and model with no entry; "agent roster set" brings the entry
+back. To keep it but stop pick offering it, use disable.
+
+Usage:
+  agent roster remove HARNESS/MODEL[@EFFORT] [flags]
+
+Examples:
+  agent roster remove agy/gemini-3-pro
+
+Flags:
+  -h, --help   help for remove
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

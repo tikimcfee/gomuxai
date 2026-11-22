@@ -1,0 +1,30 @@
+Set adds an entry for a harness and model this host can run, or changes
+the fields given on one that exists, leaving the rest. A new entry is
+enabled. Give a flag an empty value ("") to clear it.
+
+The harness is the backend spawn takes (claude, agy, aider, or a custom
+backend's name, which is also looked for on PATH); the model is what spawn
+--model takes, empty for the harness's default (claude/).
+
+Usage:
+  agent roster set HARNESS/MODEL[@EFFORT] [flags]
+
+Examples:
+  agent roster set claude/claude-haiku-5-5 --speed fast --cost low --tasks edit,test --good-at "small precise edits" --avoid "deep debugging"
+  agent roster set claude/claude-opus-5-5@max --tasks long-horizon,design --limits "weekly cap"
+  agent roster set agy/ --tasks review
+
+Flags:
+      --avoid string     What not to give it, in short
+      --cost string      Cost: low, medium, or high
+      --good-at string   What it does well, in short
+  -h, --help             help for set
+      --limits string    Its limits, in short (a weekly cap, a context size)
+      --speed string     Speed: fast, medium, or slow
+      --tasks string     The task kinds it suits, comma-separated (agent help roster lists them)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

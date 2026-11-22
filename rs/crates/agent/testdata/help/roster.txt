@@ -1,0 +1,63 @@
+Roster is where to look before a spawn: which harness and model this host
+can run, what each is good at, how fast and costly it is, whether it is
+available now, and what past runs showed. It lists this host's entries:
+
+  ENTRY                    AVAILABLE              SPEED  COST  TASKS      NOTES
+  claude/claude-haiku-5-5  yes                    fast   low   edit,test  3 good (2 sessions)
+  agy/gemini-3-pro         no: agy isn't on PATH  slow   high  review     -
+
+An entry is HARNESS/MODEL[@EFFORT]: the backend spawn takes, the model
+spawn --model takes (empty for the harness's default: claude/), and an
+effort for harnesses that take one (the same model at another effort is
+its own entry). It is available when it is enabled and its harness's CLI
+is on this host's PATH.
+
+Notes are evaluations, one per run, each citing the session it came from:
+NOTES counts them by verdict and by distinct session, so you can see
+whether a claim rests on one run or on five. A note another supersedes
+isn't counted.
+
+Task kinds: edit (small, well-specified change), bugfix, feature
+(multi-file), long-horizon (hours, many steps), review, research (reading
+and summarising), design, test, kernel (performance-critical low-level
+code), chat (quick question).
+
+roster (or roster list), show and pick only read; note only adds a note.
+set, enable, disable and remove change the entries.
+
+--json prints this host's roster as one JSON document: {"host", "entries":
+[...], "unlisted": {...}}, each entry with its fields, "key", "available",
+"unavailable" (why not), "notes" (counts by verdict) and "by_task".
+
+Usage:
+  agent roster [flags]
+  agent roster [command]
+
+Examples:
+  agent roster
+  agent roster pick --task edit
+  agent roster show claude/claude-opus-5-5
+  agent roster set claude/claude-haiku-5-5 --speed fast --cost low --tasks edit,test --good-at "small precise edits"
+  agent roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "did the rename across 12 files cleanly"
+
+Available Commands:
+  list        List this host's roster (what agent roster prints)
+  show        Show one roster entry with all its notes
+  pick        Pick the best available harness and model for a task, as a spawn line
+  note        Record how a harness and model did on a task, citing the session
+  set         Add a roster entry, or change one
+  enable      Switch a roster entry back on
+  disable     Switch a roster entry off, keeping it and its notes
+  remove      Delete a roster entry (its notes stay)
+
+Flags:
+  -h, --help   help for roster
+      --json   Print the roster as one JSON document
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent roster [command] --help" for more information about a command.

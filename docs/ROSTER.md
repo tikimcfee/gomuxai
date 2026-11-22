@@ -12,7 +12,8 @@ the plan, in the order it gets built.
 
 ## What it holds
 
-Two tables in each host's store (`gomuxai.db`).
+**built** (`rs/crates/agent-store/src/roster.rs`: plain rows; the rules
+are in `rs/crates/agent-roster`). Two tables in each host's store (`gomuxai.db`).
 
 `roster_entries`: one row per harness and model this host can run.
 
@@ -36,7 +37,15 @@ Two tables in each host's store (`gomuxai.db`).
   `roster note` checks that the session is one `agent sessions` knows on
   this host, so a note lives on the host its session ran on. Notes are
   never edited; a later note can supersede one (`--supersedes ID`).
-- `by`: the agent or person that wrote it (`dream-<id>` for a dream).
+- `by`: the agent or person that wrote it (`dream-<id>` for a dream;
+  column `written_by`).
+
+Writers go through `agent_roster::add_note(store, cfg, NoteInput)`, which
+checks the kinds, verdict, effort and superseded note, and resolves the
+source (a unique start of an id will do) against the session directories
+`cfg` names; the note stores the full `harness:session-id`. A superseded
+note stops counting. A note may name a harness and model with no entry:
+`roster` lists those apart.
 
 One note is one run. Nothing turns notes into a rule by itself: `roster`
 shows each entry's notes counted by verdict and by distinct session, so a
@@ -44,7 +53,7 @@ reader sees whether a claim rests on one run or on five.
 
 ## Task kinds
 
-A short fixed list, so `pick` can match without guessing: `edit` (small,
+**built**. A short fixed list, so `pick` can match without guessing: `edit` (small,
 well-specified change), `bugfix`, `feature` (multi-file), `long-horizon`
 (hours, many steps), `review`, `research` (reading and summarising),
 `design`, `test`, `kernel` (performance-critical low-level code), `chat`
@@ -53,15 +62,20 @@ list.
 
 ## Availability
 
-Computed when read, never stored:
+Computed when read, never stored (**built**, but for limits):
 
-- the harness's CLI is on this host's `PATH` (`claude`, `agy`, `aider`, a
-  custom backend's launch command);
+- the harness's CLI is on this host's `PATH` (`claude`, `agy`, `aider`; a
+  custom backend isn't remembered after spawn, so its entry's harness name
+  is looked for as its command);
 - the row is enabled;
 - later: plan limits from `agent manage view`'s usage data, so a model near
   its weekly limit reads `near limit` and `pick` ranks it down.
 
 ## Commands
+
+**built** on this host (`--host` and other hosts come with the bus op).
+`agent roster list` is `agent roster` under another name, for the
+pre-allow list below.
 
 ```bash
 agent roster                                  # this host and every linked host: entries, availability, note counts
@@ -77,8 +91,10 @@ agent roster pick --task long-horizon --prefer fast --host any --json
 ```
 
 `pick` ranks available entries: an entry whose `tasks` include the kind
-scores up; each good note on that kind (distinct sessions) adds, bad ones
-subtract; `--prefer fast|cheap|strong` breaks ties on speed or cost. It
+scores 2; each distinct session with a good note on that kind adds 1, each
+with a bad one takes 1 away; `--prefer fast|cheap|strong` breaks ties on
+speed or cost (strong: dearest first), then more good sessions, then this
+host before others. It
 prints the top choice as a command line
 (`agent spawn NAME --backend agy --model ...`, with `@HOST` when it is
 elsewhere) and the next two with one line of why each. It never spawns.
@@ -107,9 +123,12 @@ it chose (`tasks include edit; 2 good notes on edit; fast`) and ends with
 what to run next (the spawn line, `agent roster show ...` for the notes,
 `--save NAME` to keep it). An empty roster says how to add an entry.
 
-`roster`, `roster show`, `roster picks` and `roster pick` are read-only and pre-allowed for
-spawned agents. `roster note` only adds a note, like `friction add`, and is
-pre-allowed too. `set`, `enable`, `disable` and `remove` prompt the person.
+`roster list`, `roster show`, `roster picks` and `roster pick` are read-only and
+pre-allowed for spawned agents. `roster note` only adds a note, like
+`friction add`, and is pre-allowed too. `set`, `enable`, `disable` and
+`remove` prompt the person. Bare `roster` isn't on the list: safe commands
+match as a prefix, so it would pre-allow `roster set` and the rest too; the
+briefing should say `agent roster list`.
 
 ## Across hosts
 
