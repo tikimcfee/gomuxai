@@ -2,6 +2,8 @@
 //! gets, the shared `agent` skill text, its launch script, and the agent
 //! commands it may run unasked.
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result};
 
 use agent_allowcmd::Checker;
@@ -152,6 +154,26 @@ pub const DREAM_AGENT_COMMANDS: &[&str] = &[
     "dream memory",
 ];
 
+/// The dream item kind whose key is `<repo>@<hash>` (agent_dream::gather).
+const DREAM_KIND_COMMIT: &str = "commit";
+
+/// Whether command is one plain `git -C <repo> log|show ...` for a repo in
+/// repos, reading only: no --output (which writes a file) or --ext-diff
+/// (which runs a program). git is taken by name only, off PATH.
+pub(crate) fn dream_git_allowed(command: &str, repos: &BTreeSet<String>) -> bool {
+    let Ok(w) = agent_allowcmd::literal_words(command) else {
+        return false;
+    };
+    w.len() >= 4
+        && w[0] == "git"
+        && w[1] == "-C"
+        && repos.contains(w[2].trim_end_matches('/'))
+        && (w[3] == "log" || w[3] == "show")
+        && w[4..]
+            .iter()
+            .all(|a| !a.starts_with("--output") && !a.starts_with("--ext-diff") && a != "-o")
+}
+
 impl AgentService {
     /// Returns the shared `agent` skill text for `binary`.
     pub fn skill_text(binary: &str) -> String {
@@ -220,7 +242,8 @@ impl AgentService {
     /// before the subcommand. Only one plain run of it with a subcommand in
     /// AGENT_SAFE_COMMANDS qualifies (see allowcmd); anything else is left to the
     /// normal permission flow, so nothing is ever denied here. The agent
-    /// called name may also run DREAM_AGENT_COMMANDS while its dream is open.
+    /// called name may also run DREAM_AGENT_COMMANDS while its dream is open,
+    /// and `git -C <repo> log|show` in a repo its dream has commits of.
     pub(crate) fn hook_approval(
         &self,
         name: &str,
@@ -228,22 +251,38 @@ impl AgentService {
         hr: &HookReport,
     ) -> Option<Vec<u8>> {
         let ha = provider.as_hook_allower()?;
-        if hr.command.is_empty() || self.cfg.agent_binary.is_empty() {
+        if hr.command.is_empty() {
             return None;
         }
-        let c = Checker::new(self.cfg.agent_binary.clone(), AGENT_SAFE_COMMANDS);
-        if c.check(&hr.command, &hr.cwd).is_ok() {
-            return Some(
-                ha.allow_output("gomuxai: a safe agent command, pre-allowed for spawned agents"),
-            );
+        if !self.cfg.agent_binary.is_empty() {
+            let c = Checker::new(self.cfg.agent_binary.clone(), AGENT_SAFE_COMMANDS);
+            if c.check(&hr.command, &hr.cwd).is_ok() {
+                return Some(ha.allow_output(
+                    "gomuxai: a safe agent command, pre-allowed for spawned agents",
+                ));
+            }
         }
-        let c = Checker::new(self.cfg.agent_binary.clone(), DREAM_AGENT_COMMANDS);
-        if c.check(&hr.command, &hr.cwd).is_ok()
-            && matches!(self.storage.open_dream_of(name), Ok(Some(_)))
-        {
-            return Some(
-                ha.allow_output("gomuxai: a dream verb, pre-allowed for its open dream's agent"),
-            );
+        let Ok(Some(dream)) = self.storage.open_dream_of(name) else {
+            return None;
+        };
+        if !self.cfg.agent_binary.is_empty() {
+            let c = Checker::new(self.cfg.agent_binary.clone(), DREAM_AGENT_COMMANDS);
+            if c.check(&hr.command, &hr.cwd).is_ok() {
+                return Some(ha.allow_output(
+                    "gomuxai: a dream verb, pre-allowed for its open dream's agent",
+                ));
+            }
+        }
+        let items = self.storage.dream_items(dream.id).ok()?;
+        let repos: BTreeSet<String> = items
+            .iter()
+            .filter(|i| i.kind == DREAM_KIND_COMMIT)
+            .filter_map(|i| i.key.rsplit_once('@').map(|(repo, _)| repo.to_string()))
+            .collect();
+        if dream_git_allowed(&hr.command, &repos) {
+            return Some(ha.allow_output(
+                "gomuxai: git log or show in a repo of the dream, pre-allowed for its agent",
+            ));
         }
         None
     }
@@ -369,6 +408,31 @@ mod tests {
             brief.contains("rather than `g3d` to reach other agents."),
             "agy briefing lost the rule against driving g3d directly:\n{brief}"
         );
+    }
+
+    #[test]
+    fn test_dream_git_allowed() {
+        let repos = BTreeSet::from(["/srv/app".to_string()]);
+        for cmd in [
+            "git -C /srv/app log --oneline -n 20",
+            "git -C /srv/app/ show abc123 --stat",
+            "git -C '/srv/app' show abc123",
+        ] {
+            assert!(dream_git_allowed(cmd, &repos), "{cmd}: want allowed");
+        }
+        for cmd in [
+            "git -C /srv/other log",
+            "git log",
+            "git -C /srv/app push",
+            "git -C /srv/app log --output=/tmp/x",
+            "git -C /srv/app show --ext-diff abc",
+            "git -C /srv/app log; rm -rf /",
+            "git -C /srv/app log | sh",
+            "/usr/bin/git -C /srv/app log",
+            "git -C $HOME log",
+        ] {
+            assert!(!dream_git_allowed(cmd, &repos), "{cmd}: want refused");
+        }
     }
 
     #[test]

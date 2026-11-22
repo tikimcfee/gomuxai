@@ -99,9 +99,15 @@ fn test_pre_tool_use_allows_dream_verbs_for_the_open_dream_only() {
     let note = format!("{bin} dream note \"read 3 sessions\"");
 
     assert!(!allowed("dream-1", &dreamer, &note), "no dream yet");
+    let commit = agent_store::DreamItem {
+        kind: "commit".into(),
+        key: "/srv/app@abcdef1234".into(),
+        fingerprint: "abcdef1234".into(),
+        ..Default::default()
+    };
     let d = env
         .store
-        .open_dream("h", &[], |id| format!("dream-{id}"))
+        .open_dream("h", &[commit], |id| format!("dream-{id}"))
         .unwrap();
     assert_eq!(d.agent, "dream-1");
     for cmd in [
@@ -109,12 +115,21 @@ fn test_pre_tool_use_allows_dream_verbs_for_the_open_dream_only() {
         format!("{bin} dream friction accept 3 --note x"),
         format!("{bin} dream commit"),
         format!("{bin} logs worker"),
+        "git -C /srv/app show abcdef1 --stat".to_string(),
     ] {
         assert!(allowed("dream-1", &dreamer, &cmd), "{cmd}: want allowed");
     }
     assert!(
         !allowed("worker", &other, &note),
         "another agent's dream verbs"
+    );
+    assert!(
+        !allowed("worker", &other, "git -C /srv/app log"),
+        "git in a dream's repo, for another agent"
+    );
+    assert!(
+        !allowed("dream-1", &dreamer, "git -C /srv/other log"),
+        "a repo the dream has no commits of"
     );
     assert!(
         !allowed("dream-1", &dreamer, &format!("{bin} dream run")),

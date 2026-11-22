@@ -179,6 +179,12 @@ pub struct SpawnOptions {
     /// Resume is the session the agent continues (Claude's session id, agy's
     /// conversation id) instead of starting a new one; claude and agy only.
     pub resume: String,
+    /// Tool rules beyond the pre-allowed agent commands, for backends that
+    /// take them (backend.CommandAllower's allow_tools): run without a prompt
+    /// (Claude's "Read(//dir/**)"), and refused ("Edit"). A dream's agent is
+    /// spawned with them; resume doesn't carry them.
+    pub allow_tools: Vec<String>,
+    pub deny_tools: Vec<String>,
 }
 
 /// The Go SpawnOptions' unexported fields, which only resume and adopt set:
@@ -726,7 +732,12 @@ impl AgentService {
             cmd = ip.with_instructions(&cmd, &path)?;
         }
         if let Some(ca) = provider.as_command_allower() {
-            cmd = ca.allow_commands(&cmd, &self.allowed_command_prefixes());
+            cmd = ca.allow_tools(
+                &cmd,
+                &self.allowed_command_prefixes(),
+                &opts.allow_tools,
+                &opts.deny_tools,
+            );
         }
         if let Some(pfp) = provider.as_prompt_flag_provider()
             && !init_msg.is_empty()

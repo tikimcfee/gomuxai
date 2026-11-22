@@ -145,6 +145,19 @@ pub trait CommandAllower {
     /// Returns `launch_cmd` changed so shell commands starting with any of
     /// `prefixes` run without a permission prompt.
     fn allow_commands(&self, launch_cmd: &str, prefixes: &[String]) -> String;
+
+    /// allow_commands, plus the backend's own tool rules: `allow` run without
+    /// a prompt (e.g. "Read(//srv/app/**)") and `deny` are refused (e.g.
+    /// "Edit"). A backend that has no such rules ignores them.
+    fn allow_tools(
+        &self,
+        launch_cmd: &str,
+        prefixes: &[String],
+        _allow: &[String],
+        _deny: &[String],
+    ) -> String {
+        self.allow_commands(launch_cmd, prefixes)
+    }
 }
 
 /// Implemented by backends whose CLI asks whether to trust a new workspace

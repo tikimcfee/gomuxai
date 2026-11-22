@@ -306,6 +306,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         resume: resume.clone(),
         cwd: session_dir,
         model: args.model.clone(),
+        ..Default::default()
     };
 
     let svc = ctx.service()?;
