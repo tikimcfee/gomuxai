@@ -8,7 +8,11 @@ use std::path::Path;
 use agent_store::{RosterEntry, RosterNote, Store};
 use serde::{Deserialize, Serialize};
 
+use agent_manage::llm_usage::LlmUsage;
+use chrono::{DateTime, Utc};
+
 use crate::key::Key;
+use crate::limits::{LimitView, entry_limit, fresh};
 
 /// Tally counts notes of one verdict, and the distinct sessions they cite,
 /// so a reader sees whether a claim rests on one run or on five.
@@ -97,6 +101,17 @@ pub struct EntryView {
     /// The notes counted by the task kind they were about.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub by_task: BTreeMap<String, NoteCounts>,
+    /// The fullest window of its plan, when its host's usage snapshot is
+    /// fresh and covers its harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<LimitView>,
+    /// Whether it is near its plan's limit (pick ranks it down).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub near_limit: bool,
+    /// Its limits in words: "week 22%, resets Fri 04:00", "near limit:
+    /// ...", "at limit until ...", or "limits not known".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub limits: String,
 }
 
 /// HostRoster is one host's roster: its entries, and its notes on
@@ -117,6 +132,10 @@ pub struct HostRoster {
     /// What to run, and where, so it can be read next time.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub fix: String,
+    /// When the usage snapshot its limits come from was captured; "" when
+    /// there was none fresh enough to use.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub limits_as_of: String,
 }
 
 impl HostRoster {
@@ -165,6 +184,25 @@ pub struct EntryShow {
     pub notes: Vec<NoteView>,
 }
 
+/// Checks are what a view is judged against: the PATH check, this host's
+/// usage snapshot (None: none), and the time now.
+pub struct Checks<'a> {
+    pub on_path: &'a dyn Fn(&str) -> bool,
+    pub usage: Option<&'a LlmUsage>,
+    pub now: DateTime<Utc>,
+}
+
+impl<'a> Checks<'a> {
+    /// This host as it is now: its PATH, and usage.
+    pub fn now(usage: Option<&'a LlmUsage>) -> Checks<'a> {
+        Checks {
+            on_path: &on_path,
+            usage,
+            now: Utc::now(),
+        }
+    }
+}
+
 /// on_path says whether cmd is an executable file in a directory of this
 /// process's PATH.
 pub fn on_path(cmd: &str) -> bool {
@@ -207,13 +245,20 @@ fn harness_command(harness: &str) -> &str {
     harness
 }
 
-fn availability(e: &RosterEntry, on_path: &dyn Fn(&str) -> bool) -> (bool, String) {
+/// availability says whether e can be spawned now, and why not: disabled,
+/// its CLI not on PATH, or its plan at its limit.
+fn availability(e: &RosterEntry, limit: Option<&LimitView>, c: &Checks) -> (bool, String) {
     if !e.enabled {
         return (false, "disabled".into());
     }
     let cmd = harness_command(&e.harness);
-    if !on_path(cmd) {
+    if !(c.on_path)(cmd) {
         return (false, format!("{cmd} not on PATH"));
+    }
+    if let Some(l) = limit
+        && l.at()
+    {
+        return (false, l.describe(c.now));
     }
     (true, String::new())
 }
@@ -227,8 +272,14 @@ fn superseded(notes: &[RosterNote]) -> HashSet<i64> {
         .collect()
 }
 
-fn entry_view(e: RosterEntry, notes: &[&RosterNote], on_path: &dyn Fn(&str) -> bool) -> EntryView {
-    let (available, unavailable) = availability(&e, on_path);
+fn entry_view(e: RosterEntry, notes: &[&RosterNote], c: &Checks) -> EntryView {
+    let limit = entry_limit(&e.harness, &e.model, c.usage, c.now);
+    let (available, unavailable) = availability(&e, limit.as_ref(), c);
+    let near_limit = limit.as_ref().is_some_and(LimitView::near);
+    let limits = match &limit {
+        Some(l) => l.describe(c.now),
+        None => "limits not known".to_string(),
+    };
     let mut by_task: BTreeMap<String, Vec<&RosterNote>> = BTreeMap::new();
     for n in notes {
         by_task.entry(n.task.clone()).or_default().push(n);
@@ -243,21 +294,25 @@ fn entry_view(e: RosterEntry, notes: &[&RosterNote], on_path: &dyn Fn(&str) -> b
             .into_iter()
             .map(|(t, ns)| (t, NoteCounts::count(ns)))
             .collect(),
+        limit,
+        near_limit,
+        limits,
     }
 }
 
 /// host_view reads this host's roster, checking each harness's CLI against
-/// this process's PATH.
-pub fn host_view(store: &Store, host: &str) -> anyhow::Result<HostRoster> {
-    host_view_with(store, host, &on_path)
-}
-
-/// host_view_with is host_view with the PATH check given.
-pub fn host_view_with(
+/// this process's PATH and its plan against usage, this host's llm-exp
+/// snapshot (agent_manage::llm_usage::read_snapshot; None for none).
+pub fn host_view(
     store: &Store,
     host: &str,
-    on_path: &dyn Fn(&str) -> bool,
+    usage: Option<&LlmUsage>,
 ) -> anyhow::Result<HostRoster> {
+    host_view_with(store, host, &Checks::now(usage))
+}
+
+/// host_view_with is host_view with the checks given.
+pub fn host_view_with(store: &Store, host: &str, c: &Checks) -> anyhow::Result<HostRoster> {
     let entries = store.list_roster_entries()?;
     let notes = store.list_roster_notes()?;
     let gone = superseded(&notes);
@@ -268,7 +323,7 @@ pub fn host_view_with(
     let mut views = Vec::with_capacity(entries.len());
     for e in entries {
         let ns = by_key.remove(&Key::of_entry(&e)).unwrap_or_default();
-        views.push(entry_view(e, &ns, on_path));
+        views.push(entry_view(e, &ns, c));
     }
     Ok(HostRoster {
         host: host.to_string(),
@@ -277,23 +332,26 @@ pub fn host_view_with(
             .into_iter()
             .map(|(k, ns)| (k.to_string(), NoteCounts::count(ns)))
             .collect(),
+        limits_as_of: fresh(c.usage, c.now)
+            .map(|u| u.captured_at.clone())
+            .unwrap_or_default(),
         ..Default::default()
     })
 }
 
 /// show reads one entry and all its notes, superseded ones included. It
 /// fails when there is neither an entry nor a note for key.
-pub fn show(store: &Store, host: &str, key: &Key) -> anyhow::Result<EntryShow> {
-    show_with(store, host, key, &on_path)
-}
-
-/// show_with is show with the PATH check given.
-pub fn show_with(
+pub fn show(
     store: &Store,
     host: &str,
     key: &Key,
-    on_path: &dyn Fn(&str) -> bool,
+    usage: Option<&LlmUsage>,
 ) -> anyhow::Result<EntryShow> {
+    show_with(store, host, key, &Checks::now(usage))
+}
+
+/// show_with is show with the checks given.
+pub fn show_with(store: &Store, host: &str, key: &Key, c: &Checks) -> anyhow::Result<EntryShow> {
     let entry = store.get_roster_entry(&key.harness, &key.model, &key.effort)?;
     let notes = store.list_roster_notes_for(&key.harness, &key.model, &key.effort)?;
     if entry.is_none() && notes.is_empty() {
@@ -311,7 +369,7 @@ pub fn show_with(
         .iter()
         .filter(|n| !superseded_by.contains_key(&n.id))
         .collect();
-    let entry = entry.map(|e| entry_view(e, &current, on_path));
+    let entry = entry.map(|e| entry_view(e, &current, c));
     Ok(EntryShow {
         host: host.to_string(),
         key: key.to_string(),

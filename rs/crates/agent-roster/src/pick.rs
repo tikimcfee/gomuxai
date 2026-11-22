@@ -5,6 +5,7 @@ use std::cmp::Reverse;
 use serde::{Deserialize, Serialize};
 
 use crate::key::{COSTS, SPEEDS, check_prefer, check_task};
+use crate::limits::NEAR_LIMIT_PENALTY;
 use crate::view::{EntryView, HostRoster, NoteCounts};
 
 /// How much an entry's own tasks naming the kind counts, against one
@@ -106,6 +107,9 @@ fn why(e: &EntryView, task: &str, suits: bool, c: &NoteCounts) -> String {
     if !traits.is_empty() {
         parts.push(traits.join(", "));
     }
+    if e.near_limit {
+        parts.push(e.limits.clone());
+    }
     if !e.entry.effort.is_empty() {
         parts.push(format!(
             "effort {} (spawn has no --effort yet)",
@@ -120,7 +124,9 @@ fn why(e: &EntryView, task: &str, suits: bool, c: &NoteCounts) -> String {
 
 /// pick ranks every available entry of hosts for opts.task: its tasks
 /// naming the kind add SUITS_SCORE, each distinct session with a good note
-/// on the kind adds one and each with a bad one takes one away;
+/// on the kind adds one and each with a bad one takes one away, and being
+/// near its plan's limit takes NEAR_LIMIT_PENALTY away (one at its limit
+/// isn't available);
 /// opts.prefer breaks ties, then more good sessions, then local_host before
 /// others, then the host and key. It fails when no host has an available entry. local_host's
 /// entries spawn without @HOST.
@@ -145,7 +151,9 @@ pub fn pick(
             }
             let suits = e.entry.tasks.contains(&task);
             let c = e.by_task.get(&task).cloned().unwrap_or_default();
-            let score = if suits { SUITS_SCORE } else { 0 } + c.good.sessions - c.bad.sessions;
+            let near = if e.near_limit { NEAR_LIMIT_PENALTY } else { 0 };
+            let score =
+                if suits { SUITS_SCORE } else { 0 } + c.good.sessions - c.bad.sessions - near;
             ranked.push((
                 score,
                 tie_break(e, &prefer),

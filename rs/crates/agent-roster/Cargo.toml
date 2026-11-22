@@ -9,8 +9,10 @@ publish.workspace = true
 [dependencies]
 agent-base.workspace = true
 agent-discovery.workspace = true
+agent-manage.workspace = true
 agent-store.workspace = true
 anyhow.workspace = true
+chrono.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

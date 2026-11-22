@@ -7,6 +7,7 @@
 
 pub mod entry;
 pub mod key;
+pub mod limits;
 pub mod note;
 pub mod pick;
 pub mod saved;
@@ -21,6 +22,7 @@ pub use key::{
     COSTS, EFFORTS, Key, PREFERS, SPEEDS, TASK_KINDS, VERDICTS, check_cost, check_effort,
     check_prefer, check_speed, check_task, check_verdict, parse_tasks,
 };
+pub use limits::{LimitView, NEAR_LIMIT_PCT, NEAR_LIMIT_PENALTY, STALE_AFTER, entry_limit, when};
 pub use note::{NoteInput, add_note, add_note_in, resolve_source, session_dirs};
 pub use pick::{Pick, PickOptions, pick};
 pub use saved::{
@@ -28,6 +30,6 @@ pub use saved::{
     saved,
 };
 pub use view::{
-    EntryShow, EntryView, HostRoster, NoteCounts, NoteView, RosterRequest, Tally, host_view,
-    host_view_with, on_path, show, show_with,
+    Checks, EntryShow, EntryView, HostRoster, NoteCounts, NoteView, RosterRequest, Tally,
+    host_view, host_view_with, on_path, show, show_with,
 };

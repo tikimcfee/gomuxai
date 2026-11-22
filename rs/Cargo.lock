@@ -179,8 +179,10 @@ version = "0.2.0"
 dependencies = [
  "agent-base",
  "agent-discovery",
+ "agent-manage",
  "agent-store",
  "anyhow",
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",

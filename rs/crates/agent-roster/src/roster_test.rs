@@ -4,7 +4,17 @@ use agent_base::config::Config;
 use agent_discovery::{Dir, HARNESS_CLAUDE, ORIGIN_DEFAULT};
 use agent_store::Store;
 
+use crate::limits;
 use crate::*;
+
+/// The checks with this PATH, no usage snapshot, and the time now.
+fn paths(f: &dyn Fn(&str) -> bool) -> Checks<'_> {
+    Checks {
+        on_path: f,
+        usage: None,
+        now: chrono::Utc::now(),
+    }
+}
 
 struct Env {
     store: Store,
@@ -299,7 +309,7 @@ fn view_counts_and_availability() {
     add("kimi/k2", "chat", "mixed", "claude:s1");
 
     let only_claude = |cmd: &str| cmd == "claude";
-    let h = host_view_with(&v.store, "hub", &only_claude).unwrap();
+    let h = host_view_with(&v.store, "hub", &paths(&only_claude)).unwrap();
     assert_eq!(h.host, "hub");
     let keys: Vec<(&str, bool, &str)> = h
         .entries
@@ -348,7 +358,7 @@ fn view_counts_and_availability() {
         &v.store,
         "hub",
         &Key::parse("claude/haiku").unwrap(),
-        &only_claude,
+        &paths(&only_claude),
     )
     .unwrap();
     assert_eq!(s.notes.len(), 5);
@@ -357,13 +367,18 @@ fn view_counts_and_availability() {
         &v.store,
         "hub",
         &Key::parse("kimi/k2").unwrap(),
-        &only_claude,
+        &paths(&only_claude),
     )
     .unwrap();
     assert!(s.entry.is_none() && s.notes.len() == 1);
-    let e = show_with(&v.store, "hub", &Key::parse("x/y").unwrap(), &only_claude)
-        .unwrap_err()
-        .to_string();
+    let e = show_with(
+        &v.store,
+        "hub",
+        &Key::parse("x/y").unwrap(),
+        &paths(&only_claude),
+    )
+    .unwrap_err()
+    .to_string();
     assert!(e.contains("no roster entry or note for x/y"), "{e}");
 }
 
@@ -390,7 +405,7 @@ fn pick_ranks() {
     );
     set(&v.store, "agy/gem", "edit", "fast", "low");
     let all = |_: &str| true;
-    let local = host_view_with(&v.store, "here", &all).unwrap();
+    let local = host_view_with(&v.store, "here", &paths(&all)).unwrap();
 
     let p = |task: &str, prefer: &str, hosts: &[HostRoster]| {
         pick(
@@ -431,7 +446,7 @@ fn pick_ranks() {
         note("agy/gem", "edit", "bad", "claude:s3"),
     )
     .unwrap();
-    let local = host_view_with(&v.store, "here", &all).unwrap();
+    let local = host_view_with(&v.store, "here", &paths(&all)).unwrap();
     let ps = p("edit", "", std::slice::from_ref(&local));
     assert_eq!(
         keys(&ps),
@@ -486,7 +501,7 @@ fn pick_ranks() {
     assert!(bad("refactor", "", &[]).contains("isn't a task kind"));
     assert!(bad("edit", "cheapest", &[]).contains("isn't a preference"));
     assert!(bad("edit", "", &[]).contains("has no entries"));
-    let none = host_view_with(&v.store, "here", &|_: &str| false).unwrap();
+    let none = host_view_with(&v.store, "here", &paths(&|_: &str| false)).unwrap();
     assert!(bad("edit", "", &[none]).contains("no roster entry is available"));
 }
 
@@ -496,7 +511,7 @@ fn saved_picks() {
     set(&v.store, "claude/haiku", "edit", "fast", "low");
     set(&v.store, "claude/sonnet", "edit", "medium", "medium");
     let all = |_: &str| true;
-    let view = host_view_with(&v.store, "here", &all).unwrap();
+    let view = host_view_with(&v.store, "here", &paths(&all)).unwrap();
     let opts = |prefer: &str| PickOptions {
         task: "edit".into(),
         prefer: prefer.into(),
@@ -559,16 +574,149 @@ fn saved_picks() {
         "user",
     )
     .unwrap();
-    let view = host_view_with(&v.store, "here", &all).unwrap();
+    let view = host_view_with(&v.store, "here", &paths(&all)).unwrap();
     let c = check_saved(p1.clone(), std::slice::from_ref(&view));
     assert_eq!(
         (c.available, c.status.as_str()),
         (Some(false), "off: disabled")
     );
     remove_entry(&v.store, &Key::parse("claude/haiku").unwrap()).unwrap();
-    let view = host_view_with(&v.store, "here", &all).unwrap();
+    let view = host_view_with(&v.store, "here", &paths(&all)).unwrap();
     let c = check_saved(p1.clone(), std::slice::from_ref(&view));
     assert_eq!(c.status, "gone: here has no entry claude/haiku now");
     let c = check_saved(p1, &[]);
     assert_eq!(c.available, None);
+}
+
+/// A usage snapshot captured `age` before now, as llm-exp writes one.
+fn usage(
+    now: chrono::DateTime<chrono::Utc>,
+    age: chrono::TimeDelta,
+) -> agent_manage::llm_usage::LlmUsage {
+    let at = (now - age).to_rfc3339();
+    let reset = (now + chrono::TimeDelta::hours(30)).to_rfc3339();
+    let json = format!(
+        r#"{{"captured_at": "{at}",
+            "claude": {{"plan": "max",
+                "session": {{"pct": 10, "reset_at": "{reset}"}},
+                "week_all": {{"pct": 50, "reset_at": "{reset}"}},
+                "week_model": {{"pct": 93, "reset_at": "{reset}"}},
+                "model_name": "Fable"}},
+            "agy": {{"bars": [{{"label": "gemini 5h", "pct": 20}},
+                             {{"label": "gemini week", "pct": 100, "reset_at": "{reset}"}}]}}}}"#
+    );
+    agent_manage::llm_usage::LlmUsage::parse("/u.json", json.as_bytes())
+}
+
+#[test]
+fn plan_limits() {
+    let v = env();
+    set(&v.store, "claude/claude-fable-5-2", "edit", "fast", "low");
+    set(&v.store, "claude/claude-opus-5-5", "edit", "slow", "high");
+    set(&v.store, "agy/gemini", "edit", "fast", "low");
+    set(&v.store, "sh/x", "review", "", "");
+    let now = chrono::Utc::now();
+    let reset = limits::when(&(now + chrono::TimeDelta::hours(30)).to_rfc3339(), now);
+    let all = |_: &str| true;
+    let u = usage(now, chrono::TimeDelta::minutes(2));
+    let checks = Checks {
+        on_path: &all,
+        usage: Some(&u),
+        now,
+    };
+    let h = host_view_with(&v.store, "here", &checks).unwrap();
+    assert_eq!(h.limits_as_of, u.captured_at);
+    let by_key = |k: &str| h.entries.iter().find(|e| e.key == k).unwrap().clone();
+
+    // Its named model's week is the fullest: near the limit, still available.
+    let fable = by_key("claude/claude-fable-5-2");
+    assert!(fable.available && fable.near_limit, "{fable:?}");
+    assert_eq!(
+        fable.limits,
+        format!("near limit: week fable 93%, resets {reset}")
+    );
+    assert_eq!(fable.limit.as_ref().unwrap().window, "week fable");
+    // Another Claude model: the week, all models.
+    let opus = by_key("claude/claude-opus-5-5");
+    assert!(opus.available && !opus.near_limit);
+    assert_eq!(opus.limits, format!("week 50%, resets {reset}"));
+    // agy's fullest bar is full: off until it resets.
+    let agy = by_key("agy/gemini");
+    assert!(!agy.available);
+    assert_eq!(agy.unavailable, format!("at limit until {reset}"));
+    // A harness the snapshot doesn't cover.
+    assert_eq!(by_key("sh/x").limits, "limits not known");
+    assert!(by_key("sh/x").limit.is_none());
+
+    // pick: near the limit takes 2 away, at it isn't picked.
+    let ps = pick(
+        std::slice::from_ref(&h),
+        "here",
+        &PickOptions {
+            task: "edit".into(),
+            prefer: String::new(),
+        },
+    )
+    .unwrap();
+    let keys: Vec<(&str, i64)> = ps.iter().map(|p| (p.key.as_str(), p.score)).collect();
+    // (sh/x, which doesn't list edit, ties fable at 0 and sorts after it.)
+    assert_eq!(
+        keys[..2],
+        [
+            ("claude/claude-opus-5-5", 2),
+            ("claude/claude-fable-5-2", 0)
+        ]
+    );
+    assert!(
+        ps[1].why.contains("near limit: week fable 93%"),
+        "{}",
+        ps[1].why
+    );
+
+    // It travels with the view.
+    let back: HostRoster = serde_json::from_value(serde_json::to_value(&h).unwrap()).unwrap();
+    assert_eq!(back, h);
+
+    // A stale snapshot, or a provider that failed in it, says nothing.
+    let stale = usage(now, chrono::TimeDelta::minutes(11));
+    let h = host_view_with(
+        &v.store,
+        "here",
+        &Checks {
+            on_path: &all,
+            usage: Some(&stale),
+            now,
+        },
+    )
+    .unwrap();
+    assert_eq!(h.limits_as_of, "");
+    assert!(
+        h.entries
+            .iter()
+            .all(|e| e.limits == "limits not known" && e.available)
+    );
+    let mut failed = usage(now, chrono::TimeDelta::minutes(1));
+    failed
+        .errors
+        .insert("claude".into(), "token rejected".into());
+    let checks = Checks {
+        on_path: &all,
+        usage: Some(&failed),
+        now,
+    };
+    let h = host_view_with(&v.store, "here", &checks).unwrap();
+    let fable = h
+        .entries
+        .iter()
+        .find(|e| e.key == "claude/claude-fable-5-2")
+        .unwrap();
+    assert_eq!(fable.limits, "limits not known");
+    let s = show_with(
+        &v.store,
+        "here",
+        &Key::parse("agy/gemini").unwrap(),
+        &checks,
+    )
+    .unwrap();
+    assert!(!s.entry.unwrap().available);
 }
