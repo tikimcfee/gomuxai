@@ -34,6 +34,8 @@ pub struct Pick {
     pub score: i64,
     /// A spawn line to start it, with NAME for the agent's name.
     pub command: String,
+    /// The same command as words, as a saved pick keeps it.
+    pub argv: Vec<String>,
     /// One line of why it ranks where it does.
     pub why: String,
 }
@@ -62,45 +64,37 @@ fn tie_break(e: &EntryView, prefer: &str) -> i64 {
     }
 }
 
-fn spawn_line(host: &str, local_host: &str, e: &EntryView) -> String {
-    let mut s = String::from("agent spawn NAME");
+/// The spawn command's words for e on host: NAME@HOST when host isn't
+/// local_host, and no --model for the harness's default.
+fn spawn_argv(host: &str, local_host: &str, e: &EntryView) -> Vec<String> {
+    let mut name = String::from("NAME");
     if !host.eq_ignore_ascii_case(local_host) {
-        s.push('@');
-        s.push_str(host);
+        name.push('@');
+        name.push_str(host);
     }
-    s.push_str(" --backend ");
-    s.push_str(&e.entry.harness);
+    let mut argv: Vec<String> = vec!["agent".into(), "spawn".into(), name];
+    argv.push("--backend".into());
+    argv.push(e.entry.harness.clone());
     if !e.entry.model.is_empty() {
-        s.push_str(" --model ");
-        s.push_str(&e.entry.model);
+        argv.push("--model".into());
+        argv.push(e.entry.model.clone());
     }
-    s
+    argv
 }
 
 fn why(e: &EntryView, task: &str, suits: bool, c: &NoteCounts) -> String {
     let mut parts: Vec<String> = Vec::new();
     if suits {
-        parts.push(format!("suits {task}"));
+        parts.push(format!("tasks include {task}"));
     } else if e.entry.tasks.is_empty() {
         parts.push("no tasks set".into());
     } else {
-        parts.push(format!("set for {}, not {task}", e.entry.tasks.join(",")));
+        parts.push(format!("tasks are {}, not {task}", e.entry.tasks.join(",")));
     }
     if c.total() == 0 {
         parts.push(format!("no notes on {task}"));
     } else {
-        let mut v = Vec::new();
-        for (name, t) in [("good", &c.good), ("mixed", &c.mixed), ("bad", &c.bad)] {
-            if t.notes > 0 {
-                let runs = if t.sessions == 1 {
-                    "session"
-                } else {
-                    "sessions"
-                };
-                v.push(format!("{} {name} ({} {runs})", t.notes, t.sessions));
-            }
-        }
-        parts.push(format!("on {task}: {}", v.join(", ")));
+        parts.push(format!("notes on {task}: {}", c.describe()));
     }
     let mut traits = Vec::new();
     if !e.entry.speed.is_empty() {
@@ -164,7 +158,8 @@ pub fn pick(
                     model: e.entry.model.clone(),
                     effort: e.entry.effort.clone(),
                     score,
-                    command: spawn_line(&h.host, local_host, e),
+                    command: spawn_argv(&h.host, local_host, e).join(" "),
+                    argv: spawn_argv(&h.host, local_host, e),
                     why: why(e, &task, suits, &c),
                 },
             ));
@@ -177,7 +172,7 @@ pub fn pick(
             );
         }
         anyhow::bail!(
-            "no roster entry is available: each is disabled or its CLI isn't on PATH (agent roster shows why)"
+            "no roster entry is available: each is disabled or its CLI is not on PATH (agent roster shows why)"
         );
     }
     ranked.sort_by(|a, b| {
