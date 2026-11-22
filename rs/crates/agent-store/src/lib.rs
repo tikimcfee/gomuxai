@@ -38,7 +38,7 @@ pub use host_rename::HostRenamed;
 pub use jobs::{Job, PromotedScript};
 pub use manage::{Pruned, Untracked, UsageRow};
 pub use models::*;
-pub use roster::{RosterEntry, RosterNote};
+pub use roster::{RosterEntry, RosterNote, RosterPick};
 pub use session_reports::SessionReport;
 pub use sqlite::{ClaimUpdate, Store, new_sqlite_storage};
 pub use storage::SQLiteStorage;

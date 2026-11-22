@@ -49,7 +49,49 @@ pub(crate) const ROSTER_SCHEMA: &str = r#"
 
 	CREATE INDEX IF NOT EXISTS idx_roster_notes_entry
 		ON roster_notes(harness, model, effort);
+
+	CREATE TABLE IF NOT EXISTS roster_picks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL,
+		version INTEGER NOT NULL,
+		argv TEXT NOT NULL,
+		harness TEXT NOT NULL,
+		model TEXT NOT NULL,
+		effort TEXT NOT NULL DEFAULT '',
+		host TEXT NOT NULL,
+		task TEXT NOT NULL,
+		why TEXT NOT NULL DEFAULT '',
+		saved_by TEXT NOT NULL,
+		saved_at TEXT NOT NULL,
+		UNIQUE (name, version)
+	);
 "#;
+
+/// RosterPick is one version of a saved pick: a startup command kept by
+/// name (agent roster pick --save), with the entry it came from.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RosterPick {
+    #[serde(skip)]
+    pub id: i64,
+    pub name: String,
+    /// 1, 2, ...: a new version only when the command changed.
+    pub version: i64,
+    /// The command's words ("agent", "spawn", "NAME", ...); stored as JSON.
+    pub argv: Vec<String>,
+    pub harness: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effort: String,
+    /// The host whose entry it is.
+    pub host: String,
+    /// The task kind it was picked for.
+    pub task: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub why: String,
+    pub saved_by: String,
+    pub saved_at: Time,
+}
 
 /// RosterEntry is one harness and model (at an effort, if set) this host can
 /// run, with what a person or agent said about it.
@@ -291,5 +333,107 @@ impl Store {
             scan_note,
         )
         .context("querying roster notes")
+    }
+}
+
+const PICK_COLUMNS: &str =
+    "id, name, version, argv, harness, model, effort, host, task, why, saved_by, saved_at";
+
+fn scan_pick(row: &Row<'_>) -> rusqlite::Result<RosterPick> {
+    Ok(RosterPick {
+        id: int(row, 0)?,
+        name: text(row, 1)?,
+        version: int(row, 2)?,
+        argv: serde_json::from_str(&text(row, 3)?).unwrap_or_default(),
+        harness: text(row, 4)?,
+        model: text(row, 5)?,
+        effort: text(row, 6)?,
+        host: text(row, 7)?,
+        task: text(row, 8)?,
+        why: text(row, 9)?,
+        saved_by: text(row, 10)?,
+        saved_at: parse_time(&text(row, 11)?),
+    })
+}
+
+impl Store {
+    /// add_roster_pick records a saved pick's version and sets p.id. The
+    /// name and version must be new.
+    pub fn add_roster_pick(&self, p: &mut RosterPick) -> Result<()> {
+        let argv = serde_json::to_string(&p.argv).context("encoding the command")?;
+        let id = self.insert(
+            "saving pick",
+            &format!(
+                "INSERT INTO roster_picks ({}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                &PICK_COLUMNS["id, ".len()..]
+            ),
+            params![
+                p.name,
+                p.version,
+                argv,
+                p.harness,
+                p.model,
+                p.effort,
+                p.host,
+                p.task,
+                p.why,
+                p.saved_by,
+                time_key(&p.saved_at)
+            ],
+        )?;
+        p.id = id;
+        Ok(())
+    }
+
+    /// get_roster_pick returns version of the saved pick name, or its
+    /// newest version for 0; None if there is none.
+    pub fn get_roster_pick(&self, name: &str, version: i64) -> Result<Option<RosterPick>> {
+        let conn = self.conn();
+        if version == 0 {
+            return query_one(
+                &conn,
+                &format!(
+                    "SELECT {PICK_COLUMNS} FROM roster_picks WHERE name = ? ORDER BY version DESC LIMIT 1"
+                ),
+                [name],
+                scan_pick,
+            )
+            .context("querying saved picks");
+        }
+        query_one(
+            &conn,
+            &format!("SELECT {PICK_COLUMNS} FROM roster_picks WHERE name = ? AND version = ?"),
+            params![name, version],
+            scan_pick,
+        )
+        .context("querying saved picks")
+    }
+
+    /// list_roster_picks returns every version of the saved pick name,
+    /// newest first; for "", the newest version of each, by name.
+    pub fn list_roster_picks(&self, name: &str) -> Result<Vec<RosterPick>> {
+        let conn = self.conn();
+        if name.is_empty() {
+            return query_all(
+                &conn,
+                &format!(
+                    "SELECT {PICK_COLUMNS} FROM roster_picks p
+                     WHERE version = (SELECT MAX(version) FROM roster_picks q WHERE q.name = p.name)
+                     ORDER BY name"
+                ),
+                [],
+                scan_pick,
+            )
+            .context("querying saved picks");
+        }
+        query_all(
+            &conn,
+            &format!(
+                "SELECT {PICK_COLUMNS} FROM roster_picks WHERE name = ? ORDER BY version DESC"
+            ),
+            [name],
+            scan_pick,
+        )
+        .context("querying saved picks")
     }
 }
