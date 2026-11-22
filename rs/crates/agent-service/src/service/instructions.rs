@@ -136,6 +136,22 @@ pub const AGENT_SAFE_COMMANDS: &[&str] = &[
     "friction links",
 ];
 
+/// DREAM_AGENT_COMMANDS are the `agent dream` verbs a dream's own agent may
+/// run without a prompt while its dream is open (docs/DREAMING.md): they
+/// write only through the dream's narrow toolset. No other agent gets them,
+/// and they are never in the launch rules: the PreToolUse hook decides each
+/// one against the store.
+pub const DREAM_AGENT_COMMANDS: &[&str] = &[
+    "dream note",
+    "dream commit",
+    "dream abandon",
+    "dream friction dup",
+    "dream friction link",
+    "dream friction accept",
+    "dream limitation",
+    "dream memory",
+];
+
 impl AgentService {
     /// Returns the shared `agent` skill text for `binary`.
     pub fn skill_text(binary: &str) -> String {
@@ -203,9 +219,11 @@ impl AgentService {
     /// match the command's text: this binary by any path or symlink, or with -q
     /// before the subcommand. Only one plain run of it with a subcommand in
     /// AGENT_SAFE_COMMANDS qualifies (see allowcmd); anything else is left to the
-    /// normal permission flow, so nothing is ever denied here.
+    /// normal permission flow, so nothing is ever denied here. The agent
+    /// called name may also run DREAM_AGENT_COMMANDS while its dream is open.
     pub(crate) fn hook_approval(
         &self,
+        name: &str,
         provider: &dyn Provider,
         hr: &HookReport,
     ) -> Option<Vec<u8>> {
@@ -214,10 +232,20 @@ impl AgentService {
             return None;
         }
         let c = Checker::new(self.cfg.agent_binary.clone(), AGENT_SAFE_COMMANDS);
-        if c.check(&hr.command, &hr.cwd).is_err() {
-            return None;
+        if c.check(&hr.command, &hr.cwd).is_ok() {
+            return Some(
+                ha.allow_output("gomuxai: a safe agent command, pre-allowed for spawned agents"),
+            );
         }
-        Some(ha.allow_output("gomuxai: a safe agent command, pre-allowed for spawned agents"))
+        let c = Checker::new(self.cfg.agent_binary.clone(), DREAM_AGENT_COMMANDS);
+        if c.check(&hr.command, &hr.cwd).is_ok()
+            && matches!(self.storage.open_dream_of(name), Ok(Some(_)))
+        {
+            return Some(
+                ha.allow_output("gomuxai: a dream verb, pre-allowed for its open dream's agent"),
+            );
+        }
+        None
     }
 
     /// allowedCommandPrefixes are AGENT_SAFE_COMMANDS as the agent may type them:

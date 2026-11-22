@@ -559,7 +559,7 @@ impl AgentService {
             return (None, Ok(()));
         }
         // Decided first, so a failure to record the report can't cost it.
-        let approval = self.hook_approval(provider.as_ref(), &hr);
+        let approval = self.hook_approval(name, provider.as_ref(), &hr);
         let is_agy_idle_stop = hr.event == "Stop"
             && hr.status == Status::Idle
             && hr.detail != "USER_CANCELED"
