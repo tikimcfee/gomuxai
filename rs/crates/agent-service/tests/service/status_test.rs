@@ -441,7 +441,8 @@ fn test_spawn_briefs_the_agent() {
         "full path, /opt/gomux/agent",
         "[from NAME@HOST]",
         "agent send",
-        "agent spawn worker-review --backend claude",
+        "agent spawn worker-review --backend agy",
+        "agent roster pick",
         "agent cleanup worker-review",
     ] {
         assert!(data.contains(want), "instructions missing {want:?}");
