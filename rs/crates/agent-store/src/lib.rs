@@ -14,6 +14,7 @@ pub mod host_state;
 pub mod jobs;
 pub mod manage;
 pub mod models;
+pub mod roster;
 pub mod session_reports;
 pub mod sqlite;
 pub mod storage;
@@ -28,6 +29,8 @@ mod friction_test;
 #[cfg(test)]
 mod host_rename_test;
 #[cfg(test)]
+mod roster_test;
+#[cfg(test)]
 mod tree_test;
 
 pub use gotime::Time;
@@ -35,6 +38,7 @@ pub use host_rename::HostRenamed;
 pub use jobs::{Job, PromotedScript};
 pub use manage::{Pruned, Untracked, UsageRow};
 pub use models::*;
+pub use roster::{RosterEntry, RosterNote};
 pub use session_reports::SessionReport;
 pub use sqlite::{ClaimUpdate, Store, new_sqlite_storage};
 pub use storage::SQLiteStorage;
