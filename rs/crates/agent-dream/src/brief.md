@@ -57,7 +57,12 @@ memory and triages friction; fixing things is a later layer.
   digest's projects section): a path that no longer exists, a command or
   flag that's gone, a component that was replaced. Mark what is no longer
   true as history, with the commit that changed it, rather than deleting
-  it, unless it is plainly wrong; then the current fact leads.
+  it, unless it is plainly wrong; then the current fact leads. Start with
+  `agent dream memory check --dir <dir> --repo <project>` (a `--repo` for
+  each project the memory talks about): its stale-path, stale-make and
+  stale-agent findings are leads to verify with `git log` and the repo,
+  not edits to apply. A path in another project, or a command a memory
+  says is planned, may be right as it stands.
 - Prefer updating an existing memory to adding one. Keep scope, order,
   negations and exceptions when you merge entries. Remove a rule that
   recent sessions contradict, saying so in the diary with the sources.

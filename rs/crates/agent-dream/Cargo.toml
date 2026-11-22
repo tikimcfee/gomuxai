@@ -7,7 +7,8 @@ license.workspace = true
 publish.workspace = true
 
 # Dreaming (docs/DREAMING.md): the rules a dream works under, kept out of the CLI so they can be
-# tested alone. memory: memory files, the rewrite guard and the deterministic check. scrub:
+# tested alone. memory: memory files, the rewrite guard and the deterministic check. stale: what
+# a memory says about its repos that they no longer bear out (check --repo). scrub:
 # excerpts of transcripts made safe to show a dream. gather: what the next dream reviews.
 [dependencies]
 anyhow.workspace = true

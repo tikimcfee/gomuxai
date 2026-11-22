@@ -2,8 +2,26 @@ Check reads the memory directory and reports, changing nothing: files whose
 frontmatter or source lines don't parse, exact duplicates and near ones
 (Dice similarity of 0.8 or more on the words of entries 5 words or longer;
 titles and source lines aside), [[links]] naming no memory, MEMORY.md lines
-naming no file, and files MEMORY.md doesn't name. The report is sorted, so
-the same directory always gives the same one.
+naming no file, and files MEMORY.md doesn't name.
+
+With --repo (one per repo the memory is about), it also reports what the
+memory says that those repos no longer bear out, by file and line, from
+backticked text outside code fences:
+
+  stale-path   a path (it has a / or a file extension) that exists in no
+               repo: relative to a repo's root, or a tail of a path in
+               one; absolute only under a repo; bare names only for
+               source files; ~ paths, URLs, placeholders (<name>, ..., *),
+               paths a repo's git ignores, and paths no repo's top level
+               starts (origin/main) are not checked
+  stale-make   make <target> no repo's Makefile defines (unchecked when a
+               target is named by a variable, or with -C/-f)
+  stale-agent  agent <sub> this binary has no command for, and --flags
+               the command doesn't take: in its backticks, or in their own
+               on a line naming just that one command
+
+What it can't be sure of it leaves alone. The report is sorted, so the same
+directory always gives the same one.
 
 Usage:
   agent dream memory check [flags]
@@ -11,11 +29,13 @@ Usage:
 Examples:
   agent dream memory check
   agent dream memory check --dir ~/.claude/projects/-srv-app/memory --json
+  agent dream memory check --repo /srv/app --repo /srv/app-tools
 
 Flags:
-      --dir string   The memory directory (default: this project's)
-  -h, --help         help for check
-      --json         Print as JSON
+      --dir string         The memory directory (default: this project's)
+  -h, --help               help for check
+      --json               Print as JSON
+      --repo stringArray   Also check paths, make targets and agent commands against this repo; repeatable
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
