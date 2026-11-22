@@ -1,0 +1,36 @@
+Dreaming is opt-in by directory. Only sessions run in a scoped directory,
+or below one, are reviewed, with the memory directories, commits and
+handoff docs that go with them. The friction box is the host's whatever
+the scope: it is about agent itself. With nothing in scope, gather finds
+nothing and run starts nothing.
+
+  add <dir>      add a directory (made absolute from here)
+  remove <dir>   remove one
+  list           list them
+
+The scope is kept in this host's store (host state dream.scope).
+
+Usage:
+  agent dream scope [flags]
+  agent dream scope [command]
+
+Examples:
+  agent dream scope add ~/src/app
+  agent dream scope list
+  agent dream scope remove ~/src/app
+
+Available Commands:
+  add         Add a directory to the dream scope
+  remove      Remove a directory from the dream scope
+  list        List the directories in the dream scope
+
+Flags:
+  -h, --help   help for scope
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent dream scope [command] --help" for more information about a command.

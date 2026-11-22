@@ -90,6 +90,10 @@ manage track
 manage backup
 manage prune
 dream
+dream scope
+dream scope add
+dream scope remove
+dream scope list
 dream gather
 dream run
 dream list

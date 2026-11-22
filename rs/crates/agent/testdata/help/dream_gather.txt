@@ -1,18 +1,22 @@
 Gather lists what agent dream run would give the next dream, and records
 nothing:
 
-  sessions    no longer running, not untracked, not a dream agent's own
-              (subagents' sessions go with the session that started them);
-              at most 200, oldest first, the rest wait
+  sessions    run in the dream scope (agent dream scope), no longer
+              running, not untracked, not a dream agent's own (subagents'
+              sessions go with the session that started them), last written
+              after the floor; at most 200, oldest first, the rest wait
   friction    this host's open and accepted entries, and closed ones that
-              changed since a dream saw them
-  handoff     the docs agents' handoff state keys name
+              changed since a dream saw them, whatever the scope
+  handoff     the docs agents' handoff state keys name, in the scope
   memory      Claude Code's memory/ directory of each session's project
   commit      commits in the repos those sessions ran in, since the last
-              committed dream
+              committed dream (before any, since the floor)
 
-An item a committed dream reviewed is left out until it changes. With
-nothing new, the dream would be quiet: it says why.
+The floor is set by the first agent dream run, 7 days before it: nothing
+last written earlier is ever taken, unless it is written to again. Until
+then gather looks back 7 days. An item a committed dream reviewed is left
+out until it changes. With nothing new, the dream would be quiet; with
+nothing in scope, there is nothing to gather: it says which.
 
 Usage:
   agent dream gather [flags]

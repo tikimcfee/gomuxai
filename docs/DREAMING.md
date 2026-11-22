@@ -59,7 +59,22 @@ directory they wrote, with the fingerprint gather computes
 
 **built** (the rules in `agent-dream` `gather.rs`, the host's side in the
 CLI's `dream.rs`). `agent dream gather` lists what the next dream would
-get, without starting one. Sources:
+get, without starting one.
+
+Dreaming is opt-in by directory: `agent dream scope add|remove|list <dir>`
+keeps a list of absolute directories in the host's store (host state
+`dream.scope`, JSON). Only sessions whose cwd is one of them, or inside
+one, are evidence, and only their memory directories and commits come
+along; handoff docs must lie in the scope too. Friction stays host-wide:
+the box is about agent itself. With an empty scope, gather and run say
+nothing is in scope and how to add a directory, and run starts and
+records nothing.
+
+The first `agent dream run` records a floor, 7 days before it (host state
+`dream.floor`): a session last written before it is never evidence, for
+that dream or a later one, unless it is written to again. Until a run sets
+it, gather looks back 7 days. Commits before the first committed dream are
+taken from the floor on. Sources:
 
 - sessions that are no longer running (`agent sessions`' discovery), not
   untracked, not the dream agents' own. A session whose state can't be told
@@ -75,7 +90,7 @@ get, without starting one. Sources:
   every project with a finished session;
 - commits in the repos those sessions ran in (`git log` in each session's
   cwd, skipped when it isn't a repo or is gone), since the last committed
-  dream started, or 7 days back before any.
+  dream started, or the floor before any.
 
 ### The dream agent and its narrow toolset
 

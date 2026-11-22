@@ -39,14 +39,42 @@ fn file_friction(env: &TestEnv, uid: &str, summary: &str) -> Friction {
 fn dream_gather_run_list_and_show() {
     crate::require_termd!();
     let (mut env, home) = setup_sessions();
-    // A finished session with a memory directory beside it.
-    let old = claude_transcript(&home, "old", "/srv/shop", "Old work", Duration::from_secs(2 * 86400));
+    // A finished session with a memory directory beside it, in a project
+    // directory; another out of scope; another from before the floor.
+    let shop = env.dir.path().join("shop");
+    std::fs::create_dir_all(&shop).unwrap();
+    let shop = shop.to_string_lossy().into_owned();
+    let old = claude_transcript(&home, "old", &shop, "Old work", Duration::from_secs(2 * 86400));
+    claude_transcript(&home, "elsewhere", "/srv/personal", "Mine", Duration::from_secs(86400));
+    claude_transcript(&home, "ancient", &format!("{shop}/sub"), "Long ago", Duration::from_secs(30 * 86400));
     let memory = format!("{}/memory", std::path::Path::new(&old).parent().unwrap().display());
     std::fs::create_dir_all(&memory).unwrap();
     write_test_file(&format!("{memory}/MEMORY.md"), "- [a](a.md) — a\n");
     file_friction(&env, "local-1", "wait misses a turn");
 
+    // Nothing is in scope yet: gather finds nothing, run starts nothing.
+    let none = "Nothing is in scope for dreaming. agent dream scope add <dir> adds a project directory: sessions run in it or below it are reviewed, with their memory and commits.\n";
+    assert_eq!(run(&mut env, &["dream", "gather"]), none);
+    assert_eq!(run(&mut env, &["dream", "run"]), format!("{none}No dream started.\n"));
+    assert_eq!(run(&mut env, &["dream", "scope", "list"]), none);
+    assert!(env.store().list_dreams(0).unwrap().is_empty());
+    assert!(env.store().get_host_state("dream.floor").unwrap().is_none());
+
+    assert_eq!(
+        run(&mut env, &["dream", "scope", "add", &format!("{shop}/")]),
+        format!("Added {shop} to the dream scope.\n")
+    );
+    assert_eq!(
+        run(&mut env, &["dream", "scope", "add", &shop]),
+        format!("{shop} is already in the dream scope.\n")
+    );
+    let err = run_err(&mut env, &["dream", "scope", "add", "/no/such/dir"]);
+    assert!(err.contains("/no/such/dir isn't a directory"), "{err}");
+    assert_eq!(run(&mut env, &["dream", "scope", "list"]), format!("{shop}\n"));
+    assert_eq!(run(&mut env, &["dream", "scope", "list", "--json"]), format!("[\"{shop}\"]\n"));
+
     let out = run(&mut env, &["dream", "gather"]);
+    assert!(!out.contains("elsewhere") && !out.contains("ancient"), "out of scope, before the floor: {out}");
     assert!(
         out.starts_with("The next dream would review 1 session, 1 friction entry, 1 memory directory (3 new).\n"),
         "{out}"
@@ -90,6 +118,11 @@ fn dream_gather_run_list_and_show() {
         )
     );
     assert_eq!(env.store().get_dream(gone.id).unwrap().unwrap().status, DREAM_ABANDONED);
+    // That first run fixed the floor, 7 days back.
+    let floor = env.store().get_host_state("dream.floor").unwrap().expect("the floor");
+    let floor = chrono::DateTime::parse_from_rfc3339(&floor).unwrap();
+    let back = chrono::Utc::now().signed_duration_since(floor).num_hours();
+    assert!((7 * 24 - 1..=7 * 24).contains(&back), "floor {floor}, {back}h back");
 
     let out = run(&mut env, &["dream", "list"]);
     let lines: Vec<&str> = out.lines().collect();
@@ -113,6 +146,14 @@ fn dream_gather_run_list_and_show() {
     env.store().update_friction(&f).unwrap();
     let out = run(&mut env, &["dream", "gather"]);
     assert!(out.starts_with("The next dream would review 1 friction entry (1 new).\n"), "{out}");
+
+    assert_eq!(
+        run(&mut env, &["dream", "scope", "remove", &shop]),
+        format!("Removed {shop} from the dream scope.\n")
+    );
+    let err = run_err(&mut env, &["dream", "scope", "remove", &shop]);
+    assert!(err.contains("isn't in the dream scope"), "{err}");
+    assert_eq!(run(&mut env, &["dream", "gather"]), none, "friction alone starts nothing");
 }
 
 #[test]

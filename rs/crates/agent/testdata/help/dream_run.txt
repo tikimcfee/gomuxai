@@ -1,4 +1,6 @@
-Run starts a dream:
+Run starts a dream. With nothing in the dream scope (agent dream scope) it
+starts nothing and says so. The first run sets the floor, 7 days back:
+sessions last written before it are never taken.
 
 1. An open dream whose agent is gone (ended, or its record removed) is
    closed as abandoned, and the agents of dreams that have closed are

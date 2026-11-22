@@ -57,8 +57,14 @@ through agent dream's own verbs: it consolidates memory, triages friction
 (duplicates, links, accepting what is clearly real; it never resolves an
 entry as fixed), and keeps a diary.
 
+Dreaming is opt-in by directory: only sessions run in a directory of the
+dream scope (or below one) are reviewed, with their memory and commits;
+the friction box is the host's whatever the scope. The first dream looks
+back 7 days, and nothing older is ever taken unless it is written to again.
+
 People (or a timer) run these:
 
+  scope    choose the directories dreaming covers (add, remove, list)
   gather   what the next dream would review, without starting one
   run      start a dream: gather, record it, write its digest, spawn its agent
   list     the dreams so far
@@ -74,7 +80,8 @@ then: a session written to again or a friction entry voted on comes back.
 A dream that is abandoned, or whose agent goes away, leaves its items for
 the next one. With nothing new, a dream is recorded as quiet and no agent
 starts, until the last committed dream is 7 days old."#,
-    example: r#"  agent dream gather
+    example: r#"  agent dream scope add ~/src/app
+  agent dream gather
   agent dream run --dry-run
   agent dream run
   agent dream list
@@ -87,6 +94,7 @@ pub fn def() -> Def {
     Def::group(
         &DOC,
         vec![
+            scope_def(),
             gather_def(),
             run_def(),
             list_def(),
@@ -289,8 +297,43 @@ fn cursor(ctx: &Ctx) -> anyhow::Result<Cursor> {
             .last_committed_dream()?
             .map(|d| d.started_at.0.with_timezone(&Utc)),
         now: Utc::now(),
+        scope: read_scope(ctx)?,
+        floor: read_floor(ctx)?,
     })
 }
+
+/// The host state key holding the dream scope: a JSON list of absolute
+/// directories.
+pub const HOST_KEY_SCOPE: &str = "dream.scope";
+/// The host state key holding the floor (RFC 3339): sessions last written
+/// before it are never evidence. The first `dream run` records it.
+pub const HOST_KEY_FLOOR: &str = "dream.floor";
+
+fn read_scope(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
+    match ctx.store()?.get_host_state(HOST_KEY_SCOPE)? {
+        None => Ok(Vec::new()),
+        Some(v) if v.is_empty() => Ok(Vec::new()),
+        Some(v) => serde_json::from_str(&v)
+            .with_context(|| format!("reading the dream scope (host state {HOST_KEY_SCOPE})")),
+    }
+}
+
+fn write_scope(ctx: &Ctx, scope: &[String]) -> anyhow::Result<()> {
+    ctx.store()?
+        .set_host_state(HOST_KEY_SCOPE, &serde_json::to_string(scope)?)
+}
+
+fn read_floor(ctx: &Ctx) -> anyhow::Result<Option<DateTime<Utc>>> {
+    let Some(v) = ctx.store()?.get_host_state(HOST_KEY_FLOOR)? else {
+        return Ok(None);
+    };
+    let t = DateTime::parse_from_rfc3339(&v)
+        .with_context(|| format!("reading the dream floor (host state {HOST_KEY_FLOOR}: {v:?})"))?;
+    Ok(Some(t.with_timezone(&Utc)))
+}
+
+/// What gather and run say when the scope is empty.
+const NO_SCOPE: &str = "Nothing is in scope for dreaming. agent dream scope add <dir> adds a project directory: sessions run in it or below it are reviewed, with their memory and commits.\n";
 
 fn gather_host(ctx: &Ctx) -> anyhow::Result<Gathered> {
     let cur = cursor(ctx)?;
@@ -350,18 +393,22 @@ pub const GATHER: Doc = Doc {
     long: r#"Gather lists what agent dream run would give the next dream, and records
 nothing:
 
-  sessions    no longer running, not untracked, not a dream agent's own
-              (subagents' sessions go with the session that started them);
-              at most 200, oldest first, the rest wait
+  sessions    run in the dream scope (agent dream scope), no longer
+              running, not untracked, not a dream agent's own (subagents'
+              sessions go with the session that started them), last written
+              after the floor; at most 200, oldest first, the rest wait
   friction    this host's open and accepted entries, and closed ones that
-              changed since a dream saw them
-  handoff     the docs agents' handoff state keys name
+              changed since a dream saw them, whatever the scope
+  handoff     the docs agents' handoff state keys name, in the scope
   memory      Claude Code's memory/ directory of each session's project
   commit      commits in the repos those sessions ran in, since the last
-              committed dream
+              committed dream (before any, since the floor)
 
-An item a committed dream reviewed is left out until it changes. With
-nothing new, the dream would be quiet: it says why."#,
+The floor is set by the first agent dream run, 7 days before it: nothing
+last written earlier is ever taken, unless it is written to again. Until
+then gather looks back 7 days. An item a committed dream reviewed is left
+out until it changes. With nothing new, the dream would be quiet; with
+nothing in scope, there is nothing to gather: it says which."#,
     example: r#"  agent dream gather
   agent dream gather --json"#,
     args: ArgRule::None,
@@ -390,6 +437,9 @@ pub fn run_gather(ctx: &Ctx, args: &GatherArgs) -> anyhow::Result<()> {
 
 fn describe_gathered(g: &Gathered) -> String {
     let mut out = String::new();
+    if g.no_scope {
+        return NO_SCOPE.to_string();
+    }
     if g.quiet {
         let _ = writeln!(out, "Nothing for a dream: {}.", g.reason);
         return out;
@@ -415,12 +465,143 @@ fn describe_gathered(g: &Gathered) -> String {
     out
 }
 
+// `agent dream scope`
+
+pub const SCOPE: Doc = Doc {
+    use_line: "scope",
+    short: "Choose the project directories dreaming covers",
+    long: r#"Dreaming is opt-in by directory. Only sessions run in a scoped directory,
+or below one, are reviewed, with the memory directories, commits and
+handoff docs that go with them. The friction box is the host's whatever
+the scope: it is about agent itself. With nothing in scope, gather finds
+nothing and run starts nothing.
+
+  add <dir>      add a directory (made absolute from here)
+  remove <dir>   remove one
+  list           list them
+
+The scope is kept in this host's store (host state dream.scope)."#,
+    example: r#"  agent dream scope add ~/src/app
+  agent dream scope list
+  agent dream scope remove ~/src/app"#,
+    args: ArgRule::Any,
+    ..Doc::DEFAULT
+};
+
+pub fn scope_def() -> Def {
+    Def::group(&SCOPE, vec![scope_add_def(), scope_remove_def(), scope_list_def()])
+}
+
+/// dir made absolute (from the current directory) and cleaned, as sessions
+/// record their cwd: symlinks are left as they are.
+fn scope_dir(dir: &str) -> anyhow::Result<String> {
+    let abs = std::path::absolute(dir).with_context(|| format!("making {dir} absolute"))?;
+    let s = agent_base::gostd::filepath::clean(&abs.to_string_lossy());
+    Ok(s)
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ScopeDirArgs {
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+pub const SCOPE_ADD: Doc = Doc {
+    use_line: "add <dir>",
+    short: "Add a directory to the dream scope",
+    long: r#"Add puts a directory in the dream scope: sessions run in it or below it are
+reviewed from the next dream on (back to the floor the first dream set,
+7 days before it)."#,
+    example: "  agent dream scope add ~/src/app",
+    args: ArgRule::Exact(1),
+    ..Doc::DEFAULT
+};
+
+pub fn scope_add_def() -> Def {
+    leaf!(SCOPE_ADD, ScopeDirArgs, run_scope_add)
+}
+
+pub fn run_scope_add(ctx: &Ctx, args: &ScopeDirArgs) -> anyhow::Result<()> {
+    let dir = scope_dir(&args.args[0])?;
+    if !Path::new(&dir).is_dir() {
+        anyhow::bail!("{dir} isn't a directory");
+    }
+    let mut scope = read_scope(ctx)?;
+    if scope.contains(&dir) {
+        return ctx.write_out(&format!("{dir} is already in the dream scope.\n"));
+    }
+    scope.push(dir.clone());
+    scope.sort();
+    write_scope(ctx, &scope)?;
+    ctx.write_out(&format!("Added {dir} to the dream scope.\n"))
+}
+
+pub const SCOPE_REMOVE: Doc = Doc {
+    use_line: "remove <dir>",
+    short: "Remove a directory from the dream scope",
+    long: r#"Remove takes a directory out of the dream scope: later dreams leave its
+sessions out. What earlier dreams wrote stays."#,
+    example: "  agent dream scope remove ~/src/app",
+    args: ArgRule::Exact(1),
+    ..Doc::DEFAULT
+};
+
+pub fn scope_remove_def() -> Def {
+    leaf!(SCOPE_REMOVE, ScopeDirArgs, run_scope_remove)
+}
+
+pub fn run_scope_remove(ctx: &Ctx, args: &ScopeDirArgs) -> anyhow::Result<()> {
+    let dir = scope_dir(&args.args[0])?;
+    let mut scope = read_scope(ctx)?;
+    let before = scope.len();
+    scope.retain(|d| *d != dir);
+    if scope.len() == before {
+        anyhow::bail!("{dir} isn't in the dream scope (agent dream scope list shows it)");
+    }
+    write_scope(ctx, &scope)?;
+    ctx.write_out(&format!("Removed {dir} from the dream scope.\n"))
+}
+
+pub const SCOPE_LIST: Doc = Doc {
+    use_line: "list",
+    short: "List the directories in the dream scope",
+    long: "List prints the directories in the dream scope, one per line.",
+    example: "  agent dream scope list\n  agent dream scope list --json",
+    args: ArgRule::None,
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ScopeListArgs {
+    #[arg(long = "json", help = "Print as JSON")]
+    pub json: bool,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+pub fn scope_list_def() -> Def {
+    leaf!(SCOPE_LIST, ScopeListArgs, run_scope_list)
+}
+
+pub fn run_scope_list(ctx: &Ctx, args: &ScopeListArgs) -> anyhow::Result<()> {
+    let scope = read_scope(ctx)?;
+    if args.json {
+        return ctx.write_out(&format!("{}\n", gojson::marshal(&scope)?));
+    }
+    if scope.is_empty() {
+        return ctx.write_out(NO_SCOPE);
+    }
+    ctx.write_out(&scope.iter().map(|d| format!("{d}\n")).collect::<String>())
+}
+
 // `agent dream run`
 
 pub const RUN: Doc = Doc {
     use_line: "run",
     short: "Start a dream: gather, record it, and spawn its agent",
-    long: r#"Run starts a dream:
+    long: r#"Run starts a dream. With nothing in the dream scope (agent dream scope) it
+starts nothing and says so. The first run sets the floor, 7 days back:
+sessions last written before it are never taken.
 
 1. An open dream whose agent is gone (ended, or its record removed) is
    closed as abandoned, and the agents of dreams that have closed are
@@ -472,7 +653,20 @@ fn agent_alive(ctx: &Ctx, name: &str) -> anyhow::Result<Option<String>> {
 
 pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
     let store = ctx.store()?;
+    if read_scope(ctx)?.is_empty() {
+        ctx.write_out(NO_SCOPE)?;
+        return ctx.write_out("No dream started.\n");
+    }
     let would = if args.dry_run { "Would close" } else { "Closed" };
+    // The first run fixes the floor: nothing last written before it is ever
+    // evidence, for this dream or a later one.
+    if !args.dry_run && read_floor(ctx)?.is_none() {
+        let floor = Utc::now() - gather::DUE_AFTER;
+        store.set_host_state(
+            HOST_KEY_FLOOR,
+            &floor.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        )?;
+    }
 
     // Open dreams: abandon those whose agent is gone; leave one at work.
     for d in store.open_dreams()? {

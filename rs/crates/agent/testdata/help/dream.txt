@@ -5,8 +5,14 @@ through agent dream's own verbs: it consolidates memory, triages friction
 (duplicates, links, accepting what is clearly real; it never resolves an
 entry as fixed), and keeps a diary.
 
+Dreaming is opt-in by directory: only sessions run in a directory of the
+dream scope (or below one) are reviewed, with their memory and commits;
+the friction box is the host's whatever the scope. The first dream looks
+back 7 days, and nothing older is ever taken unless it is written to again.
+
 People (or a timer) run these:
 
+  scope    choose the directories dreaming covers (add, remove, list)
   gather   what the next dream would review, without starting one
   run      start a dream: gather, record it, write its digest, spawn its agent
   list     the dreams so far
@@ -28,6 +34,7 @@ Usage:
   agent dream [command]
 
 Examples:
+  agent dream scope add ~/src/app
   agent dream gather
   agent dream run --dry-run
   agent dream run
@@ -35,6 +42,7 @@ Examples:
   agent dream show 3
 
 Available Commands:
+  scope       Choose the project directories dreaming covers
   gather      List what the next dream would review, without starting one
   run         Start a dream: gather, record it, and spawn its agent
   list        List the dreams so far
