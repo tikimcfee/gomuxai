@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use agent_manager_core::agents::{self, AgentLine};
 use agent_manager_core::commands::Offer;
+use agent_manager_core::data::DataLine;
 use agent_manager_core::friction::{self, FrictionLine};
 use agent_manager_core::history;
 use agent_manager_core::runner::{self, Output, Source};
@@ -265,6 +266,102 @@ script_mod! {
         }
     }
 
+    // The data page: a section per host (header, then headings and name/value rows with
+    // a bar for each value's share of its group's largest), folded by pressing the header.
+    mod.widgets.DataListBase = #(DataList::register_widget(vm))
+    mod.widgets.DataList = set_type_default() do mod.widgets.DataListBase{
+        width: Fill
+        height: Fill
+        flow: Down
+        list := PortalList{
+            width: Fill
+            height: Fill
+            scan: [@Host, @Heading, @Item, @Note, @Empty]
+            Empty := NoteItem{}
+            Host := View{
+                width: Fill
+                height: Fit
+                padding: Inset{top: 10}
+                row := Row{
+                    height: 32
+                    spacing: 8
+                    show_bg: true
+                    draw_bg +: {color: theme.color_surface_container}
+                    fold := Label{
+                        width: 14
+                        draw_text +: {
+                            color: theme.color_text_meta
+                            text_style: theme.font_bold{font_size: 10}
+                        }
+                    }
+                    host := Label{
+                        draw_text +: {
+                            color: theme.color_text
+                            text_style: theme.font_bold{font_size: 11}
+                        }
+                    }
+                    host_note := Meta{
+                        width: Fill
+                        max_lines: 1
+                        text_overflow: TextOverflow.Ellipsis
+                    }
+                    here := Meta{width: Fit}
+                }
+            }
+            Heading := View{
+                width: Fill
+                height: 28
+                flow: Right
+                spacing: 10
+                padding: Inset{left: 30 right: 8 top: 8}
+                align: Align{y: 0.5}
+                title := Label{
+                    width: 150
+                    draw_text +: {
+                        color: theme.color_text
+                        text_style: theme.font_bold{font_size: 9.5}
+                    }
+                }
+                summary := Meta{
+                    width: Fill
+                    max_lines: 1
+                    text_overflow: TextOverflow.Ellipsis
+                }
+            }
+            Item := View{
+                width: Fill
+                height: 20
+                flow: Right
+                spacing: 10
+                padding: Inset{left: 46 right: 8}
+                align: Align{y: 0.5}
+                name := Cell{width: 134}
+                value := Cell{
+                    width: 84
+                    draw_text +: {text_style: theme.font_code{font_size: 8.5}}
+                }
+                well := SolidView{
+                    width: 120
+                    height: 8
+                    flow: Right
+                    show_bg: true
+                    draw_bg +: {color: theme.color_surface_container}
+                    bar := SolidView{
+                        width: 0
+                        height: Fill
+                        show_bg: true
+                        draw_bg +: {color: #x6cb6ff80}
+                    }
+                }
+                detail := Cell{
+                    width: Fill
+                    draw_text +: {color: theme.color_text_meta}
+                }
+            }
+            Note := NoteItem{padding: Inset{left: 46 right: 8}}
+        }
+    }
+
     startup() do #(App::script_component(vm)){
         ui: Root{
             main_window := Window{
@@ -421,12 +518,7 @@ script_mod! {
                             prune := Button{text: "Prune…"}
                             data_why := Meta{}
                         }
-                        ScrollYView{
-                            width: Fill
-                            height: Fill
-                            padding: Inset{left: 12 right: 12 top: 4 bottom: 12}
-                            data_text := Mono{}
-                        }
+                        data_list := mod.widgets.DataList{}
                     }
 
                     status_bar := BgBar{
@@ -826,6 +918,144 @@ impl Widget for HistoryList {
     }
 }
 
+/// The data page's list. Which hosts are folded is the page's own state: pressing a host's
+/// header toggles it here, and the lines are worked out again on each draw.
+#[derive(Script, ScriptHook, Widget)]
+pub struct DataList {
+    #[deref]
+    view: View,
+    #[rust]
+    folded: std::collections::BTreeSet<String>,
+    /// The lines last drawn, to map a pressed item back to its host.
+    #[rust]
+    lines: Vec<DataLine>,
+}
+
+/// The width of a value's bar at a full share.
+const DATA_BAR: f64 = 120.0;
+
+impl Widget for DataList {
+    fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        let now = Utc::now();
+        while let Some(step) = self.view.draw_walk(cx, scope, walk).step() {
+            let Some(mut list) = step.borrow_mut::<PortalList>() else {
+                continue;
+            };
+            let Some(m) = scope.data.get::<Model>() else {
+                continue;
+            };
+            self.lines = data::lines(&m.view, now, &self.folded);
+            if self.lines.is_empty() {
+                list.set_item_range(cx, 0, 1);
+                while let Some(i) = list.next_visible_item(cx) {
+                    let item = list.item(cx, i, id!(Empty));
+                    let text = if m.read_at.is_none() {
+                        "reading…"
+                    } else {
+                        "no host answered"
+                    };
+                    item.label(cx, ids!(note)).set_text(cx, text);
+                    item.draw_all_unscoped(cx);
+                }
+                continue;
+            }
+            list.set_item_range(cx, 0, self.lines.len());
+            while let Some(i) = list.next_visible_item(cx) {
+                let Some(line) = self.lines.get(i) else {
+                    continue;
+                };
+                match line {
+                    DataLine::Host {
+                        name,
+                        note,
+                        reachable,
+                        folded,
+                        local,
+                        ..
+                    } => {
+                        let item = list.item(cx, i, id!(Host));
+                        item.label(cx, ids!(fold))
+                            .set_text(cx, if *folded { "▸" } else { "▾" });
+                        item.label(cx, ids!(host)).set_text(cx, name);
+                        let n = item.label(cx, ids!(host_note));
+                        n.set_text(cx, note);
+                        set_color(cx, n, if *reachable { META } else { BAD });
+                        item.label(cx, ids!(here)).set_text(
+                            cx,
+                            if *local {
+                                "this host: Back up and Prune act here"
+                            } else {
+                                ""
+                            },
+                        );
+                        item.draw_all_unscoped(cx);
+                    }
+                    DataLine::Heading { title, summary } => {
+                        let item = list.item(cx, i, id!(Heading));
+                        item.label(cx, ids!(title)).set_text(cx, title);
+                        item.label(cx, ids!(summary)).set_text(cx, summary);
+                        item.draw_all_unscoped(cx);
+                    }
+                    DataLine::Item {
+                        name,
+                        value,
+                        detail,
+                        share,
+                        top,
+                    } => {
+                        let item = list.item(cx, i, id!(Item));
+                        item.label(cx, ids!(name)).set_text(cx, name);
+                        let v = item.label(cx, ids!(value));
+                        v.set_text(cx, &format!("{value:>10}"));
+                        set_color(cx, v, if *top { WARN } else { TEXT });
+                        // No share, no bar: the well stays, unpainted, to keep the column.
+                        let well = item.widget(cx, ids!(well));
+                        set_bg(cx, &well, if share.is_some() { 0x5b5b5bff } else { CLEAR });
+                        let share = share.unwrap_or(0.0);
+                        let mut bar = item.widget(cx, ids!(bar));
+                        // A value above zero shows at least a sliver.
+                        let w = if share > 0.0 {
+                            (f64::from(share) * DATA_BAR).max(2.0)
+                        } else {
+                            0.0
+                        };
+                        script_apply_eval!(cx, bar, { width: #(w) });
+                        set_bg(cx, &bar, if *top { 0xf2b84bc0 } else { 0x6cb6ff80 });
+                        item.label(cx, ids!(detail)).set_text(cx, detail);
+                        item.draw_all_unscoped(cx);
+                    }
+                    DataLine::Note { text } => {
+                        let item = list.item(cx, i, id!(Note));
+                        item.label(cx, ids!(note)).set_text(cx, text);
+                        item.draw_all_unscoped(cx);
+                    }
+                }
+            }
+        }
+        DrawStep::done()
+    }
+
+    fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        let actions = cx.capture_actions(|cx| self.view.handle_event(cx, event, scope));
+        let list = self.view.portal_list(cx, ids!(list));
+        for (i, item) in list.items_with_actions(&actions) {
+            let pressed = item
+                .view(cx, ids!(row))
+                .finger_up(&actions)
+                .is_some_and(|e| e.is_over);
+            if let (true, Some(DataLine::Host { name, .. })) = (pressed, self.lines.get(i))
+                && !self.folded.remove(name)
+            {
+                self.folded.insert(name.clone());
+            }
+            if pressed {
+                self.view.redraw(cx);
+            }
+        }
+        cx.extend_actions(actions);
+    }
+}
+
 // --- the app --------------------------------------------------------------------------
 
 #[derive(Script, ScriptHook)]
@@ -1055,14 +1285,8 @@ impl App {
             &format!("{} of {total} commands", m.history_lines.len()),
         );
 
-        // Data.
-        let mut text = String::new();
-        for h in &m.view.hosts {
-            text.push_str(&format!("── {} ──\n", h.host));
-            text.push_str(&data::text(h, now));
-            text.push('\n');
-        }
-        ui.label(cx, ids!(data_text)).set_text(cx, &text);
+        // Data: the list draws its lines from the model; this sets the buttons.
+        ui.widget(cx, ids!(data_list)).redraw(cx);
         let backup = agent_manager_core::commands::backup(&m.view);
         let busy = m.running.is_some();
         ui.button(cx, ids!(backup))
