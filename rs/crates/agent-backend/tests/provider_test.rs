@@ -188,6 +188,9 @@ fn test_with_effort() {
             shell_quote(namedagents::CLAUDE_SPAWN_SETTINGS)
         )
     );
+    // claude takes a model and --effort as they are; agy's model ids carry
+    // the effort.
+    assert_eq!(ec.model_at_effort("opus", "high"), None);
     // aider takes a model but no effort.
     assert!(
         namedagents::new_aider_backend()
@@ -211,6 +214,13 @@ fn test_with_effort() {
     assert!(
         before.ends_with(" --effort 'xhigh'") && !after.contains("--effort"),
         "agy: {launch}"
+    );
+    assert_eq!(
+        agy.as_effort_chooser()
+            .unwrap()
+            .model_at_effort("gemini-4-carbon", "high")
+            .as_deref(),
+        Some("gemini-4-carbon-high")
     );
 }
 

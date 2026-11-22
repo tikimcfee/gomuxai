@@ -236,7 +236,7 @@ finds:
 | `PromptFlagProvider`: first message on the command line | — | `-i '<task>'` | — |
 | `PromptHandover`: a long message typed as a short line, its text handed over by `UserPromptSubmit` | yes | — | — |
 | `ModelChooser`: `spawn --model` | `--model '<model>'` | `--model '<model>'`, ahead of the exit wrapper | `--model '<model>'` |
-| `EffortChooser`: `spawn --effort` (one of `agent_roster::EFFORTS`) | `--effort '<level>'` | `--effort '<level>'`, ahead of the exit wrapper | — |
+| `EffortChooser`: `spawn --effort` (one of `agent_roster::EFFORTS`) | `--effort '<level>'` | `--effort '<level>'`, ahead of the exit wrapper; with a model, `--model '<model>-<level>'` instead (`model_at_effort`: agy's variant ids carry the effort) | — |
 | `SessionNamer`: names the CLI session after the agent | `--name '<agent>'` | — | — |
 | `TrustPrompter`: reads and answers the trust prompt | moves to "Yes, I trust this folder" first (the default is "No, exit") | Enter ("Yes" is the default) | — |
 | `NativeStatusProvider` | Claude Code's session registry | — | — |
