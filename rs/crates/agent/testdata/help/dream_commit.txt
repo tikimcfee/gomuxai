@@ -1,0 +1,18 @@
+Commit closes the dream you dream: every item it was given counts as
+reviewed, at the version it had, and the next dream leaves it out until it
+changes. Only a dream's own agent runs it.
+
+Usage:
+  agent dream commit [flags]
+
+Examples:
+  agent dream commit
+
+Flags:
+  -h, --help   help for commit
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

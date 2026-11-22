@@ -119,7 +119,7 @@ macro_rules! commands {
 commands! {
     // revive is new in the Rust build, like run below.
     agents "Agents:" { spawn adopt resume revive attach list cleanup export sessions }
-    fleet "Fleet:" { fleet focus template manage }
+    fleet "Fleet:" { fleet focus template manage dream }
     messages "Messages:" { send queue deliver watch }
     status "Status and waiting:" {
         status statuses wait approve [approve::deny_def] capture logs transcript events report

@@ -1,0 +1,31 @@
+Run starts a dream:
+
+1. An open dream whose agent is gone (ended, or its record removed) is
+   closed as abandoned, and the agents of dreams that have closed are
+   cleaned up. If a dream's agent is still at work, run starts nothing.
+2. It gathers (see agent dream gather). With nothing new, it records a
+   quiet dream, starts no agent, and says so.
+3. Otherwise it records the dream and its items, writes the digest
+   (.gomuxai/dreams/<id>/digest.md: each item with its key, one line, and
+   how to read it), and spawns a Claude agent dream-<id> with the dream's
+   brief, its state key dream set to the id. The agent works in
+   .gomuxai/dreams, whose workspace trust run answers.
+
+--dry-run says what it would do and changes nothing.
+
+Usage:
+  agent dream run [flags]
+
+Examples:
+  agent dream run --dry-run
+  agent dream run
+
+Flags:
+      --dry-run   Say what it would do, and change nothing
+  -h, --help      help for run
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

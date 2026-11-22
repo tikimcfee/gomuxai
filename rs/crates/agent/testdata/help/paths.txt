@@ -89,3 +89,16 @@ manage untrack
 manage track
 manage backup
 manage prune
+dream
+dream gather
+dream run
+dream list
+dream show
+dream note
+dream commit
+dream abandon
+dream friction
+dream friction dup
+dream friction link
+dream friction accept
+dream limitation

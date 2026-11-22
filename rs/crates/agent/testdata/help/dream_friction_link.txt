@@ -1,0 +1,18 @@
+Link joins an entry here to the same problem filed on another host (agent
+friction link): both stay open, and resolving either resolves both.
+
+Usage:
+  agent dream friction link <id> <id@host> [flags]
+
+Examples:
+  agent dream friction link 12 34@hub
+
+Flags:
+  -h, --help          help for link
+      --note string   Why they're the same problem
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
