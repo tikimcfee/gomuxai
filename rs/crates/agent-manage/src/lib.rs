@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 
 pub use agent_transcript::usage::{Tokens, Usage};
 
+pub mod llm_usage;
+pub use llm_usage::LlmUsage;
+
 /// What a host is asked for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
@@ -97,6 +100,10 @@ pub struct HostView {
     pub history: Vec<HistoryRow>,
     #[serde(default)]
     pub data: DataReport,
+    /// Its LLM plan limits as llm-exp's usage widget shows them, from the snapshot llm-exp
+    /// caches; `None` where there is no such file (or the host's `agent` is older).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_usage: Option<LlmUsage>,
 }
 
 /// A recorded agent.

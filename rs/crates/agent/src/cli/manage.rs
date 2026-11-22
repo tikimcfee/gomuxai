@@ -13,8 +13,8 @@ use agent_bus::{Context, FleetAgent, RpcClient};
 use agent_discovery::{self as discovery, Query, Session, sessions::Liveness};
 use agent_fleet::fleet;
 use agent_manage::{
-    AgentRow, Backup, DataReport, Facts, Footprint, FrictionRow, HistoryRow, HostView, Request, SessionRow,
-    SessionState, Tokens, View, classify, human_bytes, human_tokens, is_stale,
+    AgentRow, Backup, DataReport, Facts, Footprint, FrictionRow, HistoryRow, HostView, LlmUsage, Request,
+    SessionRow, SessionState, Tokens, View, classify, human_bytes, human_tokens, is_stale, llm_usage,
 };
 use agent_store::{CommandFilter, FrictionFilter, Time, Untracked, UsageRow};
 use agent_transcript::UsageScan;
@@ -98,6 +98,13 @@ later view reads only what a transcript gained. --usage-budget limits how
 long one view spends counting (sessions it didn't reach come without
 usage, and "usage_pending" says how many); a peer is always asked with a
 budget of 2s, so its first answers fill in over a few views.
+
+A host's LLM plan limits ("llm_usage": the share of each Claude, GLM,
+Kimi Code and agy limit used and when it resets, Claude's extra-usage
+credits, OpenRouter spend) are llm-exp's, as its usage widget shows them:
+view reads the snapshot llm-exp caches in
+~/.cache/llm-exp/usage-snapshot.json, as it is, and asks no provider
+itself. A host without that file has none.
 
 Sessions a person stopped tracking (agent manage untrack) are left out
 unless --untracked. --host shows one host; --local this host only. A peer
@@ -308,7 +315,20 @@ pub(crate) fn local_host(ctx: &Ctx, req: &Request) -> anyhow::Result<HostView> {
         friction: friction_rows(ctx)?,
         history: history_rows(ctx, req.history)?,
         data: data_report(ctx, &recorded, footprint, untracked.len() as i64)?,
+        llm_usage: read_llm_usage(),
     })
+}
+
+/// The snapshot llm-exp caches for its usage widget, when this host has one. Only the file
+/// is read: no provider is asked and no credential touched (`agent_manage::llm_usage`).
+fn read_llm_usage() -> Option<LlmUsage> {
+    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty())?;
+    let path = filepath::join(&[&home, llm_usage::SNAPSHOT_PATH]);
+    match std::fs::read(&path) {
+        Ok(data) => Some(LlmUsage::parse(&path, &data)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(LlmUsage::failed(&path, &format!("reading it: {e}"))),
+    }
 }
 
 fn flatten_agents(tree: &[FleetAgent], adopted: &HashSet<&str>, out: &mut Vec<AgentRow>) {
@@ -748,6 +768,17 @@ pub(crate) fn render(view: &View) -> String {
             None => {
                 let _ = writeln!(out, "  backups:  none (agent manage backup)");
             }
+        }
+        if let Some(u) = &h.llm_usage {
+            let mut limits = u.summary();
+            match agent_manage::human_age(&u.captured_at, Utc::now()).as_str() {
+                "" => {}
+                "now" => limits.push_str(" (fetched just now)"),
+                age => {
+                    let _ = write!(limits, " (fetched {age} ago)");
+                }
+            }
+            let _ = writeln!(out, "  limits:   {limits}");
         }
     }
     out
