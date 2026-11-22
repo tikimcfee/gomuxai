@@ -39,6 +39,9 @@ pub mod remote_ops;
 pub mod root;
 
 mod bus_identity;
+// `agent dream memory`; its def() is wired under `agent dream` when that group lands.
+#[allow(dead_code)]
+mod dream_memory;
 mod friction_links;
 mod orient;
 mod resume_all;
