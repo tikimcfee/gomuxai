@@ -331,6 +331,26 @@ impl Model {
         }
     }
 
+    /// Reads the selected agent's logs when nothing has (a selection restored at start).
+    pub fn load_selected_logs(&mut self) -> Effect {
+        let Some(key) = self.selected_agent.clone() else {
+            return Effect::None;
+        };
+        if self.agent_logs.as_ref().is_some_and(|(k, _)| *k == key) {
+            return Effect::None;
+        }
+        let Some((h, a)) = self.agent() else {
+            return Effect::None;
+        };
+        let line = self.agent_lines.iter().position(
+            |l| matches!(l, AgentLine::Agent { host, agent, .. } if (*host, *agent) == (h, a)),
+        );
+        match line {
+            Some(i) => self.select_agent_line(i),
+            None => Effect::None,
+        }
+    }
+
     pub fn agent_offers(&self) -> Option<commands::AgentOffers> {
         let (h, a) = self.agent()?;
         Some(commands::agent_offers(&self.view, h, a))

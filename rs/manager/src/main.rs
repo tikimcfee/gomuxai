@@ -13,6 +13,7 @@ use agent_manager_core::friction::{self, FrictionLine};
 use agent_manager_core::history;
 use agent_manager_core::layout::Section;
 use agent_manager_core::runner::{self, Output, Source};
+use agent_manager_core::saved::{self, Saved, Split, WindowGeom};
 use agent_manager_core::sessions;
 use agent_manager_core::state::{AUTO_REFRESH_SECS, Dialog, Effect, Job, Model, Page, SortList};
 use agent_manager_core::usage::{self, Level, UsageLine};
@@ -1807,6 +1808,22 @@ pub struct App {
     /// Each sorted list's "remove a column…" labels, in `sort_lists()` order.
     #[rust]
     sort_remove_labels: [Vec<String>; 4],
+    /// What survives a restart: where it is kept, and what was last written and seen.
+    #[rust]
+    keep: Keep,
+}
+
+/// The saved state's bookkeeping (see `agent_manager_core::saved`).
+#[derive(Default)]
+struct Keep {
+    /// The file; None keeps nothing (no home, or the fixture without `AGENT_MANAGER_STATE`).
+    path: Option<std::path::PathBuf>,
+    /// What the file holds now.
+    written: Option<Saved>,
+    /// What the last tick saw: a change is written once a tick finds it unchanged.
+    seen: Option<Saved>,
+    /// The selected agent's logs are read once the first view is in.
+    logs_pending: bool,
 }
 
 impl App {
@@ -2292,9 +2309,143 @@ impl App {
     }
 }
 
+// --- state kept across a restart --------------------------------------------------------
+
+impl App {
+    /// What would be saved now: the model's part, and what only the widgets hold.
+    fn snapshot(&mut self, cx: &mut Cx) -> Saved {
+        let mut s = Saved::of(&self.model);
+        for (page, split, _, _, _) in details() {
+            if let Some(a) = self.ui.splitter(cx, split).align() {
+                let a = match a {
+                    SplitterAlign::FromA(v) => Split::FromA(v),
+                    SplitterAlign::FromB(v) => Split::FromB(v),
+                    SplitterAlign::Weighted(v) => Split::Weighted(v),
+                };
+                s.splits.insert(saved::page_name(page).to_string(), a);
+            }
+        }
+        if let Some(d) = self.ui.widget(cx, ids!(data_list)).borrow::<DataList>() {
+            s.data_folded = d.folded.clone();
+        }
+        let w = self.ui.window(cx, ids!(main_window));
+        let (size, at) = (w.get_inner_size(cx), w.get_position(cx));
+        let g = WindowGeom {
+            width: size.x,
+            height: size.y,
+            x: at.x,
+            y: at.y,
+        };
+        // A window not there (yet, or any more) keeps the last one seen.
+        s.window = if g.usable() {
+            Some(g)
+        } else {
+            self.keep.seen.as_ref().and_then(|s| s.window)
+        };
+        s
+    }
+
+    /// Writes the state when it differs from the file: at once with `now`, else once it
+    /// has stayed the same for a tick (a drag or a typed filter settles first).
+    fn keep_state(&mut self, cx: &mut Cx, now: bool) {
+        if self.keep.path.is_none() {
+            return;
+        }
+        let s = self.snapshot(cx);
+        let settled = now || self.keep.seen.as_ref() == Some(&s);
+        self.keep.seen = Some(s.clone());
+        if settled
+            && self.keep.written.as_ref() != Some(&s)
+            && let Some(path) = &self.keep.path
+        {
+            match saved::save(path, &s) {
+                Ok(()) => self.keep.written = Some(s),
+                Err(e) => {
+                    log!(
+                        "agent-manager: can't save its state to {}: {e}",
+                        path.display()
+                    );
+                    self.keep.path = None;
+                }
+            }
+        }
+    }
+
+    /// At start: the saved state into the model and the widgets.
+    fn restore_state(&mut self, cx: &mut Cx) {
+        self.keep.path = saved::path();
+        let Some(s) = self.keep.path.as_deref().and_then(saved::load) else {
+            return;
+        };
+        s.apply(&mut self.model);
+        self.keep.logs_pending = self.model.selected_agent.is_some();
+        // The window isn't made yet: this is the size and place it is made with.
+        if let Some(g) = s.window.filter(WindowGeom::usable) {
+            self.ui.window(cx, ids!(main_window)).configure_window(
+                cx,
+                dvec2(g.width, g.height),
+                dvec2(g.x, g.y),
+                false,
+                "agent manager".to_string(),
+            );
+        }
+        self.restore_widgets(cx, &s);
+        self.keep.written = Some(s.clone());
+        self.keep.seen = Some(s);
+    }
+
+    /// What only the widgets hold (splitters, the Data page's folds) and the inputs the
+    /// model's filters came from. Also after a hot reload, which rebuilds the widgets.
+    fn restore_widgets(&mut self, cx: &mut Cx, s: &Saved) {
+        for (page, split, _, _, _) in details() {
+            if let Some(a) = s.splits.get(saved::page_name(page)) {
+                let a = match *a {
+                    Split::FromA(v) => SplitterAlign::FromA(v),
+                    Split::FromB(v) => SplitterAlign::FromB(v),
+                    Split::Weighted(v) => SplitterAlign::Weighted(v),
+                };
+                self.ui.splitter(cx, split).set_align(cx, a);
+            }
+        }
+        if let Some(mut d) = self.ui.widget(cx, ids!(data_list)).borrow_mut::<DataList>() {
+            d.folded = s.data_folded.clone();
+        }
+        let m = &self.model;
+        let ui = &self.ui;
+        ui.text_input(cx, ids!(filter_text))
+            .set_text(cx, &m.filter.text);
+        ui.text_input(cx, ids!(history_text))
+            .set_text(cx, &m.history_text);
+        let state = sessions::state_choices()
+            .iter()
+            .position(|c| c.1 == m.filter.state)
+            .unwrap_or(0);
+        ui.drop_down(cx, ids!(state_dd))
+            .set_selected_item(cx, state);
+        for (id, on) in [
+            (ids!(stale_cb), m.filter.stale_only),
+            (ids!(untracked_cb), m.filter.show_untracked),
+            (ids!(failed_cb), m.history_failed_only),
+        ] {
+            ui.check_box(cx, id).set_active(cx, on, Animate::No);
+        }
+    }
+
+    /// The live build's launcher asked for a relaunch (`tools/live push` rebuilt it): save
+    /// and exit with the status that makes it start the new build.
+    fn relaunch_if_asked(&mut self, cx: &mut Cx) {
+        if saved::relaunch_requested() {
+            self.keep_state(cx, true);
+            log!("agent-manager: relaunching for a new build");
+            std::process::exit(saved::RELAUNCH_EXIT);
+        }
+    }
+}
+
 impl MatchEvent for App {
     fn handle_startup(&mut self, cx: &mut Cx) {
         self.model = Model::new();
+        self.restore_state(cx);
         self.source = Some(Source::from_env());
         self.tick = cx.start_interval(1.0);
         self.refresh(cx);
@@ -2306,6 +2457,10 @@ impl MatchEvent for App {
             match action.downcast_ref::<Msg>() {
                 Some(Msg::View(Ok(v))) => {
                     self.model.set_view(v.clone(), Utc::now());
+                    if std::mem::take(&mut self.keep.logs_pending) {
+                        let effect = self.model.load_selected_logs();
+                        self.apply(cx, effect);
+                    }
                     self.sync(cx);
                 }
                 Some(Msg::View(Err(e))) => {
@@ -2528,6 +2683,8 @@ impl AppMain for App {
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
         if self.tick.is_event(event).is_some() {
+            self.relaunch_if_asked(cx);
+            self.keep_state(cx, false);
             let due = self
                 .last_read
                 .is_none_or(|t| t.elapsed().as_secs_f64() >= AUTO_REFRESH_SECS);
@@ -2547,7 +2704,14 @@ impl AppMain for App {
         // layer sets on them is gone, so put the model's state back.
         if let Event::LiveEdit = event {
             self.sort_remove_labels = Default::default();
+            if let Some(s) = self.keep.seen.clone() {
+                self.restore_widgets(cx, &s);
+            }
             self.sync(cx);
+        }
+        // Closing: write what changed since the last tick, while the window still answers.
+        if let Event::WindowCloseRequested(_) | Event::QuitRequested(_) | Event::Shutdown = event {
+            self.keep_state(cx, true);
         }
     }
 }

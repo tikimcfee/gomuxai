@@ -168,7 +168,7 @@ pub fn cells(view: &View, l: &HistoryLine, now: DateTime<Utc>) -> HistoryCells {
 }
 
 /// Names one command across refreshes: its host, when it ran and what it ran.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HistoryKey {
     pub host: String,
     pub at: String,

@@ -19,6 +19,7 @@ pub mod friction;
 pub mod history;
 pub mod layout;
 pub mod runner;
+pub mod saved;
 pub mod sessions;
 pub mod sort;
 pub mod state;
