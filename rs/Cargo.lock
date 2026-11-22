@@ -212,6 +212,7 @@ dependencies = [
  "agent-bus",
  "agent-claudereg",
  "agent-discovery",
+ "agent-dream",
  "agent-manage",
  "agent-roster",
  "agent-store",

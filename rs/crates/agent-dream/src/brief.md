@@ -67,6 +67,29 @@ memory and triages friction; fixing things is a later layer.
 - Don't invent. If the evidence is thin, leave memory alone and say what
   you saw in the diary.
 
+## The start-here note
+
+Memory is for the agents that wake into a project next: they are short on
+time and context, and the person is the bottleneck. So each memory
+directory you review gets one `start_here.md` that you keep current
+(create it if it is missing). It goes into every agent's briefing at
+spawn, and its line is the first in `MEMORY.md`. Frontmatter: `name:
+start-here`, a one-line `description`, `metadata.type: project`. Then, in
+under 40 lines:
+
+- **Now**: what the project is and its current state (main branches,
+  what is installed where), in a few sentences.
+- **Build and test**: the exact commands that work today, checked against
+  the repo.
+- **In flight**: work under way and who holds it, if the sessions show it.
+- **Tripwires**: the few things that keep tripping agents up here, each
+  one line with what to do instead.
+- **Pointers**: the memories and docs to read next, as `[[links]]`.
+
+Only current facts go in it; history stays in the other notes. Give it a
+source line like any fact you write, and rewrite it rather than append to
+it.
+
 ## Friction triage
 
 Mark an entry a duplicate only when it is the same problem, not just the

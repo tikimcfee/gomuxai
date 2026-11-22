@@ -221,18 +221,44 @@ impl AgentService {
         name: &str,
         spawned_by: &str,
         backend_name: &str,
+        cwd: &str,
     ) -> Result<String> {
         let dir = self.cfg.agent_dir(name);
         goos::mkdir_all(&dir, 0o700).context("creating agent dir")?;
         let path = filepath::abs(&filepath::join(&[dir.as_str(), "instructions.md"]))?;
-        goos::write_file(
-            &path,
-            self.agent_instructions(name, spawned_by, backend_name)
-                .as_bytes(),
-            0o600,
-        )
-        .context("writing instructions")?;
+        let mut text = self.agent_instructions(name, spawned_by, backend_name);
+        let start = self.start_here_section(cwd);
+        if !start.is_empty() {
+            text.push('\n');
+            text.push_str(&start);
+        }
+        goos::write_file(&path, text.as_bytes(), 0o600).context("writing instructions")?;
         Ok(path)
+    }
+
+    /// The start-here note (agent_dream::start_here) of the project an agent
+    /// starts in, as a briefing section, or "" when it has none.
+    pub(crate) fn start_here_section(&self, cwd: &str) -> String {
+        let cwd = if cwd.is_empty() {
+            std::env::current_dir()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else {
+            cwd.to_string()
+        };
+        let home = std::env::var("HOME").unwrap_or_default();
+        let config_dir = std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_default();
+        let Some(projects) = agent_dream::start_here::projects_dir(
+            self.cfg.claude_projects_dir.as_deref(),
+            &config_dir,
+            &home,
+        ) else {
+            return String::new();
+        };
+        match agent_dream::start_here::find(&projects, &cwd) {
+            Some((path, text)) => agent_dream::start_here::briefing_section(&path, &text),
+            None => String::new(),
+        }
     }
 
     /// writeLaunchScript saves the launch command in the agent's directory and

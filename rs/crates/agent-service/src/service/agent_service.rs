@@ -728,7 +728,8 @@ impl AgentService {
             cmd = mc.with_model(&cmd, &opts.model);
         }
         if let Some(ip) = provider.as_instructions_provider() {
-            let path = self.write_instructions(name, &opts.spawned_by, provider.name())?;
+            let path =
+                self.write_instructions(name, &opts.spawned_by, provider.name(), &opts.cwd)?;
             cmd = ip.with_instructions(&cmd, &path)?;
         }
         if let Some(ca) = provider.as_command_allower() {

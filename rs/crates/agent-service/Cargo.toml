@@ -18,6 +18,7 @@ agent-discovery.workspace = true
 agent-bus.workspace = true
 agent-manage.workspace = true
 agent-roster.workspace = true
+agent-dream.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
