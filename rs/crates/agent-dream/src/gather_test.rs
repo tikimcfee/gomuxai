@@ -111,6 +111,21 @@ fn sessions_filtered_and_oldest_first() {
     assert!(!g.quiet);
     assert_eq!(g.items[0].read, "agent transcript old");
     assert_eq!(g.counts(), [("session", 2)]);
+    // The evidence reads each session's transcript, a subagent's under its
+    // parent's key.
+    let paths: Vec<(&str, &str)> = g
+        .transcripts
+        .iter()
+        .map(|t| (t.session.as_str(), t.path.as_str()))
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            ("claude:old", "/p/old.jsonl"),
+            ("claude:old", "/p/sub.jsonl"),
+            ("claude:new", "/p/new.jsonl")
+        ]
+    );
 }
 
 #[test]
