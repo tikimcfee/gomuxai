@@ -25,11 +25,37 @@ pub struct NoteCounts {
     pub good: Tally,
     pub mixed: Tally,
     pub bad: Tally,
+    /// The distinct sessions all of them cite.
+    #[serde(default)]
+    pub sessions: i64,
 }
 
 impl NoteCounts {
     pub fn total(&self) -> i64 {
         self.good.notes + self.mixed.notes + self.bad.notes
+    }
+
+    /// describe says the counts in words: "2 good, 1 bad from 3 sessions",
+    /// "1 mixed from 1 session", or "no notes".
+    pub fn describe(&self) -> String {
+        let parts: Vec<String> = [
+            ("good", &self.good),
+            ("mixed", &self.mixed),
+            ("bad", &self.bad),
+        ]
+        .iter()
+        .filter(|(_, t)| t.notes > 0)
+        .map(|(name, t)| format!("{} {name}", t.notes))
+        .collect();
+        if parts.is_empty() {
+            return "no notes".into();
+        }
+        let s = if self.sessions == 1 {
+            "session"
+        } else {
+            "sessions"
+        };
+        format!("{} from {} {s}", parts.join(", "), self.sessions)
     }
 
     /// count adds up notes, which are all of one entry and none superseded.
@@ -49,6 +75,8 @@ impl NoteCounts {
         c.good.sessions = sessions[0].len() as i64;
         c.mixed.sessions = sessions[1].len() as i64;
         c.bad.sessions = sessions[2].len() as i64;
+        let all: BTreeSet<&str> = sessions.iter().flatten().copied().collect();
+        c.sessions = all.len() as i64;
         c
     }
 }
@@ -62,7 +90,7 @@ pub struct EntryView {
     #[serde(flatten)]
     pub entry: RosterEntry,
     pub available: bool,
-    /// Why it isn't available ("disabled", "agy isn't on PATH"); "" when it is.
+    /// Why it isn't available ("disabled", "agy not on PATH"); "" when it is.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub unavailable: String,
     pub notes: NoteCounts,
@@ -156,7 +184,7 @@ fn availability(e: &RosterEntry, on_path: &dyn Fn(&str) -> bool) -> (bool, Strin
     }
     let cmd = harness_command(&e.harness);
     if !on_path(cmd) {
-        return (false, format!("{cmd} isn't on PATH"));
+        return (false, format!("{cmd} not on PATH"));
     }
     (true, String::new())
 }

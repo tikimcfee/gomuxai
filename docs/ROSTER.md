@@ -101,7 +101,7 @@ elsewhere) and the next two with one line of why each. It never spawns.
 
 ### Saved picks
 
-A pick is a startup command that worked, so it can be kept and replayed.
+**built** (`agent_roster::save_pick`, `saved`, `check_saved`). A pick is a startup command that worked, so it can be kept and replayed.
 `agent roster pick --task edit --save quick-edit` stores the chosen command
 as version 1 of `quick-edit` (a third table, `roster_picks`: name, version,
 the command's argv, harness, model, effort, host, task, the why, who saved
@@ -114,7 +114,7 @@ saved pick keeps its revisions; the roster has no revert of its own.
 
 ### Self-explaining output
 
-An agent should understand each command's output without the docs, the way
+**built**: each output ends with a `Next:` line. An agent should understand each command's output without the docs, the way
 `agent status` does. Each table has a one-line header saying what it is
 ("Roster on HOST: harnesses and models this host can run"); each entry says
 its availability in words (`available`, `off: disabled`, `off: agy not on
@@ -123,12 +123,13 @@ it chose (`tasks include edit; 2 good notes on edit; fast`) and ends with
 what to run next (the spawn line, `agent roster show ...` for the notes,
 `--save NAME` to keep it). An empty roster says how to add an entry.
 
-`roster list`, `roster show`, `roster picks` and `roster pick` are read-only and
-pre-allowed for spawned agents. `roster note` only adds a note, like
-`friction add`, and is pre-allowed too. `set`, `enable`, `disable` and
-`remove` prompt the person. Bare `roster` isn't on the list: safe commands
-match as a prefix, so it would pre-allow `roster set` and the rest too; the
-briefing should say `agent roster list`.
+`roster list`, `roster show`, `roster picks` and `roster pick` are
+read-only and pre-allowed for spawned agents. `roster note` only adds a
+note, like `friction add`, and is pre-allowed too. `set`, `enable`,
+`disable` and `remove` prompt the person. `pick --save` only adds a saved
+pick's version, as `note` adds a note, and goes with `pick`. Bare `roster` isn't on the list: safe commands match as a prefix,
+so it would pre-allow `roster set` and the rest too; the briefing says
+`agent roster list`.
 
 ## Across hosts
 

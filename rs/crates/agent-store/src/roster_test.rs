@@ -133,3 +133,47 @@ fn roster_notes() {
         .unwrap();
     assert_eq!(s.list_roster_notes().unwrap().len(), 2);
 }
+
+#[test]
+fn roster_picks() {
+    let (s, _, _dir) = new_test_store();
+    assert!(s.get_roster_pick("quick", 0).unwrap().is_none());
+    assert!(s.list_roster_picks("").unwrap().is_empty());
+
+    let now = Time::date_utc(2026, 11, 22, 10, 0, 0, 0);
+    let pick = |name: &str, version: i64, model: &str| RosterPick {
+        name: name.into(),
+        version,
+        argv: [
+            "agent",
+            "spawn",
+            "NAME",
+            "--backend",
+            "claude",
+            "--model",
+            model,
+        ]
+        .map(String::from)
+        .to_vec(),
+        harness: "claude".into(),
+        model: model.into(),
+        host: "h".into(),
+        task: "edit".into(),
+        saved_by: "lead".into(),
+        saved_at: now,
+        ..Default::default()
+    };
+    let mut a1 = pick("quick", 1, "haiku");
+    s.add_roster_pick(&mut a1).unwrap();
+    let mut a2 = pick("quick", 2, "sonnet");
+    s.add_roster_pick(&mut a2).unwrap();
+    let mut b1 = pick("deep", 1, "opus");
+    s.add_roster_pick(&mut b1).unwrap();
+    assert!(s.add_roster_pick(&mut pick("quick", 2, "x")).is_err());
+
+    assert_eq!(s.get_roster_pick("quick", 0).unwrap().as_ref(), Some(&a2));
+    assert_eq!(s.get_roster_pick("quick", 1).unwrap().as_ref(), Some(&a1));
+    assert!(s.get_roster_pick("quick", 3).unwrap().is_none());
+    assert_eq!(s.list_roster_picks("").unwrap(), vec![b1, a2.clone()]);
+    assert_eq!(s.list_roster_picks("quick").unwrap(), vec![a2, a1]);
+}

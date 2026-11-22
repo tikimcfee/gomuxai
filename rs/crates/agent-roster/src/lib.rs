@@ -9,12 +9,13 @@ pub mod entry;
 pub mod key;
 pub mod note;
 pub mod pick;
+pub mod saved;
 pub mod view;
 
 #[cfg(test)]
 mod roster_test;
 
-pub use agent_store::{RosterEntry, RosterNote};
+pub use agent_store::{RosterEntry, RosterNote, RosterPick};
 pub use entry::{EntryChanges, remove_entry, set_enabled, set_entry};
 pub use key::{
     COSTS, EFFORTS, Key, PREFERS, SPEEDS, TASK_KINDS, VERDICTS, check_cost, check_effort,
@@ -22,6 +23,10 @@ pub use key::{
 };
 pub use note::{NoteInput, add_note, add_note_in, resolve_source, session_dirs};
 pub use pick::{Pick, PickOptions, pick};
+pub use saved::{
+    SaveOutcome, SaveResult, SavedCheck, check_pick_name, check_saved, parse_saved_ref, save_pick,
+    saved,
+};
 pub use view::{
     EntryShow, EntryView, HostRoster, NoteCounts, NoteView, Tally, host_view, host_view_with,
     on_path, show, show_with,

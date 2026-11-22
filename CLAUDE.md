@@ -552,8 +552,9 @@ have run on this host, and `list` counts notes by distinct session, so one
 bad run doesn't read as a rule. `pick` scores an entry 2 for suiting the
 task and +1/-1 for each session with a good/bad note on it; it prints, never
 spawns. Inside Claude Code, the Agent tool's `model` option runs a subagent
-on another Claude model without a new agent. `set`, `enable`, `disable`
-and `remove` prompt the person.
+on another Claude model without a new agent. `pick --save` only adds a
+revision, as `note` adds a note, so it goes with `pick`; `set`, `enable`,
+`disable` and `remove` prompt the person.
 
 ### Heavy jobs: `agent run`
 

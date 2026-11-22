@@ -93,6 +93,7 @@ roster
 roster list
 roster show
 roster pick
+roster picks
 roster note
 roster set
 roster enable

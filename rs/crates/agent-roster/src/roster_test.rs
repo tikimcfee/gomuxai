@@ -309,7 +309,7 @@ fn view_counts_and_availability() {
     assert_eq!(
         keys,
         [
-            ("agy/gem", false, "agy isn't on PATH"),
+            ("agy/gem", false, "agy not on PATH"),
             ("claude/haiku", true, ""),
             ("claude/opus", false, "disabled"),
         ]
@@ -330,6 +330,9 @@ fn view_counts_and_availability() {
             sessions: 1
         }
     );
+    assert_eq!(haiku.notes.sessions, 3);
+    assert_eq!(haiku.notes.describe(), "3 good, 1 bad from 3 sessions");
+    assert_eq!(h.entries[0].notes.describe(), "no notes");
     assert_eq!(haiku.by_task["edit"].good.sessions, 2);
     assert_eq!(haiku.by_task["edit"].bad.notes, 0);
     assert_eq!(h.unlisted["kimi/k2"].mixed.notes, 1);
@@ -410,7 +413,7 @@ fn pick_ranks() {
     assert!(
         ps[0]
             .why
-            .starts_with("suits edit; no notes on edit; fast, low cost"),
+            .starts_with("tasks include edit; no notes on edit; fast, low cost"),
         "{}",
         ps[0].why
     );
@@ -436,9 +439,9 @@ fn pick_ranks() {
     );
     assert_eq!(ps[0].score, 2);
     assert!(
-        ps[0]
-            .why
-            .contains("set for feature,long-horizon, not edit; on edit: 2 good (2 sessions)"),
+        ps[0].why.contains(
+            "tasks are feature,long-horizon, not edit; notes on edit: 2 good from 2 sessions"
+        ),
         "{}",
         ps[0].why
     );
@@ -485,4 +488,87 @@ fn pick_ranks() {
     assert!(bad("edit", "", &[]).contains("has no entries"));
     let none = host_view_with(&v.store, "here", &|_: &str| false).unwrap();
     assert!(bad("edit", "", &[none]).contains("no roster entry is available"));
+}
+
+#[test]
+fn saved_picks() {
+    let v = env();
+    set(&v.store, "claude/haiku", "edit", "fast", "low");
+    set(&v.store, "claude/sonnet", "edit", "medium", "medium");
+    let all = |_: &str| true;
+    let view = host_view_with(&v.store, "here", &all).unwrap();
+    let opts = |prefer: &str| PickOptions {
+        task: "edit".into(),
+        prefer: prefer.into(),
+    };
+    let fast = pick(std::slice::from_ref(&view), "here", &opts("fast")).unwrap();
+    assert_eq!(
+        fast[0].argv,
+        [
+            "agent",
+            "spawn",
+            "NAME",
+            "--backend",
+            "claude",
+            "--model",
+            "haiku"
+        ]
+    );
+
+    let r = save_pick(&v.store, "quick-edit", &fast[0], "edit", "lead").unwrap();
+    assert_eq!((r.outcome.clone(), r.pick.version), (SaveOutcome::New, 1));
+    let r = save_pick(&v.store, "quick-edit", &fast[0], "edit", "lead").unwrap();
+    assert_eq!((r.outcome, r.pick.version), (SaveOutcome::Unchanged, 1));
+    let strong = pick(std::slice::from_ref(&view), "here", &opts("strong")).unwrap();
+    let r = save_pick(&v.store, "quick-edit", &strong[0], "edit", "lead").unwrap();
+    assert_eq!((r.outcome, r.pick.version), (SaveOutcome::NewVersion, 2));
+    assert_eq!(r.pick.model, "sonnet");
+
+    assert_eq!(saved(&v.store, "quick-edit", 1).unwrap().model, "haiku");
+    assert_eq!(saved(&v.store, "quick-edit", 0).unwrap().version, 2);
+    let e = saved(&v.store, "quick-edit", 5).unwrap_err().to_string();
+    assert!(e.contains("has no version 5: it has 1 to 2"), "{e}");
+    let e = saved(&v.store, "nope", 0).unwrap_err().to_string();
+    assert!(
+        e.contains("no saved pick nope") && e.contains("agent roster picks"),
+        "{e}"
+    );
+
+    assert_eq!(
+        parse_saved_ref("quick-edit@2").unwrap(),
+        ("quick-edit".into(), 2)
+    );
+    assert_eq!(
+        parse_saved_ref("quick-edit").unwrap(),
+        ("quick-edit".into(), 0)
+    );
+    assert!(parse_saved_ref("q@x").is_err());
+    assert!(check_pick_name("a b").is_err());
+    assert!(check_pick_name("-a").is_err());
+
+    // Whether its entry is still there and on.
+    let p1 = saved(&v.store, "quick-edit", 1).unwrap();
+    assert_eq!(
+        check_saved(p1.clone(), std::slice::from_ref(&view)).status,
+        "available"
+    );
+    set_enabled(
+        &v.store,
+        &Key::parse("claude/haiku").unwrap(),
+        false,
+        "user",
+    )
+    .unwrap();
+    let view = host_view_with(&v.store, "here", &all).unwrap();
+    let c = check_saved(p1.clone(), std::slice::from_ref(&view));
+    assert_eq!(
+        (c.available, c.status.as_str()),
+        (Some(false), "off: disabled")
+    );
+    remove_entry(&v.store, &Key::parse("claude/haiku").unwrap()).unwrap();
+    let view = host_view_with(&v.store, "here", &all).unwrap();
+    let c = check_saved(p1.clone(), std::slice::from_ref(&view));
+    assert_eq!(c.status, "gone: here has no entry claude/haiku now");
+    let c = check_saved(p1, &[]);
+    assert_eq!(c.available, None);
 }

@@ -146,6 +146,7 @@ pub const AGENT_SAFE_COMMANDS: &[&str] = &[
     "roster list",
     "roster show",
     "roster pick",
+    "roster picks",
     "roster note",
 ];
 
@@ -417,7 +418,9 @@ mod tests {
             "/opt/x/agent",
             "agent help <command>",
             "agent list",
-            "agent spawn helper --backend claude",
+            "agent spawn helper --backend agy",
+            "agent roster pick --task",
+            "agent roster note",
             "agent send helper",
             "agent wait helper --for idle,waiting --next",
             "agent state get helper _result",

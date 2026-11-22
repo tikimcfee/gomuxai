@@ -1,11 +1,15 @@
 //! `agent roster` and its subcommands (no Go file: new in the Rust build;
 //! docs/ROSTER.md). The rules are agent_roster's; this file parses flags and
 //! prints. This host only for now: reads over the bus come later.
+//!
+//! Every output explains itself (docs/ROSTER.md, "Self-explaining output"):
+//! a header line saying what it is, availability and note counts in words,
+//! and a last "Next:" line saying what to run next.
 use std::fmt::Write as _;
 
 use agent_roster::{
-    EntryChanges, EntryShow, EntryView, HostRoster, Key, NoteCounts, NoteInput, Pick, PickOptions,
-    TASK_KINDS,
+    EntryChanges, EntryShow, EntryView, HostRoster, Key, NoteInput, Pick, PickOptions,
+    RosterPick, SaveOutcome, SaveResult, SavedCheck, TASK_KINDS,
 };
 use serde::Serialize;
 
@@ -23,9 +27,10 @@ pub const DOC: Doc = Doc {
 can run, what each is good at, how fast and costly it is, whether it is
 available now, and what past runs showed. It lists this host's entries:
 
-  ENTRY                    AVAILABLE              SPEED  COST  TASKS      NOTES
-  claude/claude-haiku-5-5  yes                    fast   low   edit,test  3 good (2 sessions)
-  agy/gemini-3-pro         no: agy isn't on PATH  slow   high  review     -
+  Roster on hub: harnesses and models this host can run
+  ENTRY                    AVAILABLE            SPEED  COST  TASKS      NOTES
+  claude/claude-haiku-5-5  available            fast   low   edit,test  3 good from 2 sessions
+  agy/gemini-3-pro         off: agy not on PATH  slow   high  review     no notes
 
 An entry is HARNESS/MODEL[@EFFORT]: the backend spawn takes, the model
 spawn --model takes (empty for the harness's default: claude/), and an
@@ -34,26 +39,30 @@ its own entry). It is available when it is enabled and its harness's CLI
 is on this host's PATH.
 
 Notes are evaluations, one per run, each citing the session it came from:
-NOTES counts them by verdict and by distinct session, so you can see
-whether a claim rests on one run or on five. A note another supersedes
-isn't counted.
+NOTES counts them by verdict and says how many distinct sessions they come
+from, so you can see whether a claim rests on one run or on five. A note
+another supersedes isn't counted.
 
 Task kinds: edit (small, well-specified change), bugfix, feature
 (multi-file), long-horizon (hours, many steps), review, research (reading
 and summarising), design, test, kernel (performance-critical low-level
 code), chat (quick question).
 
-roster (or roster list), show and pick only read; note only adds a note.
-set, enable, disable and remove change the entries.
+roster (or roster list), show, picks and pick only read (pick --save adds a
+saved pick's version); note only adds a note. set, enable, disable and
+remove change the entries.
 
 --json prints this host's roster as one JSON document: {"host", "entries":
 [...], "unlisted": {...}}, each entry with its fields, "key", "available",
-"unavailable" (why not), "notes" (counts by verdict) and "by_task"."#,
+"unavailable" (why not), "notes" (counts by verdict, and "sessions") and
+"by_task"."#,
     example: r#"  agent roster
   agent roster pick --task edit
   agent roster show claude/claude-opus-5-5
   agent roster set claude/claude-haiku-5-5 --speed fast --cost low --tasks edit,test --good-at "small precise edits"
-  agent roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "did the rename across 12 files cleanly""#,
+  agent roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "did the rename across 12 files cleanly"
+  agent roster pick --task edit --save quick-edit
+  agent roster picks"#,
     args: ArgRule::None,
     ..Doc::DEFAULT
 };
@@ -74,6 +83,7 @@ pub fn def() -> Def {
             roster_list_def(),
             roster_show_def(),
             roster_pick_def(),
+            roster_picks_def(),
             roster_note_def(),
             roster_set_def(),
             roster_enable_def(),
@@ -95,25 +105,19 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
     if args.json {
         return ctx.print_json(&view);
     }
-    if view.entries.is_empty() && view.unlisted.is_empty() {
-        ctx.write_out(&format!("The roster on {} is empty.\n", view.host))?;
-        ctx.hint(
-            "agent roster set HARNESS/MODEL --tasks KINDS --speed ... --cost ... adds an entry",
-        );
-        return Ok(());
-    }
-    ctx.write_out(&render_roster(&view))?;
-    if !view.entries.iter().any(|e| e.available) && !view.entries.is_empty() {
-        ctx.hint("no entry is available: agent roster enable ENTRY, or put its CLI on PATH");
-    }
-    Ok(())
+    ctx.write_out(&render_roster(&view))
 }
 
-/// The roster as a table, then the notes on harnesses and models it has
-/// no entry for.
+/// The roster: a header, the entries as a table, the notes on harnesses
+/// and models with no entry, and what to run next.
 fn render_roster(view: &HostRoster) -> String {
-    let mut out = String::new();
-    if !view.entries.is_empty() {
+    let mut out = format!(
+        "Roster on {}: harnesses and models this host can run\n",
+        view.host
+    );
+    if view.entries.is_empty() {
+        out.push_str("It has no entries yet.\n");
+    } else {
         let mut rows = vec![vec![
             "ENTRY".to_string(),
             "AVAILABLE".into(),
@@ -129,54 +133,46 @@ fn render_roster(view: &HostRoster) -> String {
                 dash(&e.entry.speed),
                 dash(&e.entry.cost),
                 dash(&e.entry.tasks.join(",")),
-                counts(&e.notes),
+                e.notes.describe(),
             ]);
         }
         out.push_str(&tab_align(&rows, 2));
     }
     if !view.unlisted.is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str("Notes on harnesses and models with no entry:\n");
+        out.push_str("\nNotes on harnesses and models with no entry (pick doesn't offer them):\n");
         for (key, c) in &view.unlisted {
-            let _ = writeln!(out, "  {key}  {}", counts(c));
+            let _ = writeln!(out, "  {key}  {}", c.describe());
         }
+    }
+    out.push('\n');
+    if view.entries.is_empty() {
+        out.push_str(
+            "Next: agent roster set HARNESS/MODEL --tasks KINDS --speed fast|medium|slow --cost low|medium|high adds an entry.\n",
+        );
+    } else if !view.entries.iter().any(|e| e.available) {
+        out.push_str(
+            "Next: no entry is available; agent roster enable ENTRY switches one on, or put its CLI on PATH.\n",
+        );
+    } else {
+        out.push_str(
+            "Next: agent roster pick --task KIND prints a spawn line; agent roster show ENTRY lists an entry's notes.\n",
+        );
     }
     out
 }
 
+/// An entry's availability in words: "available", "off: disabled", "off:
+/// agy not on PATH".
 fn availability(e: &EntryView) -> String {
     if e.available {
-        "yes".into()
+        "available".into()
     } else {
-        format!("no: {}", e.unavailable)
+        format!("off: {}", e.unavailable)
     }
 }
 
 fn dash(s: &str) -> String {
     if s.is_empty() { "-".into() } else { s.into() }
-}
-
-/// Note counts in words: "3 good (2 sessions), 1 bad", "-" for none.
-fn counts(c: &NoteCounts) -> String {
-    let mut parts = Vec::new();
-    for (name, t) in [("good", &c.good), ("mixed", &c.mixed), ("bad", &c.bad)] {
-        if t.notes == 0 {
-            continue;
-        }
-        if t.sessions == t.notes {
-            parts.push(format!("{} {name}", t.notes));
-        } else {
-            let s = if t.sessions == 1 { "session" } else { "sessions" };
-            parts.push(format!("{} {name} ({} {s})", t.notes, t.sessions));
-        }
-    }
-    if parts.is_empty() {
-        "-".into()
-    } else {
-        parts.join(", ")
-    }
 }
 
 // `agent roster list`
@@ -248,22 +244,24 @@ pub fn run_roster_show(ctx: &Ctx, args: &RosterShowArgs) -> anyhow::Result<()> {
 
 fn render_show(s: &EntryShow) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "{} on {}", s.key, s.host);
     match &s.entry {
-        None => out.push_str("  no entry: only notes (agent roster set adds one)\n"),
-        Some(e) => {
-            let _ = writeln!(out, "  available: {}", availability(e));
-            let _ = writeln!(out, "  tasks:     {}", dash(&e.entry.tasks.join(", ")));
+        None => {
             let _ = writeln!(
                 out,
-                "  speed:     {}   cost: {}",
-                dash(&e.entry.speed),
-                dash(&e.entry.cost)
+                "Roster entry {} on {}: none, only notes (pick doesn't offer it)",
+                s.key, s.host
             );
+        }
+        Some(e) => {
+            let _ = writeln!(out, "Roster entry {} on {}", s.key, s.host);
+            let _ = writeln!(out, "  availability: {}", availability(e));
+            let _ = writeln!(out, "  tasks:        {}", dash(&e.entry.tasks.join(", ")));
+            let _ = writeln!(out, "  speed:        {}", dash(&e.entry.speed));
+            let _ = writeln!(out, "  cost:         {}", dash(&e.entry.cost));
             for (label, v) in [
-                ("good at:  ", &e.entry.good_at),
-                ("avoid:    ", &e.entry.avoid),
-                ("limits:   ", &e.entry.limits),
+                ("good at:     ", &e.entry.good_at),
+                ("avoid:       ", &e.entry.avoid),
+                ("limits:      ", &e.entry.limits),
             ] {
                 if !v.is_empty() {
                     let _ = writeln!(out, "  {label} {v}");
@@ -271,44 +269,58 @@ fn render_show(s: &EntryShow) -> String {
             }
             let _ = writeln!(
                 out,
-                "  set by:    {}, {}",
+                "  set by:       {}, {}",
                 dash(&e.entry.set_by),
                 stamp(&e.entry.updated_at)
             );
-            let _ = writeln!(out, "  notes:     {}", counts(&e.notes));
+            let _ = writeln!(
+                out,
+                "  notes:        {} (superseded notes don't count)",
+                e.notes.describe()
+            );
         }
     }
     if s.notes.is_empty() {
-        out.push_str("\nNo notes yet (agent roster note adds one).\n");
-        return out;
+        out.push_str("\nIt has no notes yet.\n");
+    } else {
+        let _ = writeln!(out, "\nNotes on {}, oldest first:", s.key);
+        for nv in &s.notes {
+            let n = &nv.note;
+            let mut head = format!(
+                "  #{} {}  {} on {}  by {}  from {}",
+                n.id,
+                stamp(&n.created_at),
+                n.verdict,
+                n.task,
+                n.by,
+                n.source
+            );
+            if n.supersedes != 0 {
+                let _ = write!(head, "  supersedes #{}", n.supersedes);
+            }
+            if nv.superseded_by != 0 {
+                let _ = write!(head, "  (superseded by #{})", nv.superseded_by);
+            }
+            out.push_str(&head);
+            out.push('\n');
+            for line in n.text.lines() {
+                let _ = writeln!(out, "      {line}");
+            }
+            if !n.why.is_empty() {
+                let _ = writeln!(out, "      why: {}", n.why);
+            }
+        }
     }
-    out.push_str("\nNotes:\n");
-    for nv in &s.notes {
-        let n = &nv.note;
-        let mut head = format!(
-            "  #{} {}  {}  {}  by {}  from {}",
-            n.id,
-            stamp(&n.created_at),
-            n.task,
-            n.verdict,
-            n.by,
-            n.source
-        );
-        if n.supersedes != 0 {
-            let _ = write!(head, "  supersedes #{}", n.supersedes);
-        }
-        if nv.superseded_by != 0 {
-            let _ = write!(head, "  (superseded by #{})", nv.superseded_by);
-        }
-        out.push_str(&head);
-        out.push('\n');
-        for line in n.text.lines() {
-            let _ = writeln!(out, "      {line}");
-        }
-        if !n.why.is_empty() {
-            let _ = writeln!(out, "      why: {}", n.why);
-        }
-    }
+    let next = if s.entry.is_none() {
+        format!("agent roster set {} --tasks KINDS adds it as an entry", s.key)
+    } else {
+        "agent roster pick --task KIND ranks it among the others".to_string()
+    };
+    let _ = writeln!(
+        out,
+        "\nNext: agent roster note {} --task KIND --verdict good|mixed|bad --session HARNESS:ID \"what happened\" adds a note; {next}.",
+        s.key
+    );
     out
 }
 
@@ -329,15 +341,26 @@ cheap (by cost) or strong (dearest first). Then more good sessions win.
 An entry at an effort is picked like any other; spawn has no --effort yet,
 so the why line says which effort the notes were about.
 
+--save NAME keeps the chosen command as a saved pick: version 1 for a new
+name, a new version only when the command differs from its newest one.
+--saved NAME[@VERSION] prints a saved command again, exactly, whatever the
+roster says now, and says whether its entry is still available. "agent
+roster picks" lists them.
+
 Task kinds: edit, bugfix, feature, long-horizon, review, research, design,
 test, kernel, chat.
 
---json prints {"task", "prefer", "pick", "runners_up": [...]}, each with
-"host", "key", "harness", "model", "effort", "score", "command" and "why"."#,
+--json prints {"task", "prefer", "pick", "runners_up": [...], "saved"},
+each pick with "host", "key", "harness", "model", "effort", "score",
+"command", "argv" and "why"; with --saved, {"pick", "available",
+"status"}."#,
     example: r#"  agent roster pick --task edit
   agent roster pick --task long-horizon --prefer fast
+  agent roster pick --task edit --save quick-edit
+  agent roster pick --saved quick-edit@1
   agent roster pick --task review --json"#,
     args: ArgRule::None,
+    exclusive: &[&["saved", "task"], &["saved", "save"], &["saved", "prefer"]],
     ..Doc::DEFAULT
 };
 
@@ -353,6 +376,20 @@ pub struct RosterPickArgs {
         help = "Break ties: fast, cheap, or strong"
     )]
     pub prefer: String,
+    #[arg(
+        long = "save",
+        value_name = "string",
+        default_value = "",
+        help = "Keep the chosen command as this saved pick (a new version if it changed)"
+    )]
+    pub save: String,
+    #[arg(
+        long = "saved",
+        value_name = "string",
+        default_value = "",
+        help = "Print a saved pick's command again: NAME[@VERSION] (default: its newest)"
+    )]
+    pub saved: String,
     // The help is "Task kind: " and TASK_KINDS joined (a test checks).
     #[arg(
         long = "task",
@@ -378,15 +415,25 @@ struct PickResult<'a> {
     prefer: &'a str,
     pick: &'a Pick,
     runners_up: &'a [Pick],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    saved: Option<&'a SaveResult>,
 }
 
 pub fn run_roster_pick(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
+    if !args.saved.trim().is_empty() {
+        return replay_saved(ctx, args);
+    }
     if args.task.trim().is_empty() {
         anyhow::bail!(
-            "--task is required: name the kind of work ({})",
+            "--task is required: name the kind of work ({}), or --saved NAME for a saved pick",
             TASK_KINDS.join(", ")
         );
     }
+    let save = if args.save.trim().is_empty() {
+        None
+    } else {
+        Some(agent_roster::check_pick_name(&args.save)?)
+    };
     let view = local_roster(ctx)?;
     let host = view.host.clone();
     let opts = PickOptions {
@@ -397,32 +444,229 @@ pub fn run_roster_pick(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
         .map_err(|e| e.context(format!("picking for --task {}", opts.task)))?;
     let (first, rest) = picks.split_first().expect("pick returns one or more");
     let rest = &rest[..rest.len().min(2)];
+    let saved = match &save {
+        None => None,
+        Some(name) => Some(agent_roster::save_pick(
+            ctx.store()?,
+            name,
+            first,
+            &opts.task,
+            &friction_caller(ctx).0,
+        )?),
+    };
     if args.json {
         return ctx.print_json(&PickResult {
             task: &opts.task,
             prefer: &opts.prefer,
             pick: first,
             runners_up: rest,
+            saved: saved.as_ref(),
         });
     }
     let mut out = String::new();
-    let _ = writeln!(out, "{}", first.command);
-    let _ = writeln!(out, "  {}: {}", first.key, first.why);
+    let _ = writeln!(out, "Picked for {} on {}: {}", opts.task, host, first.key);
+    let _ = writeln!(out, "  {}", first.command);
+    let _ = writeln!(out, "  why: {}", first.why);
     if !rest.is_empty() {
         out.push_str("\nRunners-up:\n");
-        for p in rest {
-            let _ = writeln!(out, "  {}", p.command);
-            let _ = writeln!(out, "    {}: {}", p.key, p.why);
+        for (i, p) in rest.iter().enumerate() {
+            let _ = writeln!(out, "  {}. {}: {}", i + 2, p.key, p.command);
+            let _ = writeln!(out, "     why: {}", p.why);
         }
     }
-    ctx.write_out(&out)?;
     if first.score <= 0 {
-        ctx.hint(format!(
-            "nothing on record suits {}: agent roster set ENTRY --tasks {} says which entries do",
-            opts.task, opts.task
-        ));
+        let _ = writeln!(
+            out,
+            "\nNothing on record suits {} (no entry lists it, no good notes on it): this is a guess.",
+            opts.task
+        );
     }
-    Ok(())
+    if let Some(s) = &saved {
+        out.push('\n');
+        out.push_str(&describe_save(s));
+    }
+    let keep = if saved.is_some() {
+        String::new()
+    } else {
+        "; add --save NAME to keep this command".to_string()
+    };
+    let _ = writeln!(
+        out,
+        "\nNext: run the spawn line with your agent's name for NAME; agent roster show {} lists its notes{keep}.",
+        first.key
+    );
+    ctx.write_out(&out)
+}
+
+/// What saving did, in a line.
+fn describe_save(s: &SaveResult) -> String {
+    let p = &s.pick;
+    match s.outcome {
+        SaveOutcome::New => format!(
+            "Saved as {}@{} (a new saved pick): agent roster pick --saved {} prints it again.\n",
+            p.name, p.version, p.name
+        ),
+        SaveOutcome::NewVersion => format!(
+            "Saved as {}@{}: the command changed from @{}, which is kept.\n",
+            p.name,
+            p.version,
+            p.version - 1
+        ),
+        SaveOutcome::Unchanged => format!(
+            "Not saved: {}@{} already has this command.\n",
+            p.name, p.version
+        ),
+    }
+}
+
+/// pick --saved: a saved command again, and whether its entry is
+/// available now.
+fn replay_saved(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
+    let (name, version) = agent_roster::parse_saved_ref(&args.saved)?;
+    let p = agent_roster::saved(ctx.store()?, &name, version)?;
+    let view = local_roster(ctx)?;
+    let check = agent_roster::check_saved(p, std::slice::from_ref(&view));
+    if args.json {
+        return ctx.print_json(&check);
+    }
+    ctx.write_out(&render_saved(&check))
+}
+
+fn render_saved(c: &SavedCheck) -> String {
+    let p = &c.pick;
+    let key = Key::new(&p.harness, &p.model, &p.effort);
+    let mut out = format!(
+        "Saved pick {}@{}: for {}, saved by {} {}\n",
+        p.name,
+        p.version,
+        p.task,
+        p.saved_by,
+        stamp(&p.saved_at)
+    );
+    let _ = writeln!(out, "  {}", p.argv.join(" "));
+    if !p.why.is_empty() {
+        let _ = writeln!(out, "  why, when saved: {}", p.why);
+    }
+    let _ = writeln!(out, "Its entry {key} on {} now: {}.", p.host, c.status);
+    let next = match c.available {
+        Some(false) => format!(
+            "it may not start; agent roster pick --task {} picks again",
+            p.task
+        ),
+        _ => format!("agent roster picks {} lists its versions", p.name),
+    };
+    let _ = writeln!(
+        out,
+        "\nNext: run the line with your agent's name for NAME; {next}."
+    );
+    out
+}
+
+// `agent roster picks`
+
+pub const ROSTER_PICKS: Doc = Doc {
+    use_line: "picks [NAME]",
+    short: "List the saved picks, or one saved pick's versions",
+    long: r#"Picks lists this host's saved picks: startup commands kept with "agent
+roster pick --save NAME", the newest version of each, with the task it was
+picked for, its entry, who saved it and when. Given a NAME, it lists every
+version of that one, newest first.
+
+"agent roster pick --saved NAME[@VERSION]" prints a saved command again.
+
+--json prints {"host", "picks": [...]}."#,
+    example: r#"  agent roster picks
+  agent roster picks quick-edit
+  agent roster picks --json"#,
+    args: ArgRule::Max(1),
+    ..Doc::DEFAULT
+};
+
+/// The flags and arguments of `agent roster picks`.
+#[derive(clap::Args, Debug, Clone)]
+pub struct RosterPicksArgs {
+    #[arg(long = "json", help = "Print the saved picks as one JSON document")]
+    pub json: bool,
+    /// The positional arguments, checked against ROSTER_PICKS.args.
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+pub fn roster_picks_def() -> Def {
+    leaf!(ROSTER_PICKS, RosterPicksArgs, run_roster_picks)
+}
+
+/// What picks --json prints.
+#[derive(Serialize)]
+struct PicksResult<'a> {
+    host: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    name: &'a str,
+    picks: &'a [RosterPick],
+}
+
+pub fn run_roster_picks(ctx: &Ctx, args: &RosterPicksArgs) -> anyhow::Result<()> {
+    let host = ctx.cfg().host.clone();
+    let name = match args.args.first() {
+        None => String::new(),
+        Some(n) => agent_roster::check_pick_name(n)?,
+    };
+    if !name.is_empty() {
+        // Says what there is when the name isn't saved.
+        agent_roster::saved(ctx.store()?, &name, 0)?;
+    }
+    let picks = ctx.store()?.list_roster_picks(&name)?;
+    if args.json {
+        return ctx.print_json(&PicksResult {
+            host: &host,
+            name: &name,
+            picks: &picks,
+        });
+    }
+    let mut out = if name.is_empty() {
+        format!(
+            "Saved picks on {host}: startup commands kept with pick --save (the newest version of each)\n"
+        )
+    } else {
+        format!("Saved pick {name} on {host}: every version, newest first\n")
+    };
+    if picks.is_empty() {
+        out.push_str("There are none yet.\n\nNext: agent roster pick --task KIND --save NAME keeps a pick's command.\n");
+        return ctx.write_out(&out);
+    }
+    let first = if name.is_empty() { "NAME" } else { "VERSION" };
+    let mut rows = vec![vec![
+        first.to_string(),
+        "TASK".into(),
+        "ENTRY".into(),
+        "SAVED".into(),
+        "COMMAND".into(),
+    ]];
+    for p in &picks {
+        let id = if name.is_empty() {
+            format!("{}@{}", p.name, p.version)
+        } else {
+            format!("@{}", p.version)
+        };
+        let mut entry = Key::new(&p.harness, &p.model, &p.effort).to_string();
+        if !p.host.eq_ignore_ascii_case(&host) {
+            let _ = write!(entry, " on {}", p.host);
+        }
+        rows.push(vec![
+            id,
+            p.task.clone(),
+            entry,
+            format!("{} by {}", stamp(&p.saved_at), p.saved_by),
+            p.argv.join(" "),
+        ]);
+    }
+    out.push_str(&tab_align(&rows, 2));
+    out.push_str("\nNext: agent roster pick --saved NAME[@VERSION] prints one again, saying whether its entry is still available");
+    if name.is_empty() {
+        out.push_str("; agent roster picks NAME lists a pick's versions");
+    }
+    out.push_str(".\n");
+    ctx.write_out(&out)
 }
 
 // `agent roster note`
@@ -538,25 +782,27 @@ pub fn run_roster_note(ctx: &Ctx, args: &RosterNoteArgs) -> anyhow::Result<()> {
             supersedes: args.supersedes,
         },
     )?;
-    let mut line = format!(
+    let mut out = format!(
         "Noted #{} on {key}: {} on {}, from {}",
         n.id, n.verdict, n.task, n.source
     );
     if n.supersedes != 0 {
-        let _ = write!(line, " (supersedes #{})", n.supersedes);
+        let _ = write!(out, " (supersedes #{}, which stops counting)", n.supersedes);
     }
-    line.push_str(".\n");
-    ctx.write_out(&line)?;
-    if ctx
+    out.push_str(".\n");
+    let has_entry = ctx
         .store()?
         .get_roster_entry(&key.harness, &key.model, &key.effort)?
-        .is_none()
-    {
-        ctx.hint(format!(
-            "{key} has no roster entry, so pick won't offer it: agent roster set {key} adds one"
-        ));
+        .is_some();
+    if has_entry {
+        let _ = writeln!(out, "Next: agent roster show {key} lists its notes.");
+    } else {
+        let _ = writeln!(
+            out,
+            "{key} has no roster entry, so pick won't offer it.\nNext: agent roster set {key} --tasks KINDS adds one."
+        );
     }
-    Ok(())
+    ctx.write_out(&out)
 }
 
 // `agent roster set`
@@ -626,13 +872,17 @@ pub fn run_roster_set(ctx: &Ctx, args: &RosterSetArgs) -> anyhow::Result<()> {
     let (e, created) =
         agent_roster::set_entry(ctx.store()?, &key, &changes, &friction_caller(ctx).0)?;
     let verb = if created { "Added" } else { "Updated" };
-    ctx.write_out(&format!("{verb} {}.\n", Key::of_entry(&e)))?;
-    if created && e.tasks.is_empty() {
-        ctx.hint(format!(
-            "pick matches entries by task: agent roster set {key} --tasks KINDS says which it suits"
-        ));
+    let key = Key::of_entry(&e);
+    let mut out = format!("{verb} {key}.\n");
+    if e.tasks.is_empty() {
+        let _ = writeln!(
+            out,
+            "Next: pick matches entries by task; agent roster set {key} --tasks KINDS says which it suits."
+        );
+    } else {
+        let _ = writeln!(out, "Next: agent roster show {key} shows it as pick sees it.");
     }
-    Ok(())
+    ctx.write_out(&out)
 }
 
 // `agent roster enable`, `agent roster disable`, `agent roster remove`
@@ -691,8 +941,13 @@ pub fn roster_remove_def() -> Def {
 fn switch(ctx: &Ctx, args: &RosterEntryArgs, on: bool) -> anyhow::Result<()> {
     let key = entry_key(&args.args[0])?;
     let e = agent_roster::set_enabled(ctx.store()?, &key, on, &friction_caller(ctx).0)?;
-    let state = if on { "Enabled" } else { "Disabled" };
-    ctx.write_out(&format!("{state} {}.\n", Key::of_entry(&e)))
+    let key = Key::of_entry(&e);
+    let out = if on {
+        format!("Enabled {key}: pick offers it when its CLI is on PATH.\n")
+    } else {
+        format!("Disabled {key}: it stays listed, with its notes, and pick doesn't offer it.\nNext: agent roster enable {key} switches it back on.\n")
+    };
+    ctx.write_out(&out)
 }
 
 pub fn run_roster_enable(ctx: &Ctx, args: &RosterEntryArgs) -> anyhow::Result<()> {
@@ -706,7 +961,9 @@ pub fn run_roster_disable(ctx: &Ctx, args: &RosterEntryArgs) -> anyhow::Result<(
 pub fn run_roster_remove(ctx: &Ctx, args: &RosterEntryArgs) -> anyhow::Result<()> {
     let key = entry_key(&args.args[0])?;
     agent_roster::remove_entry(ctx.store()?, &key)?;
-    ctx.write_out(&format!("Removed {key}; its notes stay.\n"))
+    ctx.write_out(&format!(
+        "Removed {key}; its notes stay, listed under the roster.\nNext: agent roster set {key} brings it back.\n"
+    ))
 }
 
 #[cfg(test)]
