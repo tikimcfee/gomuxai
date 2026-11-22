@@ -34,7 +34,7 @@ use super::friction_links::{FrictionLinkArgs, run_friction_link};
 use super::dream_memory::snapshot_dir_for;
 use super::history::clip;
 use super::root::Ctx;
-use agent_dream::{memory, review};
+use agent_dream::{evidence, memory, review};
 use anyhow::Context as _;
 
 /// The state key that names the dream an agent dreams.
@@ -335,7 +335,29 @@ const NO_SCOPE: &str = "Nothing is in scope for dreaming. agent dream scope add 
 
 fn gather_host(ctx: &Ctx) -> anyhow::Result<Gathered> {
     let cur = cursor(ctx)?;
-    gather::gather(&HostSources::new(ctx), &cur)
+    let mut g = gather::gather(&HostSources::new(ctx), &cur)?;
+    if !g.quiet {
+        g.evidence = Some(super::dream_evidence::evidence(ctx, &g)?);
+    }
+    Ok(g)
+}
+
+/// "Evidence: 12 failed agent commands in 4 groups, ...": one line.
+fn describe_evidence(e: &evidence::Evidence) -> String {
+    let groups = |n: usize| format!("{n} group{}", if n == 1 { "" } else { "s" });
+    format!(
+        "Evidence: {} failed agent command{} ({}), {} failed tool call{} in {} session{} ({}), {} correction{}.\n",
+        e.commands_failed,
+        if e.commands_failed == 1 { "" } else { "s" },
+        groups(e.commands.len()),
+        e.tools_failed,
+        if e.tools_failed == 1 { "" } else { "s" },
+        e.sessions_read,
+        if e.sessions_read == 1 { "" } else { "s" },
+        groups(e.tools.len()),
+        e.corrections.len(),
+        if e.corrections.len() == 1 { "" } else { "s" },
+    )
 }
 
 /// "3 sessions, 1 friction entry, 2 commits".
@@ -406,7 +428,12 @@ The floor is set by the first agent dream run, 7 days before it: nothing
 last written earlier is ever taken, unless it is written to again. Until
 then gather looks back 7 days. An item a committed dream reviewed is left
 out until it changes. With nothing new, the dream would be quiet; with
-nothing in scope, there is nothing to gather: it says which."#,
+nothing in scope, there is nothing to gather: it says which.
+
+It also counts the evidence the digest's evidence section lists: failed
+agent commands run in the scope, failed tool calls in those sessions'
+transcripts, and messages that corrected an agent, grouped and ranked
+(--json has them whole)."#,
     example: r#"  agent dream gather
   agent dream gather --json"#,
     args: ArgRule::None,
@@ -458,6 +485,9 @@ fn describe_gathered(g: &Gathered) -> String {
             g.sessions_left,
             if g.sessions_left == 1 { "" } else { "s" }
         );
+    }
+    if let Some(e) = &g.evidence {
+        out += &describe_evidence(e);
     }
     out += &format_items(&g.items);
     out
@@ -909,6 +939,9 @@ pub fn format_digest(d: &Dream, g: &Gathered) -> String {
             let _ = writeln!(b, "- `{}`{unchanged}: {}", i.key, i.summary);
             let _ = writeln!(b, "  read: `{}`", i.read);
         }
+    }
+    if let Some(e) = &g.evidence {
+        b += &evidence::format(e);
     }
     b
 }

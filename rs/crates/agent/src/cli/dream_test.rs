@@ -319,6 +319,65 @@ fn dream_commit_guards_memory_and_its_citations() {
 }
 
 #[test]
+fn dream_gather_carries_evidence() {
+    crate::require_termd!();
+    let (mut env, home) = setup_sessions();
+    let shop = env.dir.path().join("shop");
+    std::fs::create_dir_all(&shop).unwrap();
+    let shop = shop.to_string_lossy().into_owned();
+    // A finished session that failed a shell call twice and was corrected.
+    let path = claude_transcript(&home, "work", &shop, "Work", Duration::from_secs(3600));
+    let ts = (chrono::Utc::now() - chrono::TimeDelta::hours(2)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let mut body = std::fs::read_to_string(&path).unwrap();
+    for (n, cmd) in ["pkill -f srv", "grep -q x f"].iter().enumerate() {
+        body += &format!(
+            "{{\"type\":\"assistant\",\"timestamp\":\"{ts}\",\"message\":{{\"id\":\"m{n}\",\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"tu{n}\",\"name\":\"Bash\",\"input\":{{\"command\":\"{cmd}\"}}}}]}}}}\n\
+             {{\"type\":\"user\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"tu{n}\",\"content\":\"Exit code {}\",\"is_error\":true}}]}}}}\n",
+            if n == 0 { 144 } else { 1 }
+        );
+    }
+    body += &format!(
+        "{{\"type\":\"user\",\"timestamp\":\"{ts}\",\"cwd\":\"{shop}\",\"message\":{{\"role\":\"user\",\"content\":\"no, don't kill the server\"}}}}\n"
+    );
+    write_test_file(&path, &body);
+    sessions_set_mtime(&path);
+    // A failed command in the scope, and one outside it.
+    for cwd in [shop.as_str(), "/srv/elsewhere"] {
+        let mut rec = agent_store::CommandRecord {
+            started_at: Time::now(),
+            agent: "helper".into(),
+            cwd: cwd.into(),
+            args: vec!["history".into(), "--limit".into(), "5".into()],
+            exit_code: 1,
+            error: "unknown flag: --limit (see agent history --help for its flags)".into(),
+            ..Default::default()
+        };
+        env.store().log_command(&mut rec).unwrap();
+    }
+    run(&mut env, &["dream", "scope", "add", &shop]);
+
+    let out = run(&mut env, &["dream", "gather"]);
+    assert!(
+        out.contains("\nEvidence: 1 failed agent command (1 group), 1 failed tool call in 1 session (1 group), 1 correction.\n"),
+        "{out}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&run(&mut env, &["dream", "gather", "--json"])).unwrap();
+    let e = &v["evidence"];
+    assert_eq!(e["commands"][0]["what"], "agent history --limit");
+    assert_eq!(e["commands"][0]["sources"], serde_json::json!(["helper"]));
+    assert_eq!(e["tools"][0]["what"], "Bash pkill");
+    assert_eq!(e["tools"][0]["error"], "exit 144");
+    assert_eq!(e["tools"][0]["sources"], serde_json::json!(["claude:work"]));
+    assert_eq!(e["corrections"][0]["excerpt"], "no, don't kill the server");
+}
+
+/// Sets a transcript's mtime an hour back, so it reads as finished.
+fn sessions_set_mtime(path: &str) {
+    let t = std::time::SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options().write(true).open(path).unwrap().set_modified(t).unwrap();
+}
+
+#[test]
 fn digest_lists_the_scoped_projects() {
     assert_eq!(super::format_scope(&[]), "");
     let s = super::format_scope(&["/srv/app".to_string()]);

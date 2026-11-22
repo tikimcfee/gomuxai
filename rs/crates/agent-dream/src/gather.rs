@@ -224,6 +224,22 @@ pub struct Gathered {
     pub no_scope: bool,
     /// Why it is quiet, or runs with nothing new.
     pub reason: String,
+    /// The transcripts of the sessions taken, their subagents' with them:
+    /// what the evidence is read from.
+    #[serde(skip)]
+    pub transcripts: Vec<Transcript>,
+    /// What kept tripping agents in the batch (the CLI fills it in).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::evidence::Evidence>,
+}
+
+/// A transcript of a session a dream takes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Transcript {
+    /// The session it belongs to (a subagent's, its parent's): `harness:id`.
+    pub session: String,
+    pub harness: String,
+    pub path: String,
 }
 
 impl Gathered {
@@ -430,10 +446,31 @@ pub fn gather(src: &dyn Sources, cur: &Cursor) -> Result<Gathered> {
     items.extend(memory.into_values());
     items.extend(commits.into_values());
 
+    // The transcripts the evidence is read from: each session taken, and
+    // its subagents' under its key.
+    let mut transcripts: Vec<Transcript> = Vec::new();
+    for s in &fresh {
+        transcripts.push(Transcript {
+            session: s.key(),
+            harness: s.harness.clone(),
+            path: s.path.clone(),
+        });
+        for sub in sessions.iter().filter(|c| {
+            c.harness == s.harness && c.parent_session == s.session_id && !c.path.is_empty()
+        }) {
+            transcripts.push(Transcript {
+                session: s.key(),
+                harness: sub.harness.clone(),
+                path: sub.path.clone(),
+            });
+        }
+    }
+
     let mut g = Gathered {
         items,
         sessions_left,
         since: Some(since),
+        transcripts,
         ..Default::default()
     };
     if g.new_count() == 0 {

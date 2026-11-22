@@ -18,6 +18,11 @@ then gather looks back 7 days. An item a committed dream reviewed is left
 out until it changes. With nothing new, the dream would be quiet; with
 nothing in scope, there is nothing to gather: it says which.
 
+It also counts the evidence the digest's evidence section lists: failed
+agent commands run in the scope, failed tool calls in those sessions'
+transcripts, and messages that corrected an agent, grouped and ranked
+(--json has them whole).
+
 Usage:
   agent dream gather [flags]
 

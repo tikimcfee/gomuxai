@@ -100,6 +100,13 @@ Only current facts go in it; history stays in the other notes. Give it a
 source line like any fact you write, and rewrite it rather than append to
 it.
 
+Take the Tripwires from the digest's `## evidence` section: the failed
+`agent` commands, failed tool calls and corrections that recurred in this
+batch, each with its count and the sessions or agents it came from. A
+group seen in three or more sessions is a candidate; read those sessions
+to see what went wrong and what worked instead, and cite them. Groups seen
+in one session only are leads, not tripwires.
+
 ## Friction triage
 
 Mark an entry a duplicate only when it is the same problem, not just the
