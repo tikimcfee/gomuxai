@@ -213,8 +213,10 @@ fn test_rpc_spawn_model() {
     }
 }
 
-// spawn --effort goes on the CLI's launch line beside --model, ahead of agy's
-// exit report, and resume relaunches at the same effort.
+// spawn --effort goes on agy's launch line ahead of its exit report; with a
+// model, agy launches on that model's variant id (<model>-<effort>, the id
+// its transcripts record) instead, while the model and effort are kept
+// apart as the roster names them. Resume relaunches at the same effort.
 #[test]
 fn test_spawn_effort_is_passed_and_kept_on_resume() {
     require_termd!();
@@ -225,7 +227,6 @@ fn test_spawn_effort_is_passed_and_kept_on_resume() {
         &env,
         SpawnOptions {
             name: "e".into(),
-            model: "gemini-3.8-flash-high".into(),
             effort: "xhigh".into(),
             ..Default::default()
         },
@@ -238,6 +239,44 @@ fn test_spawn_effort_is_passed_and_kept_on_resume() {
         "launch line {launch:?}: want --effort before the exit report"
     );
     assert_eq!(env.state_value("e", STATE_KEY_EFFORT), "xhigh");
+
+    let spawned = spawn_fake_agy(
+        &env,
+        SpawnOptions {
+            name: "v".into(),
+            model: "gemini-4-carbon".into(),
+            effort: "high".into(),
+            ..Default::default()
+        },
+    );
+    let launch = spawned.launched_cmd();
+    assert!(
+        launch.contains(" --model 'gemini-4-carbon-high'") && !launch.contains("--effort"),
+        "launch line {launch:?}: want the variant id, no --effort"
+    );
+    assert_eq!(env.state_value("v", STATE_KEY_MODEL), "gemini-4-carbon");
+    assert_eq!(env.state_value("v", STATE_KEY_EFFORT), "high");
+
+    // A model that already names an effort, with --effort too, is refused.
+    let err = env
+        .service
+        .spawn(
+            &bg(),
+            SpawnOptions {
+                name: "c".into(),
+                backend: "agy".into(),
+                model: "gemini-4-carbon-high".into(),
+                effort: "xhigh".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains(
+            "model gemini-4-carbon-high already names effort high, and --effort says xhigh: for agy, give the model without it (--model gemini-4-carbon --effort xhigh)"
+        ),
+        "{err:#}"
+    );
 
     env.service
         .spawn(

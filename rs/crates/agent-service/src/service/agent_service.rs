@@ -21,7 +21,9 @@ use super::dialog::{dialog_from_detail, dialog_send_err};
 use super::events::EventPublisher;
 use super::handover::HandoverError;
 use super::held::{SendOptions, SendResult};
-use super::model::{effort_refusal, model_refusal, validate_effort, validate_model};
+use super::model::{
+    check_model_names_no_effort, effort_refusal, model_refusal, validate_effort, validate_model,
+};
 use super::remove_all;
 use super::slash::is_slash_command;
 use super::status::{
@@ -367,6 +369,13 @@ impl AgentService {
         }
         if !opts.effort.is_empty() && provider.as_effort_chooser().is_none() {
             return Err(effort_refusal(&opts.backend));
+        }
+        if let Some(ec) = provider.as_effort_chooser()
+            && !opts.model.is_empty()
+            && !opts.effort.is_empty()
+            && ec.model_at_effort(&opts.model, &opts.effort).is_some()
+        {
+            check_model_names_no_effort(&opts.backend, &opts.model, &opts.effort)?;
         }
         self.spawn_with_provider(ctx, &opts, &internal, provider.as_ref())
     }
@@ -734,13 +743,22 @@ impl AgentService {
         {
             cmd = sn.with_session_name(&cmd, name);
         }
+        // A CLI whose models come one per effort (agy) launches on that
+        // variant's id; the model and effort are recorded apart either way,
+        // as the roster names them (agy/gemini-4-carbon@high).
+        let variant = match provider.as_effort_chooser() {
+            Some(ec) if !opts.model.is_empty() && !opts.effort.is_empty() => {
+                ec.model_at_effort(&opts.model, &opts.effort)
+            }
+            _ => None,
+        };
         if let Some(mc) = provider.as_model_chooser()
             && !opts.model.is_empty()
         {
             // Recorded for resume, which relaunches on it.
             self.set_state(name, STATE_KEY_MODEL, &opts.model)
                 .with_context(|| format!("storing {STATE_KEY_MODEL}"))?;
-            cmd = mc.with_model(&cmd, &opts.model);
+            cmd = mc.with_model(&cmd, variant.as_deref().unwrap_or(&opts.model));
         }
         if let Some(ec) = provider.as_effort_chooser()
             && !opts.effort.is_empty()
@@ -748,7 +766,9 @@ impl AgentService {
             // Recorded for resume, which relaunches at it.
             self.set_state(name, STATE_KEY_EFFORT, &opts.effort)
                 .with_context(|| format!("storing {STATE_KEY_EFFORT}"))?;
-            cmd = ec.with_effort(&cmd, &opts.effort);
+            if variant.is_none() {
+                cmd = ec.with_effort(&cmd, &opts.effort);
+            }
         }
         if let Some(ip) = provider.as_instructions_provider() {
             let path = self.write_instructions(name, &opts.spawned_by, provider.name())?;

@@ -382,9 +382,18 @@ impl ModelChooser for AgyBackend {
 }
 
 impl EffortChooser for AgyBackend {
-    /// Runs agy at `effort` (--effort).
+    /// Runs agy at `effort` (--effort), on the model it would pick.
     fn with_effort(&self, launch_cmd: &str, effort: &str) -> String {
         self.insert_before_exit(launch_cmd, &format!(" --effort {}", shell_quote(effort)))
+    }
+
+    /// agy names each effort of a model as its own id, `<model>-<effort>`
+    /// (gemini-4-carbon-high, gemini-4-neon-xhigh): the id its transcripts
+    /// record, and one --model takes as is. A base name with --effort is
+    /// documented to pick the same variant, but an id agy doesn't know only
+    /// warns and runs its default model, so spawn passes the id it records.
+    fn model_at_effort(&self, model: &str, effort: &str) -> Option<String> {
+        Some(format!("{model}-{effort}"))
     }
 }
 

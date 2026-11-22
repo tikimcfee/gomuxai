@@ -1061,6 +1061,9 @@ impl EffortChooser for AgyFake {
             None => self.inner.with_effort(launch_cmd, effort),
         }
     }
+    fn model_at_effort(&self, model: &str, effort: &str) -> Option<String> {
+        self.inner.model_at_effort(model, effort)
+    }
 }
 
 impl PromptFlagProvider for AgyFake {

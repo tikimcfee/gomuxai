@@ -189,6 +189,15 @@ pub trait ModelChooser {
 pub trait EffortChooser {
     /// Returns `launch_cmd` changed to run at `effort`.
     fn with_effort(&self, launch_cmd: &str, effort: &str) -> String;
+
+    /// The model id to launch when both a model and an effort are given,
+    /// for a CLI whose models come in one variant per effort, or None to
+    /// pass the model and --effort as they are. agy's variants are
+    /// `<model>-<effort>` (gemini-4-carbon-high), which --model takes as
+    /// they are.
+    fn model_at_effort(&self, _model: &str, _effort: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Implemented by backends whose CLI takes a display name for the session at
