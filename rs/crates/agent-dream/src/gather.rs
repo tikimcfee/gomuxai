@@ -411,6 +411,35 @@ pub fn gather(src: &dyn Sources, cur: &Cursor) -> Result<Gathered> {
     Ok(g)
 }
 
+/// A memory directory's fingerprint, and how many `.md` files it has:
+/// `<files>:<bytes>@<newest mtime in ns>` over its top-level `.md` files.
+/// None when it isn't a directory. Gather and a dream's own memory writes
+/// both use it, so a dream's write is recorded at the fingerprint the next
+/// gather sees.
+pub fn memory_fingerprint(dir: &Path) -> Option<(usize, String)> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let (mut files, mut bytes, mut newest) = (0usize, 0u64, 0i128);
+    for e in entries.flatten() {
+        if e.path().extension().is_none_or(|x| x != "md") {
+            continue;
+        }
+        let Ok(md) = e.metadata() else { continue };
+        if !md.is_file() {
+            continue;
+        }
+        files += 1;
+        bytes += md.len();
+        let at = md
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as i128)
+            .unwrap_or_default();
+        newest = newest.max(at);
+    }
+    Some((files, format!("{files}:{bytes}@{newest}")))
+}
+
 fn or_dash(s: &str) -> &str {
     if s.is_empty() { "-" } else { s }
 }

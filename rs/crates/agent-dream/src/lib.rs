@@ -3,6 +3,7 @@
 
 pub mod gather;
 pub mod memory;
+pub mod review;
 pub mod schedule;
 pub mod scrub;
 

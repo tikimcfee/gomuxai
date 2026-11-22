@@ -389,7 +389,9 @@ pub enum PutOutcome {
 /// Writes `content` to `file` in `dir`, if the file is still at `expect_version`
 /// (NEW for a file that doesn't exist yet). Refuses content without valid
 /// frontmatter, a new or changed fact file with no source line, a rewrite that
-/// loses a citation the old file had, and an index rewrite that drops more than a
+/// loses a citation the file had when the dream opened (its copy in
+/// `snapshot_dir`; with no snapshot there, the file as it is now), and an
+/// index rewrite that drops more than a
 /// quarter of its lines. The prior file is saved under `snapshot_dir` first, and
 /// the write is atomic.
 pub fn put(
@@ -415,7 +417,15 @@ pub fn put(
     if file == INDEX {
         check_index_rewrite(old.as_ref().map(|(c, _)| c.as_str()), content)?;
     } else {
-        check_fact_rewrite(file, old.as_ref().map(|(c, _)| c.as_str()), content)?;
+        // The citations to keep are the ones the file had when the dream
+        // opened: one this dream added it may take back. With no snapshot,
+        // the file as it is now.
+        let baseline = if snapshot_dir.join("MANIFEST").exists() {
+            fs::read_to_string(snapshot_dir.join("files").join(file)).ok()
+        } else {
+            old.as_ref().map(|(c, _)| c.clone())
+        };
+        check_fact_rewrite(file, baseline.as_deref(), content)?;
     }
     if let Some((old_content, _)) = &old {
         save_history(snapshot_dir, file, old_content.as_bytes())?;
