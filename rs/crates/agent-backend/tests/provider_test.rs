@@ -118,7 +118,7 @@ fn test_registry_create_provider() {
         .unwrap();
     assert_eq!(
         p_agy.launch_command(),
-        r#"env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --settings '{"showFeedbackSurvey":false}' --dangerously-skip-permissions"#
+        r#"env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY agy --settings '{"queuedMessages":"send-immediately","showFeedbackSurvey":false}' --dangerously-skip-permissions"#
     );
 }
 

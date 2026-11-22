@@ -457,6 +457,8 @@ impl Handler for EvilHandler {
                 typed: 0,
                 input_blocked: t.clone(),
                 unchecked: t.clone(),
+                already_delivered_via: t.clone(),
+                ..Default::default()
             }));
         }
         anyhow::bail!("{}", self.text)

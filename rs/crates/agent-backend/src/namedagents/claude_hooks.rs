@@ -43,10 +43,20 @@ impl GlobalHooker for ClaudeBackend {
     fn hooks_installed(&self, binary: &str) -> anyhow::Result<()> {
         let path = claude_settings_path()?;
         let r = claude_hooks_status(&path, binary)?;
+        let has_current = r.events.values().any(|&s| s == HookState::Current);
         let missing: Vec<&str> = CLAUDE_HOOK_EVENTS
             .iter()
             .copied()
-            .filter(|e| r.events.get(*e).copied().unwrap_or_default() != HookState::Current)
+            .filter(|e| {
+                let st = r.events.get(*e).copied().unwrap_or_default();
+                // Hosts upgrading from 13-event settings before re-running
+                // `agent hooks install` still have Stop installed, so let spawn
+                // degrade gracefully to Stop rather than failing.
+                if *e == "PostToolBatch" && st == HookState::Missing && has_current {
+                    return false;
+                }
+                st != HookState::Current
+            })
             .collect();
         let live = live_others(&r.others);
         if !missing.is_empty() && !live.is_empty() {
@@ -200,6 +210,13 @@ impl HookProvider for ClaudeBackend {
                 r.prompt = PromptChange::Resolved;
                 r.call_key = call_key(&p.tool_name, &input);
             }
+            "PostToolBatch" => {
+                // Fires once after every tool call in a batch resolves, right
+                // before the next model call: delivers held messages mid-turn
+                // without recording anything when nothing is held.
+                r.status = Status::Processing;
+                r.delivery_only = true;
+            }
             "PermissionRequest" => {
                 r.status = Status::Waiting;
                 r.detail = format!("permission: {}", tool_summary(&p.tool_name, &input));
@@ -273,16 +290,16 @@ fn hook_specific_output(fields: &[(&str, &str)]) -> Vec<u8> {
 }
 
 impl HookDeliverer for ClaudeBackend {
-    /// Claude's Stop, with or without background work running. Its
-    /// additionalContext continues the turn. Nothing fires when a turn is
-    /// interrupted (Esc, a deny), and later hooks of a running turn
-    /// (PostToolUse) only add context the model was seen to ignore.
+    /// Claude's PostToolBatch (mid-turn, main session only — never let a
+    /// subagent steal the main agent's held messages) and Stop (turn-end
+    /// backstop, covering 0-tool turns and messages arriving during final
+    /// generation).
     fn can_deliver(&self, r: &HookReport) -> bool {
-        r.event == "Stop"
+        r.event == "Stop" || (r.event == "PostToolBatch" && r.agent.is_empty())
     }
 
     fn delivery_point(&self) -> String {
-        "its turn ends".to_string()
+        "its next tool batch or turn ends".to_string()
     }
 
     /// Returns the messages as Stop's additionalContext, under a line saying
@@ -300,6 +317,60 @@ impl HookDeliverer for ClaudeBackend {
         };
         let context = format!("{head}\n\n{}", messages.join("\n\n"));
         hook_specific_output(&[("hookEventName", "Stop"), ("additionalContext", &context)])
+    }
+
+    /// Coalesced delivery output for `PostToolBatch` (mid-turn, with a short
+    /// user-visible `systemMessage` banner) or `Stop` (end of turn).
+    fn delivery_output_for(&self, event: &str, batch: &[crate::CoalescedMessage]) -> Vec<u8> {
+        let context = crate::format_coalesced_batch(batch, true);
+        if context.is_empty() {
+            return Vec::new();
+        }
+        let hook_event = if event == "PostToolBatch" {
+            "PostToolBatch"
+        } else {
+            "Stop"
+        };
+        if hook_event == "PostToolBatch" {
+            let mut inner = BTreeMap::new();
+            inner.insert("additionalContext", context);
+            inner.insert("hookEventName", hook_event.to_string());
+            let mut outer = BTreeMap::new();
+            outer.insert(
+                "hookSpecificOutput",
+                serde_json::to_value(inner).unwrap_or_default(),
+            );
+            outer.insert(
+                "systemMessage",
+                serde_json::Value::String(crate::mid_turn_banner(batch)),
+            );
+            return marshal(&outer);
+        }
+        hook_specific_output(&[
+            ("hookEventName", hook_event),
+            ("additionalContext", &context),
+        ])
+    }
+
+    /// On main-session PreToolUse with an interrupt-urgency message waiting,
+    /// denies the tool call AND sets `continue: false` + `stopReason` so
+    /// Claude halts the turn cleanly rather than retrying the blocked tool.
+    fn interrupt_output(&self, r: &HookReport, reason: &str) -> Option<Vec<u8>> {
+        if r.event != "PreToolUse" || !r.agent.is_empty() {
+            return None;
+        }
+        let mut inner = BTreeMap::new();
+        inner.insert("hookEventName", "PreToolUse");
+        inner.insert("permissionDecision", "deny");
+        inner.insert("permissionDecisionReason", reason);
+        let mut outer = BTreeMap::new();
+        outer.insert("continue", serde_json::Value::Bool(false));
+        outer.insert(
+            "hookSpecificOutput",
+            serde_json::to_value(inner).unwrap_or_default(),
+        );
+        outer.insert("stopReason", serde_json::Value::String(reason.to_string()));
+        Some(marshal(&outer))
     }
 }
 

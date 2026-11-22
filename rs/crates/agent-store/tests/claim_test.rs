@@ -130,3 +130,110 @@ fn claim_each_message_once() {
         );
     }
 }
+
+#[test]
+fn replace_supersede_later_filter_and_requeue() {
+    let store = setup_test_db();
+    store
+        .create_agent(&Agent {
+            name: "worker".into(),
+            session_name: "s".into(),
+            backend: "claude".into(),
+            created_at: Time::now(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // Pending messages across topics, plus a `later` chain whose superseded
+    // predecessor must NOT leak into a mid-turn `NonLater` claim.
+    let mut m1 = Message {
+        sender_id: "lead".into(),
+        receiver_id: "worker".into(),
+        content: "try A".into(),
+        status: MESSAGE_STATUS_PENDING,
+        created_at: Time::now(),
+        topic: "plan".into(),
+        ..Default::default()
+    };
+    let (sup, already) = store.create_message_replacing(&mut m1, false, 0).unwrap();
+    assert!(sup.is_empty() && already.is_none());
+
+    let mut m_later_old = Message {
+        sender_id: "review".into(),
+        receiver_id: "worker".into(),
+        content: "end-of-turn v1".into(),
+        status: MESSAGE_STATUS_PENDING,
+        created_at: Time::now(),
+        urgency: URGENCY_LATER.into(),
+        ..Default::default()
+    };
+    store
+        .create_message_replacing(&mut m_later_old, false, 0)
+        .unwrap();
+
+    let mut m_later_new = Message {
+        sender_id: "review".into(),
+        receiver_id: "worker".into(),
+        content: "end-of-turn v2".into(),
+        status: MESSAGE_STATUS_PENDING,
+        created_at: Time::now(),
+        urgency: URGENCY_LATER.into(),
+        ..Default::default()
+    };
+    let (sup_later, _) = store
+        .create_message_replacing(&mut m_later_new, true, 0)
+        .unwrap();
+    assert_eq!(sup_later, vec![m_later_old.id]);
+
+    let mut m2 = Message {
+        sender_id: "lead".into(),
+        receiver_id: "worker".into(),
+        content: "switch to B".into(),
+        status: MESSAGE_STATUS_PENDING,
+        created_at: Time::now(),
+        topic: "plan".into(),
+        ..Default::default()
+    };
+    let (sup, _) = store.create_message_replacing(&mut m2, true, 0).unwrap();
+    assert_eq!(sup, vec![m1.id]);
+
+    // Mid-turn `NonLater` claims m2 + its superseded m1, leaving m_later_new + m_later_old!
+    let mid_batch = store
+        .claim_pending_batch_matching("worker", ClaimFilter::NonLater, "PostToolBatch", None)
+        .unwrap();
+    let mid_ids: Vec<i64> = mid_batch.iter().map(|m| m.id).collect();
+    assert_eq!(mid_ids, vec![m1.id, m2.id]);
+
+    // Requeue restores m2 to pending and m1's delivery_batch to 0, then re-claim.
+    store.requeue_batch(&mid_batch).unwrap();
+    let mid_batch2 = store
+        .claim_pending_batch_matching("worker", ClaimFilter::NonLater, "PostToolBatch", None)
+        .unwrap();
+    assert_eq!(
+        mid_batch2.iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![m1.id, m2.id]
+    );
+
+    // Calling `--replace` when nothing is pending from `lead` reports `m2` as already delivered!
+    let mut m3 = Message {
+        sender_id: "lead".into(),
+        receiver_id: "worker".into(),
+        content: "switch to C".into(),
+        status: MESSAGE_STATUS_PENDING,
+        created_at: Time::now(),
+        topic: "plan".into(),
+        ..Default::default()
+    };
+    let (sup3, already3) = store.create_message_replacing(&mut m3, true, 0).unwrap();
+    assert!(sup3.is_empty());
+    assert_eq!(already3.unwrap().id, m2.id);
+
+    // Turn-end `All` claims m_later_old + m_later_new + m3 together.
+    let end_batch = store
+        .claim_pending_batch_matching("worker", ClaimFilter::All, "Stop", None)
+        .unwrap();
+    assert_eq!(
+        end_batch.iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![m_later_old.id, m_later_new.id, m3.id]
+    );
+}

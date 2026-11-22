@@ -626,6 +626,7 @@ mod tests {
             json,
             verbose,
             args: words(&[target]),
+            ..Default::default()
         }
     }
 
@@ -641,6 +642,7 @@ mod tests {
             force: false,
             now: false,
             args: words(a),
+            ..Default::default()
         }
     }
 

@@ -16,10 +16,9 @@ pub const DOC: Doc = Doc {
     short: "Queue a message, delivered when the agent is idle",
     long: r#"Queue adds a message to the agent's inbox, for delivery when it is ready.
 
-For a Claude or agy agent, queue does what "agent send" does, and needs no
-watcher: the message is typed in if the agent is at its prompt, and
-otherwise held until a hook hands it over (Claude's Stop, agy's
-PostInvocation).
+For a Claude or agy agent, queue needs no watcher: the message is typed in if
+the agent is at its prompt, and otherwise held with --later urgency until its
+current turn finishes completely (Claude's Stop, agy's Stop).
 
 For other agents, the watcher ("agent watch") delivers queued messages when
 the agent's status is idle, or error (a failed turn, back at its prompt). It
@@ -87,8 +86,8 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
     };
     let svc = ctx.service()?;
     if svc.holds_messages_named(name) {
-        // Send already holds a message until the agent is free, and needs no
-        // watcher to deliver it.
+        // Queue holds until the agent's current turn finishes (`later`), even
+        // on backends whose default `send` delivers mid-turn.
         let res = svc.send(
             &Context::background(),
             name,
@@ -96,6 +95,8 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
             SendOptions {
                 now: false,
                 from: sender.clone(),
+                urgency: "later".to_string(),
+                ..Default::default()
             },
         )?;
         return print_sent(ctx, name, &res);

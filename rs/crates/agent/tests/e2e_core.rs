@@ -568,7 +568,7 @@ fn e2e_skill_install_under_the_temp_home() {
     assert_eq!(
         o.stdout,
         format!(
-            "Installed the agent skill for claude: {}\n  its hook in {}: 13 event(s) added, 0 pointed at this binary\n",
+            "Installed the agent skill for claude: {}\n  its hook in {}: 14 event(s) added, 0 pointed at this binary\n",
             skill.display(),
             settings.display()
         )

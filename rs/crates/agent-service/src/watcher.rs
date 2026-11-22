@@ -14,11 +14,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use agent_base::gostd::{strconv, time as gotime};
-use agent_store::{Agent, MESSAGE_STATUS_FAILED, MESSAGE_STATUS_PENDING, Message, Store};
+#[cfg(test)]
+use agent_store::MESSAGE_STATUS_PENDING;
+use agent_store::{Agent, MESSAGE_STATUS_FAILED, Message, Store};
 
 use crate::service::{
     AGENT_STATUS_ENDED, AGENT_STATUS_ERROR, AGENT_STATUS_IDLE, AGENT_STATUS_UNKNOWN, AgentService,
-    Context, SendOptions,
+    Context,
 };
 
 /// MAX_RETRIES is how many failed sends a message gets before it fails.
@@ -401,41 +403,59 @@ impl Inner {
     }
 
     fn deliver_message(&self, ctx: &Context, agent_name: &str, msg: &Message, logger: &Logger) {
-        // Claim it first: an agent's Stop hook, a send, or another watcher may
-        // be delivering the same message (see AgentService::send).
-        let claimed = match self.storage.claim_message(msg.id) {
+        // Claim every pending message (and any unreported superseded rows)
+        // atomically so they arrive coalesced in one prompt instead of one
+        // tick at a time.
+        let claimed = match self
+            .storage
+            .claim_pending_batch(agent_name, "watcher", None)
+        {
             Ok(c) => c,
             Err(e) => {
                 logger.error("failed to claim message", &[("error", &GoError(&e))]);
                 return;
             }
         };
-        if !claimed {
+        if claimed.is_empty() {
             self.clear_state(msg.id);
             logger.debug("message already delivered", &[]);
             return;
         }
-        let opts = SendOptions {
-            now: true,
-            ..Default::default()
-        };
-        if let Err(e) = self.service.send(ctx, agent_name, &msg.content, opts) {
+        let now = agent_store::Time::now();
+        let batch = crate::to_coalesced(&claimed, &now);
+        let text = agent_backend::format_coalesced_batch(&batch, false);
+        let res = self
+            .service
+            .check_can_send(&match self.service.get_agent(agent_name) {
+                Ok(a) => a,
+                Err(e) => {
+                    logger.error("failed to look up agent", &[("error", &GoError(&e))]);
+                    let _ = self.storage.requeue_batch(&claimed);
+                    self.handle_delivery_failure(msg, logger);
+                    return;
+                }
+            })
+            .and_then(|_| self.service.send_message(ctx, agent_name, &text, true));
+        if let Err(e) = res {
             logger.error("failed to send message", &[("error", &GoError(&e))]);
-            if let Err(e) = self
-                .storage
-                .update_message_status(msg.id, MESSAGE_STATUS_PENDING)
+            if e.downcast_ref::<crate::service::UnsubmittedError>()
+                .is_none()
+                && e.downcast_ref::<crate::service::HandoverError>().is_none()
+                && let Err(re) = self.storage.requeue_batch(&claimed)
             {
                 logger.error(
                     "failed to update message status",
-                    &[("error", &GoError(&e))],
+                    &[("error", &GoError(&re))],
                 );
             }
             self.handle_delivery_failure(msg, logger);
             return;
         }
 
-        // Clean up state
-        self.clear_state(msg.id);
+        // Clean up state for all claimed messages
+        for m in &claimed {
+            self.clear_state(m.id);
+        }
         logger.info("message delivered successfully", &[]);
     }
 

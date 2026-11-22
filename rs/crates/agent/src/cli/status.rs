@@ -70,10 +70,17 @@ An agent on another host is addressed as name@host (needs a running bus)."#,
 };
 
 /// The flags and arguments of `agent status`.
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct Args {
     #[arg(long = "json", help = "Print the status and its details as JSON")]
     pub json: bool,
+    #[arg(
+        long = "receipt",
+        value_name = "int",
+        default_value_t = 0,
+        help = "Show the delivery or superseding receipt for message ID (local agents)",
+    )]
+    pub receipt: i64,
     #[arg(long = "verbose", short = 'v', help = "Show source, last event, and detail")]
     pub verbose: bool,
     /// The positional arguments, checked against DOC.args.
@@ -88,6 +95,36 @@ pub fn def() -> Def {
 pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
     let name = &args.args[0];
     let (r, remote) = parse_target(ctx, name)?;
+
+    if args.receipt > 0 {
+        if remote {
+            anyhow::bail!("--receipt is stored per host; query it on {}", r.host);
+        }
+        let rec = ctx.service()?.message_receipt(&r.name, args.receipt)?;
+        if args.json {
+            return ctx.print_json(&rec);
+        }
+        let mut line = format!(
+            "message #{} to {} (from {}): {}",
+            rec.id, rec.receiver_id, rec.sender_id, rec.status
+        );
+        if rec.superseded_by > 0 {
+            line.push_str(&format!(", superseded by #{}", rec.superseded_by));
+        }
+        if !rec.delivery_via.is_empty() {
+            line.push_str(&format!(" via {}", rec.delivery_via));
+        }
+        if rec.delivery_batch > 0 && rec.delivery_batch != rec.id {
+            line.push_str(&format!(" (batch #{})", rec.delivery_batch));
+        }
+        if !rec.delivered_at.is_zero() {
+            line.push_str(&format!(" at {}", rec.delivered_at.format_rfc3339()));
+        } else if !rec.urgency.is_empty() && rec.status == "pending" {
+            line.push_str(&format!(" (urgency: {})", rec.urgency));
+        }
+        line.push('\n');
+        return ctx.write_out(&line);
+    }
 
     let info = if remote {
         remote_status(ctx, &r)?

@@ -169,6 +169,18 @@ impl Handler for RpcHandler {
     }
 
     fn send(&self, ctx: &Context, req: SendRequest) -> Result<Option<SendResponse>> {
+        let inferred = sender_from_message(&req.message);
+        let from = if !req.from.is_empty() {
+            // Never let a remote agent spoof `from = "user"` to bypass
+            // `check_can_interrupt` when the message header names an agent.
+            if req.from == "user" && inferred != "user" && inferred != "remote" {
+                inferred
+            } else {
+                req.from.clone()
+            }
+        } else {
+            inferred
+        };
         let res = self
             .s
             .send(
@@ -177,7 +189,11 @@ impl Handler for RpcHandler {
                 &req.message,
                 SendOptions {
                     now: req.now,
-                    from: "remote".into(),
+                    from,
+                    urgency: req.urgency,
+                    replace: req.replace,
+                    supersede: req.supersede,
+                    topic: req.topic,
                 },
             )
             .map_err(remote_err)?;
@@ -191,6 +207,11 @@ impl Handler for RpcHandler {
 
             input_blocked: res.input_blocked,
             unchecked: res.unchecked,
+            message_id: res.message_id,
+            superseded_ids: res.superseded_ids,
+            already_delivered_id: res.already_delivered_id,
+            already_delivered_via: res.already_delivered_via,
+            interrupted: res.interrupted,
         }))
     }
 
@@ -415,4 +436,20 @@ pub fn permission_response_name(resp: PermissionResponse) -> Result<String> {
         Some((name, _)) => Ok(name.to_string()),
         None => bail!("unknown permission response {}", resp as i32),
     }
+}
+
+/// Extracts the sender identity from a `[from <who>] ` prefix when an older
+/// remote peer omits `SendRequest.from`.
+fn sender_from_message(msg: &str) -> String {
+    if let Some(rest) = msg.strip_prefix("[from ")
+        && let Some((who, _)) = rest.split_once("] ")
+    {
+        if who.starts_with("a person on ") || who.starts_with("a ") || who.starts_with("an ") {
+            return "user".to_string();
+        }
+        if !who.is_empty() && !who.contains(char::is_whitespace) {
+            return who.to_string();
+        }
+    }
+    "remote".to_string()
 }

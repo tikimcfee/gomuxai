@@ -452,7 +452,7 @@ static CLAUDE_PLAIN_COMMAND: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(/[a-z][a-z0-9_:-]*)(?:[\t\n\f\r ]|$)").unwrap());
 
 static CLAUDE_DELIVERED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(A message arrived|[0-9]+ messages arrived) while you were working").unwrap()
+    Regex::new(r"^(A message arrived|An urgent message arrived|[0-9]+ messages arrived) while you were working").unwrap()
 });
 
 impl ClaudeLine<'_> {
@@ -902,7 +902,9 @@ impl ClaudeLine<'_> {
                     return;
                 }
                 p.text = parts.join("\n");
-                p.origin = if a.hook_event == "Stop" && CLAUDE_DELIVERED.is_match(&p.text) {
+                p.origin = if (a.hook_event == "Stop" || a.hook_event == "PostToolBatch")
+                    && CLAUDE_DELIVERED.is_match(&p.text)
+                {
                     ORIGIN_DELIVERED.to_string()
                 } else {
                     ORIGIN_SYSTEM.to_string()

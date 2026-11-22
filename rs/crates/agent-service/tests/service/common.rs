@@ -592,6 +592,16 @@ impl HookDeliverer for ClaudeFake {
     fn delivery_output(&self, messages: &[String]) -> Vec<u8> {
         self.inner.delivery_output(messages)
     }
+    fn delivery_output_for(
+        &self,
+        event: &str,
+        batch: &[agent_backend::CoalescedMessage],
+    ) -> Vec<u8> {
+        self.inner.delivery_output_for(event, batch)
+    }
+    fn interrupt_output(&self, r: &HookReport, reason: &str) -> Option<Vec<u8>> {
+        self.inner.interrupt_output(r, reason)
+    }
     fn delivery_point(&self) -> String {
         self.inner.delivery_point()
     }
@@ -994,6 +1004,16 @@ impl HookDeliverer for AgyFake {
     }
     fn delivery_output(&self, messages: &[String]) -> Vec<u8> {
         self.inner.delivery_output(messages)
+    }
+    fn delivery_output_for(
+        &self,
+        event: &str,
+        batch: &[agent_backend::CoalescedMessage],
+    ) -> Vec<u8> {
+        self.inner.delivery_output_for(event, batch)
+    }
+    fn interrupt_output(&self, r: &HookReport, reason: &str) -> Option<Vec<u8>> {
+        self.inner.interrupt_output(r, reason)
     }
     fn delivery_point(&self) -> String {
         self.inner.delivery_point()

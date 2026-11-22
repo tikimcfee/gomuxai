@@ -129,8 +129,14 @@ fn test_send_held_until_stop_delivers() {
         "worker",
         r#"{"hook_event_name":"Stop","last_assistant_message":"interim"}"#,
     );
-    let want = "2 messages arrived while you were working, oldest first:\n\n[from lead@h] first\n\n[from a person on h] second";
-    assert_eq!(additional_context(out), want);
+    let ctx_text = additional_context(out);
+    assert!(
+        ctx_text.starts_with("2 messages arrived while you were working, oldest first")
+            && ctx_text.contains("[from lead@h] first")
+            && ctx_text.contains("[from a person on h] second")
+            && ctx_text.find("[from lead@h] first") < ctx_text.find("[from a person on h] second"),
+        "unexpected coalesced Stop output: {ctx_text}"
+    );
     assert_eq!(
         env.service.held_count("worker"),
         0,
@@ -529,4 +535,576 @@ fn test_deliver_held_grace_starts_when_input_empties() {
         since >= Duration::from_millis(300),
         "typed {since:?} after the input line emptied, before the grace"
     );
+}
+
+// Claude PostToolBatch delivers held messages mid-turn (coalesced, keeping full
+// superseded text, skipping `--later` messages), ignores empty/subagent batches,
+// and PreToolUse interrupt denies the tool, marks the turn interrupted, and
+// lets deliver_held type with 0s grace.
+#[test]
+fn test_claude_post_tool_batch_coalescing_full_superseded_text_and_pre_tool_interrupt() {
+    require_termd!();
+    let mut env = setup_test_env();
+    let fake = spawn_holding(&mut env, "worker");
+    let mut a = env.store.get_agent("worker").unwrap().unwrap();
+    a.spawned_by = "lead".into();
+    env.store.replace_agent(&a).unwrap();
+    busy(&env, &fake, "worker");
+
+    hook_as(
+        &env,
+        &fake,
+        "worker",
+        r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cargo test"}}"#,
+    );
+    assert!(
+        stop_hook(
+            &env,
+            &fake,
+            "worker",
+            r#"{"hook_event_name":"PostToolBatch"}"#
+        )
+        .is_none(),
+        "empty PostToolBatch must print nothing"
+    );
+    assert_eq!(
+        env.state_value("worker", STATE_KEY_DETAIL),
+        "Bash: cargo test"
+    );
+
+    // `--later` message must skip mid-turn PostToolBatch.
+    let later = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from peer@h] run clippy at end of turn",
+            SendOptions {
+                from: "peer".into(),
+                urgency: "later".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(later.held && later.held_until == "its turn ends");
+
+    // Multi-line draft replaced by a relative follow-up: full superseded text is kept!
+    let r1 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] Step 1: refactor auth.rs\nStep 2: keep Option<Token> on parse failure",
+            SendOptions {
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let r2 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] Skip Step 1, only do Step 2 from above",
+            SendOptions {
+                from: "lead".into(),
+                replace: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(r2.superseded_ids, vec![r1.message_id]);
+    assert_eq!(
+        r2.held_count, 2,
+        "only active pending messages (later + r2) counted"
+    );
+
+    // Subagent PostToolBatch must NOT steal main session messages.
+    assert!(
+        stop_hook(
+            &env,
+            &fake,
+            "worker",
+            r#"{"hook_event_name":"PostToolBatch","agent_id":"sub-agent-1"}"#
+        )
+        .is_none()
+    );
+
+    // Main-session PostToolBatch claims r2 + superseded r1, leaving `later` for Stop.
+    let out = stop_hook(
+        &env,
+        &fake,
+        "worker",
+        r#"{"hook_event_name":"PostToolBatch"}"#,
+    )
+    .expect("PostToolBatch output");
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PostToolBatch");
+    assert_eq!(
+        v["systemMessage"],
+        "[gomuxai] Delivered 1 held message (1 superseded) mid-turn"
+    );
+    let ctx_str = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        ctx_str.contains("Step 2: keep Option<Token> on parse failure"),
+        "full superseded multiline text must be preserved:\n{ctx_str}"
+    );
+    assert!(ctx_str.contains(&format!(
+        "[SUPERSEDED by #{} — context only, do NOT act on this]",
+        r2.message_id
+    )));
+    assert_eq!(env.service.held_count("worker"), 1, "--later still held");
+
+    // `--replace` after r2 was delivered warns with `already_delivered_id == r2.message_id`!
+    let r3 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "echo urgent_stop-$((20+2))",
+            SendOptions {
+                from: "lead".into(),
+                replace: true,
+                urgency: "interrupt".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(r3.already_delivered_id, r2.message_id);
+    assert_eq!(r3.already_delivered_via, "PostToolBatch");
+
+    // PreToolUse with interrupt pending returns deny + continue:false AND flips
+    // reported status to idle/interrupted so deliver_held delivers with 0s grace
+    // even when native registry status is unavailable!
+    fake.set(|s| {
+        s.native_found = false;
+    });
+    let pre_out = stop_hook(
+        &env,
+        &fake,
+        "worker",
+        r#"{"hook_event_name":"PreToolUse","cwd":"/work","tool_name":"Bash","tool_input":{"command":"/opt/x/agent list"}}"#,
+    )
+    .expect("PreToolUse interrupt deny");
+    let pv: serde_json::Value = serde_json::from_slice(&pre_out).unwrap();
+    assert_eq!(pv["continue"], false);
+    assert_eq!(pv["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(env.state_value("worker", STATE_KEY_STATUS), "idle");
+
+    let (typed, err) = env.service.deliver_held(
+        &bg(),
+        "worker",
+        &DeliverOptions {
+            wait: true,
+            interval: Duration::from_millis(20),
+            grace: Duration::from_secs(10),
+        },
+    );
+    assert!(typed == 2 && err.is_ok(), "typed={typed}, err={err:?}");
+    wait_for_output(&env, "worker", "urgent_stop-22");
+}
+
+// `send --now` always records a SQLite receipt ID, sweeps held messages ahead
+// of itself when the input line is empty, and leaves held messages waiting when
+// a human has draft text in the input box.
+#[test]
+fn test_send_now_records_receipt_and_sweeps_held_messages_when_input_empty() {
+    require_termd!();
+    let mut env = setup_test_env();
+    let fake = spawn_holding(&mut env, "worker");
+    busy(&env, &fake, "worker");
+
+    // 1. `held_count == 0` -> `--now` still records `message_id > 0` in SQLite!
+    let r0 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "echo now_zero-$((10+1))",
+            SendOptions {
+                now: true,
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(r0.message_id > 0 && r0.typed == 1);
+    let rec0 = env
+        .service
+        .message_receipt("worker", r0.message_id)
+        .unwrap();
+    assert_eq!(rec0.status, "delivered");
+    assert_eq!(rec0.delivery_via, "now");
+
+    // 2. Pending message held -> `--now` with empty input sweeps and coalesces it!
+    let r1 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "echo held_before-$((10+2))",
+            SendOptions {
+                from: "peer".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(r1.held);
+    let r2 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "echo now_sweeps-$((10+3))",
+            SendOptions {
+                now: true,
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(r2.message_id > 0 && !r2.held && r2.typed == 2);
+    assert_eq!(env.service.held_count("worker"), 0);
+    let screen = wait_for_output(&env, "worker", "now_sweeps-13");
+    assert!(screen.find("held_before-12") < screen.find("now_sweeps-13"));
+}
+
+// Idle `send` records real message IDs and applies `--replace` / `--supersede`
+// against pending messages left over from an interrupted turn.
+#[test]
+fn test_idle_send_applies_replace_with_real_message_id() {
+    require_termd!();
+    let mut env = setup_test_env();
+    let fake = spawn_holding(&mut env, "worker");
+    busy(&env, &fake, "worker");
+
+    let r1 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "echo stale_draft",
+            SendOptions {
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(r1.held);
+
+    // Turn ends via Esc (native status turns idle with r1 still pending).
+    fake.set(|s| s.native = Status::Idle);
+    let r2 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "echo fresh_plan-$((30+4))",
+            SendOptions {
+                from: "lead".into(),
+                replace: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(r2.message_id > 0 && r2.typed == 1);
+    assert_eq!(r2.superseded_ids, vec![r1.message_id]);
+    let rec1 = env
+        .service
+        .message_receipt("worker", r1.message_id)
+        .unwrap();
+    assert_eq!(rec1.status, "superseded");
+    assert_eq!(rec1.superseded_by, r2.message_id);
+    wait_for_output(&env, "worker", "fresh_plan-34");
+}
+
+// `check_can_interrupt` allows people and true `spawned_by` ancestors, and
+// rejects peers, self, and bare local names colliding with a remote parent!
+#[test]
+fn test_interrupt_enforces_host_aware_spawned_by_ancestry() {
+    require_termd!();
+    let mut env = setup_test_env();
+    let fake = spawn_holding(&mut env, "worker");
+    // Spawn a local agent also named "lead" on this host ("local" / ""), while
+    // `worker`'s true parent is `lead@laptop-2` on another host!
+    let _local_lead = spawn_holding(&mut env, "lead");
+    let mut w = env.store.get_agent("worker").unwrap().unwrap();
+    w.spawned_by = "lead@laptop-2".into();
+    env.store.replace_agent(&w).unwrap();
+    busy(&env, &fake, "worker");
+
+    // Local `lead` must NOT match `lead@laptop-2`!
+    let local_err = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "stop",
+            SendOptions {
+                from: "lead".into(),
+                urgency: "interrupt".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        local_err.to_string().contains("cannot interrupt"),
+        "local collision allowed: {local_err:#}"
+    );
+
+    // Self-interrupt rejected.
+    assert!(
+        env.service
+            .send(
+                &bg(),
+                "worker",
+                "stop",
+                SendOptions {
+                    from: "worker".into(),
+                    urgency: "interrupt".into(),
+                    ..Default::default()
+                },
+            )
+            .is_err()
+    );
+
+    // True remote parent `lead@laptop-2` is allowed!
+    let ok = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@laptop-2] stop",
+            SendOptions {
+                from: "lead@laptop-2".into(),
+                urgency: "interrupt".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(ok.held && ok.interrupted);
+}
+
+// Regression test for final-review Blockers #1 & #2:
+// (1) Failed `send --now` and failed idle `send_held` mark the failed send
+//     `failed`, undo any supersedes it applied, and keep earlier held rows
+//     intact (never leaving a ghost `pending` row behind).
+// (2) Hook delivery publishes `delivered_ids` and `superseded_ids` on
+//     `StatusEvent`.
+#[test]
+fn test_failed_send_now_and_idle_send_undo_supersedes_and_publish_event_ids() {
+    use std::sync::{Arc, Mutex};
+
+    struct CapturingPublisher(Arc<Mutex<Vec<agent_bus::StatusEvent>>>);
+    impl EventPublisher for CapturingPublisher {
+        fn publish_status(&self, ev: &agent_bus::StatusEvent) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(ev.clone());
+            Ok(())
+        }
+    }
+
+    // Part A: `DialogTookError` inside `send_message` (after `check_can_send` +
+    // `insert_pending_message` + `claim_*` have already run!) exercises the real
+    // post-insert abort path for both `send_now` and idle `send_held`.
+    let term = ClaudeTerminal::new(|_| {});
+    let ce = setup_claude_terminal(&term, SUBMIT_TEST_WAIT);
+    ce.set_state(STATE_KEY_SPAWN_ID, "s1");
+    turn_started(&ce.store, "worker");
+    ce.svc
+        .report(
+            "worker",
+            StatusReport {
+                status: AGENT_STATUS_PROCESSING,
+                event: "PreToolUse".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let m1 = ce
+        .svc
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] keep me if replace fails",
+            SendOptions {
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let m2 = ce
+        .svc
+        .send(
+            &bg(),
+            "worker",
+            "[from peer@h] peer note",
+            SendOptions {
+                from: "peer".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(ce.svc.held_count("worker"), 2);
+
+    // 1. Failed `send --now --replace`: dialog appears during typing (`DialogTookError`).
+    term.set(|s| {
+        s.offer = false;
+        s.offer_on_read = true;
+    });
+    let err_now = ce
+        .svc
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] doomed now replace",
+            SendOptions {
+                now: true,
+                replace: true,
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        err_now.downcast_ref::<DialogTookError>().is_some(),
+        "expected DialogTookError: {err_now:#}"
+    );
+    assert_eq!(
+        ce.svc.held_count("worker"),
+        2,
+        "failed send --now must leave held_count unchanged and no ghost pending row"
+    );
+    let m1_after_now = ce.store.get_message(m1.message_id).unwrap().unwrap();
+    assert_eq!(m1_after_now.status.as_str(), "pending");
+    assert_eq!(m1_after_now.superseded_by, 0);
+    let m2_after_now = ce.store.get_message(m2.message_id).unwrap().unwrap();
+    assert_eq!(m2_after_now.status.as_str(), "pending");
+    let doomed_now = &ce.store.list_messages("worker", 10).unwrap()[0];
+    assert_eq!(doomed_now.status.as_str(), "failed");
+
+    // 2. Failed idle `send_held` with `--replace`: clear offer, report Idle, and
+    //    let `offer_on_read` fail `type_held`'s `send_message`!
+    term.set(|s| {
+        s.offer = false;
+        s.offer_on_read = true;
+    });
+    ce.svc
+        .report(
+            "worker",
+            StatusReport {
+                status: AGENT_STATUS_IDLE,
+                event: "Stop".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let err_idle = ce
+        .svc
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] doomed idle replace",
+            SendOptions {
+                replace: true,
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        err_idle.downcast_ref::<DialogTookError>().is_some(),
+        "expected DialogTookError: {err_idle:#}"
+    );
+    assert_eq!(
+        ce.svc.held_count("worker"),
+        2,
+        "failed idle send_held must undo supersede and leave no ghost pending row"
+    );
+    let m1_after_idle = ce.store.get_message(m1.message_id).unwrap().unwrap();
+    assert_eq!(m1_after_idle.status.as_str(), "pending");
+    assert_eq!(m1_after_idle.superseded_by, 0);
+    let doomed_idle = &ce.store.list_messages("worker", 10).unwrap()[0];
+    assert_eq!(doomed_idle.status.as_str(), "failed");
+
+    // Part B: Verify `PostToolBatch` publishes `StatusEvent` with exact
+    // `delivered_ids` and `superseded_ids`, and stamps `delivered_at` only on
+    // batch delivery!
+    require_termd!();
+    let mut env = setup_test_env();
+    let published: Arc<Mutex<Vec<agent_bus::StatusEvent>>> = Arc::default();
+    env.svc_mut()
+        .set_event_publisher(Some(Box::new(CapturingPublisher(Arc::clone(&published)))));
+    let fake = spawn_holding(&mut env, "worker");
+    busy(&env, &fake, "worker");
+
+    let e1 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] old draft",
+            SendOptions {
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let e2 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from peer@h] peer note",
+            SendOptions {
+                from: "peer".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let e3 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] valid replacement",
+            SendOptions {
+                replace: true,
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(e3.superseded_ids, vec![e1.message_id]);
+
+    // Before batch delivery, superseded e1 has `delivered_at` zero!
+    let rec_before = env
+        .service
+        .message_receipt("worker", e1.message_id)
+        .unwrap();
+    assert!(rec_before.delivered_at.is_zero());
+
+    published.lock().unwrap().clear();
+    let _out = stop_hook(
+        &env,
+        &fake,
+        "worker",
+        r#"{"hook_event_name":"PostToolBatch"}"#,
+    )
+    .expect("PostToolBatch delivery");
+    let evs = published.lock().unwrap().clone();
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0].event, "delivered");
+    assert_eq!(evs[0].delivered_ids, vec![e2.message_id, e3.message_id]);
+    assert_eq!(evs[0].superseded_ids, vec![e1.message_id]);
+
+    // After batch delivery, superseded e1 now has `delivered_at` stamped!
+    let rec_after = env
+        .service
+        .message_receipt("worker", e1.message_id)
+        .unwrap();
+    assert!(!rec_after.delivered_at.is_zero());
 }

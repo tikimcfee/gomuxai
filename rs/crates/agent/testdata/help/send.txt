@@ -4,23 +4,32 @@ status it found the agent in.
 An agent at its prompt gets the message typed into its terminal. A Claude or
 agy agent that is busy (processing, or waiting on a prompt or question)
 holds it instead (a Claude agent once "agent hook" has reported its current
-session: a CLI started without the hook gets messages typed in), and a hook hands over every message held for it, oldest
-first:
-  claude  when its turn ends, from its Stop hook: Claude goes on with them as
-          its next step (its screen shows them as "Stop hook feedback").
+session: a CLI started without the hook gets messages typed in), and a hook hands over every message held for it, coalesced oldest
+first with newest last:
+  claude  when its next tool batch finishes (PostToolBatch) or when its turn
+          ends (Stop): Claude receives all held messages coalesced oldest-first
+          as hook context and continues in the same turn.
   agy     when its current step ends (a model call and its tools), from its
-          PostInvocation hook: each shows as a prompt of its own, and the
-          model answers them in the same turn.
+          PostInvocation hook: all held messages arrive coalesced into one
+          prompt, and the model answers them in the same turn.
 If the turn ends without that hook (Esc, a deny, a failed turn), the held
 messages are typed in once it has sat at its prompt for 10s, or ahead of the
-next message sent to it. Messages are never typed into an agent's input line
-while it has text in it (a person typing there): they're held until it's
-empty. "agent status <name> -v" shows how many are held and what they wait
-for.
+next message sent to it. Use --later to hold until the entire turn ends,
+--replace to supersede your earlier pending messages (scoped to --key when
+given; keeping superseded text as context), --key <topic> to auto-supersede
+your earlier pending messages with the same topic key, --supersede <id> to
+supersede a specific pending message ID (with a note if it was already
+delivered), or --interrupt (people and spawning ancestors) to block the
+agent's next tool call via PreToolUse and deliver urgently. Messages are never
+typed into an agent's input line while it has text in it (a person typing
+there): they're held until it's empty. "agent status <name> -v" shows how many
+are held and what they wait for, and "agent status <name> --receipt <id>"
+inspects a message's delivery receipt.
 
---now types the message in even while the agent is busy (Claude takes it at
-its next tool boundary, agy queues it for its turn's end), as send always
-does for other backends. Typing is refused while the agent is at a dialog (a
+--now types the message in even while the agent is busy (sweeping any held
+messages ahead of it when the input line is empty; Claude takes it at its
+next tool boundary, agy at its next step), as send always does for other
+backends. Typing is refused while the agent is at a dialog (a
 permission, question, or workspace trust prompt), where the Enter would
 answer the dialog instead; answer permission prompts with approve/deny, and
 questions with agent key. Send is also refused once the agent's session has
@@ -83,9 +92,17 @@ Examples:
   agent send builder@hub "run the tests"
 
 Flags:
-      --force   Send even if the agent is at a dialog or its session has ended (local agents, people only)
-  -h, --help    help for send
-      --now     Type it in now even if the agent is busy, instead of holding it until its turn ends
+      --force            Send even if the agent is at a dialog or its session has ended (local agents, people only)
+  -h, --help             help for send
+      --interrupt        Block the next tool call via PreToolUse and deliver urgently (people or spawning ancestors)
+      --json             Print the send result and receipt as JSON
+      --key string       Topic key for coalescing and auto-superseding earlier pending messages with the same key
+      --later            Hold until the current turn ends completely, even on backends that deliver between steps
+      --now              Type it in now even if the agent is busy, sweeping held messages first when the input line is empty
+      --replace          Supersede earlier pending held messages from you to <name> (scoped to --key if set)
+      --soon             Deliver at the next tool batch or step boundary (default)
+      --supersede int    Mark pending message ID superseded by this message (warns if already delivered)
+      --urgency string   Delivery urgency: later, soon, now, or interrupt
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

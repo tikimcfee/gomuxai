@@ -405,6 +405,28 @@ pub struct SendRequest {
     pub message: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub now: bool,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub from: String,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub urgency: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub replace: bool,
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub supersede: i64,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub topic: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -441,6 +463,24 @@ pub struct SendResponse {
         skip_serializing_if = "String::is_empty"
     )]
     pub unchecked: String,
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub message_id: i64,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub superseded_ids: Vec<i64>,
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub already_delivered_id: i64,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub already_delivered_via: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub interrupted: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -827,6 +867,18 @@ pub struct StatusEvent {
     pub tool: String,
     #[serde(default)]
     pub at: Time,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub delivered_ids: Vec<i64>,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub superseded_ids: Vec<i64>,
 }
 
 /// Published on `subject_focus` whenever a host's focused agent changes.

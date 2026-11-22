@@ -47,6 +47,8 @@ impl AgentService {
             detail: r.detail.clone(),
             tool: r.tool.clone(),
             at: bus_time(at),
+            delivered_ids: r.delivered_ids.clone(),
+            superseded_ids: r.superseded_ids.clone(),
         });
     }
 }

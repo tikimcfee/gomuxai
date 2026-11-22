@@ -706,19 +706,77 @@ fn test_claude_delivery() {
         String::from_utf8(b.delivery_output(&["<a>".to_string()])).unwrap(),
         "{\"hookSpecificOutput\":{\"additionalContext\":\"A message arrived while you were working:\\n\\n\\u003ca\\u003e\",\"hookEventName\":\"Stop\"}}"
     );
-    for (event, want) in [
-        ("Stop", true),
-        ("PostToolUse", false),
-        ("StopFailure", false),
-        ("Notification", false),
+    for (event, agent, want) in [
+        ("Stop", "", true),
+        ("PostToolBatch", "", true),
+        ("PostToolBatch", "sub-1", false),
+        ("PostToolUse", "", false),
+        ("StopFailure", "", false),
+        ("Notification", "", false),
     ] {
         let r = HookReport {
             event: event.to_string(),
+            agent: agent.to_string(),
             ..Default::default()
         };
-        assert_eq!(b.can_deliver(&r), want, "can_deliver({event})");
+        assert_eq!(
+            b.can_deliver(&r),
+            want,
+            "can_deliver({event}, agent={agent:?})"
+        );
     }
-    assert_eq!(b.delivery_point(), "its turn ends");
+    assert_eq!(b.delivery_point(), "its next tool batch or turn ends");
+
+    let post_batch = parse(r#"{"hook_event_name":"PostToolBatch","session_id":"s1"}"#)
+        .unwrap()
+        .unwrap();
+    assert!(post_batch.delivery_only && post_batch.status == Status::Processing);
+
+    let batch = [
+        CoalescedMessage {
+            id: 1,
+            sender: "lead".into(),
+            content: "[from lead@h] draft".into(),
+            age_secs: 20,
+            urgency: "soon".into(),
+            superseded_by: 2,
+            topic: String::new(),
+        },
+        CoalescedMessage {
+            id: 2,
+            sender: "lead".into(),
+            content: "[from lead@h] final".into(),
+            age_secs: 5,
+            urgency: "soon".into(),
+            superseded_by: 0,
+            topic: String::new(),
+        },
+    ];
+    let ptb_out: serde_json::Value =
+        serde_json::from_slice(&b.delivery_output_for("PostToolBatch", &batch)).unwrap();
+    assert_eq!(
+        ptb_out["hookSpecificOutput"]["hookEventName"],
+        "PostToolBatch"
+    );
+    assert_eq!(
+        ptb_out["systemMessage"],
+        "[gomuxai] Delivered 1 held message (1 superseded) mid-turn"
+    );
+
+    let pre = HookReport {
+        event: "PreToolUse".into(),
+        ..Default::default()
+    };
+    let deny: serde_json::Value =
+        serde_json::from_slice(&b.interrupt_output(&pre, "urgent stop").unwrap()).unwrap();
+    assert_eq!(deny["continue"], false);
+    assert_eq!(deny["hookSpecificOutput"]["permissionDecision"], "deny");
+    let sub_pre = HookReport {
+        event: "PreToolUse".into(),
+        agent: "sub-1".into(),
+        ..Default::default()
+    };
+    assert!(b.interrupt_output(&sub_pre, "urgent stop").is_none());
 }
 
 #[test]

@@ -74,11 +74,14 @@ fn held_briefing(backend_name: &str) -> &'static str {
         "A message sent to you while you're working is held until your current step \
 (a model call and its tools) ends, then handed to you as a new prompt, starting with \
 its \"[from ...]\" tag, in the middle of your turn: it's a message like any other, so \
-act on it and reply as asked."
+act on it and reply as asked. When multiple messages arrive together, read all of them \
+(oldest first, newest last) before acting and treat any marked SUPERSEDED as context only."
     } else {
-        "A message sent to you while you're working is held until your turn ends, then \
-handed to you as Stop hook feedback (\"A message arrived while you were working: ...\"): \
-it's a message like any other, so act on it and reply as asked."
+        "A message sent to you while you're working is held until your next tool batch or \
+turn ends, then handed to you as PostToolBatch hook context or Stop hook feedback \
+(\"A message arrived while you were working: ...\"): it's a message like any other, so \
+act on it and reply as asked. When multiple messages arrive together, read all of them \
+(oldest first, newest last) before acting and treat any marked SUPERSEDED as context only."
     }
 }
 

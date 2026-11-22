@@ -902,9 +902,27 @@ impl AgentService {
         opts: SendOptions,
     ) -> Result<SendResult> {
         let agent = self.get_agent(name)?;
+        let urgency = opts.effective_urgency();
+        if urgency == agent_store::URGENCY_INTERRUPT {
+            self.check_can_interrupt(&agent, &opts.from)?;
+        }
         // A hook can only hand over text, which wouldn't run a slash command.
-        if !opts.now && !is_slash_command(message) && self.holds_messages(&agent) {
-            return self.send_held(ctx, &agent, message, &opts.from);
+        if is_slash_command(message) {
+            let status = self.check_can_send(&agent)?;
+            let mut res = SendResult {
+                status,
+                ..Default::default()
+            };
+            let unchecked = self.send_message(ctx, name, message, true)?;
+            res.typed = 1;
+            res.unchecked = unchecked;
+            return Ok(res);
+        }
+        if urgency == agent_store::URGENCY_NOW {
+            return self.send_now(ctx, &agent, message, &opts);
+        }
+        if self.holds_messages(&agent) {
+            return self.send_held(ctx, &agent, message, &opts);
         }
         let status = self.check_can_send(&agent)?;
         let mut res = SendResult {
@@ -914,6 +932,16 @@ impl AgentService {
         let unchecked = self.send_message(ctx, name, message, true)?;
         res.typed = 1;
         res.unchecked = unchecked;
+        if let Ok((id, sup, prev)) =
+            self.record_direct_delivery(&agent.name, message, &opts, "typed")
+        {
+            res.message_id = id;
+            res.superseded_ids = sup;
+            if let Some(p) = prev {
+                res.already_delivered_id = p.id;
+                res.already_delivered_via = p.delivery_via;
+            }
+        }
         Ok(res)
     }
 
