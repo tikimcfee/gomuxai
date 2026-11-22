@@ -28,6 +28,7 @@ Examples:
 
 Flags:
       --as string           Agent name (defaults to AGENT_NAME)
+      --confined            The agent is in a confined role: a PreToolUse hook that has no decision to print fails, which blocks the call
       --end-reason string   With ended: how the session ended (quit, gone, replaced, finished, parent, closed; default quit)
       --event string        Hook event name (for backends whose payload omits it)
   -h, --help                help for report

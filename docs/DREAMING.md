@@ -226,7 +226,23 @@ verbs. It reads files through its Read tool, which its launch rules allow
 for Claude Code's projects directories, the scoped projects, the machine
 memory, the repos its commits are in, and its handoff docs. It may edit
 files only in its own dream directory (drafts for `memory put --from`);
-`NotebookEdit`, `WebFetch`, `WebSearch` and subagents are refused. It writes only
+`NotebookEdit`, `WebFetch`, `WebSearch` and subagents are refused.
+
+agy has no permission mode to lean on (a person's agy may run
+`always-proceed`), so a dream's agy agent is confined by its own
+PreToolUse hook instead (`confined` spawn option, `confine.rs`). While
+its dream is open, the hook answers every tool call: `read_file` and
+`view_file` under the dream's read roots (state key `dream_read`, the
+paths its Read and Edit rules name) and `run_command` for the same
+commands a Claude dream may run are allowed, and everything else is
+denied, `write_file`, `edit_file`, `search_web` and subagents included.
+It fails closed: its hook runs with `agent report --confined`, which
+exits non-zero when it has no decision to print (an error, an unknown
+agent), and agy blocks a call whose PreToolUse hook fails; a confined agy
+agent whose hooks can't be written isn't started. Checked by hand on agy
+1.5.14 under `always-proceed`: a deny and a failing hook each blocked
+`write_file`, `run_command` and `search_web`. Other agy agents are left to
+agy's own settings, as before. No dream uses agy yet. It writes only
 through `agent dream` verbs, which the PreToolUse hook allows for that
 agent alone while its dream is open (`DREAM_AGENT_COMMANDS` in
 agent-service; never in the launch rules), and the hook also allows it

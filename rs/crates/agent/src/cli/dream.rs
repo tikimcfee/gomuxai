@@ -1273,6 +1273,7 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
     }
 
     let (allow_tools, deny_tools) = dream_tool_rules(ctx, &dir, &g.items);
+    let read_roots = rule_paths(&allow_tools);
     let svc = ctx.service()?;
     svc.spawn(
         &Context::background(),
@@ -1291,9 +1292,18 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
             permission_mode: "dontAsk".to_string(),
             // Reading only, of the general commands: no send, no friction add.
             agent_commands: Some(agent_service::DREAM_READ_COMMANDS.to_vec()),
+            confined: true,
             ..Default::default()
         },
     )?;
+    // What a dream agent on a hook-decided backend (agy) may read: the paths
+    // its Read and Edit rules name (confine.rs).
+    ctx.store()?.set_state(&StateEntry {
+        agent_name: d.agent.clone(),
+        key: agent_service::STATE_KEY_DREAM_READ.to_string(),
+        value: serde_json::to_string(&read_roots)?,
+        updated_at: Time::now(),
+    })?;
     ctx.store()?.set_state(&StateEntry {
         agent_name: d.agent.clone(),
         key: STATE_KEY_DREAM.to_string(),
@@ -1326,6 +1336,25 @@ fn format_brief(d: &Dream, digest: &str) -> String {
 }
 
 /// Claude's rule for a path and everything under it ("//" is the root).
+/// The paths a dream's Read and Edit rules name (`Read(//srv/app/**)` is
+/// /srv/app), for a backend whose hook checks each read itself.
+pub(crate) fn rule_paths(rules: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = rules
+        .iter()
+        .filter_map(|r| {
+            let inner = r.strip_prefix("Read(").or_else(|| r.strip_prefix("Edit("))?;
+            let inner = inner.strip_suffix(')')?;
+            let inner = inner.strip_suffix("/**").unwrap_or(inner);
+            // read_rule writes an absolute path as //path.
+            Some(inner.strip_prefix('/').unwrap_or(inner).to_string())
+        })
+        .filter(|p| p.starts_with('/'))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn read_rule(tool: &str, path: &str, tree: bool) -> String {
     let path = path.trim_end_matches('/');
     if tree {

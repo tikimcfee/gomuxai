@@ -21,9 +21,9 @@ use anyhow::{Result, anyhow, bail};
 
 use agent_backend::namedagents::{self, AgyBackend, AgyConfig, ClaudeBackend};
 use agent_backend::{
-    Backend, CommandAllower, Dialog, DialogReader, EffortChooser, GlobalHooker, HookAllower,
-    HookDeliverer, HookProvider, HookReport, InputReader, InstructionsProvider, ModelChooser,
-    NativeStatusProvider, PaneSession, PaneSessionProvider, PermissionResponder,
+    Backend, CommandAllower, ConfinedHook, Dialog, DialogReader, EffortChooser, GlobalHooker,
+    HookAllower, HookDeliverer, HookProvider, HookReport, InputReader, InstructionsProvider,
+    ModelChooser, NativeStatusProvider, PaneSession, PaneSessionProvider, PermissionResponder,
     PermissionResponse, PromptFlagProvider, PromptHandover, Provider, ProviderConfig,
     QuestionPrompter, Registry, SpawnHooker, Status, SubmitChecker, TranscriptProvider,
     TrustPrompter, TurnEndReader,
@@ -947,6 +947,9 @@ impl Provider for AgyFake {
     }
     fn as_hook_deliverer(&self) -> Option<&dyn HookDeliverer> {
         Some(self)
+    }
+    fn as_confined_hook(&self) -> Option<&dyn ConfinedHook> {
+        self.inner.as_confined_hook()
     }
     fn as_input_reader(&self) -> Option<&dyn InputReader> {
         Some(self)

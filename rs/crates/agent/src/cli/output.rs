@@ -914,6 +914,7 @@ mod tests {
             end_reason: String::new(),
             event: String::new(),
             hook: false,
+            confined: false,
             spawn_id: String::new(),
             args: words(a),
         };

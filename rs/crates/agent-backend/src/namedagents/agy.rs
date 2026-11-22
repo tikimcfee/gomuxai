@@ -34,6 +34,11 @@ pub struct AgyConfig {
 
     /// The conversation id agy continues (--conversation), or "".
     pub resume: String,
+
+    /// The agent is in a confined role (a dream's): its PreToolUse hook runs
+    /// with --confined, so a call it has no allow for is blocked, and it
+    /// never launches without its hooks.
+    pub confined: bool,
 }
 
 /// Implements [`Provider`], and most optional backend traits, for the
@@ -293,7 +298,18 @@ impl SpawnHooker for AgyBackend {
     /// --spawn-id guarding against stale respawns.
     fn launch_command_with_hooks(&self, report_cmd: &str, session_id: &str) -> String {
         let bundle_dir = self.bundle_dir(session_id);
-        if write_agy_hooks_bundle(&bundle_dir, report_cmd).is_err() {
+        let hook_cmd = if self.config.confined {
+            format!("{report_cmd} --confined")
+        } else {
+            report_cmd.to_string()
+        };
+        if write_agy_hooks_bundle(&bundle_dir, &hook_cmd).is_err() {
+            if self.config.confined {
+                // Without its hooks, agy's own settings would decide every
+                // call (always-proceed on a person's machine): don't start it.
+                return "echo 'gomuxai: no hooks for a confined agy agent, so it is not started' >&2; exit 1"
+                    .to_string();
+            }
             return self.launch_command();
         }
         let suffix = format!("; {}", agy_exit_report_cmd(report_cmd));
@@ -469,6 +485,9 @@ impl HookProvider for AgyBackend {
             }
             "PreToolUse" => {
                 r.status = Status::Processing;
+                if p.tool_call.name == "run_command" {
+                    r.command = agy_arg(p.tool_call.args(), "CommandLine");
+                }
                 r.detail = agy_tool_summary(&p.tool_call.name, p.tool_call.args());
                 // agy shows its permission dialog after PreToolUse, with no hook of
                 // its own: keep the input for the status that promotes this to
@@ -760,6 +779,24 @@ struct AgyStopContinueOutput<'a> {
     reason: &'a str,
 }
 
+/// agy's PreToolUse decision output: `{"decision": "allow"|"deny", "reason":
+/// ...}`. A deny blocks the call even under always-proceed, and the model is
+/// told the reason (exploration/agy-hooks-findings.md, 2.3).
+impl ConfinedHook for AgyBackend {
+    fn confined_allow(&self, reason: &str) -> Vec<u8> {
+        marshal(&AgyPreToolDenyOutput {
+            decision: "allow",
+            reason,
+        })
+    }
+    fn confined_deny(&self, reason: &str) -> Vec<u8> {
+        marshal(&AgyPreToolDenyOutput {
+            decision: "deny",
+            reason,
+        })
+    }
+}
+
 impl HookDeliverer for AgyBackend {
     /// agy's PostInvocation, which fires after every model call and its
     /// tools, including the turn's last one. With injectSteps and
@@ -831,6 +868,22 @@ impl HookDeliverer for AgyBackend {
             decision: "deny",
             reason,
         }))
+    }
+}
+
+/// The string value of `key` in an agy tool call's args. agy encodes each
+/// value as JSON text inside a string (`{"CommandLine": "\"git log\""}`), so
+/// it is decoded twice; a plain string is taken as it is. "" when missing.
+pub fn agy_arg(args: &[u8], key: &str) -> String {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(args) else {
+        return String::new();
+    };
+    match v.get(key) {
+        Some(serde_json::Value::String(s)) => match serde_json::from_str::<String>(s) {
+            Ok(inner) => inner,
+            Err(_) => s.clone(),
+        },
+        _ => String::new(),
     }
 }
 
@@ -916,6 +969,9 @@ impl Provider for AgyBackend {
         Some(self)
     }
     fn as_hook_deliverer(&self) -> Option<&dyn HookDeliverer> {
+        Some(self)
+    }
+    fn as_confined_hook(&self) -> Option<&dyn ConfinedHook> {
         Some(self)
     }
     fn as_input_reader(&self) -> Option<&dyn InputReader> {

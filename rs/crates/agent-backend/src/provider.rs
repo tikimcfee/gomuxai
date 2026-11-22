@@ -112,6 +112,18 @@ pub trait HookAllower {
     fn allow_output(&self, reason: &str) -> Vec<u8>;
 }
 
+/// Implemented by hook backends whose PreToolUse hook can both allow and
+/// deny any tool call, so an agent in a confined role (a dream's) runs only
+/// what its role allows: every other call is denied, whatever the CLI's own
+/// permission settings say (agy's always-proceed included). Only agents in a
+/// confined role get these outputs; others are left to the CLI.
+pub trait ConfinedHook {
+    /// What the hook prints to let the call run.
+    fn confined_allow(&self, reason: &str) -> Vec<u8>;
+    /// What the hook prints to refuse the call, telling the model why.
+    fn confined_deny(&self, reason: &str) -> Vec<u8>;
+}
+
 /// Implemented by backends that can read the CLI's input line off the
 /// screen, so held messages are never typed into a person's half-written
 /// input.
@@ -321,6 +333,9 @@ pub trait Provider: Send + Sync {
         None
     }
     fn as_hook_allower(&self) -> Option<&dyn HookAllower> {
+        None
+    }
+    fn as_confined_hook(&self) -> Option<&dyn ConfinedHook> {
         None
     }
     fn as_input_reader(&self) -> Option<&dyn InputReader> {

@@ -7,6 +7,8 @@ mod common;
 mod adopt_test;
 #[path = "service/agent_service_test.rs"]
 mod agent_service_test;
+#[path = "service/agy_confined_test.rs"]
+mod agy_confined_test;
 #[path = "service/agy_held_test.rs"]
 mod agy_held_test;
 #[path = "service/agy_spawn_test.rs"]
