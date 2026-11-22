@@ -53,6 +53,11 @@ memory and triages friction; fixing things is a later layer.
   and keeps its why (`**Why:**`, `**How to apply:**`). Pointing a broken
   `[[link]]` at the memory it meant, and changing nothing else, needs no
   source line.
+- Check what memory claims against the projects as they are now (the
+  digest's projects section): a path that no longer exists, a command or
+  flag that's gone, a component that was replaced. Mark what is no longer
+  true as history, with the commit that changed it, rather than deleting
+  it, unless it is plainly wrong; then the current fact leads.
 - Prefer updating an existing memory to adding one. Keep scope, order,
   negations and exceptions when you merge entries. Remove a rule that
   recent sessions contradict, saying so in the diary with the sources.

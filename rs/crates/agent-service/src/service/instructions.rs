@@ -288,11 +288,14 @@ impl AgentService {
             }
         }
         let items = self.storage.dream_items(dream.id).ok()?;
-        let repos: BTreeSet<String> = items
+        let mut repos: BTreeSet<String> = items
             .iter()
             .filter(|i| i.kind == DREAM_KIND_COMMIT)
             .filter_map(|i| i.key.rsplit_once('@').map(|(repo, _)| repo.to_string()))
             .collect();
+        // The scoped projects too, so a dream can check memory against the
+        // repo as it is now, even with no new commits.
+        repos.extend(self.storage.dream_scope().unwrap_or_default());
         if dream_git_allowed(&hr.command, &repos) {
             return Some(ha.allow_output(
                 "gomuxai: git log or show in a repo of the dream, pre-allowed for its agent",

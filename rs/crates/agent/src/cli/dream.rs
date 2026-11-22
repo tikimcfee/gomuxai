@@ -306,18 +306,13 @@ fn cursor(ctx: &Ctx) -> anyhow::Result<Cursor> {
 
 /// The host state key holding the dream scope: a JSON list of absolute
 /// directories.
-pub const HOST_KEY_SCOPE: &str = "dream.scope";
+pub const HOST_KEY_SCOPE: &str = agent_store::dreams::HOST_KEY_DREAM_SCOPE;
 /// The host state key holding the floor (RFC 3339): sessions last written
 /// before it are never evidence. The first `dream run` records it.
 pub const HOST_KEY_FLOOR: &str = "dream.floor";
 
 pub(crate) fn read_scope(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
-    match ctx.store()?.get_host_state(HOST_KEY_SCOPE)? {
-        None => Ok(Vec::new()),
-        Some(v) if v.is_empty() => Ok(Vec::new()),
-        Some(v) => serde_json::from_str(&v)
-            .with_context(|| format!("reading the dream scope (host state {HOST_KEY_SCOPE})")),
-    }
+    ctx.store()?.dream_scope()
 }
 
 fn write_scope(ctx: &Ctx, scope: &[String]) -> anyhow::Result<()> {
@@ -763,8 +758,9 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
         .map_err(|e| anyhow::anyhow!("creating {}: {e}", dir.display()))?;
     let digest = dir.join("digest.md");
     let digest_s = digest.to_string_lossy().into_owned();
-    std::fs::write(&digest, format_digest(d, g))
-        .map_err(|e| anyhow::anyhow!("writing {digest_s}: {e}"))?;
+    let mut text = format_digest(d, g);
+    text.push_str(&format_scope(&read_scope(ctx)?));
+    std::fs::write(&digest, text).map_err(|e| anyhow::anyhow!("writing {digest_s}: {e}"))?;
     let brief = dir.join("brief.md");
     let brief_s = brief.to_string_lossy().into_owned();
     std::fs::write(&brief, format_brief(d, &digest_s))
@@ -846,10 +842,30 @@ fn dream_tool_rules(ctx: &Ctx, dream_dir: &Path, items: &[Item]) -> (Vec<String>
             _ => {}
         }
     }
+    // The scoped projects themselves, so a dream can check what memory says
+    // against the repo as it is now, even with no new commits.
+    for dir in read_scope(ctx).unwrap_or_default() {
+        allow.push(read_rule("Read", &dir, true));
+    }
     allow.push(read_rule("Edit", &dream_dir.to_string_lossy(), true));
     allow.sort();
     allow.dedup();
     (allow, vec!["NotebookEdit".to_string()])
+}
+
+/// The digest's last section: the scoped projects, which a dream may read
+/// and run `git -C <dir> log|show` in, to check memory against the repo as
+/// it is now.
+pub fn format_scope(scope: &[String]) -> String {
+    if scope.is_empty() {
+        return String::new();
+    }
+    let mut b = String::from("\n## projects\n\n");
+    for dir in scope {
+        let _ = writeln!(b, "- `{dir}`");
+        let _ = writeln!(b, "  read: your Read tool, `git -C {dir} log`, `git -C {dir} show`");
+    }
+    b
 }
 
 /// The digest: each item with its key, one line, and how to read it.

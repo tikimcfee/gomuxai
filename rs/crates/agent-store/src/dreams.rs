@@ -120,7 +120,22 @@ const UPSERT_ITEM: &str = "
 		summary = CASE WHEN excluded.summary = '' THEN summary ELSE excluded.summary END,
 		read = CASE WHEN excluded.read = '' THEN read ELSE excluded.read END";
 
+/// The host state key holding the dream scope: a JSON list of absolute
+/// directories (`agent dream scope`).
+pub const HOST_KEY_DREAM_SCOPE: &str = "dream.scope";
+
 impl Store {
+    /// The dream scope: the project directories dreaming covers, or none.
+    pub fn dream_scope(&self) -> Result<Vec<String>> {
+        match self.get_host_state(HOST_KEY_DREAM_SCOPE)? {
+            None => Ok(Vec::new()),
+            Some(v) if v.is_empty() => Ok(Vec::new()),
+            Some(v) => serde_json::from_str(&v).with_context(|| {
+                format!("reading the dream scope (host state {HOST_KEY_DREAM_SCOPE})")
+            }),
+        }
+    }
+
     /// Records a new open dream on host with its items, its agent named by
     /// agent_of from the dream's id, and returns it.
     pub fn open_dream(

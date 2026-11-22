@@ -317,3 +317,11 @@ fn dream_commit_guards_memory_and_its_citations() {
     );
     assert_eq!(env.store().get_dream(d.id).unwrap().unwrap().status, DREAM_COMMITTED);
 }
+
+#[test]
+fn digest_lists_the_scoped_projects() {
+    assert_eq!(super::format_scope(&[]), "");
+    let s = super::format_scope(&["/srv/app".to_string()]);
+    assert!(s.contains("## projects"), "{s}");
+    assert!(s.contains("git -C /srv/app log"), "{s}");
+}
