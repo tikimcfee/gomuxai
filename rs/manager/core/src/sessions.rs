@@ -6,6 +6,8 @@ use std::collections::{BTreeSet, HashMap};
 use agent_manage::{SessionRow, SessionState, View, human_age, human_bytes, human_tokens};
 use chrono::{DateTime, Utc};
 
+use crate::sort::{self, Natural, SortOrder, Value};
+
 /// What the list shows.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Filter {
@@ -50,26 +52,106 @@ impl Filter {
     }
 }
 
-/// How the list is ordered. A subagent's session always follows its parent's.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Sort {
-    /// Newest first.
-    #[default]
+/// The sessions list's columns, as the header shows them. A subagent's session always
+/// stays under its parent's: the order sorts the parents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
     When,
-    /// Most tokens first (with subagents).
+    Host,
+    Harness,
+    Project,
+    State,
+    Status,
+    Agent,
+    Model,
+    Context,
+    /// With subagents'.
     Tokens,
-    /// Largest transcript first.
     Size,
+    Title,
 }
 
-impl Sort {
-    pub const ALL: [Sort; 3] = [Sort::When, Sort::Tokens, Sort::Size];
-    pub fn label(&self) -> &'static str {
+impl sort::Column for Column {
+    const ALL: &'static [Column] = &[
+        Column::When,
+        Column::Host,
+        Column::Harness,
+        Column::Project,
+        Column::State,
+        Column::Status,
+        Column::Agent,
+        Column::Model,
+        Column::Context,
+        Column::Tokens,
+        Column::Size,
+        Column::Title,
+    ];
+    const DEFAULT: &'static str = "newest first";
+    fn label(self) -> &'static str {
         match self {
-            Sort::When => "newest",
-            Sort::Tokens => "most tokens",
-            Sort::Size => "largest",
+            Column::When => "age",
+            Column::Host => "host",
+            Column::Harness => "CLI",
+            Column::Project => "project",
+            Column::State => "state",
+            Column::Status => "status",
+            Column::Agent => "agent",
+            Column::Model => "model",
+            Column::Context => "context",
+            Column::Tokens => "tokens Σ+subs",
+            Column::Size => "size",
+            Column::Title => "title",
         }
+    }
+    fn natural(self) -> Natural {
+        match self {
+            Column::When => Natural::Time,
+            Column::State | Column::Status => Natural::Rank,
+            Column::Context | Column::Tokens | Column::Size => Natural::Number,
+            _ => Natural::Text,
+        }
+    }
+    fn rank_words(self) -> (&'static str, &'static str) {
+        match self {
+            Column::State => ("running first", "ended first"),
+            _ => ("waiting first", "ended first"),
+        }
+    }
+}
+
+/// How the sessions list is ordered.
+pub type Order = SortOrder<Column>;
+
+/// Running first, then those that could come back, then the rest.
+pub fn state_rank(s: SessionState) -> u32 {
+    match s {
+        SessionState::Running => 0,
+        SessionState::Dormant => 1,
+        SessionState::Missing => 2,
+        SessionState::Unknown => 3,
+        SessionState::Ended => 4,
+    }
+}
+
+/// A session's value in a column, for sorting.
+pub fn value(host: &str, s: &SessionRow, c: Column) -> Value {
+    match c {
+        Column::When => sort::time(&s.mtime),
+        Column::Host => sort::text(host),
+        Column::Harness => sort::text(&s.harness),
+        Column::Project => sort::text(&s.project),
+        Column::State => Value::Rank(state_rank(s.state)),
+        Column::Status => Value::Rank(sort::status_rank(&s.status)),
+        Column::Agent => sort::text(&s.agent),
+        Column::Model => sort::text(&s.model),
+        Column::Context => sort::num(s.usage.as_ref().map(|u| u.context_tokens)),
+        Column::Tokens => sort::num(tokens_with_subagents(s)),
+        Column::Size => Value::Num(s.size),
+        Column::Title => sort::text(if s.title.is_empty() {
+            &s.session_id
+        } else {
+            &s.title
+        }),
     }
 }
 
@@ -112,10 +194,11 @@ pub fn tokens_with_subagents(s: &SessionRow) -> Option<i64> {
 }
 
 /// The shown lines: every host's sessions that pass the filter, grouped as a session with
-/// its subagents, the groups ordered by `sort` across hosts.
-pub fn lines(view: &View, filter: &Filter, sort: Sort) -> Vec<SessionLine> {
-    // (sort key, lines) per group.
-    let mut groups: Vec<((i64, String), Vec<SessionLine>)> = Vec::new();
+/// its subagents (newest first under it), the groups newest first across hosts, then by
+/// `order`'s keys of the group's head.
+pub fn lines(view: &View, filter: &Filter, order: &Order) -> Vec<SessionLine> {
+    // (the head's host and index, the group's shown lines).
+    let mut groups: Vec<((usize, usize), Vec<SessionLine>)> = Vec::new();
     for (hi, h) in view.hosts.iter().enumerate() {
         // A subagent joins the group of the session that started it, wherever the host
         // listed it (a host may order by time rather than put it after its parent). One
@@ -153,22 +236,18 @@ pub fn lines(view: &View, filter: &Filter, sort: Sort) -> Vec<SessionLine> {
                     subagents: if i == head { subs } else { 0 },
                 })
                 .collect();
-            if ls.is_empty() {
-                continue;
+            if !ls.is_empty() {
+                groups.push(((hi, head), ls));
             }
-            let s = &h.sessions[head];
-            let k = match sort {
-                Sort::When => 0,
-                Sort::Tokens => -tokens_with_subagents(s).unwrap_or(-1),
-                Sort::Size => -s.size,
-            };
-            // Ties (all of them for `When`) go newest first: RFC 3339 in UTC sorts as
-            // text, and the sort below compares it reversed.
-            groups.push(((k, s.mtime.clone()), ls));
         }
     }
-    // Stable: equal keys keep each host's own order (newest first), hosts in order.
-    groups.sort_by(|(a, _), (b, _)| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+    // The default: newest first (RFC 3339 in UTC sorts as text). Stable: equal times keep
+    // each host's own order, hosts in order. A group sorts by its head, shown or not.
+    let row = |&(h, i): &(usize, usize)| &view.hosts[h].sessions[i];
+    groups.sort_by(|(a, _), (b, _)| row(b).mtime.cmp(&row(a).mtime));
+    let groups = order.sort(groups, |(at, _), c| {
+        value(&view.hosts[at.0].host, row(at), c)
+    });
     groups.into_iter().flat_map(|(_, ls)| ls).collect()
 }
 
@@ -447,7 +526,9 @@ mod tests {
     #[test]
     fn tokens_break_down_by_kind_and_model() {
         let v = v();
-        let ls = lines(&v, &Filter::default(), Sort::Tokens);
+        let mut o = Order::default();
+        o.click(Column::Tokens, false);
+        let ls = lines(&v, &Filter::default(), &o);
         let t = tokens(&v, &ls[0]);
         assert!(t.starts_with("input"), "{t}");
         assert!(t.contains("\ncache write "));
@@ -461,7 +542,7 @@ mod tests {
     #[test]
     fn default_hides_untracked_and_keeps_subagents_under_parents() {
         let v = v();
-        let ls = lines(&v, &Filter::default(), Sort::When);
+        let ls = lines(&v, &Filter::default(), &Order::default());
         assert!(ls.iter().all(|l| !l.row(&v).untracked));
         let all: usize = v.hosts.iter().map(|h| h.sessions.len()).sum();
         let untracked: usize = v
@@ -512,7 +593,7 @@ mod tests {
             }],
             ..View::default()
         };
-        let ids: Vec<(&str, usize)> = lines(&v, &Filter::default(), Sort::When)
+        let ids: Vec<(&str, usize)> = lines(&v, &Filter::default(), &Order::default())
             .iter()
             .map(|l| (l.row(&v).session_id.as_str(), l.depth))
             .collect();
@@ -529,7 +610,7 @@ mod tests {
             show_untracked: true,
             ..Filter::default()
         };
-        let ls = lines(&v, &f, Sort::When);
+        let ls = lines(&v, &f, &Order::default());
         assert!(!ls.is_empty());
         for l in &ls {
             let s = l.row(&v);
@@ -545,7 +626,7 @@ mod tests {
                 stale_only: true,
                 ..Filter::default()
             },
-            Sort::When,
+            &Order::default(),
         );
         assert!(!stale.is_empty() && stale.iter().all(|l| l.row(&v).stale));
         let text = lines(
@@ -554,7 +635,7 @@ mod tests {
                 text: "LEAD-GUI".into(),
                 ..Filter::default()
             },
-            Sort::When,
+            &Order::default(),
         );
         assert_eq!(text.len(), 2, "the gui agent's session and its reviewer's");
     }
@@ -562,20 +643,106 @@ mod tests {
     #[test]
     fn sort_by_tokens_and_size() {
         let v = v();
-        let ls = lines(&v, &Filter::default(), Sort::Tokens);
+        let by = |c: Column| {
+            let mut o = Order::default();
+            o.click(c, false);
+            o
+        };
+        let ls = lines(&v, &Filter::default(), &by(Column::Tokens));
         let toks: Vec<i64> = ls
             .iter()
             .filter(|l| l.depth == 0)
             .map(|l| tokens_with_subagents(l.row(&v)).unwrap_or(-1))
             .collect();
         assert!(toks.windows(2).all(|w| w[0] >= w[1]));
-        let ls = lines(&v, &Filter::default(), Sort::Size);
+        let ls = lines(&v, &Filter::default(), &by(Column::Size));
         let sizes: Vec<i64> = ls
             .iter()
             .filter(|l| l.depth == 0)
             .map(|l| l.row(&v).size)
             .collect();
         assert!(sizes.windows(2).all(|w| w[0] >= w[1]));
+        assert_children_under_parents(&v, &ls);
+    }
+
+    fn assert_children_under_parents(v: &View, ls: &[SessionLine]) {
+        for (i, l) in ls.iter().enumerate() {
+            if l.depth == 1 {
+                let parent = ls[..i].iter().rev().find(|p| p.depth == 0).unwrap();
+                if parent.row(v).session_id == l.row(v).parent_session {
+                    // Siblings keep their order: newest first.
+                    let prev = &ls[i - 1];
+                    if prev.depth == 1 {
+                        assert!(prev.row(v).mtime >= l.row(v).mtime);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn several_keys_sort_the_parents_and_keep_children_under_them() {
+        let v = v();
+        let mut o = Order::default();
+        o.click(Column::State, true);
+        o.click(Column::Project, true);
+        o.click(Column::Project, true); // Z to A
+        let ls = lines(&v, &Filter::default(), &o);
+        let heads: Vec<(u32, String)> = ls
+            .iter()
+            .filter(|l| l.depth == 0)
+            .map(|l| {
+                (
+                    state_rank(l.row(&v).state),
+                    l.row(&v).project.to_lowercase(),
+                )
+            })
+            .collect();
+        for w in heads.windows(2) {
+            assert!(
+                w[0].0 < w[1].0 || (w[0].0 == w[1].0 && (w[0].1 >= w[1].1 || w[1].1.is_empty())),
+                "{w:?}"
+            );
+        }
+        assert_eq!(
+            ls.len(),
+            lines(&v, &Filter::default(), &Order::default()).len()
+        );
+        // Every subagent line still follows its parent's group.
+        let mut seen_heads = std::collections::HashSet::new();
+        for l in &ls {
+            let s = l.row(&v);
+            if l.depth == 0 {
+                seen_heads.insert((l.host, s.session_id.clone()));
+            } else if v.hosts[l.host]
+                .sessions
+                .iter()
+                .any(|p| p.session_id == s.parent_session)
+            {
+                assert!(seen_heads.contains(&(l.host, s.parent_session.clone())));
+            }
+        }
+        assert_children_under_parents(&v, &ls);
+    }
+
+    #[test]
+    fn ties_fall_back_to_newest_first() {
+        let v = v();
+        let mut o = Order::default();
+        o.click(Column::Harness, false);
+        let ls = lines(&v, &Filter::default(), &o);
+        let heads: Vec<(&str, &str)> = ls
+            .iter()
+            .filter(|l| l.depth == 0)
+            .map(|l| (l.row(&v).harness.as_str(), l.row(&v).mtime.as_str()))
+            .collect();
+        for w in heads.windows(2) {
+            assert!(
+                w[0].0 < w[1].0 || (w[0].0 == w[1].0 && (w[0].1 >= w[1].1 || w[1].1.is_empty()))
+            );
+        }
+        // The same order twice gives the same lines.
+        assert_eq!(ls, lines(&v, &Filter::default(), &o));
     }
 
     #[test]
@@ -585,7 +752,7 @@ mod tests {
             show_untracked: true,
             ..Filter::default()
         };
-        let ls = lines(&v, &all, Sort::When);
+        let ls = lines(&v, &all, &Order::default());
         let t = totals(&v, &ls);
         let want: i64 = ls
             .iter()
@@ -600,7 +767,7 @@ mod tests {
     #[test]
     fn cells_mark_pending_and_subagents() {
         let v = v();
-        let ls = lines(&v, &Filter::default(), Sort::When);
+        let ls = lines(&v, &Filter::default(), &Order::default());
         let now = fixture::default_now();
         let pending = ls
             .iter()
@@ -623,7 +790,7 @@ mod tests {
                 show_untracked: true,
                 ..Filter::default()
             },
-            Sort::When,
+            &Order::default(),
         );
         let untracked = all.iter().find(|l| l.row(&v).untracked).unwrap();
         assert!(cells(&v, untracked, now).title.starts_with("[untracked] "));

@@ -13,8 +13,8 @@ use agent_manager_core::friction::{self, FrictionLine};
 use agent_manager_core::history;
 use agent_manager_core::layout::Section;
 use agent_manager_core::runner::{self, Output, Source};
-use agent_manager_core::sessions::{self, Sort};
-use agent_manager_core::state::{AUTO_REFRESH_SECS, Dialog, Effect, Job, Model, Page};
+use agent_manager_core::sessions;
+use agent_manager_core::state::{AUTO_REFRESH_SECS, Dialog, Effect, Job, Model, Page, SortList};
 use agent_manager_core::{SessionState, View as FleetView, data};
 use chrono::Utc;
 use makepad_widgets::*;
@@ -39,6 +39,42 @@ script_mod! {
             color: theme.color_text_meta
             text_style: theme.font_bold{font_size: 8.5}
         }
+    }
+    // A column header that sorts the list when clicked: its text (label and sort marker)
+    // comes from the model. The width goes on `head`, so it lays out as a row's Cell.
+    let HeadCell = View{
+        width: Fit
+        height: Fit
+        cursor: MouseCursor.Hand
+        head := Head{}
+    }
+    // Above a list's header: the order in words, "add columns", remove one, reset.
+    let SortBar = View{
+        width: Fill
+        height: Fit
+        flow: Right
+        spacing: 8
+        padding: Inset{left: 8 right: 8 top: 4 bottom: 0}
+        align: Align{y: 0.5}
+        Label{
+            text: "Sort:"
+            draw_text +: {
+                color: theme.color_text_meta
+                text_style: theme.font_bold{font_size: 8.5}
+            }
+        }
+        sort_words := Label{
+            width: Fill
+            max_lines: 1
+            text_overflow: TextOverflow.Ellipsis
+            draw_text +: {
+                color: theme.color_text
+                text_style: theme.font_regular{font_size: 8.5}
+            }
+        }
+        sort_multi := CheckBox{text: "add columns (or shift-click)"}
+        sort_remove := DropDown{labels: ["remove a column…"]}
+        sort_reset := ButtonFlat{text: "Default order"}
     }
     let Mono = Label{
         width: Fill
@@ -238,16 +274,17 @@ script_mod! {
         width: Fill
         height: Fill
         flow: Down
+        SortBar{}
         Bar{
             padding: Inset{left: 8 right: 8 top: 4 bottom: 4}
-            Head{width: 200 text: "agent"}
-            Head{width: 96 text: "status"}
-            Head{width: 46 text: "CLI"}
-            Head{width: 104 text: "model"}
-            Head{width: 50 text: "context"}
-            Head{width: 50 text: "tokens"}
-            Head{width: 30 text: "held"}
-            Head{width: Fill text: "flags · cwd"}
+            c0 := HeadCell{head +: {width: 200}}
+            c1 := HeadCell{head +: {width: 96}}
+            c2 := HeadCell{head +: {width: 46}}
+            c3 := HeadCell{head +: {width: 104}}
+            c4 := HeadCell{head +: {width: 50}}
+            c5 := HeadCell{head +: {width: 50}}
+            c6 := HeadCell{head +: {width: 40}}
+            c7 := HeadCell{width: Fill head +: {width: Fill}}
         }
         list := PortalList{
             width: Fill
@@ -265,7 +302,7 @@ script_mod! {
                     model := Cell{width: 104}
                     context := Cell{width: 50}
                     tokens := Cell{width: 50}
-                    held := Cell{width: 30}
+                    held := Cell{width: 40}
                     flags := Cell{width: Fill}
                 }
             }
@@ -277,22 +314,24 @@ script_mod! {
         width: Fill
         height: Fill
         flow: Down
+        SortBar{}
         Bar{
             spacing: 6
             padding: Inset{left: 8 right: 8 top: 4 bottom: 4}
-            Head{width: 22 text: ""}
-            Head{width: 30 text: "age"}
-            Head{width: 62 text: "host"}
-            Head{width: 40 text: "CLI"}
-            Head{width: 72 text: "project"}
-            Head{width: 90 text: "state"}
-            Head{width: 78 text: "status"}
-            Head{width: 96 text: "agent"}
-            Head{width: 96 text: "model"}
-            Head{width: 44 text: "context"}
-            Head{width: 80 text: "tokens Σ+subs"}
-            Head{width: 60 text: "size"}
-            Head{width: Fill text: "title"}
+            // Over the checkboxes: a Head's padding makes it 6 wider than its width.
+            Head{width: 16 text: ""}
+            c0 := HeadCell{head +: {width: 40}}
+            c1 := HeadCell{head +: {width: 62}}
+            c2 := HeadCell{head +: {width: 40}}
+            c3 := HeadCell{head +: {width: 72}}
+            c4 := HeadCell{head +: {width: 90}}
+            c5 := HeadCell{head +: {width: 78}}
+            c6 := HeadCell{head +: {width: 96}}
+            c7 := HeadCell{head +: {width: 96}}
+            c8 := HeadCell{head +: {width: 44}}
+            c9 := HeadCell{head +: {width: 80}}
+            c10 := HeadCell{head +: {width: 60}}
+            c11 := HeadCell{width: Fill head +: {width: Fill}}
         }
         list := PortalList{
             width: Fill
@@ -305,7 +344,7 @@ script_mod! {
                 row := Row{
                     spacing: 6
                     check := CheckBox{text: "" width: 22}
-                    when := Cell{width: 30}
+                    when := Cell{width: 40}
                     host := Cell{width: 62}
                     harness := Cell{width: 40}
                     project := Cell{width: 72}
@@ -327,6 +366,16 @@ script_mod! {
         width: Fill
         height: Fill
         flow: Down
+        SortBar{}
+        Bar{
+            padding: Inset{left: 8 right: 8 top: 4 bottom: 4}
+            c0 := HeadCell{head +: {width: 40}}
+            c1 := HeadCell{head +: {width: 60}}
+            c2 := HeadCell{head +: {width: 64}}
+            c3 := HeadCell{head +: {width: 46}}
+            c4 := HeadCell{width: Fill head +: {width: Fill}}
+            c5 := HeadCell{head +: {width: 100}}
+        }
         list := PortalList{
             width: Fill
             height: Fill
@@ -340,7 +389,7 @@ script_mod! {
                     id := Cell{width: 40}
                     kind := Cell{width: 60}
                     status := Cell{width: 64}
-                    votes := Cell{width: 30}
+                    votes := Cell{width: 46}
                     summary := Cell{width: Fill}
                     links := Cell{width: 100}
                 }
@@ -353,14 +402,15 @@ script_mod! {
         width: Fill
         height: Fill
         flow: Down
+        SortBar{}
         Bar{
             padding: Inset{left: 8 right: 8 top: 4 bottom: 4}
-            Head{width: 40 text: "age"}
-            Head{width: 80 text: "host"}
-            Head{width: 150 text: "who"}
-            Head{width: Fill text: "command"}
-            Head{width: 34 text: "exit"}
-            Head{width: 60 text: "took"}
+            c0 := HeadCell{head +: {width: 40}}
+            c1 := HeadCell{head +: {width: 80}}
+            c2 := HeadCell{head +: {width: 150}}
+            c3 := HeadCell{width: Fill head +: {width: Fill}}
+            c4 := HeadCell{head +: {width: 44}}
+            c5 := HeadCell{head +: {width: 60}}
         }
         list := PortalList{
             width: Fill
@@ -378,7 +428,7 @@ script_mod! {
                         width: Fill
                         draw_text +: {text_style: theme.font_code{font_size: 8.5}}
                     }
-                    exit := Cell{width: 34}
+                    exit := Cell{width: 44}
                     took := Cell{width: 60}
                 }
             }
@@ -593,7 +643,6 @@ script_mod! {
                             host_dd := DropDown{labels: ["all hosts"]}
                             harness_dd := DropDown{labels: ["all harnesses"]}
                             state_dd := DropDown{labels: ["all states" "running" "dormant" "ended" "missing" "unknown"]}
-                            sort_dd := DropDown{labels: ["newest" "most tokens" "largest"]}
                             stale_cb := CheckBox{text: "stale only"}
                             untracked_cb := CheckBox{text: "show untracked"}
                         }
@@ -934,6 +983,48 @@ fn sections() -> [(Section, Ids, Ids); 7] {
             ids!(sec_history_detail_body),
         ),
     ]
+}
+
+// --- sorting by column headers ---------------------------------------------------------
+
+/// The lists sorted by their headers, and their widgets.
+fn sort_lists() -> [(SortList, &'static [LiveId]); 4] {
+    [
+        (SortList::Agents, ids!(agent_list)),
+        (SortList::Sessions, ids!(session_list)),
+        (SortList::Friction, ids!(friction_list)),
+        (SortList::History, ids!(history_list)),
+    ]
+}
+
+/// A list's header cells, left to right (column `i` is `c{i}`).
+fn head_ids() -> [&'static [LiveId]; 12] {
+    [
+        ids!(c0),
+        ids!(c1),
+        ids!(c2),
+        ids!(c3),
+        ids!(c4),
+        ids!(c5),
+        ids!(c6),
+        ids!(c7),
+        ids!(c8),
+        ids!(c9),
+        ids!(c10),
+        ids!(c11),
+    ]
+}
+
+/// The "remove a column…" menu: a title, then each key.
+fn remove_labels(m: &Model, list: SortList) -> Vec<String> {
+    let mut labels = vec!["remove a column…".to_string()];
+    labels.extend(
+        m.order(list)
+            .key_words()
+            .into_iter()
+            .map(|w| format!("✕ {w}")),
+    );
+    labels
 }
 
 // --- the lists ------------------------------------------------------------------------
@@ -1388,6 +1479,9 @@ pub struct App {
     host_labels: Vec<String>,
     #[rust]
     harness_labels: Vec<String>,
+    /// Each sorted list's "remove a column…" labels, in `sort_lists()` order.
+    #[rust]
+    sort_remove_labels: [Vec<String>; 4],
 }
 
 impl App {
@@ -1478,9 +1572,60 @@ impl App {
         }
     }
 
+    /// Puts each list's order into its headers and sort bar.
+    fn sync_sort(&mut self, cx: &mut Cx) {
+        for (n, (list, id)) in sort_lists().into_iter().enumerate() {
+            let w = self.ui.widget(cx, id);
+            let order = self.model.order(list);
+            for (i, h) in head_ids().iter().enumerate().take(order.columns()) {
+                let head = w.widget(cx, h).label(cx, ids!(head));
+                head.set_text(cx, &order.header(i));
+                set_color(cx, head, if order.sorts_by(i) { BUSY } else { META });
+            }
+            w.label(cx, ids!(sort_words)).set_text(cx, &order.words());
+            w.button(cx, ids!(sort_reset))
+                .enable(cx, !order.is_default());
+            let labels = remove_labels(&self.model, list);
+            if labels != self.sort_remove_labels[n] {
+                let dd = w.drop_down(cx, ids!(sort_remove));
+                dd.set_labels(cx, labels.clone());
+                dd.set_selected_item(cx, 0);
+                self.sort_remove_labels[n] = labels;
+            }
+        }
+    }
+
+    /// A header click, a removal or a reset in a list's sort bar.
+    fn sort_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        for (list, id) in sort_lists() {
+            let w = self.ui.widget(cx, id);
+            let columns = self.model.order(list).columns();
+            for (i, h) in head_ids().iter().enumerate().take(columns) {
+                if let Some(e) = w.view(cx, h).finger_up(actions)
+                    && e.is_over
+                {
+                    let add = e.modifiers.shift || w.check_box(cx, ids!(sort_multi)).active(cx);
+                    self.model.sort_click(list, i, add);
+                    self.sync(cx);
+                }
+            }
+            if let Some(i) = w.drop_down(cx, ids!(sort_remove)).changed(actions)
+                && i > 0
+            {
+                self.model.sort_remove(list, i - 1);
+                self.sync(cx);
+            }
+            if w.button(cx, ids!(sort_reset)).clicked(actions) {
+                self.model.sort_reset(list);
+                self.sync(cx);
+            }
+        }
+    }
+
     /// Puts the model's state into everything that isn't a list.
     fn sync(&mut self, cx: &mut Cx) {
         self.sync_shell(cx);
+        self.sync_sort(cx);
         let m = &self.model;
         let ui = &self.ui;
         let now = Utc::now();
@@ -1861,6 +2006,7 @@ impl MatchEvent for App {
             self.model.auto_refresh = on;
         }
         self.shell_actions(cx, actions);
+        self.sort_actions(cx, actions);
 
         // Agents.
         let list = ui.widget(cx, ids!(agent_list)).portal_list(cx, ids!(list));
@@ -1903,10 +2049,6 @@ impl MatchEvent for App {
         }
         if let Some(i) = ui.drop_down(cx, ids!(state_dd)).changed(actions) {
             self.model.filter.state = sessions::state_choices().get(i).and_then(|c| c.1);
-            refilter = true;
-        }
-        if let Some(i) = ui.drop_down(cx, ids!(sort_dd)).changed(actions) {
-            self.model.sort = Sort::ALL.get(i).copied().unwrap_or_default();
             refilter = true;
         }
         if let Some(on) = ui.check_box(cx, ids!(stale_cb)).changed(actions) {

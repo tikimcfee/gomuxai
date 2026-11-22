@@ -446,7 +446,7 @@ pub fn prune_confirm(view: &View, days: u32, dry_run_output: &str) -> Confirm {
 mod tests {
     use super::*;
     use crate::fixture;
-    use crate::sessions::{self, Filter, Sort};
+    use crate::sessions::{self, Filter, Order};
 
     fn v() -> View {
         fixture::view(fixture::default_now())
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn untrack_says_running_and_leaves_other_hosts_out() {
         let v = v();
-        let ls = sessions::lines(&v, &Filter::default(), Sort::When);
+        let ls = sessions::lines(&v, &Filter::default(), &Order::default());
         let running: Vec<SessionLine> = ls
             .iter()
             .filter(|l| l.row(&v).state == SessionState::Running)
@@ -589,7 +589,7 @@ mod tests {
             show_untracked: true,
             ..Filter::default()
         };
-        let ls = sessions::lines(&v, &f, Sort::When);
+        let ls = sessions::lines(&v, &f, &Order::default());
         let Offer::Ready(c) = track(&v, &ls) else {
             panic!()
         };

@@ -15,7 +15,26 @@ use crate::friction::{self, FrictionKey, FrictionLine};
 use crate::history::{self, HistoryKey, HistoryLine};
 use crate::layout::Layout;
 use crate::runner::Output;
-use crate::sessions::{self, Filter, SessionKey, SessionLine, Sort, Totals};
+use crate::sessions::{self, Filter, SessionKey, SessionLine, Totals};
+use crate::sort::Orders;
+
+/// A list a person can sort by its columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortList {
+    Agents,
+    Sessions,
+    Friction,
+    History,
+}
+
+impl SortList {
+    pub const ALL: [SortList; 4] = [
+        SortList::Agents,
+        SortList::Sessions,
+        SortList::Friction,
+        SortList::History,
+    ];
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Page {
@@ -99,24 +118,27 @@ pub struct Model {
     pub last_action: Option<String>,
     pub dialog: Option<Dialog>,
 
+    pub agent_order: agents::Order,
     pub agent_lines: Vec<AgentLine>,
     pub selected_agent: Option<AgentKey>,
     /// The selected agent's logs, once read.
     pub agent_logs: Option<(AgentKey, String)>,
 
     pub filter: Filter,
-    pub sort: Sort,
+    pub session_order: sessions::Order,
     pub session_lines: Vec<SessionLine>,
     pub totals: Totals,
     pub selected_sessions: BTreeSet<SessionKey>,
     /// The session whose detail shows: the last one clicked.
     pub focused_session: Option<SessionKey>,
 
+    pub friction_order: friction::Order,
     pub friction_lines: Vec<FrictionLine>,
     pub selected_friction: Option<FrictionKey>,
 
     pub history_text: String,
     pub history_failed_only: bool,
+    pub history_order: history::Order,
     pub history_lines: Vec<HistoryLine>,
     /// The command whose detail shows.
     pub selected_history: Option<HistoryKey>,
@@ -144,8 +166,8 @@ impl Model {
         self.read_at = Some(now);
         self.load_error = None;
         self.refreshing = false;
-        self.agent_lines = agents::lines(&self.view);
-        self.friction_lines = friction::lines(&self.view);
+        self.agent_lines = agents::lines(&self.view, &self.agent_order);
+        self.friction_lines = friction::lines(&self.view, &self.friction_order);
         // Selections name rows that may have gone.
         let keys: BTreeSet<SessionKey> = self
             .view
@@ -201,10 +223,72 @@ impl Model {
     }
 
     pub fn refilter(&mut self) {
-        self.session_lines = sessions::lines(&self.view, &self.filter, self.sort);
+        self.session_lines = sessions::lines(&self.view, &self.filter, &self.session_order);
         self.totals = sessions::totals(&self.view, &self.session_lines);
-        self.history_lines =
-            history::lines(&self.view, &self.history_text, self.history_failed_only);
+        self.rehistory();
+    }
+
+    fn rehistory(&mut self) {
+        self.history_lines = history::lines(
+            &self.view,
+            &self.history_text,
+            self.history_failed_only,
+            &self.history_order,
+        );
+    }
+
+    // --- sorting ---------------------------------------------------------------------
+
+    /// A list's order, by column index (the header's left to right).
+    pub fn order(&self, list: SortList) -> &dyn Orders {
+        match list {
+            SortList::Agents => &self.agent_order,
+            SortList::Sessions => &self.session_order,
+            SortList::Friction => &self.friction_order,
+            SortList::History => &self.history_order,
+        }
+    }
+
+    fn order_mut(&mut self, list: SortList) -> &mut dyn Orders {
+        match list {
+            SortList::Agents => &mut self.agent_order,
+            SortList::Sessions => &mut self.session_order,
+            SortList::Friction => &mut self.friction_order,
+            SortList::History => &mut self.history_order,
+        }
+    }
+
+    /// Header `column` of `list` was clicked; `add` (the "add columns" switch, or a
+    /// modifier) adds it as the next key instead of sorting by it alone.
+    pub fn sort_click(&mut self, list: SortList, column: usize, add: bool) {
+        self.order_mut(list).click(column, add);
+        self.resort(list);
+    }
+
+    /// Takes key `i` out of `list`'s order.
+    pub fn sort_remove(&mut self, list: SortList, i: usize) {
+        self.order_mut(list).remove_at(i);
+        self.resort(list);
+    }
+
+    /// Back to `list`'s default order.
+    pub fn sort_reset(&mut self, list: SortList) {
+        self.order_mut(list).reset();
+        self.resort(list);
+    }
+
+    /// Orders `list`'s lines again; only when the view or its order changes.
+    fn resort(&mut self, list: SortList) {
+        match list {
+            SortList::Agents => self.agent_lines = agents::lines(&self.view, &self.agent_order),
+            SortList::Sessions => {
+                self.session_lines = sessions::lines(&self.view, &self.filter, &self.session_order)
+            }
+            SortList::Friction => {
+                self.friction_lines = friction::lines(&self.view, &self.friction_order)
+            }
+            SortList::History => self.rehistory(),
+        }
     }
 
     /// The host names, for the host filter.
@@ -425,8 +509,7 @@ impl Model {
 
     pub fn set_history_text(&mut self, text: &str) {
         self.history_text = text.to_string();
-        self.history_lines =
-            history::lines(&self.view, &self.history_text, self.history_failed_only);
+        self.rehistory();
     }
 
     pub fn set_history_failed_only(&mut self, on: bool) {
@@ -757,6 +840,40 @@ mod tests {
         assert!(s.contains("(12s ago)"), "{s}");
         assert!(s.contains("unreachable: laptop"));
         assert!(s.contains("tokens not counted yet: 14 on phone"));
+    }
+
+    #[test]
+    fn sorting_by_header_survives_a_reload_and_resets() {
+        let mut m = model();
+        let default_lines = m.session_lines.clone();
+        // Column 9 is tokens; 4 is state.
+        m.sort_click(SortList::Sessions, 9, false);
+        assert_eq!(m.order(SortList::Sessions).header(9), "↓ tokens Σ+subs");
+        assert_ne!(m.session_lines, default_lines);
+        m.sort_click(SortList::Sessions, 4, true);
+        assert_eq!(
+            m.order(SortList::Sessions).words(),
+            "tokens Σ+subs largest first, then state running first"
+        );
+        assert_eq!(m.order(SortList::Sessions).header(4), "2↑ state");
+        let sorted = m.session_lines.clone();
+        m.set_view(m.view.clone(), fixture::default_now());
+        assert_eq!(m.session_lines, sorted);
+        m.sort_remove(SortList::Sessions, 0);
+        assert_eq!(m.order(SortList::Sessions).words(), "state running first");
+        m.sort_reset(SortList::Sessions);
+        assert!(m.order(SortList::Sessions).is_default());
+        assert_eq!(m.session_lines, default_lines);
+        // Each list keeps its own order.
+        m.sort_click(SortList::History, 4, false);
+        m.sort_click(SortList::Agents, 1, false);
+        m.sort_click(SortList::Friction, 0, false);
+        assert!(m.order(SortList::Sessions).is_default());
+        for l in SortList::ALL {
+            assert_eq!(m.order(l).is_default(), l == SortList::Sessions);
+        }
+        let first = m.history_lines[0];
+        assert_ne!(m.view.hosts[first.host].history[first.index].exit_code, 0);
     }
 
     #[test]

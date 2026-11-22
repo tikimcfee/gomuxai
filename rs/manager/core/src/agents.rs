@@ -3,6 +3,8 @@
 
 use agent_manage::{AgentRow, HostView, SessionRow, SessionState, View, human_tokens};
 
+use crate::sort::{self, Natural, SortOrder, Value};
+
 /// One line of the agents page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentLine {
@@ -25,9 +27,91 @@ pub struct AgentKey {
     pub name: String,
 }
 
+/// The agents list's columns, as the header shows them. The order sorts each agent's
+/// helpers among themselves, and the roots of each host's tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    Name,
+    Status,
+    Backend,
+    Model,
+    Context,
+    Tokens,
+    Held,
+    /// Flags, then the cwd.
+    Flags,
+}
+
+impl sort::Column for Column {
+    const ALL: &'static [Column] = &[
+        Column::Name,
+        Column::Status,
+        Column::Backend,
+        Column::Model,
+        Column::Context,
+        Column::Tokens,
+        Column::Held,
+        Column::Flags,
+    ];
+    const DEFAULT: &'static str = "agent A–Z, helpers under their parent";
+    fn label(self) -> &'static str {
+        match self {
+            Column::Name => "agent",
+            Column::Status => "status",
+            Column::Backend => "CLI",
+            Column::Model => "model",
+            Column::Context => "context",
+            Column::Tokens => "tokens",
+            Column::Held => "held",
+            Column::Flags => "flags · cwd",
+        }
+    }
+    fn natural(self) -> Natural {
+        match self {
+            Column::Status => Natural::Rank,
+            Column::Context | Column::Tokens | Column::Held => Natural::Number,
+            _ => Natural::Text,
+        }
+    }
+    fn rank_words(self) -> (&'static str, &'static str) {
+        ("waiting first", "ended first")
+    }
+}
+
+/// How the agents list is ordered.
+pub type Order = SortOrder<Column>;
+
+/// An agent's value in a column, for sorting.
+pub fn value(h: &HostView, a: &AgentRow, c: Column) -> Value {
+    let usage = || session_of(h, a).and_then(|s| s.usage.as_ref().map(|u| (s, u)));
+    match c {
+        Column::Name => sort::text(&a.name),
+        Column::Status => Value::Rank(sort::status_rank(&a.status)),
+        Column::Backend => sort::text(&a.backend),
+        Column::Model => sort::text(&model_of(a, session_of(h, a))),
+        Column::Context => sort::num(usage().map(|(_, u)| u.context_tokens)),
+        Column::Tokens => sort::num(usage().map(|(s, u)| {
+            s.usage_with_subagents
+                .map(|t| t.total())
+                .unwrap_or(u.tokens.total())
+        })),
+        Column::Held => Value::Num(a.held),
+        Column::Flags => {
+            let mut t = a.flags.join("; ");
+            if t.is_empty() {
+                // No flags after any flags, so what needs a look comes first.
+                t.push('\u{10FFFF}');
+            }
+            t.push_str(&a.cwd);
+            sort::text(&t)
+        }
+    }
+}
+
 /// The lines, host by host: roots are agents with no parent on their own host (spawned by
-/// a person, or by an agent on another host), each followed by its helpers, by name.
-pub fn lines(view: &View) -> Vec<AgentLine> {
+/// a person, or by an agent on another host), each followed by its helpers; siblings by
+/// name, or by `order` when it has keys.
+pub fn lines(view: &View, order: &Order) -> Vec<AgentLine> {
     let mut out = Vec::new();
     for (hi, h) in view.hosts.iter().enumerate() {
         out.push(AgentLine::Host { host: hi });
@@ -64,10 +148,16 @@ pub fn lines(view: &View) -> Vec<AgentLine> {
                 .position(|p| p.name == name && p.name != a.name)
         };
         let parents: Vec<Option<usize>> = h.agents.iter().map(local_parent).collect();
-        let mut roots: Vec<usize> = (0..h.agents.len())
-            .filter(|&i| parents[i].is_none())
-            .collect();
-        roots.sort_by(|&a, &b| h.agents[a].name.cmp(&h.agents[b].name));
+        // Siblings by name, then by the order's keys.
+        let siblings = |mut ids: Vec<usize>| -> Vec<usize> {
+            ids.sort_by(|&a, &b| h.agents[a].name.cmp(&h.agents[b].name));
+            order.sort(ids, |&i, c| value(h, &h.agents[i], c))
+        };
+        let roots = siblings(
+            (0..h.agents.len())
+                .filter(|&i| parents[i].is_none())
+                .collect(),
+        );
         let mut seen = vec![false; h.agents.len()];
         let emit = |start: Vec<(usize, usize)>, seen: &mut Vec<bool>, out: &mut Vec<AgentLine>| {
             let mut stack = start;
@@ -80,11 +170,13 @@ pub fn lines(view: &View) -> Vec<AgentLine> {
                     agent: i,
                     depth,
                 });
-                let mut kids: Vec<usize> = (0..h.agents.len())
-                    .filter(|&k| parents[k] == Some(i))
-                    .collect();
-                kids.sort_by(|&a, &b| h.agents[b].name.cmp(&h.agents[a].name));
-                stack.extend(kids.into_iter().map(|k| (k, depth + 1)));
+                let kids = siblings(
+                    (0..h.agents.len())
+                        .filter(|&k| parents[k] == Some(i))
+                        .collect(),
+                );
+                // Reversed onto the stack, so the first pops first.
+                stack.extend(kids.into_iter().rev().map(|k| (k, depth + 1)));
             }
         };
         emit(
@@ -297,9 +389,70 @@ mod tests {
     }
 
     #[test]
+    fn sorting_keeps_helpers_under_their_parent_and_sorts_siblings() {
+        let v = fixture::view(fixture::default_now());
+        let mut o = Order::default();
+        o.click(Column::Status, false);
+        let tail = [
+            "# laptop",
+            "(unreachable)",
+            "# phone",
+            "phone-shell",
+            "-phone-shell-ui",
+        ];
+        let mut want = vec![
+            "# hub",
+            "lead",
+            "-lead-gui",
+            "--lead-gui-review",
+            "-lead-docs",
+            "--old-helper",
+            "notes-pane",
+            "watcher",
+            "builder",
+        ];
+        want.extend(tail);
+        assert_eq!(names(&v, &lines(&v, &o)), want);
+        // Flipped: ended first; ties (lead, notes-pane) keep the default, by name.
+        o.click(Column::Status, false);
+        let mut want = vec![
+            "# hub",
+            "builder",
+            "watcher",
+            "lead",
+            "-lead-docs",
+            "--old-helper",
+            "-lead-gui",
+            "--lead-gui-review",
+            "notes-pane",
+        ];
+        want.extend(tail);
+        assert_eq!(names(&v, &lines(&v, &o)), want);
+        // Two keys: CLI, then status.
+        let mut o = Order::default();
+        o.click(Column::Backend, true);
+        o.click(Column::Status, true);
+        let got = names(&v, &lines(&v, &o));
+        assert_eq!(
+            got[..9],
+            [
+                "# hub",
+                "builder",
+                "lead",
+                "-lead-gui",
+                "--lead-gui-review",
+                "-lead-docs",
+                "--old-helper",
+                "notes-pane",
+                "watcher",
+            ]
+        );
+    }
+
+    #[test]
     fn tree_by_parent_per_host() {
         let v = fixture::view(fixture::default_now());
-        let got = names(&v, &lines(&v));
+        let got = names(&v, &lines(&v, &Order::default()));
         assert_eq!(
             got,
             [
@@ -337,7 +490,7 @@ mod tests {
             });
         }
         v.hosts.push(h);
-        let got = names(&v, &lines(&v));
+        let got = names(&v, &lines(&v, &Order::default()));
         assert_eq!(got.len(), 4, "{got:?}");
     }
 

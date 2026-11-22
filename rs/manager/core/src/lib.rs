@@ -3,7 +3,8 @@
 //! - [`Model`] holds the last [`View`] read from `agent manage --json`, the filters, the
 //!   selections and the last action's result, and derives the lines each page draws.
 //! - [`agents`], [`sessions`], [`friction`], [`history`] and [`data`] turn a [`View`] into
-//!   rows of display strings, without assuming how wide the screen is.
+//!   rows of display strings, without assuming how wide the screen is; each list's
+//!   columns sort it through a [`sort::SortOrder`].
 //! - [`commands`] decides which actions a row offers (or why not) and the `agent` command
 //!   line each runs, and what a confirmation names.
 //! - [`runner`] runs the `agent` binary (or reads a fixture) off the UI thread.
@@ -18,6 +19,7 @@ pub mod history;
 pub mod layout;
 pub mod runner;
 pub mod sessions;
+pub mod sort;
 pub mod state;
 
 pub use agent_manage::{
