@@ -78,6 +78,7 @@ version = "0.2.0"
 dependencies = [
  "agent-base",
  "agent-manage",
+ "agent-roster",
  "anyhow",
  "async-nats",
  "chrono",
@@ -196,6 +197,7 @@ dependencies = [
  "agent-claudereg",
  "agent-discovery",
  "agent-manage",
+ "agent-roster",
  "agent-store",
  "agent-termd",
  "agent-transcript",

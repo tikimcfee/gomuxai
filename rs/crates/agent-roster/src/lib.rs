@@ -28,6 +28,6 @@ pub use saved::{
     saved,
 };
 pub use view::{
-    EntryShow, EntryView, HostRoster, NoteCounts, NoteView, Tally, host_view, host_view_with,
-    on_path, show, show_with,
+    EntryShow, EntryView, HostRoster, NoteCounts, NoteView, RosterRequest, Tally, host_view,
+    host_view_with, on_path, show, show_with,
 };
