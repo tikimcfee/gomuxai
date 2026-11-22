@@ -166,6 +166,7 @@ pub const DREAM_AGENT_COMMANDS: &[&str] = &[
     "dream friction accept",
     "dream limitation",
     "dream memory",
+    "dream roster note",
 ];
 
 /// The dream item kind whose key is `<repo>@<hash>` (agent_dream::gather).

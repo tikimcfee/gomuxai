@@ -53,6 +53,7 @@ Available Commands:
   abandon     Give up your dream: its items wait for the next one
   friction    Triage friction for your dream: duplicates, links, accepting
   limitation  File friction about dreaming itself
+  roster      Note how a harness and model did, from a session your dream reviewed
   memory      Read, write and check a memory directory, under a dream's guard
   schedule    Run dreams on a timer (a systemd user timer)
 

@@ -105,6 +105,7 @@ pub fn def() -> Def {
             abandon_def(),
             friction_def(),
             limitation_def(),
+            roster_def(),
             super::dream_memory::def(),
             super::dream_schedule::def(),
         ],
@@ -1352,6 +1353,67 @@ runs them."#,
     args: ArgRule::Any,
     ..Doc::DEFAULT
 };
+
+// `agent dream roster note`
+
+pub const ROSTER: Doc = Doc {
+    use_line: "roster",
+    short: "Note how a harness and model did, from a session your dream reviewed",
+    long: r#"Roster note records a model evaluation on this host's roster (agent roster
+note) from a dream: --by is the dream's agent, and --session must be one of
+the sessions the dream was given to review. It takes roster note's flags
+otherwise. Only a dream's own agent runs it."#,
+    example: r#"  agent dream roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "renamed across 12 files cleanly""#,
+    args: ArgRule::Any,
+    ..Doc::DEFAULT
+};
+
+pub const ROSTER_NOTE: Doc = Doc {
+    use_line: "note HARNESS/MODEL[@EFFORT] \"what happened\"",
+    short: "Record a roster note from a session your dream reviewed",
+    long: r#"Note records how a harness and model did on a task, as agent roster note
+does, written by your dream's agent. --session must name a session your
+dream was given (its digest lists them): a note rests on evidence the
+dream reviewed. --by can't be given."#,
+    example: r#"  agent dream roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "renamed across 12 files cleanly""#,
+    args: ArgRule::Exact(2),
+    ..Doc::DEFAULT
+};
+
+pub fn roster_def() -> Def {
+    Def::group(&ROSTER, vec![roster_note_def()])
+}
+
+pub fn roster_note_def() -> Def {
+    leaf!(ROSTER_NOTE, super::roster::RosterNoteArgs, run_roster_note)
+}
+
+pub fn run_roster_note(ctx: &Ctx, args: &super::roster::RosterNoteArgs) -> anyhow::Result<()> {
+    let d = own_open_dream(ctx, "roster note")?;
+    if !args.by.trim().is_empty() {
+        anyhow::bail!("--by is the dream's own agent ({}); leave it out", d.agent);
+    }
+    let session = args.session.trim();
+    if session.is_empty() {
+        anyhow::bail!("--session is required: a session your dream was given, as HARNESS:ID");
+    }
+    let given: Vec<String> = ctx
+        .store()?
+        .dream_items(d.id)?
+        .into_iter()
+        .filter(|i| i.kind == gather::KIND_SESSION && i.key.starts_with(session))
+        .map(|i| i.key)
+        .collect();
+    match given.len() {
+        0 => anyhow::bail!(
+            "{session} is no session dream #{} was given: a roster note cites one its digest lists",
+            d.id
+        ),
+        1 => {}
+        _ => anyhow::bail!("{session} names {} sessions of the dream: give more of the id", given.len()),
+    }
+    super::roster::roster_note_by(ctx, args, d.agent.clone())
+}
 
 pub fn friction_def() -> Def {
     Def::group(

@@ -124,6 +124,9 @@ and refuses otherwise:
   the dream's directory first.
 - `agent dream friction dup|link|accept`: triage only; it never resolves
   an entry as fixed.
+- `agent dream roster note`: a model evaluation on the roster (**built**),
+  through `agent_roster::add_note`, with `--by` set to the dream's agent
+  and `--session` limited to sessions the dream was given.
 - `agent dream limitation "..."`: files friction about dreaming itself,
   de-duplicated against open entries.
 - `agent dream note "..."`: appends to the dream's diary.
@@ -205,10 +208,6 @@ call.
 
 - A Dreams view in the manager: an optional field on `HostView` (agent-manage), filled in `cli/manage.rs`'s `local_host`, with the page built by the manager's lead (the Usage tab is the pattern).
 - The act layer, above.
-- Model evaluations for the roster (branch `roster`, another tree): dreams
-  review ended sessions, so they could feed its notes. The interface is
-  agreed with the roster's lead first; dreams write nothing to it until
-  then.
 
 ## Prior art
 

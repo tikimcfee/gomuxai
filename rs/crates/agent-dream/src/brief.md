@@ -23,6 +23,11 @@ own dream only:
 - `agent dream friction dup <id> <original-id>`, `agent dream friction
   link <id> <id@host>`, `agent dream friction accept <id> --note "..."`.
   You never resolve an entry as fixed.
+- `agent dream roster note HARNESS/MODEL[@EFFORT] --task KIND --verdict
+  good|mixed|bad --session HARNESS:ID --why "..." "what happened"` when a
+  session you reviewed shows clearly how a harness and model did on a
+  task. One note per session; it stays a note, and the roster weighs
+  them. Only sessions your digest lists can be cited.
 - `agent dream limitation "..."` when dreaming itself got in your way.
 - `agent dream note "..."` adds to this dream's diary.
 - `agent dream commit` when you are done, or `agent dream abandon
