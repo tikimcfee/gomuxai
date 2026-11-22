@@ -1,15 +1,23 @@
 Add puts a directory in the dream scope: sessions run in it or below it are
 reviewed from the next dream on (back to the floor the first dream set,
-7 days before it).
+7 days before it). A session in a git worktree of a repo in scope counts
+too, with the repo's memory and commits, while the worktree exists.
+
+--worktrees names the path prefix the repo's worktrees are made under
+(say /var/tmp/app-wt-): a session whose directory starts with it belongs
+to the repo even after its worktree was removed, as helpers' worktrees
+usually are. Add again with another --worktrees to change it.
 
 Usage:
   agent dream scope add <dir> [flags]
 
 Examples:
   agent dream scope add ~/src/app
+  agent dream scope add ~/src/app --worktrees /var/tmp/app-wt-
 
 Flags:
-  -h, --help   help for add
+  -h, --help               help for add
+      --worktrees string   A path prefix the repo's worktrees are made under (e.g. /var/tmp/app-wt-)
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

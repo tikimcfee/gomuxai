@@ -434,3 +434,23 @@ fn one_line_clips() {
     assert_eq!(one_line("a\n  b", 10), "a b");
     assert_eq!(one_line("abcdefghijkl", 8), "abcde...");
 }
+
+#[test]
+fn a_worktree_of_a_scoped_repo_is_in_scope() {
+    let mut f = Fake::default();
+    let mut wt = session("wt", 5, "/scratch/app-wt-feature");
+    wt.root = "/srv/app".into();
+    let mut other = session("other", 5, "/scratch/other-wt");
+    other.root = "/srv/other".into();
+    f.sessions = vec![wt, other, session("gone", 5, "/scratch/app-wt-old")];
+    let mut cur = cursor(at(10));
+    cur.scope = vec!["/srv/app".into()];
+    let g = gather(&f, &cur).unwrap();
+    let keys: Vec<&str> = g
+        .items
+        .iter()
+        .filter(|i| i.kind == KIND_SESSION)
+        .map(|i| i.key.as_str())
+        .collect();
+    assert_eq!(keys, vec!["claude:wt"]);
+}

@@ -458,3 +458,31 @@ fn dream_roster_note_cites_only_the_dreams_sessions() {
     let err = note(&mut env, &["--session", "claude:s1", "--by", "someone"]);
     assert!(err.contains("--by is the dream's own agent"), "{err}");
 }
+
+#[test]
+fn dream_scope_maps_removed_worktrees_to_their_repo() {
+    crate::require_termd!();
+    let (mut env, home) = setup_sessions();
+    let shop = env.dir.path().join("shop");
+    std::fs::create_dir_all(&shop).unwrap();
+    let shop = shop.to_string_lossy().into_owned();
+    // A helper's session in a worktree that has since been removed.
+    claude_transcript(&home, "helper", "/scratch/shop-wt-fix", "Fix it", Duration::from_secs(86400));
+    run(&mut env, &["dream", "scope", "add", &shop]);
+    assert!(!run(&mut env, &["dream", "gather"]).contains("claude:helper"));
+
+    let err = run_err(&mut env, &["dream", "scope", "add", &shop, "--worktrees", "relative-wt-"]);
+    assert!(err.contains("absolute path prefix"), "{err}");
+    assert_eq!(
+        run(&mut env, &["dream", "scope", "add", &shop, "--worktrees", "/scratch/shop-wt-"]),
+        format!("{shop} is in the dream scope; its worktrees are under /scratch/shop-wt-.\n")
+    );
+    assert_eq!(
+        run(&mut env, &["dream", "scope", "list"]),
+        format!("{shop}  (worktrees under /scratch/shop-wt-)\n")
+    );
+    assert!(run(&mut env, &["dream", "gather"]).contains("claude:helper"));
+
+    run(&mut env, &["dream", "scope", "remove", &shop]);
+    assert!(env.store().get_host_state("dream.worktrees").unwrap().as_deref() == Some("{}"));
+}

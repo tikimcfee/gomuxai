@@ -118,6 +118,9 @@ struct HostSources<'a> {
     ctx: &'a Ctx,
     /// git's answers by working directory: the repo's top and its commits.
     repos: RefCell<HashMap<String, Option<String>>>,
+    roots: RefCell<HashMap<String, Option<String>>>,
+    /// Worktree path prefixes and the repo each belongs to.
+    worktrees: std::collections::BTreeMap<String, String>,
     commits: RefCell<HashMap<String, Vec<CommitIn>>>,
 }
 
@@ -126,8 +129,45 @@ impl<'a> HostSources<'a> {
         HostSources {
             ctx,
             repos: RefCell::default(),
+            roots: RefCell::default(),
+            worktrees: read_worktrees(ctx).unwrap_or_default(),
             commits: RefCell::default(),
         }
+    }
+
+    /// The main checkout of the repo cwd is in (for a linked worktree, the
+    /// checkout whose .git it shares), cached by cwd.
+    fn root_of(&self, cwd: &str) -> Option<String> {
+        if let Some(root) = self.roots.borrow().get(cwd) {
+            return root.clone();
+        }
+        let root = if Path::new(cwd).is_dir() {
+            git(&[
+                "-C",
+                cwd,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ])
+            .map(|s| s.trim().to_string())
+            .and_then(|common| {
+                let p = Path::new(&common);
+                (p.file_name()? == ".git")
+                    .then(|| p.parent().map(|p| p.to_string_lossy().into_owned()))
+                    .flatten()
+            })
+        } else {
+            None
+        };
+        // A worktree since removed: the prefix it was made under says whose.
+        let root = root.or_else(|| {
+            self.worktrees
+                .iter()
+                .find(|(prefix, _)| cwd.starts_with(prefix.as_str()))
+                .map(|(_, dir)| dir.clone())
+        });
+        self.roots.borrow_mut().insert(cwd.to_string(), root.clone());
+        root
     }
 
     fn repo_of(&self, cwd: &str) -> Option<String> {
@@ -206,6 +246,7 @@ impl Sources for HostSources<'_> {
                 session_id: r.session_id,
                 path: r.path,
                 size: r.size,
+                root: self.root_of(&r.cwd).unwrap_or_default(),
                 cwd: r.cwd,
                 project: r.project,
                 title: r.title,
@@ -248,7 +289,20 @@ impl Sources for HostSources<'_> {
         if s.harness != agent_discovery::HARNESS_CLAUDE {
             return None;
         }
-        let dir = Path::new(&s.path).parent()?.join("memory");
+        // A worktree's sessions keep their transcripts in the worktree's
+        // own project folder, but Claude Code gives them the main
+        // checkout's memory.
+        let folder = Path::new(&s.path).parent()?;
+        let mut dir = folder.join("memory");
+        if !s.root.is_empty() && s.root != s.cwd {
+            let main = folder
+                .parent()?
+                .join(agent_dream::start_here::project_folder(&s.root))
+                .join("memory");
+            if main.is_dir() {
+                dir = main;
+            }
+        }
         let (files, fingerprint) = gather::memory_fingerprint(&dir)?;
         Some(MemoryIn {
             dir: dir.to_string_lossy().into_owned(),
@@ -257,8 +311,11 @@ impl Sources for HostSources<'_> {
         })
     }
 
+    /// Commits on any local branch of the repo, keyed by its main checkout,
+    /// so worktrees of one repo share one list (and a worktree since
+    /// removed still has its branch's commits counted).
     fn commits(&self, cwd: &str, since: DateTime<Utc>) -> Vec<CommitIn> {
-        let Some(top) = self.repo_of(cwd) else {
+        let Some(top) = self.root_of(cwd).or_else(|| self.repo_of(cwd)) else {
             return Vec::new();
         };
         if let Some(c) = self.commits.borrow().get(&top) {
@@ -269,6 +326,7 @@ impl Sources for HostSources<'_> {
             "-C",
             &top,
             "log",
+            "--branches",
             "--no-merges",
             &since,
             "-n",
@@ -534,28 +592,65 @@ pub struct ScopeDirArgs {
     pub args: Vec<String>,
 }
 
+#[derive(clap::Args, Debug, Clone)]
+pub struct ScopeAddArgs {
+    #[arg(
+        long = "worktrees",
+        value_name = "string",
+        default_value = "",
+        help = "A path prefix the repo's worktrees are made under (e.g. /var/tmp/app-wt-)"
+    )]
+    pub worktrees: String,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
 pub const SCOPE_ADD: Doc = Doc {
     use_line: "add <dir>",
     short: "Add a directory to the dream scope",
     long: r#"Add puts a directory in the dream scope: sessions run in it or below it are
 reviewed from the next dream on (back to the floor the first dream set,
-7 days before it)."#,
-    example: "  agent dream scope add ~/src/app",
+7 days before it). A session in a git worktree of a repo in scope counts
+too, with the repo's memory and commits, while the worktree exists.
+
+--worktrees names the path prefix the repo's worktrees are made under
+(say /var/tmp/app-wt-): a session whose directory starts with it belongs
+to the repo even after its worktree was removed, as helpers' worktrees
+usually are. Add again with another --worktrees to change it."#,
+    example: "  agent dream scope add ~/src/app\n  agent dream scope add ~/src/app --worktrees /var/tmp/app-wt-",
     args: ArgRule::Exact(1),
     ..Doc::DEFAULT
 };
 
 pub fn scope_add_def() -> Def {
-    leaf!(SCOPE_ADD, ScopeDirArgs, run_scope_add)
+    leaf!(SCOPE_ADD, ScopeAddArgs, run_scope_add)
 }
 
-pub fn run_scope_add(ctx: &Ctx, args: &ScopeDirArgs) -> anyhow::Result<()> {
+pub fn run_scope_add(ctx: &Ctx, args: &ScopeAddArgs) -> anyhow::Result<()> {
     let dir = scope_dir(&args.args[0])?;
     if !Path::new(&dir).is_dir() {
         anyhow::bail!("{dir} isn't a directory");
     }
+    if !args.worktrees.is_empty() {
+        let prefix = &args.worktrees;
+        if !Path::new(prefix).is_absolute() || prefix.contains('*') {
+            anyhow::bail!(
+                "--worktrees takes an absolute path prefix, like /var/tmp/app-wt- (no *), not {prefix:?}"
+            );
+        }
+        let mut wt = read_worktrees(ctx)?;
+        wt.retain(|_, d| *d != dir);
+        wt.insert(prefix.clone(), dir.clone());
+        write_worktrees(ctx, &wt)?;
+    }
     let mut scope = read_scope(ctx)?;
     if scope.contains(&dir) {
+        if !args.worktrees.is_empty() {
+            return ctx.write_out(&format!(
+                "{dir} is in the dream scope; its worktrees are under {}.\n",
+                args.worktrees
+            ));
+        }
         return ctx.write_out(&format!("{dir} is already in the dream scope.\n"));
     }
     scope.push(dir.clone());
@@ -587,6 +682,12 @@ pub fn run_scope_remove(ctx: &Ctx, args: &ScopeDirArgs) -> anyhow::Result<()> {
         anyhow::bail!("{dir} isn't in the dream scope (agent dream scope list shows it)");
     }
     write_scope(ctx, &scope)?;
+    let mut wt = read_worktrees(ctx)?;
+    let had = wt.len();
+    wt.retain(|_, d| *d != dir);
+    if wt.len() != had {
+        write_worktrees(ctx, &wt)?;
+    }
     ctx.write_out(&format!("Removed {dir} from the dream scope.\n"))
 }
 
@@ -619,7 +720,34 @@ pub fn run_scope_list(ctx: &Ctx, args: &ScopeListArgs) -> anyhow::Result<()> {
     if scope.is_empty() {
         return ctx.write_out(NO_SCOPE);
     }
-    ctx.write_out(&scope.iter().map(|d| format!("{d}\n")).collect::<String>())
+    let wt = read_worktrees(ctx)?;
+    let mut out = String::new();
+    for d in &scope {
+        out += d;
+        for (prefix, _) in wt.iter().filter(|(_, root)| *root == d) {
+            out += &format!("  (worktrees under {prefix})");
+        }
+        out.push('\n');
+    }
+    ctx.write_out(&out)
+}
+
+/// The host state key mapping a worktree path prefix to the scoped repo
+/// its worktrees belong to (agent dream scope add --worktrees).
+pub const HOST_KEY_WORKTREES: &str = "dream.worktrees";
+
+pub(crate) fn read_worktrees(ctx: &Ctx) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    match ctx.store()?.get_host_state(HOST_KEY_WORKTREES)? {
+        None => Ok(Default::default()),
+        Some(v) if v.is_empty() => Ok(Default::default()),
+        Some(v) => serde_json::from_str(&v)
+            .with_context(|| format!("reading host state {HOST_KEY_WORKTREES}")),
+    }
+}
+
+fn write_worktrees(ctx: &Ctx, wt: &std::collections::BTreeMap<String, String>) -> anyhow::Result<()> {
+    ctx.store()?
+        .set_host_state(HOST_KEY_WORKTREES, &serde_json::to_string(wt)?)
 }
 
 // `agent dream run`

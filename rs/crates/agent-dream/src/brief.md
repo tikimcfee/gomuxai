@@ -96,7 +96,10 @@ under 40 lines:
   one line with what to do instead.
 - **Pointers**: the memories and docs to read next, as `[[links]]`.
 
-Only current facts go in it; history stays in the other notes. Give it a
+Only current facts go in it; history stays in the other notes. Keep it
+to what is specific to this project: how the machines are set up, and
+habits that hold in every project, belong to a machine-wide note (planned,
+not built yet), not to each project's start-here. Give it a
 source line like any fact you write, and rewrite it rather than append to
 it.
 

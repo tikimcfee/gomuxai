@@ -68,6 +68,11 @@ pub struct SessionIn {
     pub size: i64,
     pub mtime: Option<DateTime<Utc>>,
     pub cwd: String,
+    /// The main checkout of the git repo cwd is in, when cwd is one of its
+    /// worktrees (or the checkout itself); "" when it can't be told (cwd
+    /// gone, or not in a repo). A session in a worktree of a scoped repo is
+    /// in scope, and its memory is the main checkout's.
+    pub root: String,
     pub project: String,
     pub title: String,
     /// The workgroup agent that owns it, "" for none.
@@ -278,7 +283,7 @@ fn finished_sessions<'a>(sessions: &'a [SessionIn], cur: &Cursor) -> Vec<&'a Ses
                 && !s.path.is_empty()
                 && s.parent_session.is_empty()
                 && !cur.dream_agents.contains(&s.agent)
-                && cur.in_scope(&s.cwd)
+                && (cur.in_scope(&s.cwd) || cur.in_scope(&s.root))
                 && s.mtime.is_some_and(|t| t >= floor)
         })
         .collect()
