@@ -14,6 +14,7 @@ use crate::host_state::HOST_STATE_SCHEMA;
 use crate::jobs::{JOBS_ADDED_COLUMNS, JOBS_SCHEMA, SCRIPTS_SCHEMA};
 use crate::manage::MANAGE_SCHEMA;
 use crate::models::*;
+use crate::roster::ROSTER_SCHEMA;
 use crate::session_reports::SESSION_REPORTS_SCHEMA;
 use crate::tree::{
     AgentEvent, Schema, TREE_SCHEMA, create_agent_tx, delete_agent_tx, insert_agent_event,
@@ -145,7 +146,8 @@ impl Store {
             + JOBS_SCHEMA
             + SCRIPTS_SCHEMA
             + HOST_STATE_SCHEMA
-            + MANAGE_SCHEMA;
+            + MANAGE_SCHEMA
+            + ROSTER_SCHEMA;
 
         let conn = self.conn();
         conn.execute_batch(&schema)?;

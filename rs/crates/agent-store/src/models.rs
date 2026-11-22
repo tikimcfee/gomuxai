@@ -11,7 +11,7 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-fn is_zero_i64(n: &i64) -> bool {
+pub(crate) fn is_zero_i64(n: &i64) -> bool {
     *n == 0
 }
 
