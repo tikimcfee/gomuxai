@@ -1660,6 +1660,11 @@ impl App {
             }
             _ => String::new(),
         };
+        let src = match runner::live_note() {
+            Some(live) if src.is_empty() => live,
+            Some(live) => format!("{live} · {src}"),
+            None => src,
+        };
         ui.label(cx, ids!(source)).set_text(cx, &src);
 
         // Agents.
@@ -2208,5 +2213,11 @@ impl AppMain for App {
         self.match_event(cx, event);
         self.ui
             .handle_event(cx, event, &mut Scope::with_data(&mut self.model));
+        // A hot reload (`--hot`) rebuilt the widgets from the script: everything this
+        // layer sets on them is gone, so put the model's state back.
+        if let Event::LiveEdit = event {
+            self.sort_remove_labels = Default::default();
+            self.sync(cx);
+        }
     }
 }

@@ -59,6 +59,20 @@ impl Source {
     }
 }
 
+/// The note of a live build: `AGENT_MANAGER_LIVE` names a file whose first line says what
+/// is on screen but not approved (`tools/live` writes it). `None` for an installed build.
+pub fn live_note() -> Option<String> {
+    let path = std::env::var_os("AGENT_MANAGER_LIVE").filter(|v| !v.is_empty())?;
+    Some(live_note_of(std::fs::read_to_string(path).ok().as_deref()))
+}
+
+fn live_note_of(file: Option<&str>) -> String {
+    match file.and_then(|t| t.lines().next()).map(str::trim) {
+        Some(l) if !l.is_empty() => format!("live build · {l}"),
+        _ => "live build".to_string(),
+    }
+}
+
 fn beside_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let p = exe.parent()?.join("agent");
@@ -277,5 +291,14 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         spawn(|| 6 * 7, move |r| tx.send(r).unwrap());
         assert_eq!(rx.recv().unwrap(), 42);
+    }
+    #[test]
+    fn live_note_is_the_files_first_line() {
+        assert_eq!(live_note_of(None), "live build");
+        assert_eq!(live_note_of(Some("\n")), "live build");
+        assert_eq!(
+            live_note_of(Some("2 unapproved: wider held column\nmore")),
+            "live build · 2 unapproved: wider held column"
+        );
     }
 }

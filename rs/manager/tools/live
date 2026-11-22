@@ -1,0 +1,250 @@
+#!/bin/sh
+# Live UI changes for the manager: put a proposed change on a running manager without a
+# rebuild, and fold the approved ones into the branch.
+#
+#   tools/live setup          make the live checkout and the live build on the target
+#   tools/live push [REV]     put REV (default HEAD) on the target's live checkout
+#   tools/live status         what the target shows that isn't approved
+#   tools/live approve [REV]  check, push REV to the approved branch, bake release builds
+#   tools/live reset          put the live checkout back on the approved branch
+#
+# The target is the machine whose person looks at the manager. It has two things:
+#   - the live checkout: a git worktree beside its normal checkout, holding the source the
+#     live build was made from;
+#   - the live build, started as `agent-manager-live`: the manager run with `--hot`, which
+#     makes Makepad watch that source and re-apply its `script_mod!` blocks when they
+#     change. The window and what is selected in it stay.
+# The installed `agent-manager` is a different binary and never changes under a push.
+#
+# A proposal is a commit ahead of the approved branch as the remote has it
+# (origin/manager). `push` sends it over ssh and checks it out in the live checkout. A
+# change inside `script_mod!` shows at once; any other change (Rust code, the core crate)
+# is built there, and the live window must then be restarted. `approve` runs the checks,
+# pushes the commit to the approved branch, and installs release builds here and on the
+# target. To reject a proposal, drop its commit and `push` again (or `reset`).
+#
+# Settings are read from ${AGENT_MANAGER_LIVE_CONF:-~/.config/agent-manager/live.conf}, a
+# shell file (it names machines, so it is not in the repo):
+#   LIVE_SSH="ssh user@host"       how to reach the target; empty or unset: this machine
+#   LIVE_REPO=src/gomuxai          its checkout, on the approved branch (from its home, or absolute)
+#   LIVE_DIR=src/gomuxai-live      the live checkout to make (default: $LIVE_REPO-live)
+#   LIVE_TARGET=/var/tmp/agent-manager-live-target    the live build's cargo target dir
+#   LIVE_PATH='$HOME/.cargo/bin'   put before PATH on the target (single quotes: expanded there)
+#   LIVE_BRANCH=manager            the approved branch
+#   LIVE_SCAN='regex'              approve refuses a diff or message matching this (grep -E -i)
+set -eu
+
+conf=${AGENT_MANAGER_LIVE_CONF:-$HOME/.config/agent-manager/live.conf}
+LIVE_SSH=
+LIVE_REPO=
+LIVE_DIR=
+LIVE_TARGET=/var/tmp/agent-manager-live-target
+LIVE_PATH=
+LIVE_BRANCH=manager
+LIVE_SCAN=
+# shellcheck disable=SC1090
+[ -f "$conf" ] && . "$conf"
+[ -n "$LIVE_REPO" ] || { echo "live: set LIVE_REPO in $conf (see the top of $0)" >&2; exit 1; }
+: "${LIVE_DIR:=$LIVE_REPO-live}"
+approved=origin/$LIVE_BRANCH
+
+die() { echo "live: $*" >&2; exit 1; }
+
+# Runs the script on stdin on the target, after the settings it needs and the
+# assignments in $1.
+target() {
+    {
+        cat <<EOF
+set -eu
+cd "\$HOME"
+PATH="$LIVE_PATH\${PATH:+:\$PATH}"
+repo='$LIVE_REPO' live='$LIVE_DIR' tdir='$LIVE_TARGET' branch='$LIVE_BRANCH'
+case \$repo in /*) ;; *) repo="\$HOME/\$repo" ;; esac
+case \$live in /*) ;; *) live="\$HOME/\$live" ;; esac
+approved=origin/\$branch
+note="\$tdir/live-note"
+${1:-}
+EOF
+        cat <<'EOF'
+# Brings origin/$branch up to date. Over ssh a key may be unusable (a passphrase and no
+# ssh agent), so an ssh remote of a public repo is read over https.
+fetch_approved() {
+    url=$(git -C "$repo" remote get-url origin | sed -E 's#^(ssh://)?git@([^:/]+)[:/]#https://\2/#')
+    git -C "$repo" fetch -q "$url" "+refs/heads/$branch:refs/remotes/origin/$branch"
+}
+build() {
+    (cd "$live/rs/manager" && CARGO_TARGET_DIR="$tdir" cargo build --release 2>&1 | tail -2)
+}
+# The file without its script_mod! blocks: what hot reload can't apply.
+rust_of() {
+    git -C "$live" show "$1" 2>/dev/null |
+        awk '/^script_mod! *\{/ {skip = 1} !skip {print} skip && /^}/ {skip = 0}'
+}
+# "hot", "none" or "rebuild": what going from commit $1 to $2 takes.
+effect() {
+    e=none
+    for f in $(git -C "$live" diff --name-only "$1" "$2" -- rs); do
+        case $f in
+        rs/manager/tools/* | rs/manager/fixtures/* | rs/tasks/* | *.md) ;;
+        rs/manager/src/*.rs)
+            if [ "$(rust_of "$1:$f")" = "$(rust_of "$2:$f")" ]; then
+                [ $e = none ] && e=hot
+            else
+                e=rebuild
+            fi
+            ;;
+        rs/manager/* | rs/crates/agent-manage/*) e=rebuild ;;
+        esac
+    done
+    echo $e
+}
+write_note() {
+    mkdir -p "$tdir"
+    n=$(git -C "$live" rev-list --count "$approved..HEAD")
+    if [ "$n" = 0 ]; then
+        echo "nothing unapproved" >"$note"
+    else
+        # The status line is short: the count and the newest one's subject.
+        echo "$n unapproved, newest: $(git -C "$live" log -1 --format=%s | cut -c1-48)" >"$note"
+    fi
+}
+EOF
+        cat
+    } | if [ -n "$LIVE_SSH" ]; then $LIVE_SSH sh -s; else sh -s; fi
+}
+
+# Sends the commits the target may lack (those ahead of the approved branch) as a bundle.
+send() {
+    rev=$1
+    if [ "$(git rev-list --count "$approved..$rev")" != 0 ]; then
+        git update-ref refs/live/push "$rev" # a bundle carries refs, not bare commits
+        git bundle create -q - "$approved..refs/live/push" |
+            if [ -n "$LIVE_SSH" ]; then
+                $LIVE_SSH "mkdir -p '$LIVE_TARGET' && cat >'$LIVE_TARGET/push.bundle'"
+            else
+                mkdir -p "$LIVE_TARGET" && cat >"$LIVE_TARGET/push.bundle"
+            fi
+    fi
+}
+
+rev_of() {
+    git fetch -q origin "$LIVE_BRANCH"
+    rev=$(git rev-parse --verify -q "${1:-HEAD}^{commit}") || die "no commit ${1:-HEAD}"
+    git merge-base --is-ancestor "$approved" "$rev" ||
+        die "$(git rev-parse --short "$rev") isn't built on $approved: rebase it first"
+    echo "$rev"
+}
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift
+case $cmd in
+setup)
+    target <<'EOF'
+fetch_approved
+if [ ! -e "$live/.git" ]; then
+    git -C "$repo" worktree add -q --detach "$live" "$approved"
+    echo "made the live checkout $live at $(git -C "$live" rev-parse --short HEAD)"
+fi
+build
+write_note
+bin="$HOME/.local/bin/agent-manager-live"
+mkdir -p "$HOME/.local/bin"
+cat >"$bin" <<LAUNCH
+#!/bin/sh
+# Written by rs/manager/tools/live setup: the manager built from the live checkout,
+# re-applying its UI source as it changes.
+AGENT_MANAGER_LIVE='$note' AGENT_MANAGER_AGENT="\${AGENT_MANAGER_AGENT:-\$HOME/.local/bin/agent}" \\
+    exec '$tdir/release/agent-manager' --hot "\$@"
+LAUNCH
+chmod 755 "$bin"
+echo "start it with: $bin"
+EOF
+    ;;
+push)
+    force=
+    [ "${1:-}" = --force ] && { force=1; shift; }
+    rev=$(rev_of "${1:-}")
+    send "$rev"
+    target "rev=$rev force=$force" <<'EOF'
+[ -e "$live/.git" ] || { echo "live: no live checkout on the target: run tools/live setup" >&2; exit 1; }
+fetch_approved
+[ -f "$tdir/push.bundle" ] && git -C "$repo" fetch -q "$tdir/push.bundle" refs/live/push
+rm -f "$tdir/push.bundle"
+git -C "$repo" cat-file -e "$rev^{commit}" 2>/dev/null || { echo "live: the target doesn't have $rev" >&2; exit 1; }
+drift=$(git -C "$live" status --porcelain --untracked-files=no)
+if [ -n "$drift" ] && [ -z "$force" ]; then
+    echo "live: the live checkout was edited on the target; nothing pushed:" >&2
+    echo "$drift" >&2
+    echo "live: take those edits from there first, or push --force to discard them" >&2
+    exit 3
+fi
+old=$(git -C "$live" rev-parse HEAD)
+e=$(effect "$old" "$rev")
+git -C "$live" checkout -q --force --detach "$rev"
+write_note
+short=$(git -C "$live" rev-parse --short HEAD)
+case $e in
+none) echo "live checkout at $short: nothing the manager draws changed" ;;
+hot) echo "live checkout at $short: applied to the running live manager (hot)" ;;
+rebuild)
+    build
+    echo "live checkout at $short: Rust changed, so it was rebuilt: RESTART agent-manager-live to see it"
+    ;;
+esac
+cat "$note"
+EOF
+    ;;
+status)
+    target <<'EOF'
+[ -e "$live/.git" ] || { echo "no live checkout on the target: run tools/live setup"; exit 0; }
+fetch_approved
+echo "live checkout: $(git -C "$live" log -1 --format='%h %s')"
+echo "approved ($approved): $(git -C "$live" log -1 --format='%h %s' "$approved")"
+write_note
+cat "$note"
+git -C "$live" log --format='  %h %s' "$approved..HEAD"
+drift=$(git -C "$live" status --porcelain --untracked-files=no)
+[ -z "$drift" ] || { echo "edited on the target, in no commit:"; echo "$drift"; }
+if pgrep -f "$tdir/release/agent-manager" >/dev/null 2>&1; then
+    echo "the live manager is running"
+else
+    echo "the live manager isn't running (agent-manager-live starts it)"
+fi
+EOF
+    ;;
+approve)
+    rev=$(rev_of "${1:-}")
+    top=$(git rev-parse --show-toplevel)
+    [ "$rev" = "$(git rev-parse HEAD)" ] || die "check out $(git rev-parse --short "$rev") to approve it: the checks run on this tree"
+    [ -z "$(git status --porcelain --untracked-files=no)" ] || die "this tree has uncommitted changes"
+    [ "$(git rev-list --count "$approved..$rev")" != 0 ] || die "nothing to approve: $approved is already there"
+    if [ -n "$LIVE_SCAN" ] &&
+        { git log --format=%B "$approved..$rev"; git diff "$approved" "$rev"; } |
+        grep -E -i -n "$LIVE_SCAN" | head -5 | grep .; then
+        die "the diff or a message matches LIVE_SCAN (above): fix that before it is pushed"
+    fi
+    git log --format='approving %h %s' "$approved..$rev"
+    (cd "$top" && make manager-test >/dev/null 2>&1) || die "make manager-test fails: nothing pushed"
+    git push -q origin "$rev:refs/heads/$LIVE_BRANCH"
+    git fetch -q origin "$LIVE_BRANCH"
+    echo "pushed to $approved"
+    (cd "$top" && make install-manager 2>&1 | tail -1)
+    target <<'EOF'
+fetch_approved
+on=$(git -C "$repo" rev-parse --abbrev-ref HEAD)
+if [ "$on" = "$branch" ] && git -C "$repo" merge -q --ff-only "$approved"; then
+    (cd "$repo" && make install-manager 2>&1 | tail -1)
+else
+    echo "live: the target's checkout isn't on $branch or can't fast-forward: bake it there by hand" >&2
+fi
+[ -e "$live/.git" ] && write_note && cat "$note"
+EOF
+    ;;
+reset)
+    git fetch -q origin "$LIVE_BRANCH"
+    exec "$0" push --force "$approved"
+    ;;
+*)
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+esac
