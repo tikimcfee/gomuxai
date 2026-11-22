@@ -189,7 +189,7 @@ script_mod! {
         width: Fill
         height: Fill
         axis: Horizontal
-        align: FromB(290.)
+        align: FromB(272.)
         min_vertical: 260.
         max_vertical: 220.
         fold: mod.widgets.SplitterCollapse.B
@@ -277,8 +277,8 @@ script_mod! {
         SortBar{}
         Bar{
             padding: Inset{left: 8 right: 8 top: 4 bottom: 4}
-            c0 := HeadCell{head +: {width: 200}}
-            c1 := HeadCell{head +: {width: 96}}
+            c0 := HeadCell{head +: {width: 176}}
+            c1 := HeadCell{head +: {width: 92}}
             c2 := HeadCell{head +: {width: 46}}
             c3 := HeadCell{head +: {width: 104}}
             c4 := HeadCell{head +: {width: 50}}
@@ -296,8 +296,8 @@ script_mod! {
                 width: Fill
                 height: Fit
                 row := Row{
-                    name := Cell{width: 200}
-                    status := Cell{width: 96}
+                    name := Cell{width: 176}
+                    status := Cell{width: 92}
                     backend := Cell{width: 46}
                     model := Cell{width: 104}
                     context := Cell{width: 50}
