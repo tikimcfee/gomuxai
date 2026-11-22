@@ -3,7 +3,11 @@
 A dream is a scheduled pass over finished work: ended sessions and their
 transcripts, the friction box, handoff docs, memory directories, and git
 history. It consolidates what was learned, so the next session starts from
-it, and curates the friction box so a person doesn't have to.
+it, and curates the friction box so a person doesn't have to. A project
+dream covers one project of the dream scope and keeps its memory; the
+global dream covers what holds across projects: the machine's memory, the
+lessons one project's dreams learned that another needs, and the friction
+box.
 
 This document is the design. What is built is marked **built**; the rest is
 the plan, in the order it gets built.
@@ -30,12 +34,15 @@ Only the consolidate layer is being built now.
 
 - `dreams`: one row per dream: id, host, the agent that dreamt it,
   started/finished, status (`open`, `committed`, `abandoned`, `quiet`),
-  and its diary entry.
+  its diary entry, its `kind` (`project` or `global`) and, for a project
+  dream, its `project` (a scope dir). Rows from before kinds are project
+  dreams with no project: they covered the whole scope, and count as the
+  last committed dream of every project until one of its own commits.
 - `dream_items`: what a dream was given to review: kind (`session`,
-  `friction`, `handoff`, `memory`, `commit`), a key (a session's
-  `harness:id`, a friction entry's uid, a path, a repo and commit), a
-  fingerprint (size and mtime, `updated_at` and votes, a commit hash),
-  and the dream it belongs to.
+  `friction`, `handoff`, `memory`, `commit`, `dream`), a key (a session's
+  `harness:id`, a friction entry's uid, a path, a repo and commit, a
+  dream's id), a fingerprint (size and mtime, `updated_at` and votes, a
+  commit hash, when a dream committed), and the dream it belongs to.
 
 An item counts as reviewed only once its dream commits. A dream that is
 abandoned, or whose agent dies, leaves its items for the next one: the next
@@ -65,10 +72,20 @@ Dreaming is opt-in by directory: `agent dream scope add|remove|list <dir>`
 keeps a list of absolute directories in the host's store (host state
 `dream.scope`, JSON). Only sessions whose cwd is one of them, or inside
 one, are evidence, and only their memory directories and commits come
-along; handoff docs must lie in the scope too. Friction stays host-wide:
-the box is about agent itself. With an empty scope, gather and run say
-nothing is in scope and how to add a directory, and run starts and
-records nothing.
+along; handoff docs must lie in the scope too. With an empty scope,
+gather and run say nothing is in scope and how to add a directory, and
+run starts and records nothing.
+
+**built**: a dream is over one project, a scope dir (`agent dream run
+--project DIR`; `gather` takes the same flag). Without `--project`, run
+picks the scoped dir with something new (or due) whose last committed
+dream is oldest (none counts as oldest; ties go by path), and gather shows
+that pick, or why each project is quiet. Gather restricts sessions,
+worktrees, memory and commits to that dir. Its window (commits since, the
+evidence's since) and the 7-day due rule are the project's own: its last
+committed project dream, or a dream from before projects if that is
+newer. Project dreams take no friction: the global dream triages it, once.
+Only one dream is open at a time, whatever its kind.
 
 The first `agent dream run` records a floor, 7 days before it (host state
 `dream.floor`): a session last written before it is never evidence, for
@@ -80,8 +97,6 @@ taken from the floor on. Sources:
   untracked, not the dream agents' own. A session whose state can't be told
   counts as running, and a subagent's session goes with the session that
   started it, not as an item of its own;
-- this host's friction entries: open and accepted ones not reviewed as they
-  are, and closed ones that changed since a dream reviewed them;
 - handoff docs named by agents' `handoff` state keys;
 - memory directories (Claude Code's per-project `memory/`, beside the
   transcripts) of the projects whose sessions the dream takes, changed or
@@ -89,8 +104,53 @@ taken from the floor on. Sources:
   that runs with nothing new (7 days on) takes the memory directories of
   every project with a finished session;
 - commits in the repos those sessions ran in (`git log` in each session's
-  cwd, skipped when it isn't a repo or is gone), since the last committed
-  dream started, or the floor before any.
+  cwd, skipped when it isn't a repo or is gone), since the project's last
+  committed dream started, or the floor before any.
+
+### The global dream and the machine memory
+
+**built** (`gather::gather_global`, the CLI's `dream.rs`, the brief in
+`agent-dream` `brief_global.md`). Lessons about the machine, the process,
+agent communication, friction and harness behavior should help whichever
+repo an agent is in, so one dream covers what holds across projects:
+`agent dream run --global` (`gather --global` shows it). Its items:
+
+- `dream`: each project dream committed since the last committed global
+  dream (key the dream's id; read with `agent dream show <id>`);
+- `friction`: this host's entries, as project dreams took them before:
+  open and accepted ones not reviewed as they are, and closed ones that
+  changed since a dream reviewed them;
+- `memory`: every scoped project's memory directory, and the machine
+  memory directory, `<data dir>/memory/` beside the store. They come along
+  every time (they are where it writes), new only when changed since a
+  global dream reviewed them: a project dream's write to its own memory is
+  news to the global dream.
+
+The digest's evidence section pools every scoped project's finished
+sessions written since the last committed global dream (the floor before
+any; the newest 200), and each group names the projects it was seen in: a
+trip seen in two or more projects is machine-wide, the three-session rule
+still holding. The global dream is quiet with no new project dream and no
+changed friction, until the last committed global dream is 7 days old.
+
+The machine memory has the format of a project's (`start_here.md`, fact
+files, `MEMORY.md`). The first `run --global` creates it empty, with an
+empty index, before it gathers. It is a memory item of the dream like any
+other: snapshot at open, commit's guard and citation check, abandon's
+restore. The global brief keeps its `start_here.md` under 50 lines (hosts
+and the bus, how agents are run and who answers approvals, build rules,
+toolchains, the tripwires that recur across projects, each cited), carries
+a lesson from one project's sessions or diary into another's memory with a
+`[source: dream:<id>, ...]` citation, replaces a machine-wide fact a
+project's start-here repeats with a pointer, and triages friction with the
+same verbs and rules project dreams had. A `dream:<id>` citation must name
+a committed dream. The project brief (`brief.md`) leaves friction and
+machine-wide facts to it.
+
+Spawn puts the machine note in every new agent's briefing, whatever its
+harness, as a section of its own ("This machine") before the project's
+start-here section, with the same cut (80 lines) and frontmatter dropped
+(`agent_dream::start_here::machine_section`).
 
 ### Evidence: what keeps tripping agents
 
@@ -99,7 +159,9 @@ CLI's `dream_evidence.rs`). The start-here note's Tripwires come from
 evidence, not guesses: the digest ends with an `## evidence` section of
 what failed again and again in the batch, and `agent dream gather` says how
 much (`--json` carries it whole, as `evidence`). Its window is the batch's:
-since the last committed dream started (the floor before any).
+since the last committed dream of its kind (the project's, or the last
+global one) started, the floor before any. A project dream's commands are
+those run in its directory or in a worktree of it.
 
 - **Failed `agent` commands**: the store's command log, rows that exited
   non-zero in a scoped directory, grouped by command shape (its subcommand
@@ -145,22 +207,24 @@ cleans up the agents of closed dreams, gathers, records the dream and its
 items, writes a digest (`.gomuxai/dreams/<id>/digest.md`), snapshots each
 memory directory in the batch (`memory-before/<folder>/` in the dream's
 directory, `memory::take_snapshot`), and spawns a Claude agent `dream-<id>`
-with the fixed brief (`agent_dream::brief`, behind a line naming the
-dream), in `.gomuxai/dreams` with its workspace trust answered, and its
+with the fixed brief (`agent_dream::brief`, or `brief_global` for the
+global dream, behind a line naming the dream and what it is over), in
+`.gomuxai/dreams` with its workspace trust answered, and its
 state key `dream` set to the id. `--dry-run` says what it would do.
 `agent dream list` and `show` read the record.
 
 The agent reads transcripts through `agent logs` and `agent transcript`
 (pre-allowed for every agent), and files through its Read tool, which its
 launch rules allow without a prompt for Claude Code's projects directories,
-the repos its commits are in, and its handoff docs. It may edit files only
+the scoped projects, the machine memory, the repos its commits are in, and
+its handoff docs. It may edit files only
 in its own dream directory (drafts for `memory put --from`), and
 `NotebookEdit` is refused; any other edit asks a person. It writes only
 through `agent dream` verbs, which the PreToolUse hook allows for that
 agent alone while its dream is open (`DREAM_AGENT_COMMANDS` in
 agent-service; never in the launch rules), and the hook also allows it
-`git -C <repo> log|show` for a repo its dream has commits of (no
-`--output`, no `--ext-diff`). Each verb acts on the caller's own open dream
+`git -C <repo> log|show` for a repo its dream has commits of, or any
+scoped project (no `--output`, no `--ext-diff`). Each verb acts on the caller's own open dream
 and refuses otherwise:
 
 - `agent dream memory get|put|check`: put takes the version it read
@@ -168,7 +232,7 @@ and refuses otherwise:
   file's entries or loses a source citation; the prior file is saved under
   the dream's directory first.
 - `agent dream friction dup|link|accept`: triage only; it never resolves
-  an entry as fixed.
+  an entry as fixed. Only the global dream's brief asks for it.
 - `agent dream roster note`: a model evaluation on the roster (**built**),
   through `agent_roster::add_note`, with `--by` set to the dream's agent
   and `--session` limited to sessions the dream was given.
@@ -253,6 +317,9 @@ call.
 
 - A Dreams view in the manager: an optional field on `HostView` (agent-manage), filled in `cli/manage.rs`'s `local_host`, with the page built by the manager's lead (the Usage tab is the pattern).
 - The act layer, above.
+- The timer runs `agent dream run`, which picks a project dream; the
+  global dream still needs a schedule of its own (a second timer, or the
+  timer running `--global` once a day).
 
 ## Prior art
 
