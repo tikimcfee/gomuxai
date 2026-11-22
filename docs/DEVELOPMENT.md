@@ -161,8 +161,23 @@ The live build is the manager started with `--hot`: Makepad then watches the sou
 was built from and re-applies a `script_mod!` block when its file changes, keeping the
 window and the model's state (the manager puts what it sets on widgets back after each
 reload). `push` reports which kind a change was: one inside `script_mod!` shows at once;
-one that touches Rust is built on the target, and the live window must be restarted. A
+one that touches Rust is built on the target, and the live window relaunches itself on
+the new build: `agent-manager-live` runs the window in a loop, `push` creates a relaunch
+file once the build has succeeded, and the window, which polls for it every second,
+saves its state and exits with status 75, so the loop starts the new build. A failed
+build leaves the old window running (`push` prints cargo's errors and exits 1), and
+closing the window by hand ends the loop. A
 proposal is a commit ahead of `origin/<branch>`; to reject one, drop it and push again.
+
+Every manager keeps its UI state across a restart: the page, each list's order, filters
+and selection, the folded sidebar, detail panes, sections and Data hosts, the splitters,
+auto refresh, and the window's size and place. It is written once a change has settled
+and at close, to `agent-manager/state.json` under `~/Library/Application Support` on
+macOS and `$XDG_STATE_HOME` (or `~/.local/state`) elsewhere; `AGENT_MANAGER_STATE=/path`
+names another file (the live build uses one in its target dir, apart from the installed
+manager's), and a run on a fixture keeps none unless it is set. A file it can't read is
+ignored. What is kept is `core/src/saved.rs`: everything is named by text, so a page or
+column a build doesn't know is skipped, and a new page is kept once it is in `Page::ALL`.
 The installed `agent-manager` is a separate binary that only `approve` replaces. Hot
 reload refuses an edit that doesn't parse, or that changes how many `script_mod!` blocks
 or `#(...)` placeholders a file has, and keeps the old UI.
