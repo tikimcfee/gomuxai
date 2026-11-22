@@ -98,6 +98,7 @@ effect() {
     done
     echo $e
 }
+running() { pgrep -f "$tdir/release/agent-manager" >/dev/null 2>&1; }
 write_note() {
     mkdir -p "$tdir"
     n=$(git -C "$live" rev-list --count "$approved..HEAD")
@@ -185,7 +186,13 @@ write_note
 short=$(git -C "$live" rev-parse --short HEAD)
 case $e in
 none) echo "live checkout at $short: nothing the manager draws changed" ;;
-hot) echo "live checkout at $short: applied to the running live manager (hot)" ;;
+hot)
+    if running; then
+        echo "live checkout at $short: applied to the running live manager (hot)"
+    else
+        echo "live checkout at $short: UI only; the live manager isn't running, and shows it when started"
+    fi
+    ;;
 rebuild)
     build
     echo "live checkout at $short: Rust changed, so it was rebuilt: RESTART agent-manager-live to see it"
@@ -205,7 +212,7 @@ cat "$note"
 git -C "$live" log --format='  %h %s' "$approved..HEAD"
 drift=$(git -C "$live" status --porcelain --untracked-files=no)
 [ -z "$drift" ] || { echo "edited on the target, in no commit:"; echo "$drift"; }
-if pgrep -f "$tdir/release/agent-manager" >/dev/null 2>&1; then
+if running; then
     echo "the live manager is running"
 else
     echo "the live manager isn't running (agent-manager-live starts it)"
