@@ -146,14 +146,14 @@ fn roster_note_checks_the_session() {
 
     let e = fails(
         &mut env,
-        &["roster", "note", "sh/m", "--task", "edit", "--verdict", "good", "--session", "claude:beef", "x"],
+        &["roster", "note", "sh/m", "--task", "edit", "--verdict", "good", "--session", "claude:beef", "--by", "lead", "x"],
     );
     assert!(e.contains("no claude session on this host is beef") && e.contains("agent sessions --harness claude"), "{e}");
-    let e = fails(&mut env, &["roster", "note", "sh/m", "--task", "edit", "--verdict", "good", "x"]);
+    let e = fails(&mut env, &["roster", "note", "sh/m", "--task", "edit", "--verdict", "good", "--by", "lead", "x"]);
     assert!(e.contains("--session is required") && e.contains("agent sessions"), "{e}");
     let e = fails(
         &mut env,
-        &["roster", "note", "sh/m", "--task", "fix", "--verdict", "good", "--session", "claude:3f3a", "x"],
+        &["roster", "note", "sh/m", "--task", "fix", "--verdict", "good", "--session", "claude:3f3a", "--by", "lead", "x"],
     );
     assert!(e.contains("\"fix\" isn't a task kind: use edit, bugfix"), "{e}");
     // Only a dream's own agent writes as a dream, through agent dream roster note.
