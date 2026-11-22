@@ -217,8 +217,16 @@ static AGY_TASK_DONE: LazyLock<Regex> = LazyLock::new(|| {
 });
 const AGY_RESTART: &str = "[Notice] All your subagents and background tasks have been stopped";
 static AGY_HOOK_PREAMBLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^The following system message was injected by an? [0-9A-Za-z_]+ hook:[\t\n\f\r ]*")
-        .unwrap()
+    Regex::new(
+        r"^(?:The following system message was injected by an? [0-9A-Za-z_]+ hook:|Stop hook blocked termination:)[\t\n\f\r ]*",
+    )
+    .unwrap()
+});
+static AGY_DELIVERED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?:\[from |\[URGENT INTERRUPT\]\n|[0-9]+ messages arrived while you were working(?:, | \()|\[part [0-9]+/[0-9]+ of the message above\]\n)",
+    )
+    .unwrap()
 });
 static AGY_MESSAGE_HEAD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -584,7 +592,7 @@ impl AgyLine<'_> {
 }
 
 fn agy_injected(text: &str) -> &'static str {
-    if text.starts_with("[from ") {
+    if AGY_DELIVERED.is_match(text) {
         ORIGIN_DELIVERED
     } else {
         ORIGIN_SYSTEM

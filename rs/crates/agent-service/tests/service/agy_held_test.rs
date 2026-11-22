@@ -1363,3 +1363,119 @@ fn test_agy_naming_skips_already_named_and_handles_resume_and_adopt() {
         .tmux
         .kill_session(&format!("{}adopted-pane", env.cfg().session_prefix));
 }
+
+// On agy with `queuedMessages: "send-immediately"`, `send --now` mid-turn is
+// picked up by `PreInvocation` (`invocationNum >= 1`) in the running turn
+// without firing a separate prompt-submit hook: `_turn_at` must advance past
+// `_sent_at` so `wait --next` returns on `Stop` instead of timing out, whereas
+// an ordinary `PreInvocation(>=1)` with only a `--later` message held must NOT
+// advance `_turn_at` prematurely.
+#[test]
+fn test_agy_send_now_mid_turn_advances_turn_at_for_wait_next() {
+    require_termd!();
+    let mut env = setup_test_env();
+    spawn_agy_holding(&mut env, "agynow");
+
+    // 1. Hold a `--later` message mid-turn: `PreInvocation(1)` must NOT advance
+    // `_turn_at` past `_sent_at` while `--later` is still held for turn end.
+    env.service
+        .send(
+            &bg(),
+            "agynow",
+            "[from peer@h] after turn",
+            SendOptions {
+                from: "peer@h".into(),
+                urgency: "later".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    agy_hook(
+        &env,
+        "agynow",
+        "PreInvocation",
+        r#"{"conversationId":"c1","invocationNum":1}"#,
+    );
+    let info_later = env.service.status_info("agynow").unwrap();
+    assert!(
+        !info_later.turn_at.after(&info_later.sent_at),
+        "PreInvocation(1) without --now advanced turn_at ({:?}) past --later sent_at ({:?})",
+        info_later.turn_at,
+        info_later.sent_at
+    );
+
+    // 2. `send --now` mid-turn sweeps held messages and sets `_sent_at`; the
+    // following `PreInvocation(2)` consumes `_now_at`, advancing `_turn_at >
+    // _sent_at`, so `Stop` immediately satisfies `wait --next`.
+    let now_res = env
+        .service
+        .send(
+            &bg(),
+            "agynow",
+            "[from lead@h] steer right now",
+            SendOptions {
+                now: true,
+                from: "lead@h".into(),
+                urgency: "now".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(!now_res.held && now_res.typed == 2);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    agy_hook(
+        &env,
+        "agynow",
+        "PreInvocation",
+        r#"{"conversationId":"c1","invocationNum":2}"#,
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    agy_hook(
+        &env,
+        "agynow",
+        "Stop",
+        r#"{"conversationId":"c1","fullyIdle":true,"terminationReason":"NO_TOOL_CALL"}"#,
+    );
+
+    let info = env.service.status_info("agynow").unwrap();
+    assert!(
+        info.sent_at.before(&info.turn_at) && info.turn_at.before(&info.reported_at),
+        "want sent < turn < reported after mid-turn --now, got {:?}, {:?}, {:?}",
+        info.sent_at.0,
+        info.turn_at.0,
+        info.reported_at.0
+    );
+
+    let (wait_ctx, _cancel) =
+        agent_service::Context::with_timeout(&bg(), std::time::Duration::from_secs(1));
+    let waited = agent_bus::wait(
+        &wait_ctx,
+        None,
+        agent_bus::WaitOptions {
+            host: String::new(),
+            agent: "agynow".into(),
+            for_statuses: vec!["idle".into()],
+            fail_statuses: Vec::new(),
+            next: true,
+            after: agent_bus::Time::default(),
+            current: Some(Box::new(|_| {
+                let i = env.service.status_info("agynow")?;
+                Ok(agent_bus::Observation {
+                    status: i.status.to_string(),
+                    detail: i.detail,
+                    reported_status: i.reported_status.to_string(),
+                    reported_at: agent_bus::Time(i.reported_at.0),
+                    sent_at: agent_bus::Time(i.sent_at.0),
+                    turn_at: agent_bus::Time(i.turn_at.0),
+                })
+            })),
+            interval: std::time::Duration::from_millis(20),
+        },
+    );
+    assert_eq!(
+        waited.map_err(|(s, e)| format!("{s}: {e:#}")),
+        Ok("idle".to_string()),
+        "wait --next should immediately see the completed --now turn"
+    );
+}
