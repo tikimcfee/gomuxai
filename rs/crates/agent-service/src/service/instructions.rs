@@ -26,13 +26,20 @@ pub fn skill_text(binary: &str) -> String {
 ## Core loop
 
     agent list                                                # agents here; --host HOST for another host
-    agent spawn helper --backend claude                       # start a helper (<yourname>-<role> inside an agent)
-    agent send helper "the task"                              # send now, or hold while busy (--now types in at once)
+    agent roster pick --task review                           # which harness, model and host suit the task (see below)
+    agent spawn helper --backend agy --model MODEL            # start a helper (<yourname>-<role> inside an agent)
+    agent send helper "the task"                            # send now, or hold while busy (--now types in at once)
     agent wait helper --for idle,waiting --next --timeout 30m # wait for that turn (--any returns at first of several)
     agent state get helper _result                            # latest final reply (claude and agy on this host)
     agent status helper -v                                    # status, source, pending prompt detail, held count
     agent capture helper --lines 50                           # live screen; agent logs helper for transcript history
     agent cleanup helper                                      # stop and remove your helper (--ended cleans ended ones)
+
+## Choosing a harness and model
+
+Don't default to your own harness and model: each one sees a problem differently and runs at its own speed and cost. Before a spawn, ask the roster: `agent roster list` lists each host's harnesses and models with what they're good at, speed, cost, availability, and past evaluations; `agent roster pick --task KIND` (`edit`, `bugfix`, `feature`, `long-horizon`, `review`, `research`, `design`, `test`, `kernel`, `chat`) prints a ready `agent spawn` line. Mix them: a review or a second opinion on another harness or model catches what yours misses; a fast, cheap model suits mechanical edits; save the strongest for long or hard work. Inside Claude Code, the Agent tool's `model` option runs a subagent on another Claude model without a new agent. When a run teaches you something about a model, record it, citing the session (`agent sessions` lists them):
+
+    agent roster note HARNESS/MODEL --task KIND --verdict good|mixed|bad --session HARNESS:SESSION-ID "what happened" --why "..."
 
 ## Messages and prompts
 
@@ -91,7 +98,7 @@ fn agent_briefing_header(
     format!(
         r#"# Working with other agents (gomuxai)
 
-You are agent {qname} on host {qhost}, started by {by} through gomuxai. Run `agent` by its full path, {bin}, since your shell's PATH may not include it. Your status (idle, processing, waiting on a permission prompt, ended) is reported automatically. Name any helper you spawn {name}-<role> (for example, `agent spawn {name}-review --backend claude` and `agent cleanup {name}-review`), and clean up only your own helpers and theirs.
+You are agent {qname} on host {qhost}, started by {by} through gomuxai. Run `agent` by its full path, {bin}, since your shell's PATH may not include it. Your status (idle, processing, waiting on a permission prompt, ended) is reported automatically. Name any helper you spawn {name}-<role> (for example, `agent spawn {name}-review --backend agy` and `agent cleanup {name}-review`; `agent roster pick` suggests a harness and model), and clean up only your own helpers and theirs.
 
 {held}
 "#,
