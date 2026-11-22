@@ -45,7 +45,7 @@ mod tests {
             "start_here.md",
             "under 50 lines",
             "dream:<id>",
-            "two or more projects",
+            "A trip is machine-wide",
             "agent dream friction dup",
         ] {
             assert!(g.contains(want), "global brief lacks {want}");
