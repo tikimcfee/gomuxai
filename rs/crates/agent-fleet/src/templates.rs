@@ -56,6 +56,13 @@ pub struct Template {
         skip_serializing_if = "String::is_empty"
     )]
     pub model: String,
+    /// The CLI's --effort (claude, agy), "" for its default.
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub effort: String,
     #[serde(default, deserialize_with = "null_default")]
     pub cwd: String,
     #[serde(
@@ -82,6 +89,7 @@ impl Template {
             name: name.into(),
             backend: backend.into(),
             model: model.into(),
+            effort: String::new(),
             cwd: cwd.into(),
             brief: brief.into(),
             extra: serde_json::Map::new(),
@@ -115,6 +123,17 @@ impl Template {
                 self.name,
                 self.backend
             );
+        }
+        if !self.effort.is_empty() {
+            agent_service::validate_effort(&self.effort)
+                .with_context(|| format!("template {:?}", self.name))?;
+            if self.backend != "claude" && self.backend != "agy" {
+                bail!(
+                    "template {:?}: backend {} takes no effort: claude and agy do",
+                    self.name,
+                    self.backend
+                );
+            }
         }
         if self.cwd.is_empty() || !Path::new(&self.cwd).is_absolute() {
             bail!(
@@ -173,6 +192,7 @@ impl Template {
             name: self.name.clone(),
             backend: self.backend.clone(),
             model: self.model.clone(),
+            effort: self.effort.clone(),
             cwd: self.cwd.clone(),
             brief: self.brief.clone(),
             problem: self.problem().unwrap_or_default(),
@@ -194,7 +214,10 @@ impl From<&Template> for agent_bus::Template {
 
 impl From<agent_bus::Template> for Template {
     fn from(t: agent_bus::Template) -> Self {
-        Self::new(t.name, t.backend, t.model, t.cwd, t.brief)
+        Self {
+            effort: t.effort,
+            ..Self::new(t.name, t.backend, t.model, t.cwd, t.brief)
+        }
     }
 }
 

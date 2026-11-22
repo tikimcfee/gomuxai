@@ -127,6 +127,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
             updated_at: (!info.updated_at.is_zero()).then_some(info.updated_at),
             held: info.held,
             model: info.model.clone(),
+            effort: info.effort.clone(),
             unsubmitted_at: unsubmitted.as_ref().map(|(at, _)| *at),
             unchecked: unchecked
                 .as_ref()
@@ -144,6 +145,9 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         out += &format!("  source: {}\n", info.source);
         if !info.model.is_empty() {
             out += &format!("  model:  {}\n", info.model);
+        }
+        if !info.effort.is_empty() {
+            out += &format!("  effort: {}\n", info.effort);
         }
         if !info.native_err.is_empty() {
             out += &format!("  native: unread: {}\n", wrap(&info.native_err));
@@ -341,6 +345,9 @@ struct StatusJsonOut {
     /// the model spawn --model started it on; absent for the CLI's default
     #[serde(skip_serializing_if = "String::is_empty")]
     model: String,
+    /// the effort spawn --effort started it at; absent for the CLI's default
+    #[serde(skip_serializing_if = "String::is_empty")]
+    effort: String,
     /// when a message was typed into the agent's input box that Enter failed
     /// to submit, if it still sits there
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -433,5 +440,6 @@ fn remote_status(ctx: &Ctx, r: &AgentRef) -> anyhow::Result<StatusInfo> {
     info.updated_at = Time(resp.updated_at.0);
     info.held = usize::try_from(resp.held).unwrap_or(0);
     info.model = resp.model;
+    info.effort = resp.effort;
     Ok(info)
 }

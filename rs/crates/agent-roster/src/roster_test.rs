@@ -505,6 +505,33 @@ fn pick_ranks() {
     assert!(bad("edit", "", &[none]).contains("no roster entry is available"));
 }
 
+// An entry with an effort spawns with --effort, as spawn now takes it.
+#[test]
+fn pick_spawns_at_the_entrys_effort() {
+    let v = env();
+    set(&v.store, "claude/haiku@low", "chat", "fast", "low");
+    let all = |_: &str| true;
+    let view = host_view_with(&v.store, "here", &paths(&all)).unwrap();
+    let ps = pick(
+        std::slice::from_ref(&view),
+        "here",
+        &PickOptions {
+            task: "chat".into(),
+            prefer: String::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        (ps[0].key.as_str(), ps[0].effort.as_str()),
+        ("claude/haiku@low", "low")
+    );
+    assert_eq!(
+        ps[0].command,
+        "agent spawn NAME --backend claude --model haiku --effort low"
+    );
+    assert!(!ps[0].why.contains("effort"), "{}", ps[0].why);
+}
+
 #[test]
 fn saved_picks() {
     let v = env();

@@ -876,6 +876,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "--add-dir",
     "--conversation",
     "--model",
+    "--effort",
     "--settings",
     "--resume",
     "-r",

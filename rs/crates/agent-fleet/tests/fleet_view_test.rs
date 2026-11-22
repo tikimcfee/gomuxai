@@ -36,7 +36,8 @@ use agent_fleet::templates::{self, Template};
 use agent_fleet::{focus, handoff, run, template_op};
 use agent_service::{
     AGENT_STATUS_ENDED, AGENT_STATUS_IDLE, AGENT_STATUS_WAITING, AgentNotFoundError, AgentService,
-    RpcExtras, STATE_KEY_MODEL, STATE_KEY_SESSION_ID, new_rpc_handler, new_rpc_handler_with,
+    RpcExtras, STATE_KEY_EFFORT, STATE_KEY_MODEL, STATE_KEY_SESSION_ID, new_rpc_handler,
+    new_rpc_handler_with,
 };
 use agent_store::{
     AGENT_STATUS, Agent, FRICTION_ACCEPTED, FRICTION_OPEN, FRICTION_RESOLVED, Friction, Job,
@@ -887,6 +888,12 @@ fn local_tree_sections_render_and_baseline_report() {
                 if name == "lead" {
                     entries.push(StateEntry {
                         agent_name: name.into(),
+                        key: STATE_KEY_EFFORT.into(),
+                        value: "high".into(),
+                        updated_at: status_at,
+                    });
+                    entries.push(StateEntry {
+                        agent_name: name.into(),
                         key: "_transcript".into(),
                         value: lead_tr.to_string_lossy().into_owned(),
                         updated_at: status_at,
@@ -1067,7 +1074,7 @@ fn local_tree_sections_render_and_baseline_report() {
             assert!(text.contains("hub-main (build "), "text:\n{text}");
             assert!(text.contains("  focus: helper-a"), "text:\n{text}");
             assert!(
-                text.contains("  lead: idle (claude claude-opus-4-6)"),
+                text.contains("  lead: idle (claude claude-opus-4-6@high)"),
                 "text:\n{text}"
             );
             assert!(

@@ -105,8 +105,9 @@ with a bad one takes 1 away; `--prefer fast|cheap|strong` breaks ties on
 speed or cost (strong: dearest first), then more good sessions, then this
 host before others. It
 prints the top choice as a command line
-(`agent spawn NAME --backend agy --model ...`, with `@HOST` when it is
-elsewhere) and the next two with one line of why each. It never spawns.
+(`agent spawn NAME --backend agy --model ... [--effort ...]`, with `@HOST`
+when it is elsewhere) and the next two with one line of why each. It never
+spawns; `spawn --pick` (below) does.
 
 ### Saved picks
 
@@ -152,6 +153,53 @@ saved pick on its own host. `roster` is added to the default remote ops, but hos
 saved bus settings need `agent bus restart --remote-ops <list>,roster`;
 that is a person's call on each host.
 
+## spawn --effort
+
+**built**. `agent spawn NAME --backend claude|agy --effort LEVEL` runs the
+CLI at that reasoning effort (both take `--effort
+low|medium|high|xhigh|max`). The levels are the roster's own
+(`agent_roster::EFFORTS`; `agent_service::validate_effort` checks against
+it), so an entry's `@EFFORT` is always one spawn takes. Like `--model`, it
+is refused for backends that take none (aider, shell, custom), kept on the
+agent (state key `_effort`) so `resume` and `revive` relaunch at it, shown
+by `status -v` and `fleet` (`claude opus@high`), carried over the bus on a
+remote spawn (a host that predates it says so), and taken by `template add
+--effort`. A pick's spawn line carries the entry's `--effort`.
+
+## spawn --pick
+
+**built** (`rs/crates/agent/src/cli/spawn_pick.rs`). Opt-in routing:
+
+```bash
+agent spawn fixer --pick edit tasks/fix.md     # the roster chooses backend, model, effort and host
+agent spawn fixer@hub --pick edit              # from hub's roster only (--host hub too)
+agent spawn reviewer --saved quick-review@2    # a saved pick, on its own host
+```
+
+`--pick KIND` gathers this host's and every linked host's roster and ranks
+them with `agent_roster::pick`, exactly as `roster pick --task KIND` does
+(no `--prefer`). Spawn says what it chose and why before it spawns, in a
+line (`Picked claude/claude-haiku-5-5@low for edit: tasks include edit;
+notes on edit: 2 good from 2 sessions; fast, low cost`), plus a second
+when nothing on record suits the kind and the pick is a guess. Then it
+spawns with that backend, model and effort. A pick on another host spawns
+there as `NAME@HOST` would, which needs that host's bus to serve `spawn`;
+when it doesn't, spawn says so (`the pick runs on leaf, so leaf was asked
+to spawn w and didn't: a host starts agents for others only if its bus's
+--remote-ops lists spawn ...`) and how to pick from this host only. A
+name or `--host` naming a host limits the pick to that host's roster.
+
+`--saved NAME[@VERSION]` spawns a saved pick's harness, model and effort on
+its own host (refused if the name or `--host` names another), after
+checking its entry there as `roster pick --saved` does: one that is off or
+gone is refused, with `roster pick --task KIND` to pick again; one whose
+host couldn't be read is spawned and says it wasn't checked.
+
+Both refuse `--backend`, `--backend-config`, `--model` and `--effort`, and
+each other. When nothing can be picked, the refusal says why, lists each
+entry's availability as `roster list` shows it (and hosts not read), and
+how to add or enable an entry.
+
 ## Teaching it
 
 The briefing and the `agent` skill get a short section, "Choosing a
@@ -172,6 +220,5 @@ with the dreaming lead before dreams write anything.
 ## Later
 
 - Usage limits in availability (above).
-- `spawn --effort` where the harness takes it.
-- Automatic routing: `spawn --pick TASK` resolving through `pick`.
+- `spawn --pick` with `--prefer`.
 - A Roster view in the manager.

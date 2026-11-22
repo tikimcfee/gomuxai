@@ -10,7 +10,8 @@ use super::agent_service::{
 };
 use super::ctx::Ctx;
 use super::status::{
-    STATE_KEY_END_REASON, STATE_KEY_MODEL, STATE_KEY_RESULT, STATE_KEY_STATUS, STATE_KEY_TRANSCRIPT,
+    STATE_KEY_EFFORT, STATE_KEY_END_REASON, STATE_KEY_MODEL, STATE_KEY_RESULT, STATE_KEY_STATUS,
+    STATE_KEY_TRANSCRIPT,
 };
 
 /// ResumeOptions holds options for resuming an ended agent.
@@ -30,11 +31,15 @@ pub struct ResumeOptions {
 }
 
 /// keptOnResume are the reserved state keys a resume keeps: the last turn's
-/// reply, the transcript of the session it continues, and the model it was
-/// spawned on. The rest describe
+/// reply, the transcript of the session it continues, and the model and
+/// effort it was spawned on. The rest describe
 /// the run that ended (its status, prompts, spawn id) and would only mislead.
-pub(crate) const KEPT_ON_RESUME: &[&str] =
-    &[STATE_KEY_RESULT, STATE_KEY_TRANSCRIPT, STATE_KEY_MODEL];
+pub(crate) const KEPT_ON_RESUME: &[&str] = &[
+    STATE_KEY_RESULT,
+    STATE_KEY_TRANSCRIPT,
+    STATE_KEY_MODEL,
+    STATE_KEY_EFFORT,
+];
 
 impl AgentService {
     /// Resume relaunches an ended agent on its session, under its own record:
@@ -79,6 +84,7 @@ impl AgentService {
                 backend: agent.backend.clone(),
                 spawned_by: agent.spawned_by.clone(),
                 model: self.state_value(&agent.name, STATE_KEY_MODEL),
+                effort: self.state_value(&agent.name, STATE_KEY_EFFORT),
                 skip_permissions: opts.skip_permissions,
                 trust_workspace: opts.trust_workspace,
                 resume: opts.session_id.clone(),

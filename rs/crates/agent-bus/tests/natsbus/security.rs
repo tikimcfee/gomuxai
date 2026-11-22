@@ -433,6 +433,7 @@ impl Handler for EvilHandler {
             end_reason: t.clone(),
             detail: t.clone(),
             model: t.clone(),
+            effort: t.clone(),
             tool_input: r#"{"command":"ok\u001b]52;c;pwned\u0007\u001b[2Jls"}"#.to_string(),
             ..Default::default()
         })
@@ -487,6 +488,7 @@ impl Handler for EvilHandler {
             cwd: t.clone(),
             task_file: t.clone(),
             model: t.clone(),
+            effort: t.clone(),
             status: t.clone(),
             detail: t.clone(),
             end_reason: t.clone(),
@@ -572,6 +574,7 @@ fn test_rpc_client_sanitizes_remote_text() {
     );
     assert_eq!(st.end_reason, st.detail, "status end_reason");
     assert_eq!(st.model, st.detail, "status model");
+    assert_eq!(st.effort, st.detail, "status effort");
     let decoded_input: serde_json::Value = serde_json::from_str(&st.tool_input).unwrap();
     let cmd_str = decoded_input["command"].as_str().unwrap();
     assert!(
@@ -650,6 +653,7 @@ fn test_rpc_client_sanitizes_remote_text() {
         ("cwd", &spawned.cwd),
         ("task_file", &spawned.task_file),
         ("model", &spawned.model),
+        ("effort", &spawned.effort),
         ("status", &spawned.status),
         ("detail", &spawned.detail),
         ("end_reason", &spawned.end_reason),

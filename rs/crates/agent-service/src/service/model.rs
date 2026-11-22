@@ -23,6 +23,25 @@ pub fn validate_model(model: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Says why effort can't be passed to a CLI's --effort, or Ok: it must be
+/// one of the roster's efforts (agent_roster::EFFORTS), so a roster entry's
+/// effort is always one spawn takes.
+pub fn validate_effort(effort: &str) -> anyhow::Result<()> {
+    if !agent_roster::EFFORTS.contains(&effort) {
+        anyhow::bail!(
+            "invalid effort {}: use {}",
+            agent_base::gostd::strconv::quote(effort),
+            agent_roster::EFFORTS.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// The error for spawn --effort on a backend that takes none.
+pub(crate) fn effort_refusal(backend_name: &str) -> anyhow::Error {
+    anyhow::anyhow!("backend {backend_name} takes no --effort: claude and agy do")
+}
+
 /// modelRefusal is the error for spawn --model on a backend that takes none.
 pub(crate) fn model_refusal(backend_name: &str) -> anyhow::Error {
     anyhow::anyhow!(

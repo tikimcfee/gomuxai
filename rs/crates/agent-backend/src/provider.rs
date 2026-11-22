@@ -184,6 +184,13 @@ pub trait ModelChooser {
     fn with_model(&self, launch_cmd: &str, model: &str) -> String;
 }
 
+/// Implemented by backends whose CLI takes a reasoning effort at launch
+/// (spawn --effort: claude's and agy's --effort low|medium|high|xhigh|max).
+pub trait EffortChooser {
+    /// Returns `launch_cmd` changed to run at `effort`.
+    fn with_effort(&self, launch_cmd: &str, effort: &str) -> String;
+}
+
 /// Implemented by backends whose CLI takes a display name for the session at
 /// launch (Claude's --name).
 pub trait SessionNamer {
@@ -307,6 +314,9 @@ pub trait Provider: Send + Sync {
         None
     }
     fn as_model_chooser(&self) -> Option<&dyn ModelChooser> {
+        None
+    }
+    fn as_effort_chooser(&self) -> Option<&dyn EffortChooser> {
         None
     }
     fn as_session_namer(&self) -> Option<&dyn SessionNamer> {

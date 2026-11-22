@@ -306,7 +306,7 @@ Peers may call only the ops in `--remote-ops`; raw `keys` stays local.
 To let other machines start or resume pre-approved agents on the hub without
 opening arbitrary remote spawn, define a template on the hub (stored locally in
 `.gomuxai/templates.json`; `add` requires `--backend` and `--cwd`, with
-optional `--brief` and `--model`):
+optional `--brief`, `--model` and `--effort`):
 
 ```bash
 hub$ agent template add builder --backend claude --cwd /home/user/project --brief docs/lanes/builder.md

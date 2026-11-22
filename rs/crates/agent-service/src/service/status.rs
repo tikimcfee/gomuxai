@@ -58,6 +58,9 @@ pub const STATE_KEY_TURN_AT: &str = "_turn_at";
 /// StateKeyModel is the model spawn --model started the agent on; resume
 /// relaunches on it. Unset for the CLI's default.
 pub const STATE_KEY_MODEL: &str = "_model";
+/// StateKeyEffort is the effort spawn --effort started the agent at; resume
+/// relaunches at it. Unset for the CLI's default.
+pub const STATE_KEY_EFFORT: &str = "_effort";
 /// StateKeyNamed holds the conversation/session id that this run has already
 /// named via `/rename <agent.name>` (or confirmed already carries that title),
 /// so an agy session is named at most once per conversation.
@@ -170,6 +173,10 @@ pub struct StatusInfo {
     /// Model is the model spawn --model started the agent on; "" for the
     /// CLI's default.
     pub model: String,
+
+    /// Effort is the effort spawn --effort started the agent at; "" for the
+    /// CLI's default.
+    pub effort: String,
 
     /// NativeErr says why the backend CLI's own status couldn't be read,
     /// when that is why another source answered.
@@ -651,6 +658,7 @@ impl AgentService {
         let (mut info, reported) = self.resolve_status(name)?;
         info.held = self.held_count(name);
         info.model = self.state_value(name, STATE_KEY_MODEL);
+        info.effort = self.state_value(name, STATE_KEY_EFFORT);
         if let Some(reported) = &reported {
             info.reported_status = reported.status.clone();
             info.reported_at = reported.updated_at;
