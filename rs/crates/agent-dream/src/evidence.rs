@@ -92,6 +92,10 @@ pub struct Group {
     pub sources: Vec<String>,
     pub first: DateTime<Utc>,
     pub last: DateTime<Utc>,
+    /// The scoped projects it was seen in, when the evidence pools several
+    /// (the global dream's); empty otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
 }
 
 impl Group {
@@ -518,6 +522,7 @@ fn ranked(acc: BTreeMap<(String, String), Acc>) -> Vec<Group> {
             sources: a.sources.into_iter().collect(),
             first: a.first.unwrap_or_default(),
             last: a.last.unwrap_or_default(),
+            projects: Vec::new(),
         })
         .collect();
     groups.sort_by(|a, b| {
@@ -531,6 +536,24 @@ fn ranked(acc: BTreeMap<(String, String), Acc>) -> Vec<Group> {
     });
     groups.truncate(MAX_GROUPS);
     groups
+}
+
+/// Sets each group's projects: those its sources (sessions or agents) were
+/// seen in, by `projects_of`. For evidence pooled across projects, where a
+/// trip seen in two or more is the machine's.
+pub fn set_projects(
+    groups: &mut [Group],
+    projects_of: &BTreeMap<String, std::collections::BTreeSet<String>>,
+) {
+    for g in groups {
+        let mut p = std::collections::BTreeSet::new();
+        for s in &g.sources {
+            if let Some(of) = projects_of.get(s) {
+                p.extend(of.iter().filter(|d| !d.is_empty()).cloned());
+            }
+        }
+        g.projects = p.into_iter().collect();
+    }
 }
 
 /// Failed commands grouped by shape and error, noise left out. Returns the
@@ -718,14 +741,28 @@ fn group_line(g: &Group, noun: &str) -> String {
     } else {
         format!("{} to {}", day(g.first), day(g.last))
     };
-    format!(
+    let mut line = format!(
         "- {}× `{}`: {}\n  {n} {noun}{} ({when}): {}\n",
         g.count,
         g.what,
         g.error,
         if n == 1 { "" } else { "s" },
         names.join(", ")
-    )
+    );
+    if !g.projects.is_empty() {
+        let p = g.projects.len();
+        let _ = writeln!(
+            line,
+            "  in {p} project{}: {}",
+            if p == 1 { "" } else { "s" },
+            g.projects
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    line
 }
 
 /// Lines added to `b` while the section stays within `budget` bytes; the

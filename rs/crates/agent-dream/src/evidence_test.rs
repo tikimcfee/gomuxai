@@ -413,6 +413,7 @@ fn formats_a_bounded_section() {
         sources: sources.iter().map(|s| s.to_string()).collect(),
         first: at(1, 1),
         last: at(3, 1),
+        projects: Vec::new(),
     };
     let e = Evidence {
         since: Some(at(1, 0)),
@@ -473,4 +474,33 @@ fn formats_a_bounded_section() {
     let s = format(&big);
     assert!(s.len() <= MAX_BYTES + 200, "{}", s.len());
     assert!(s.contains("more left out for space"), "{s}");
+}
+
+#[test]
+fn pooled_groups_name_their_projects() {
+    let mut groups = vec![Group {
+        what: "Bash pkill".into(),
+        sources: vec!["claude:1".into(), "claude:2".into(), "helper".into()],
+        ..Default::default()
+    }];
+    let mut of: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
+    of.entry("claude:1".into())
+        .or_default()
+        .insert("/srv/app".into());
+    of.entry("claude:2".into())
+        .or_default()
+        .insert("/srv/tools".into());
+    of.entry("helper".into())
+        .or_default()
+        .insert("/srv/app".into());
+    set_projects(&mut groups, &of);
+    assert_eq!(groups[0].projects, ["/srv/app", "/srv/tools"]);
+    let s = format(&Evidence {
+        tools: groups,
+        ..Default::default()
+    });
+    assert!(
+        s.contains("  in 2 projects: `/srv/app`, `/srv/tools`\n"),
+        "{s}"
+    );
 }

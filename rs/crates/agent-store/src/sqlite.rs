@@ -7,7 +7,7 @@ use rusqlite::types::{Type, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Params, Row, Transaction, params};
 
 use crate::commands::COMMAND_LOG_SCHEMA;
-use crate::dreams::DREAMS_SCHEMA;
+use crate::dreams::{DREAMS_ADDED_COLUMNS, DREAMS_SCHEMA};
 use crate::friction::FRICTION_SCHEMA;
 use crate::friction_links::FRICTION_LINKS_SCHEMA;
 use crate::gotime::Time;
@@ -161,6 +161,7 @@ impl Store {
         ]
         .iter()
         .chain(JOBS_ADDED_COLUMNS)
+        .chain(DREAMS_ADDED_COLUMNS)
         {
             add_column(&conn, table, column, def)?;
         }

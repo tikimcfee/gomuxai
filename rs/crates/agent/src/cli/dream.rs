@@ -11,15 +11,15 @@ use std::path::Path;
 
 use agent_bus::Context;
 use agent_dream::gather::{
-    self, CommitIn, Cursor, FrictionIn, Gathered, HandoffIn, Item, KINDS, MemoryIn, SessionIn,
-    Sources,
+    self, CommitIn, Cursor, DreamIn, FrictionIn, Gathered, HandoffIn, Item, KINDS, MemoryIn,
+    SessionIn, Sources,
 };
 use agent_fleet::handoff::STATE_KEY_HANDOFF;
 use agent_manage::SessionState;
 use agent_service::SpawnOptions;
 use agent_store::{
-    DREAM_OPEN, Dream, DreamItem, FRICTION_ACCEPTED, FRICTION_OPEN, Friction, FrictionFilter,
-    StateEntry, Time, gojson,
+    DREAM_COMMITTED, DREAM_KIND_GLOBAL, DREAM_OPEN, Dream, DreamItem, DreamOf, FRICTION_ACCEPTED,
+    FRICTION_OPEN, Friction, FrictionFilter, StateEntry, Time, gojson,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -50,11 +50,15 @@ pub fn dream_agent_name(id: i64) -> String {
 pub const DOC: Doc = Doc {
     use_line: "dream",
     short: "Review finished work: consolidate memory and triage friction",
-    long: r#"A dream is a pass over finished work: sessions that have ended, the friction
-box, handoff docs, memory directories, and the commits in the repos those
-sessions ran in. A Claude agent, dream-<id>, reads them and writes back only
-through agent dream's own verbs: it consolidates memory, triages friction
-(duplicates, links, accepting what is clearly real; it never resolves an
+    long: r#"A dream is a pass over finished work. A project dream covers one directory
+of the dream scope: its sessions that have ended, handoff docs, memory, and
+the commits in its repo. The global dream covers the machine: the project
+dreams committed since the last one, every project's memory, the machine
+memory (<data dir>/memory, whose start_here.md goes into every agent's
+briefing), the friction box, and the evidence across projects. A Claude
+agent, dream-<id>, reads them and writes back only through agent dream's
+own verbs: it consolidates memory, triages friction (the global dream;
+duplicates, links, accepting what is clearly real; it never resolves an
 entry as fixed), and keeps a diary.
 
 Dreaming is opt-in by directory: only sessions run in a directory of the
@@ -80,11 +84,13 @@ An item counts as reviewed once its dream commits, at the version it had
 then: a session written to again or a friction entry voted on comes back.
 A dream that is abandoned, or whose agent goes away, leaves its items for
 the next one. With nothing new, a dream is recorded as quiet and no agent
-starts, until the last committed dream is 7 days old."#,
+starts, until the last committed dream (the project's, or the last global
+one) is 7 days old. Only one dream is open at a time."#,
     example: r#"  agent dream scope add ~/src/app
   agent dream gather
   agent dream run --dry-run
   agent dream run
+  agent dream run --global
   agent dream list
   agent dream show 3"#,
     args: ArgRule::Any,
@@ -122,6 +128,8 @@ struct HostSources<'a> {
     /// Worktree path prefixes and the repo each belongs to.
     worktrees: std::collections::BTreeMap<String, String>,
     commits: RefCell<HashMap<String, Vec<CommitIn>>>,
+    /// Discovery's sessions, read once: picking a project gathers each.
+    sessions: RefCell<Option<Vec<SessionIn>>>,
 }
 
 impl<'a> HostSources<'a> {
@@ -132,6 +140,7 @@ impl<'a> HostSources<'a> {
             roots: RefCell::default(),
             worktrees: read_worktrees(ctx).unwrap_or_default(),
             commits: RefCell::default(),
+            sessions: RefCell::default(),
         }
     }
 
@@ -234,8 +243,11 @@ fn friction_in(f: &Friction) -> FrictionIn {
 
 impl Sources for HostSources<'_> {
     fn sessions(&self) -> anyhow::Result<Vec<SessionIn>> {
+        if let Some(s) = self.sessions.borrow().as_ref() {
+            return Ok(s.clone());
+        }
         let rows = super::manage::all_rows(self.ctx)?;
-        Ok(rows
+        let sessions: Vec<SessionIn> = rows
             .into_iter()
             .map(|r| SessionIn {
                 running: matches!(r.state, SessionState::Running | SessionState::Unknown),
@@ -254,7 +266,53 @@ impl Sources for HostSources<'_> {
                 parent_session: r.parent_session,
                 untracked: r.untracked,
             })
+            .collect();
+        *self.sessions.borrow_mut() = Some(sessions.clone());
+        Ok(sessions)
+    }
+
+    fn project_dreams(&self, since: DateTime<Utc>) -> anyhow::Result<Vec<DreamIn>> {
+        let dreams = self
+            .ctx
+            .store()?
+            .committed_project_dreams_since(&Time(since.fixed_offset()))?;
+        Ok(dreams
+            .into_iter()
+            .map(|d| DreamIn {
+                id: d.id,
+                project: d.project,
+                finished_at: (!d.finished_at.is_zero())
+                    .then(|| d.finished_at.0.with_timezone(&Utc)),
+                items: d.items,
+                diary: d.diary.lines().next().unwrap_or_default().to_string(),
+            })
             .collect())
+    }
+
+    /// Claude Code's memory of the project at dir.
+    fn project_memory(&self, dir: &str) -> Option<MemoryIn> {
+        let projects = claude_projects_dir(self.ctx)?;
+        let mem = Path::new(&projects)
+            .join(agent_dream::start_here::project_folder(dir))
+            .join("memory");
+        let (files, fingerprint) = gather::memory_fingerprint(&mem)?;
+        Some(MemoryIn {
+            dir: mem.to_string_lossy().into_owned(),
+            files,
+            fingerprint,
+        })
+    }
+
+    /// `<data dir>/memory`, as an empty directory before it exists.
+    fn machine_memory(&self) -> Option<MemoryIn> {
+        let dir = machine_memory_dir(self.ctx);
+        let (files, fingerprint) =
+            gather::memory_fingerprint(&dir).unwrap_or((0, "0:0@0".to_string()));
+        Some(MemoryIn {
+            dir: dir.to_string_lossy().into_owned(),
+            files,
+            fingerprint,
+        })
     }
 
     fn friction(&self) -> anyhow::Result<Vec<FrictionIn>> {
@@ -348,17 +406,86 @@ impl Sources for HostSources<'_> {
     }
 }
 
-/// The reviewed cursor as the store has it.
-fn cursor(ctx: &Ctx) -> anyhow::Result<Cursor> {
+/// Where Claude Code keeps its per-project folders, as spawn finds a
+/// project's start-here note; None when the app config turns it off.
+fn claude_projects_dir(ctx: &Ctx) -> Option<String> {
+    agent_dream::start_here::projects_dir(
+        ctx.cfg().claude_projects_dir.as_deref(),
+        &std::env::var("CLAUDE_CONFIG_DIR").unwrap_or_default(),
+        &std::env::var("HOME").unwrap_or_default(),
+    )
+}
+
+/// The machine memory directory: `<data dir>/memory`, beside the store.
+pub(crate) fn machine_memory_dir(ctx: &Ctx) -> std::path::PathBuf {
+    Path::new(&ctx.data_dir()).join("memory")
+}
+
+/// Creates the machine memory directory, with an empty index, if it isn't
+/// there: the first global dream opens over it.
+fn ensure_machine_memory(ctx: &Ctx) -> anyhow::Result<()> {
+    let dir = machine_memory_dir(ctx);
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let index = dir.join("MEMORY.md");
+    if !index.exists() {
+        std::fs::write(&index, "").with_context(|| format!("writing {}", index.display()))?;
+    }
+    Ok(())
+}
+
+/// What a dream is over: one scoped project, or the machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Target {
+    Project(String),
+    Global,
+}
+
+impl Target {
+    fn of(&self) -> DreamOf {
+        match self {
+            Target::Project(dir) => DreamOf::project(dir),
+            Target::Global => DreamOf::global(),
+        }
+    }
+
+    /// "over /srv/app", "over the machine".
+    fn over(&self) -> String {
+        match self {
+            Target::Project(dir) => format!("over {dir}"),
+            Target::Global => "over the machine (global)".to_string(),
+        }
+    }
+}
+
+/// The reviewed cursor for a dream over target, as the store has it. A
+/// project's covers that project, and its last committed dream is that
+/// project's (or one from before projects). The global dream's covers the
+/// whole scope, its last committed dream is the last global one, and a
+/// memory directory counts as reviewed only as a global dream left it.
+fn cursor(ctx: &Ctx, target: &Target) -> anyhow::Result<Cursor> {
     let store = ctx.store()?;
+    let mut reviewed = store.reviewed_fingerprints()?;
+    let scope = match target {
+        Target::Project(dir) => vec![dir.clone()],
+        Target::Global => {
+            reviewed.retain(|(kind, _), _| kind != gather::KIND_MEMORY);
+            reviewed.extend(
+                store
+                    .reviewed_fingerprints_by(DREAM_KIND_GLOBAL)?
+                    .into_iter()
+                    .filter(|((kind, _), _)| kind == gather::KIND_MEMORY),
+            );
+            read_scope(ctx)?
+        }
+    };
     Ok(Cursor {
-        reviewed: store.reviewed_fingerprints()?,
+        reviewed,
         dream_agents: store.dream_agents()?,
         last_committed: store
-            .last_committed_dream()?
+            .last_committed_dream_of(&target.of())?
             .map(|d| d.started_at.0.with_timezone(&Utc)),
         now: Utc::now(),
-        scope: read_scope(ctx)?,
+        scope,
         floor: read_floor(ctx)?,
     })
 }
@@ -391,13 +518,110 @@ fn read_floor(ctx: &Ctx) -> anyhow::Result<Option<DateTime<Utc>>> {
 /// What gather and run say when the scope is empty.
 const NO_SCOPE: &str = "Nothing is in scope for dreaming. agent dream scope add <dir> adds a project directory: sessions run in it or below it are reviewed, with their memory and commits.\n";
 
-fn gather_host(ctx: &Ctx) -> anyhow::Result<Gathered> {
-    let cur = cursor(ctx)?;
-    let mut g = gather::gather(&HostSources::new(ctx), &cur)?;
-    if !g.quiet {
-        g.evidence = Some(super::dream_evidence::evidence(ctx, &g)?);
+/// What the next dream would be: its target and what it gathers. When no
+/// target was asked for and no project has anything, `g` is quiet and
+/// `quiet` says why for each project.
+struct Plan {
+    target: Target,
+    g: Gathered,
+    quiet: Vec<(String, String)>,
+}
+
+/// --project as a scope dir: made absolute, and in the scope.
+fn project_arg(ctx: &Ctx, dir: &str) -> anyhow::Result<String> {
+    let dir = scope_dir(dir)?;
+    if !read_scope(ctx)?.contains(&dir) {
+        anyhow::bail!(
+            "{dir} isn't in the dream scope: --project takes one of its directories (agent dream scope list shows them)"
+        );
     }
-    Ok(g)
+    Ok(dir)
+}
+
+/// The target --project and --global ask for, or None for the pick.
+fn target_arg(ctx: &Ctx, project: &str, global: bool) -> anyhow::Result<Option<Target>> {
+    match (project.is_empty(), global) {
+        (false, true) => anyhow::bail!("--project and --global can't go together"),
+        (false, false) => Ok(Some(Target::Project(project_arg(ctx, project)?))),
+        (true, true) => Ok(Some(Target::Global)),
+        (true, false) => Ok(None),
+    }
+}
+
+/// Gathers for target, with the evidence when it isn't quiet.
+fn gather_for(ctx: &Ctx, src: &HostSources, target: &Target) -> anyhow::Result<(Cursor, Gathered)> {
+    let cur = cursor(ctx, target)?;
+    let mut g = match target {
+        Target::Project(_) => gather::gather(src, &cur)?,
+        Target::Global => gather::gather_global(src, &cur)?,
+    };
+    if !g.quiet {
+        g.evidence = Some(super::dream_evidence::evidence(
+            ctx,
+            &g,
+            &cur.scope,
+            *target == Target::Global,
+        )?);
+    }
+    Ok((cur, g))
+}
+
+/// What the next dream would be. Without a target, the project dream of
+/// the scoped dir with something new (or due) whose last committed dream is
+/// oldest.
+fn gather_host(ctx: &Ctx, want: Option<Target>) -> anyhow::Result<Plan> {
+    let src = HostSources::new(ctx);
+    let scope = read_scope(ctx)?;
+    if scope.is_empty() {
+        let target = want.unwrap_or(Target::Global);
+        let (_, g) = gather_for(ctx, &src, &target)?;
+        return Ok(Plan {
+            target,
+            g,
+            quiet: Vec::new(),
+        });
+    }
+    if let Some(target) = want {
+        let (_, g) = gather_for(ctx, &src, &target)?;
+        return Ok(Plan {
+            target,
+            g,
+            quiet: Vec::new(),
+        });
+    }
+    let mut candidates = Vec::new();
+    let mut quiet = Vec::new();
+    for dir in &scope {
+        let target = Target::Project(dir.clone());
+        let cur = cursor(ctx, &target)?;
+        let g = gather::gather(&src, &cur)?;
+        if g.quiet {
+            quiet.push((dir.clone(), g.reason.clone()));
+        } else {
+            candidates.push((cur.last_committed, dir.clone()));
+        }
+    }
+    candidates.sort();
+    match candidates.into_iter().next() {
+        Some((_, dir)) => {
+            let target = Target::Project(dir);
+            let (_, g) = gather_for(ctx, &src, &target)?;
+            Ok(Plan {
+                target,
+                g,
+                quiet: Vec::new(),
+            })
+        }
+        None => Ok(Plan {
+            target: Target::Project(String::new()),
+            g: Gathered {
+                quiet: true,
+                reason: "no project has anything new".into(),
+                ..Default::default()
+            },
+            quiet,
+        }),
+    }
 }
 
 /// "Evidence: 12 failed agent commands in 4 groups, ...": one line.
@@ -428,6 +652,7 @@ fn describe_counts(g: &Gathered) -> String {
                 "friction" => "friction entr",
                 "memory" => "memory director",
                 "handoff" => "handoff doc",
+                "dream" => "project dream",
                 other => other,
             };
             let plural = match (*k, *n == 1) {
@@ -469,18 +694,32 @@ pub const GATHER: Doc = Doc {
     use_line: "gather",
     short: "List what the next dream would review, without starting one",
     long: r#"Gather lists what agent dream run would give the next dream, and records
-nothing:
+nothing. A project dream covers one directory of the dream scope: the one
+--project names, or else the one with something new (or due) whose last
+committed dream is oldest. It gets:
 
-  sessions    run in the dream scope (agent dream scope), no longer
-              running, not untracked, not a dream agent's own (subagents'
-              sessions go with the session that started them), last written
-              after the floor; at most 200, oldest first, the rest wait
-  friction    this host's open and accepted entries, and closed ones that
-              changed since a dream saw them, whatever the scope
-  handoff     the docs agents' handoff state keys name, in the scope
+  sessions    run in the project (agent dream scope), or in a worktree of
+              it, no longer running, not untracked, not a dream agent's
+              own (subagents' sessions go with the session that started
+              them), last written after the floor; at most 200, oldest
+              first, the rest wait
+  handoff     the docs agents' handoff state keys name, in the project
   memory      Claude Code's memory/ directory of each session's project
-  commit      commits in the repos those sessions ran in, since the last
-              committed dream (before any, since the floor)
+  commit      commits in the repos those sessions ran in, since the
+              project's last committed dream (before any, since the floor)
+
+The global dream (--global) gets:
+
+  dream       the project dreams committed since the last global dream
+  friction    this host's open and accepted entries, and closed ones that
+              changed since a dream saw them
+  memory      every scoped project's memory and the machine memory
+              (<data dir>/memory), new when changed since a global dream
+              reviewed them
+
+and the evidence of every scoped project's sessions since the last global
+dream. It is quiet with no new project dream and no changed friction,
+until the last global dream is 7 days old.
 
 The floor is set by the first agent dream run, 7 days before it: nothing
 last written earlier is ever taken, unless it is written to again. Until
@@ -489,11 +728,12 @@ out until it changes. With nothing new, the dream would be quiet; with
 nothing in scope, there is nothing to gather: it says which.
 
 It also counts the evidence the digest's evidence section lists: failed
-agent commands run in the scope, failed tool calls in those sessions'
-transcripts, and messages that corrected an agent, grouped and ranked
-(--json has them whole)."#,
+agent commands run in the dream's directories, failed tool calls in those
+sessions' transcripts, and messages that corrected an agent, grouped and
+ranked (--json has them whole)."#,
     example: r#"  agent dream gather
-  agent dream gather --json"#,
+  agent dream gather --project ~/src/app
+  agent dream gather --global --json"#,
     args: ArgRule::None,
     ..Doc::DEFAULT
 };
@@ -502,6 +742,15 @@ transcripts, and messages that corrected an agent, grouped and ranked
 pub struct GatherArgs {
     #[arg(long = "json", help = "Print as JSON")]
     pub json: bool,
+    #[arg(
+        long = "project",
+        value_name = "string",
+        default_value = "",
+        help = "Gather for a dream over this scope directory"
+    )]
+    pub project: String,
+    #[arg(long = "global", help = "Gather for the global dream")]
+    pub global: bool,
     #[arg(hide = true)]
     pub args: Vec<String>,
 }
@@ -510,26 +759,66 @@ pub fn gather_def() -> Def {
     leaf!(GATHER, GatherArgs, run_gather)
 }
 
-pub fn run_gather(ctx: &Ctx, args: &GatherArgs) -> anyhow::Result<()> {
-    let g = gather_host(ctx)?;
-    if args.json {
-        return ctx.write_out(&format!("{}\n", gojson::marshal(&g)?));
-    }
-    ctx.write_out(&describe_gathered(&g))
+#[derive(Serialize)]
+struct GatherView<'a> {
+    kind: String,
+    project: String,
+    #[serde(flatten)]
+    gathered: &'a Gathered,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    quiet_projects: Vec<QuietProject>,
 }
 
-fn describe_gathered(g: &Gathered) -> String {
+#[derive(Serialize)]
+struct QuietProject {
+    project: String,
+    reason: String,
+}
+
+pub fn run_gather(ctx: &Ctx, args: &GatherArgs) -> anyhow::Result<()> {
+    let want = target_arg(ctx, &args.project, args.global)?;
+    let plan = gather_host(ctx, want)?;
+    if args.json {
+        let of = plan.target.of();
+        let v = GatherView {
+            kind: of.kind,
+            project: of.project,
+            gathered: &plan.g,
+            quiet_projects: plan
+                .quiet
+                .iter()
+                .map(|(p, r)| QuietProject {
+                    project: p.clone(),
+                    reason: r.clone(),
+                })
+                .collect(),
+        };
+        return ctx.write_out(&format!("{}\n", gojson::marshal(&v)?));
+    }
+    ctx.write_out(&describe_plan(&plan))
+}
+
+fn describe_plan(plan: &Plan) -> String {
+    let g = &plan.g;
     let mut out = String::new();
     if g.no_scope {
         return NO_SCOPE.to_string();
     }
     if g.quiet {
-        let _ = writeln!(out, "Nothing for a dream: {}.", g.reason);
+        if plan.quiet.is_empty() {
+            let _ = writeln!(out, "Nothing for a dream {}: {}.", plan.target.over(), g.reason);
+        } else {
+            let _ = writeln!(out, "Nothing for a dream: {}.", g.reason);
+            for (dir, why) in &plan.quiet {
+                let _ = writeln!(out, "  {dir}: {why}");
+            }
+        }
         return out;
     }
     let _ = writeln!(
         out,
-        "The next dream would review {} ({} new).",
+        "The next dream {} would review {} ({} new).",
+        plan.target.over(),
         describe_counts(g),
         g.new_count()
     );
@@ -755,9 +1044,18 @@ fn write_worktrees(ctx: &Ctx, wt: &std::collections::BTreeMap<String, String>) -
 pub const RUN: Doc = Doc {
     use_line: "run",
     short: "Start a dream: gather, record it, and spawn its agent",
-    long: r#"Run starts a dream. With nothing in the dream scope (agent dream scope) it
-starts nothing and says so. The first run sets the floor, 7 days back:
-sessions last written before it are never taken.
+    long: r#"Run starts a dream: a project dream over one directory of the dream scope,
+or with --global the machine's. With nothing in the dream scope (agent
+dream scope) it starts nothing and says so. The first run sets the floor,
+7 days back: sessions last written before it are never taken.
+
+A project dream covers the directory --project names, or else the scoped
+directory with something new (or due: its last committed dream 7 days old)
+whose last committed dream is oldest. The global dream reviews the project
+dreams committed since the last global one, every scoped project's memory
+and the machine memory (<data dir>/memory, created empty by the first
+global dream), the host's friction, and the evidence pooled across the
+scope. Only one dream is open at a time.
 
 1. An open dream whose agent is gone (ended, or its record removed) is
    closed as abandoned, and the agents of dreams that have closed are
@@ -770,13 +1068,16 @@ sessions last written before it are never taken.
    the dream's changes against it), and spawns a Claude agent dream-<id>
    with the dream's brief, its state key dream set to the id. The agent
    works in .gomuxai/dreams, whose workspace trust run answers. It may read
-   Claude Code's projects (transcripts and memory), the repos its commits
-   are in and its handoff docs, edit files only in its dream's directory,
-   and run git -C <repo> log or show in those repos, without a prompt.
+   Claude Code's projects (transcripts and memory), the scoped projects,
+   the machine memory, the repos its commits are in and its handoff docs,
+   edit files only in its dream's directory, and run git -C <repo> log or
+   show in those repos, without a prompt.
 
 --dry-run says what it would do and changes nothing."#,
     example: r#"  agent dream run --dry-run
-  agent dream run"#,
+  agent dream run
+  agent dream run --project ~/src/app
+  agent dream run --global"#,
     args: ArgRule::None,
     ..Doc::DEFAULT
 };
@@ -785,6 +1086,15 @@ sessions last written before it are never taken.
 pub struct RunArgs {
     #[arg(long = "dry-run", help = "Say what it would do, and change nothing")]
     pub dry_run: bool,
+    #[arg(
+        long = "project",
+        value_name = "string",
+        default_value = "",
+        help = "Dream over this scope directory"
+    )]
+    pub project: String,
+    #[arg(long = "global", help = "Dream the global dream")]
+    pub global: bool,
     #[arg(hide = true)]
     pub args: Vec<String>,
 }
@@ -813,6 +1123,7 @@ pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
         ctx.write_out(NO_SCOPE)?;
         return ctx.write_out("No dream started.\n");
     }
+    let want = target_arg(ctx, &args.project, args.global)?;
     let would = if args.dry_run { "Would close" } else { "Closed" };
     // The first run fixes the floor: nothing last written before it is ever
     // evidence, for this dream or a later one.
@@ -865,24 +1176,35 @@ pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
         }
     }
 
-    let g = gather_host(ctx)?;
+    // The first global dream opens over an empty machine memory, made
+    // before gathering so the dream is given it as it is.
+    if !args.dry_run && want == Some(Target::Global) {
+        ensure_machine_memory(ctx)?;
+    }
+    let plan = gather_host(ctx, want)?;
+    let g = &plan.g;
     let host = ctx.cfg().host.clone();
     if g.quiet {
+        let over = if plan.quiet.is_empty() {
+            format!(" {}", plan.target.over())
+        } else {
+            String::new()
+        };
         if args.dry_run {
             return ctx.write_out(&format!(
-                "Would record a quiet dream: {}. No agent would start.\n",
+                "Would record a quiet dream{over}: {}. No agent would start.\n",
                 g.reason
             ));
         }
-        let d = store.record_quiet_dream(&host, &g.reason)?;
+        let d = store.record_quiet_dream(&host, &plan.target.of(), &g.reason)?;
         return ctx.write_out(&format!(
-            "Dream #{} is quiet: {}. No agent started.\n",
+            "Dream #{} is quiet{over}: {}. No agent started.\n",
             d.id, g.reason
         ));
     }
     if args.dry_run {
         let mut out = String::from("Would start a dream: ");
-        out += &describe_gathered(&g);
+        out += &describe_plan(&plan);
         return ctx.write_out(&out);
     }
 
@@ -897,12 +1219,13 @@ pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
             read: i.read.clone(),
         })
         .collect();
-    let d = store.open_dream(&host, &items, dream_agent_name)?;
-    match start_dream(ctx, &d, &g) {
+    let d = store.open_dream_of_kind(&host, &plan.target.of(), &items, dream_agent_name)?;
+    match start_dream(ctx, &d, g) {
         Ok(digest) => ctx.write_out(&format!(
-            "Started dream #{} with {}: agent {} (its digest is {digest}).\n",
+            "Started dream #{} {} with {}: agent {} (its digest is {digest}).\n",
             d.id,
-            describe_counts(&g),
+            plan.target.over(),
+            describe_counts(g),
             d.agent
         )),
         Err(e) => {
@@ -922,7 +1245,17 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
     let digest = dir.join("digest.md");
     let digest_s = digest.to_string_lossy().into_owned();
     let mut text = format_digest(d, g);
-    text.push_str(&format_scope(&read_scope(ctx)?));
+    // A project dream checks memory against its own project; the global
+    // dream against every one.
+    let projects = if d.kind == DREAM_KIND_GLOBAL || d.project.is_empty() {
+        read_scope(ctx)?
+    } else {
+        vec![d.project.clone()]
+    };
+    text.push_str(&format_scope(&projects));
+    if d.kind == DREAM_KIND_GLOBAL {
+        text.push_str(&format_machine(&machine_memory_dir(ctx).to_string_lossy()));
+    }
     std::fs::write(&digest, text).map_err(|e| anyhow::anyhow!("writing {digest_s}: {e}"))?;
     let brief = dir.join("brief.md");
     let brief_s = brief.to_string_lossy().into_owned();
@@ -964,8 +1297,21 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
 }
 
 fn format_brief(d: &Dream, digest: &str) -> String {
+    if d.kind == DREAM_KIND_GLOBAL {
+        return format!(
+            "You are {}, dreaming dream #{}, the global dream, on this host.\n\n{}",
+            d.agent,
+            d.id,
+            agent_dream::brief_global(digest)
+        );
+    }
+    let over = if d.project.is_empty() {
+        String::new()
+    } else {
+        format!(", a project dream over {}", d.project)
+    };
     format!(
-        "You are {}, dreaming dream #{} on this host.\n\n{}",
+        "You are {}, dreaming dream #{}{over} on this host.\n\n{}",
         d.agent,
         d.id,
         agent_dream::brief(digest)
@@ -1010,6 +1356,13 @@ fn dream_tool_rules(ctx: &Ctx, dream_dir: &Path, items: &[Item]) -> (Vec<String>
     for dir in read_scope(ctx).unwrap_or_default() {
         allow.push(read_rule("Read", &dir, true));
     }
+    // The machine memory: the global dream keeps it, and a project dream
+    // reads it to leave what is machine-wide there.
+    allow.push(read_rule(
+        "Read",
+        &machine_memory_dir(ctx).to_string_lossy(),
+        true,
+    ));
     allow.push(read_rule("Edit", &dream_dir.to_string_lossy(), true));
     allow.sort();
     allow.dedup();
@@ -1031,9 +1384,25 @@ pub fn format_scope(scope: &[String]) -> String {
     b
 }
 
+/// The global dream's digest section on the machine memory.
+pub fn format_machine(dir: &str) -> String {
+    format!(
+        "\n## machine memory\n\n- `{dir}`: this machine's memory, which you keep; its \
+         `start_here.md` goes into every agent's briefing on this host, before the \
+         project's.\n  read: your Read tool, `agent dream memory get <file> --dir {dir}`\n"
+    )
+}
+
 /// The digest: each item with its key, one line, and how to read it.
 pub fn format_digest(d: &Dream, g: &Gathered) -> String {
-    let mut b = format!("# Dream {}\n\n", d.id);
+    let over = if d.kind == DREAM_KIND_GLOBAL {
+        " (global)".to_string()
+    } else if !d.project.is_empty() {
+        format!(" over {}", d.project)
+    } else {
+        String::new()
+    };
+    let mut b = format!("# Dream {}{over}\n\n", d.id);
     let _ = writeln!(
         b,
         "Started {} by {}. It reviews {} ({} new).",
@@ -1209,6 +1578,17 @@ fn memory_problems(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>> {
                 .any(|(k, item)| k == kind && review::commit_matches(key, item))
                 || scope.iter().any(|repo| commit_in_repo(repo, key));
         }
+        if kind == gather::KIND_DREAM {
+            // Any committed dream: the global dream cites the project dreams
+            // a lesson came from, given or reviewed earlier.
+            return key.parse::<i64>().ok().is_some_and(|id| {
+                store
+                    .get_dream(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|d| d.status == DREAM_COMMITTED)
+            });
+        }
         items.iter().any(|i| i.kind == kind && i.key == key)
             || reviewed.contains_key(&(kind.to_string(), key.to_string()))
     };
@@ -1348,7 +1728,10 @@ pub const LIST: Doc = Doc {
     short: "List the dreams so far",
     long: r#"List shows the dreams on this host, newest first: id, status (open,
 committed, abandoned, quiet), its agent, when it started, how many items it
-was given, and the first line of its diary."#,
+was given, what it was over (global, a project's folder name, or all: a
+dream from before project dreams, or a quiet run that found nothing in any
+project), and the first line of its diary. --json has each dream's kind
+(project or global) and project directory."#,
     example: r#"  agent dream list
   agent dream list --limit 5 --json"#,
     args: ArgRule::None,
@@ -1387,23 +1770,39 @@ pub fn run_list(ctx: &Ctx, args: &ListArgs) -> anyhow::Result<()> {
     let mut b = String::new();
     let _ = writeln!(
         b,
-        "{:<5} {:<10} {:<10} {:<16} {:>5}  DIARY",
-        "ID", "STATUS", "AGENT", "STARTED", "ITEMS"
+        "{:<5} {:<10} {:<10} {:<16} {:>5}  {:<14} DIARY",
+        "ID", "STATUS", "AGENT", "STARTED", "ITEMS", "OVER"
     );
     for d in &dreams {
         let first = d.diary.lines().next().unwrap_or_default();
         let _ = writeln!(
             b,
-            "{:<5} {:<10} {:<10} {:<16} {:>5}  {}",
+            "{:<5} {:<10} {:<10} {:<16} {:>5}  {:<14} {}",
             format!("#{}", d.id),
             d.status,
             if d.agent.is_empty() { "-" } else { &d.agent },
             stamp(&d.started_at),
             d.items,
-            clip(first, 70)
+            clip(&dream_over(d), 14),
+            clip(first, 60)
         );
     }
     ctx.write_out(&b)
+}
+
+/// What a dream was over, short: "global", its project's folder name, or
+/// "all" (a project dream from before projects, or a quiet pick).
+fn dream_over(d: &Dream) -> String {
+    if d.kind == DREAM_KIND_GLOBAL {
+        return "global".to_string();
+    }
+    if d.project.is_empty() {
+        return "all".to_string();
+    }
+    Path::new(&d.project)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| d.project.clone())
 }
 
 // `agent dream show`
@@ -1411,8 +1810,9 @@ pub fn run_list(ctx: &Ctx, args: &ListArgs) -> anyhow::Result<()> {
 pub const SHOW: Doc = Doc {
     use_line: "show [id]",
     short: "Show a dream: its diary and what it was given",
-    long: r#"Show prints a dream (the newest, without an id): its status, agent and
-times, its diary, and each item it was given, with how to read it."#,
+    long: r#"Show prints a dream (the newest, without an id): its status, what it was
+over (a project directory, or the machine for the global dream), its agent
+and times, its diary, and each item it was given, with how to read it."#,
     example: r#"  agent dream show
   agent dream show 3 --json"#,
     args: ArgRule::Range(0, 1),
@@ -1466,6 +1866,14 @@ pub fn run_show(ctx: &Ctx, args: &ShowArgs) -> anyhow::Result<()> {
         return ctx.write_out(&format!("{}\n", gojson::marshal(&v)?));
     }
     let mut b = format!("Dream #{} ({}) on {}\n", d.id, d.status, d.host);
+    let over = if d.kind == DREAM_KIND_GLOBAL {
+        "the machine (global)".to_string()
+    } else if d.project.is_empty() {
+        "every project in scope".to_string()
+    } else {
+        d.project.clone()
+    };
+    let _ = writeln!(b, "Over:     {over}");
     if !d.agent.is_empty() {
         let _ = writeln!(b, "Agent:    {}", d.agent);
     }

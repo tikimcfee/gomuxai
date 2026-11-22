@@ -57,19 +57,50 @@ pub fn find(projects_dir: &str, cwd: &str) -> Option<(String, String)> {
     None
 }
 
+/// The machine note: the start-here note of the machine memory directory
+/// (`<data dir>/memory/`), which the global dream keeps.
+pub fn machine_note(data_dir: &str) -> Option<(String, String)> {
+    if data_dir.is_empty() {
+        return None;
+    }
+    let path = Path::new(data_dir).join("memory").join(FILE);
+    let text = std::fs::read_to_string(&path).ok()?;
+    Some((path.to_string_lossy().into_owned(), text))
+}
+
 /// The briefing section for a note read from `path`: its body without the
 /// frontmatter, cut at MAX_LINES.
 pub fn briefing_section(path: &str, text: &str) -> String {
+    section(
+        &format!(
+            "## Start here\n\nThis project's start-here note, kept current by dreaming \
+             ({path}). Treat it as what was true when it was written; the repo wins \
+             where they disagree.\n\n"
+        ),
+        text,
+    )
+}
+
+/// The briefing section for the machine note read from `path`, as
+/// [`briefing_section`] makes a project's: it goes before the project's.
+pub fn machine_section(path: &str, text: &str) -> String {
+    section(
+        &format!(
+            "## This machine\n\nThis machine's note, kept current by dreaming across \
+             every project here ({path}). Treat it as what was true when it was \
+             written; what you find on the machine wins where they disagree.\n\n"
+        ),
+        text,
+    )
+}
+
+fn section(head: &str, text: &str) -> String {
     let body = strip_frontmatter(text).trim();
     if body.is_empty() {
         return String::new();
     }
     let lines: Vec<&str> = body.lines().collect();
-    let mut out = format!(
-        "## Start here\n\nThis project's start-here note, kept current by dreaming \
-         ({path}). Treat it as what was true when it was written; the repo wins \
-         where they disagree.\n\n"
-    );
+    let mut out = head.to_string();
     for l in lines.iter().take(MAX_LINES) {
         out.push_str(l);
         out.push('\n');
@@ -133,6 +164,28 @@ mod tests {
             "{s}"
         );
         assert!(find(&projects, "/srv/other").is_none());
+    }
+
+    #[test]
+    fn the_machine_note_has_its_own_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().to_string_lossy().into_owned();
+        assert!(machine_note(&data).is_none());
+        assert!(machine_note("").is_none());
+        std::fs::create_dir_all(tmp.path().join("memory")).unwrap();
+        std::fs::write(
+            tmp.path().join("memory").join(FILE),
+            "---\nname: start-here\n---\n\nBuild in /var/tmp.\n",
+        )
+        .unwrap();
+        let (path, text) = machine_note(&data).unwrap();
+        let s = machine_section(&path, &text);
+        assert!(s.starts_with("## This machine\n"), "{s}");
+        assert!(
+            s.contains("Build in /var/tmp.") && !s.contains("name:"),
+            "{s}"
+        );
+        assert_eq!(machine_section(&path, "---\nname: x\n---\n"), "");
     }
 
     #[test]

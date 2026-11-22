@@ -112,7 +112,13 @@ fn dreams_abandoned_and_quiet() {
     );
     assert!(s.reviewed_fingerprints().unwrap().is_empty());
 
-    let q = s.record_quiet_dream("h", "nothing new").unwrap();
+    let q = s
+        .record_quiet_dream("h", &DreamOf::project("/srv/app"), "nothing new")
+        .unwrap();
+    assert_eq!(
+        (q.kind.as_str(), q.project.as_str()),
+        ("project", "/srv/app")
+    );
     assert_eq!(q.status, DREAM_QUIET);
     assert_eq!(q.agent, "");
     assert_eq!(q.items, 0);
@@ -124,5 +130,99 @@ fn dreams_abandoned_and_quiet() {
     assert_eq!(
         s.dream_agents().unwrap(),
         std::collections::HashSet::from([d.agent.clone()])
+    );
+}
+
+/// A store from before projects: opening it adds kind and project, and its
+/// dreams read as project dreams over the whole scope.
+#[test]
+fn dreams_migrate_to_kinds_and_projects() {
+    let dir = crate::tree_test::temp_dir();
+    let path = dir.path().join("gomuxai.db");
+    Store::open(&path).unwrap().close().unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    for stmt in [
+        "ALTER TABLE dreams DROP COLUMN project",
+        "ALTER TABLE dreams DROP COLUMN kind",
+        "INSERT INTO dreams (host, agent, started_at, finished_at, status) VALUES ('h', 'dream-1', '2026-11-01T10:00:00Z', '2026-11-01T11:00:00Z', 'committed')",
+    ] {
+        db.execute_batch(stmt)
+            .unwrap_or_else(|e| panic!("{stmt}: {e}"));
+    }
+    drop(db);
+
+    let s = Store::open(&path).unwrap();
+    let d = s.get_dream(1).unwrap().unwrap();
+    assert_eq!(
+        (d.kind.as_str(), d.project.as_str()),
+        (DREAM_KIND_PROJECT, "")
+    );
+    // The legacy dream covered every project, and no global one.
+    let of = |dir: &str| {
+        s.last_committed_dream_of(&DreamOf::project(dir))
+            .unwrap()
+            .map(|d| d.id)
+    };
+    assert_eq!(of("/srv/app"), Some(1));
+    assert!(
+        s.last_committed_dream_of(&DreamOf::global())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn dreams_per_project_and_global() {
+    let (s, _, _dir) = new_test_store();
+    let open = |of: &DreamOf, items: &[DreamItem]| {
+        s.open_dream_of_kind("h", of, items, |id| format!("dream-{id}"))
+            .unwrap()
+    };
+    let legacy = open(&DreamOf::project(""), &[]);
+    s.commit_dream(legacy.id).unwrap();
+    let app = open(
+        &DreamOf::project("/srv/app"),
+        &[item("memory", "/m/app", "1")],
+    );
+    assert_eq!(
+        (app.kind.as_str(), app.project.as_str()),
+        ("project", "/srv/app")
+    );
+    s.commit_dream(app.id).unwrap();
+    let last = |of: DreamOf| s.last_committed_dream_of(&of).unwrap().map(|d| d.id);
+    assert_eq!(last(DreamOf::project("/srv/app")), Some(app.id));
+    assert_eq!(
+        last(DreamOf::project("/srv/tools")),
+        Some(legacy.id),
+        "the legacy dream covered it"
+    );
+    assert_eq!(last(DreamOf::global()), None);
+
+    let since = s.get_dream(app.id).unwrap().unwrap().finished_at;
+    let ids: Vec<i64> = s
+        .committed_project_dreams_since(&since)
+        .unwrap()
+        .iter()
+        .map(|d| d.id)
+        .collect();
+    assert_eq!(ids, [app.id]);
+
+    let g = open(&DreamOf::global(), &[item("memory", "/m/app", "2")]);
+    s.commit_dream(g.id).unwrap();
+    assert_eq!(last(DreamOf::global()), Some(g.id));
+    assert_eq!(
+        last(DreamOf::project("/srv/app")),
+        Some(app.id),
+        "a global dream is no project's"
+    );
+    let key = ("memory".to_string(), "/m/app".to_string());
+    assert_eq!(s.reviewed_fingerprints().unwrap()[&key], "2");
+    assert_eq!(
+        s.reviewed_fingerprints_by(DREAM_KIND_PROJECT).unwrap()[&key],
+        "1"
+    );
+    assert_eq!(
+        s.reviewed_fingerprints_by(DREAM_KIND_GLOBAL).unwrap()[&key],
+        "2"
     );
 }

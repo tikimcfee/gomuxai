@@ -1,6 +1,9 @@
 List shows the dreams on this host, newest first: id, status (open,
 committed, abandoned, quiet), its agent, when it started, how many items it
-was given, and the first line of its diary.
+was given, what it was over (global, a project's folder name, or all: a
+dream from before project dreams, or a quiet run that found nothing in any
+project), and the first line of its diary. --json has each dream's kind
+(project or global) and project directory.
 
 Usage:
   agent dream list [flags]

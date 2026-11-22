@@ -1,6 +1,15 @@
-Run starts a dream. With nothing in the dream scope (agent dream scope) it
-starts nothing and says so. The first run sets the floor, 7 days back:
-sessions last written before it are never taken.
+Run starts a dream: a project dream over one directory of the dream scope,
+or with --global the machine's. With nothing in the dream scope (agent
+dream scope) it starts nothing and says so. The first run sets the floor,
+7 days back: sessions last written before it are never taken.
+
+A project dream covers the directory --project names, or else the scoped
+directory with something new (or due: its last committed dream 7 days old)
+whose last committed dream is oldest. The global dream reviews the project
+dreams committed since the last global one, every scoped project's memory
+and the machine memory (<data dir>/memory, created empty by the first
+global dream), the host's friction, and the evidence pooled across the
+scope. Only one dream is open at a time.
 
 1. An open dream whose agent is gone (ended, or its record removed) is
    closed as abandoned, and the agents of dreams that have closed are
@@ -13,9 +22,10 @@ sessions last written before it are never taken.
    the dream's changes against it), and spawns a Claude agent dream-<id>
    with the dream's brief, its state key dream set to the id. The agent
    works in .gomuxai/dreams, whose workspace trust run answers. It may read
-   Claude Code's projects (transcripts and memory), the repos its commits
-   are in and its handoff docs, edit files only in its dream's directory,
-   and run git -C <repo> log or show in those repos, without a prompt.
+   Claude Code's projects (transcripts and memory), the scoped projects,
+   the machine memory, the repos its commits are in and its handoff docs,
+   edit files only in its dream's directory, and run git -C <repo> log or
+   show in those repos, without a prompt.
 
 --dry-run says what it would do and changes nothing.
 
@@ -25,10 +35,14 @@ Usage:
 Examples:
   agent dream run --dry-run
   agent dream run
+  agent dream run --project ~/src/app
+  agent dream run --global
 
 Flags:
-      --dry-run   Say what it would do, and change nothing
-  -h, --help      help for run
+      --dry-run          Say what it would do, and change nothing
+      --global           Dream the global dream
+  -h, --help             help for run
+      --project string   Dream over this scope directory
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

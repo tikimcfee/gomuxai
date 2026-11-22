@@ -36,7 +36,10 @@ mod roster_test;
 #[cfg(test)]
 mod tree_test;
 
-pub use dreams::{DREAM_ABANDONED, DREAM_COMMITTED, DREAM_OPEN, DREAM_QUIET, Dream, DreamItem};
+pub use dreams::{
+    DREAM_ABANDONED, DREAM_COMMITTED, DREAM_KIND_GLOBAL, DREAM_KIND_PROJECT, DREAM_OPEN,
+    DREAM_QUIET, Dream, DreamItem, DreamOf,
+};
 pub use gotime::Time;
 pub use host_rename::HostRenamed;
 pub use jobs::{Job, PromotedScript};

@@ -184,16 +184,56 @@ fn reviewed_items_stay_away_until_they_change() {
     let g = gather(&f, &cur).unwrap();
     assert_eq!(
         keys(&g),
-        ["session:claude:a", "friction:h-1", "handoff:/doc.md"],
+        ["session:claude:a", "handoff:/doc.md"],
+        "friction is the global dream's"
+    );
+    commit(&mut cur, &g, at(10));
+
+    let g = gather(&f, &cursor_after(&cur, 11)).unwrap();
+    assert!(g.quiet, "{g:?}");
+    assert_eq!(g.reason, "nothing new since the last committed dream");
+
+    // A session written to again.
+    f.sessions[0].size = 200;
+    let g = gather(&f, &cursor_after(&cur, 11)).unwrap();
+    assert_eq!(keys(&g), ["session:claude:a"]);
+}
+
+#[test]
+fn the_global_dream_triages_friction() {
+    let mut f = Fake::default();
+    f.friction = vec![
+        FrictionIn {
+            id: 1,
+            uid: "h-1".into(),
+            status: "open".into(),
+            kind: "bug".into(),
+            summary: "it broke".into(),
+            updated_at: "t1".into(),
+            votes: 0,
+        },
+        FrictionIn {
+            id: 2,
+            uid: "h-2".into(),
+            status: "resolved".into(),
+            updated_at: "t1".into(),
+            ..Default::default()
+        },
+    ];
+    let mut cur = cursor(at(10));
+    let g = gather_global(&f, &cur).unwrap();
+    assert_eq!(
+        keys(&g),
+        ["friction:h-1"],
         "a closed entry no dream saw isn't evidence"
     );
-    assert_eq!(g.items[1].summary, "#1 bug +0: it broke");
+    assert_eq!(g.items[0].summary, "#1 bug +0: it broke");
     commit(&mut cur, &g, at(10));
     // The resolved one was reviewed before (as a dream would have it).
     cur.reviewed
         .insert(("friction".into(), "h-2".into()), "t0+0".into());
 
-    let g = gather(&f, &cursor_after(&cur, 11)).unwrap();
+    let g = gather_global(&f, &cursor_after(&cur, 11)).unwrap();
     assert_eq!(
         keys(&g),
         ["friction:h-2"],
@@ -202,15 +242,159 @@ fn reviewed_items_stay_away_until_they_change() {
     cur.reviewed
         .insert(("friction".into(), "h-2".into()), "t1+0".into());
 
-    let g = gather(&f, &cursor_after(&cur, 11)).unwrap();
+    let g = gather_global(&f, &cursor_after(&cur, 11)).unwrap();
     assert!(g.quiet, "{g:?}");
-    assert_eq!(g.reason, "nothing new since the last committed dream");
 
-    // A vote, and a session written to again.
+    // A vote.
     f.friction[0].votes = 1;
-    f.sessions[0].size = 200;
-    let g = gather(&f, &cursor_after(&cur, 11)).unwrap();
-    assert_eq!(keys(&g), ["session:claude:a", "friction:h-1"]);
+    let g = gather_global(&f, &cursor_after(&cur, 11)).unwrap();
+    assert_eq!(keys(&g), ["friction:h-1"]);
+}
+
+/// A Fake that also has project dreams, project memory and the machine's.
+#[derive(Default)]
+struct GlobalFake {
+    base: Fake,
+    dreams: Vec<DreamIn>,
+    /// By scope dir.
+    project_memory: HashMap<String, MemoryIn>,
+    machine: Option<MemoryIn>,
+}
+
+impl Sources for GlobalFake {
+    fn sessions(&self) -> Result<Vec<SessionIn>> {
+        self.base.sessions()
+    }
+    fn friction(&self) -> Result<Vec<FrictionIn>> {
+        self.base.friction()
+    }
+    fn handoffs(&self) -> Result<Vec<HandoffIn>> {
+        self.base.handoffs()
+    }
+    fn memory_dir(&self, s: &SessionIn) -> Option<MemoryIn> {
+        self.base.memory_dir(s)
+    }
+    fn commits(&self, cwd: &str, since: DateTime<Utc>) -> Vec<CommitIn> {
+        self.base.commits(cwd, since)
+    }
+    fn project_dreams(&self, since: DateTime<Utc>) -> Result<Vec<DreamIn>> {
+        Ok(self
+            .dreams
+            .iter()
+            .filter(|d| d.finished_at.is_some_and(|t| t >= since))
+            .cloned()
+            .collect())
+    }
+    fn project_memory(&self, dir: &str) -> Option<MemoryIn> {
+        self.project_memory.get(dir).cloned()
+    }
+    fn machine_memory(&self) -> Option<MemoryIn> {
+        self.machine.clone()
+    }
+}
+
+fn mem(dir: &str, fp: &str) -> MemoryIn {
+    MemoryIn {
+        dir: dir.into(),
+        files: 1,
+        fingerprint: fp.into(),
+    }
+}
+
+#[test]
+fn the_global_dream_takes_project_dreams_memory_and_pooled_evidence() {
+    let mut f = GlobalFake::default();
+    f.base.sessions = vec![
+        session("a", 4, "/srv/app"),
+        session("b", 5, "/srv/tools/sub"),
+        session("out", 5, "/home/someone"),
+    ];
+    f.dreams = vec![
+        DreamIn {
+            id: 3,
+            project: "/srv/app".into(),
+            finished_at: Some(at(5)),
+            items: 4,
+            diary: "merged two notes".into(),
+        },
+        DreamIn {
+            id: 4,
+            project: "/srv/tools".into(),
+            finished_at: Some(at(6)),
+            items: 1,
+            diary: String::new(),
+        },
+    ];
+    f.project_memory
+        .insert("/srv/app".into(), mem("/m/app", "1"));
+    f.machine = Some(mem("/data/memory", "0"));
+    let mut cur = cursor(at(7));
+    cur.scope = vec!["/srv/app".into(), "/srv/tools".into()];
+    let g = gather_global(&f, &cur).unwrap();
+    assert!(!g.quiet);
+    assert_eq!(
+        keys(&g),
+        ["dream:3", "dream:4", "memory:/m/app", "memory:/data/memory"]
+    );
+    assert_eq!(
+        g.items[0].summary,
+        "dream #3 over /srv/app (4 items): merged two notes"
+    );
+    assert_eq!(g.items[0].read, "agent dream show 3");
+    assert_eq!(g.items[3].summary, "the machine memory (1 file)");
+    // Evidence comes from both projects' sessions, each with its project.
+    let t: Vec<(&str, &str)> = g
+        .transcripts
+        .iter()
+        .map(|t| (t.session.as_str(), t.project.as_str()))
+        .collect();
+    assert_eq!(t, [("claude:a", "/srv/app"), ("claude:b", "/srv/tools")]);
+    commit(&mut cur, &g, at(7));
+
+    // Nothing new: quiet, though a project's memory changed (a project
+    // dream wrote it; it is news only alongside a new project dream).
+    f.project_memory
+        .insert("/srv/app".into(), mem("/m/app", "2"));
+    let g = gather_global(&f, &cursor_after(&cur, 8)).unwrap();
+    assert!(g.quiet, "{g:?}");
+    assert_eq!(
+        g.reason,
+        "no project dream has committed and no friction changed since the last global dream"
+    );
+
+    // A new project dream: the changed memory is new, the machine's isn't.
+    f.dreams.push(DreamIn {
+        id: 6,
+        project: "/srv/app".into(),
+        finished_at: Some(at(8)),
+        ..Default::default()
+    });
+    let g = gather_global(&f, &cursor_after(&cur, 9)).unwrap();
+    assert_eq!(
+        keys(&g),
+        ["dream:6", "memory:/m/app", "memory:/data/memory"]
+    );
+    let news: Vec<bool> = g.items.iter().map(|i| i.new).collect();
+    assert_eq!(news, [true, true, false]);
+    assert_eq!(g.since, Some(at(7)));
+    assert!(
+        g.transcripts.is_empty(),
+        "no session written since the last global dream"
+    );
+
+    // Seven days on, it runs with nothing new.
+    f.dreams.pop();
+    let g = gather_global(&f, &cursor_after(&cur, 14)).unwrap();
+    assert!(!g.quiet);
+    assert_eq!(
+        g.reason,
+        "no new project dream or friction, but the last committed global dream is 7 days old"
+    );
+
+    // An empty scope gathers nothing.
+    let mut none = cursor(at(7));
+    none.scope.clear();
+    assert!(gather_global(&f, &none).unwrap().no_scope);
 }
 
 fn cursor_after(cur: &Cursor, day: u32) -> Cursor {
@@ -368,7 +552,7 @@ fn scope_picks_the_sessions_and_what_goes_with_them() {
         ..Default::default()
     }];
 
-    // An empty scope gathers nothing, friction included.
+    // An empty scope gathers nothing.
     let mut cur = cursor(at(10));
     cur.scope.clear();
     let g = gather(&f, &cur).unwrap();
@@ -381,14 +565,14 @@ fn scope_picks_the_sessions_and_what_goes_with_them() {
         [
             "session:claude:below",
             "session:claude:in",
-            "friction:h-1",
             "handoff:/srv/app/docs/lead.md",
             "memory:/m/srv/app",
             "commit:/srv/app@aaaa"
         ],
-        "friction stays the host's; the rest follows the scope"
+        "friction is the global dream's; the rest follows the scope"
     );
     assert!(!g.no_scope);
+    assert!(g.transcripts.iter().all(|t| t.project == "/srv/app"));
 }
 
 #[test]
