@@ -201,6 +201,9 @@ pub struct SpawnOptions {
     /// AGENT_SAFE_COMMANDS; None for those. A dream's agent gets
     /// DREAM_READ_COMMANDS.
     pub agent_commands: Option<Vec<&'static str>>,
+    /// A confined role (a dream's agent): an agy agent's hooks decide every
+    /// tool call and fail closed (confine.rs).
+    pub confined: bool,
 }
 
 /// The Go SpawnOptions' unexported fields, which only resume and adopt set:
@@ -356,6 +359,7 @@ impl AgentService {
             ProviderConfig {
                 skip_permissions: opts.skip_permissions,
                 permission_mode: opts.permission_mode.clone(),
+                confined: opts.confined,
                 agent_dir: self.cfg.agent_dir(&opts.name),
                 cwd,
                 resume: opts.resume.clone(),

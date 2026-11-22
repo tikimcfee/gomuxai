@@ -8,6 +8,7 @@
 mod adopt;
 mod agent_service;
 mod caller;
+mod confine;
 mod ctx;
 mod dialog;
 mod errors;
@@ -29,6 +30,7 @@ mod trust;
 
 pub use adopt::*;
 pub use agent_service::*;
+pub use confine::STATE_KEY_DREAM_READ;
 pub use ctx::{CancelFn, Context, ContextError};
 pub use dialog::*;
 pub use errors::AgentNotFoundError;

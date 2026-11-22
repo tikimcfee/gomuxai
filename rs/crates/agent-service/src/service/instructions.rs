@@ -347,21 +347,35 @@ impl AgentService {
             }
             return None;
         };
+        let reason = self.dream_command_allowed(dream.id, &hr.command, &hr.cwd)?;
+        Some(ha.allow_output(reason))
+    }
+
+    /// Why `command` may run without a prompt for the agent of open dream
+    /// `dream_id`, or None: a reading agent command, a dream verb, or `git -C
+    /// <repo> log|show` in a repo of the dream (its commits' repos and every
+    /// scoped project). Claude's hook and a confined agy agent's
+    /// (confine.rs) both ask it.
+    pub(crate) fn dream_command_allowed(
+        &self,
+        dream_id: i64,
+        command: &str,
+        cwd: &str,
+    ) -> Option<&'static str> {
+        if command.is_empty() {
+            return None;
+        }
         if !self.cfg.agent_binary.is_empty() {
             let c = Checker::new(self.cfg.agent_binary.clone(), DREAM_READ_COMMANDS);
-            if c.check(&hr.command, &hr.cwd).is_ok() {
-                return Some(ha.allow_output(
-                    "gomuxai: a reading agent command, pre-allowed for a dream's agent",
-                ));
+            if c.check(command, cwd).is_ok() {
+                return Some("gomuxai: a reading agent command, pre-allowed for a dream's agent");
             }
             let c = Checker::new(self.cfg.agent_binary.clone(), DREAM_AGENT_COMMANDS);
-            if c.check(&hr.command, &hr.cwd).is_ok() {
-                return Some(ha.allow_output(
-                    "gomuxai: a dream verb, pre-allowed for its open dream's agent",
-                ));
+            if c.check(command, cwd).is_ok() {
+                return Some("gomuxai: a dream verb, pre-allowed for its open dream's agent");
             }
         }
-        let items = self.storage.dream_items(dream.id).ok()?;
+        let items = self.storage.dream_items(dream_id).ok()?;
         let mut repos: BTreeSet<String> = items
             .iter()
             .filter(|i| i.kind == DREAM_KIND_COMMIT)
@@ -370,10 +384,10 @@ impl AgentService {
         // The scoped projects too, so a dream can check memory against the
         // repo as it is now, even with no new commits.
         repos.extend(self.storage.dream_scope().unwrap_or_default());
-        if dream_git_allowed(&hr.command, &repos) {
-            return Some(ha.allow_output(
+        if dream_git_allowed(command, &repos) {
+            return Some(
                 "gomuxai: git log or show in a repo of the dream, pre-allowed for its agent",
-            ));
+            );
         }
         None
     }

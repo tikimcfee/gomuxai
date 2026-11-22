@@ -897,6 +897,7 @@ fn register_agy_cat(env: &mut TestEnv, backend_name: &str) -> FakeAgyScreen {
                 agent_dir: cfg.agent_dir,
                 cwd: cfg.cwd,
                 resume: cfg.resume,
+                ..Default::default()
             }),
             &o,
         ))

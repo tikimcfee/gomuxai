@@ -12,7 +12,7 @@ mod shell;
 mod trust;
 
 pub use agy::{
-    AgyBackend, AgyConfig, agy_footer_model, new_agy_backend, new_agy_backend_with_config,
+    AgyBackend, AgyConfig, agy_arg, agy_footer_model, new_agy_backend, new_agy_backend_with_config,
 };
 pub use aider::{AiderBackend, new_aider_backend};
 pub use claude::{

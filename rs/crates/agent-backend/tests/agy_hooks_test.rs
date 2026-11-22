@@ -619,3 +619,42 @@ fn test_agy_parse_hook_event_lenient_utf8_and_null_array_elements() {
         .unwrap();
     assert_eq!(r.detail, "ask_question: Q1 (a, b); 1 more question");
 }
+
+// A confined agy agent's hooks run with --confined (so a PreToolUse with no
+// allow fails closed), and it doesn't start at all without its hooks.
+#[test]
+fn test_agy_confined_hooks_fail_closed() {
+    let tmp = temp_dir();
+    let agent_dir = path_in(&tmp, "dream-1");
+    let provider = namedagents::new_agy_backend_with_config(AgyConfig {
+        agent_dir: agent_dir.clone(),
+        confined: true,
+        ..Default::default()
+    });
+    let cmd = provider.launch_command_with_hooks("/opt/agent report --hook --as 'dream-1'", "s1");
+    assert!(cmd.contains(" --add-dir "), "{cmd}");
+    let data = std::fs::read_to_string(
+        std::path::Path::new(&agent_dir)
+            .join(".agents")
+            .join("hooks.json"),
+    )
+    .unwrap();
+    assert!(
+        data.contains("--as 'dream-1' --confined --event PreToolUse"),
+        "{data}"
+    );
+
+    // Its hooks can't be written: it isn't started.
+    let blocked = path_in(&tmp, "file-not-dir");
+    std::fs::write(&blocked, "x").unwrap();
+    let provider = namedagents::new_agy_backend_with_config(AgyConfig {
+        agent_dir: blocked,
+        confined: true,
+        ..Default::default()
+    });
+    let cmd = provider.launch_command_with_hooks("/opt/agent report --hook", "s1");
+    assert!(
+        cmd.ends_with("exit 1") && !cmd.contains("--add-dir"),
+        "{cmd}"
+    );
+}

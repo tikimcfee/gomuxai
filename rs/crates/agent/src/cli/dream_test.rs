@@ -669,3 +669,17 @@ fn digest_runs_the_memory_check_first() {
     assert!(s.contains("nowhere"), "{s}");
     assert_eq!(super::format_memory_checks(&Default::default(), &[]), "");
 }
+
+#[test]
+fn rule_paths_are_the_read_and_edit_rules_paths() {
+    let rules = vec![
+        "Read(//srv/app/**)".to_string(),
+        "Read(//data/h.md)".to_string(),
+        "Edit(//data/dreams/3/**)".to_string(),
+        "Bash(agent list:*)".to_string(),
+    ];
+    assert_eq!(
+        super::rule_paths(&rules),
+        vec!["/data/dreams/3", "/data/h.md", "/srv/app"]
+    );
+}

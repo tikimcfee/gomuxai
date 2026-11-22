@@ -66,6 +66,11 @@ pub struct Args {
     #[arg(long = "hook", help = "Read a backend hook payload from stdin")]
     pub hook: bool,
     #[arg(
+        long = "confined",
+        help = "The agent is in a confined role: a PreToolUse hook that has no decision to print fails, which blocks the call"
+    )]
+    pub confined: bool,
+    #[arg(
         long = "spawn-id",
         value_name = "string",
         default_value = "",
@@ -98,11 +103,21 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
     }
 
     if args.hook {
+        let mut decided = false;
         if err.is_none() {
-            err = report_from_hook(ctx, &name, args).err();
+            match report_from_hook(ctx, &name, args) {
+                Ok(printed) => decided = printed,
+                Err(e) => err = Some(e),
+            }
         }
-        if let Some(e) = err {
+        if let Some(e) = &err {
             let _ = writeln!(ctx.err(), "agent report: {e:#}");
+        }
+        // A confined agent's tool call runs only on an allow this hook
+        // printed: anything else fails closed (a failing PreToolUse hook
+        // blocks the call, whatever the CLI's own settings say).
+        if args.confined && args.event == "PreToolUse" && (err.is_some() || !decided) {
+            anyhow::bail!("agent report: no decision for a confined agent's tool call, so it is refused");
         }
         return Ok(());
     }
@@ -142,21 +157,26 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
     ctx.write_out(&(line + ".\n"))
 }
 
-fn report_from_hook(ctx: &Ctx, name: &str, args: &Args) -> anyhow::Result<()> {
+/// Handles a hook payload; Ok(true) when it printed an output for the hook.
+fn report_from_hook(ctx: &Ctx, name: &str, args: &Args) -> anyhow::Result<bool> {
     let payload = ctx.read_stdin().context("reading hook payload")?;
     let (out, mut res) = ctx
         .service()?
         .handle_hook(name, &args.spawn_id, &args.event, &payload);
+    let mut printed = false;
     if let Some(out) = out {
         // Held messages, claimed: print them even if recording failed after.
         let mut stdout = ctx.out();
-        if let Err(werr) = stdout.write_all(&out).and_then(|()| stdout.flush()) {
-            let werr = anyhow::Error::new(werr).context("handing over held messages");
-            res = Err(match res {
-                Ok(()) => werr,
-                Err(e) => anyhow::anyhow!("{e:#}\n{werr:#}"),
-            });
+        match stdout.write_all(&out).and_then(|()| stdout.flush()) {
+            Ok(()) => printed = true,
+            Err(werr) => {
+                let werr = anyhow::Error::new(werr).context("handing over held messages");
+                res = Err(match res {
+                    Ok(()) => werr,
+                    Err(e) => anyhow::anyhow!("{e:#}\n{werr:#}"),
+                });
+            }
         }
     }
-    res
+    res.map(|()| printed)
 }

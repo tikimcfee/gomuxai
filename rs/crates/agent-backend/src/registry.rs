@@ -20,6 +20,10 @@ pub struct ProviderConfig {
     /// dream's agent runs dontAsk: what isn't pre-allowed is refused).
     pub permission_mode: String,
 
+    /// The agent is in a confined role (a dream's): for agy, its hooks
+    /// decide every tool call and fail closed.
+    pub confined: bool,
+
     /// The per-agent bundle directory under .gomuxai/agents/<name>.
     pub agent_dir: String,
 
@@ -89,6 +93,7 @@ pub fn new_registry() -> Registry {
                 agent_dir: cfg.agent_dir,
                 cwd: cfg.cwd,
                 resume: cfg.resume,
+                confined: cfg.confined,
             },
         ))
     });

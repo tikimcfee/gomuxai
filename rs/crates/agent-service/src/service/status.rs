@@ -569,7 +569,11 @@ impl AgentService {
             return (None, Ok(()));
         }
         // Decided first, so a failure to record the report can't cost it.
-        let approval = self.hook_approval(name, provider.as_ref(), &hr);
+        // A confined role's agent (an agy dream) gets an allow or a deny for
+        // every tool call; others only the approvals Claude's hook gives.
+        let approval = self
+            .confined_decision(name, provider.as_ref(), &hr)
+            .or_else(|| self.hook_approval(name, provider.as_ref(), &hr));
         let is_agy_idle_stop = hr.event == "Stop"
             && hr.status == Status::Idle
             && hr.detail != "USER_CANCELED"

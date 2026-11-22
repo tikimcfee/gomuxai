@@ -267,3 +267,26 @@ fn hook_records_payloads_go_takes() {
     assert_eq!(got("s2"), ("SessionEnd".into(), "ended".into(), "quit \u{fffd}".into()));
     assert_eq!(got("s3"), ("Stop".into(), "idle".into(), "turn finished".into()));
 }
+
+// A confined agent's PreToolUse report that can't decide (here: no such
+// agent) fails, which blocks the tool call; without --confined it stays
+// quiet and succeeds, as hooks must for everyone else.
+#[test]
+fn confined_report_fails_closed() {
+    crate::require_termd!();
+    let mut env = TestEnv::with_termd();
+    let payload = r#"{"conversationId":"c1","toolCall":{"name":"write_file","args":{}}}"#;
+    let run = |env: &mut TestEnv, confined: bool| {
+        env.ctx.set_stdin(std::io::Cursor::new(payload.as_bytes().to_vec()));
+        let mut words = vec!["report", "--hook", "--as", "nobody", "--event", "PreToolUse"];
+        if confined {
+            words.push("--confined");
+        }
+        let (_, res) = env.run(&words);
+        let _ = env.take_err();
+        res
+    };
+    assert!(run(&mut env, false).is_ok(), "an ordinary hook stays quiet");
+    let err = run(&mut env, true).unwrap_err();
+    assert!(format!("{err:#}").contains("refused"), "{err:#}");
+}
