@@ -1,0 +1,36 @@
+Note records one run's evaluation of a harness and model: the task kind it
+was tried on, a verdict (good, mixed or bad), what happened, and why.
+
+--session is required: the session the note comes from, as HARNESS:ID
+(claude:3f3a9c...); the start of an id is enough when it names one
+session. It must be a session on this host, as "agent sessions" lists
+them, so a note lives on the host its session ran on. Notes are never
+edited: --supersedes ID records a newer note in place of an older one on
+the same entry, which then stops counting.
+
+The entry needn't exist yet: notes on a harness and model with no entry
+are listed under the roster. --by names the writer (default: you, or
+"user" for a person; a dream writes dream-<id>).
+
+Usage:
+  agent roster note HARNESS/MODEL[@EFFORT] "what happened" [flags]
+
+Examples:
+  agent roster note claude/claude-haiku-5-5@low --task edit --verdict good --session claude:3f3a9c "did the rename across 12 files cleanly"
+  agent roster note agy/gemini-3-pro --task review --verdict mixed --session agy:8d1e --why "missed the race" "found 3 of 4 issues"
+  agent roster note claude/claude-opus-5-5 --task bugfix --verdict bad --session claude:77aa --supersedes 4 "the fix regressed"
+
+Flags:
+      --by string        Who wrote it (default: your agent name, or "user")
+  -h, --help             help for note
+      --session string   The session it came from, as HARNESS:ID (agent sessions lists them)
+      --supersedes int   The id of an earlier note on this entry that this one replaces
+      --task string      Task kind: edit, bugfix, feature, long-horizon, review, research, design, test, kernel, chat
+      --verdict string   Verdict: good, mixed, or bad
+      --why string       Why it went that way
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

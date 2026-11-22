@@ -29,6 +29,7 @@ agent-claudereg.workspace = true
 agent-allowcmd.workspace = true
 agent-export.workspace = true
 agent-manage.workspace = true
+agent-roster.workspace = true
 libc.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

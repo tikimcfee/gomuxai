@@ -89,3 +89,12 @@ manage untrack
 manage track
 manage backup
 manage prune
+roster
+roster list
+roster show
+roster pick
+roster note
+roster set
+roster enable
+roster disable
+roster remove

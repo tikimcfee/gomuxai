@@ -1,0 +1,37 @@
+Pick ranks this host's available entries for a task kind and prints the
+best as a ready spawn line, then the next two, each with one line of why.
+It never spawns: replace NAME and run the line yourself.
+
+Ranking: an entry whose tasks include the kind scores 2; each distinct
+session with a good note on that kind adds 1, each with a bad one takes 1
+away (superseded notes don't count). --prefer breaks ties: fast (by speed),
+cheap (by cost) or strong (dearest first). Then more good sessions win.
+
+An entry at an effort is picked like any other; spawn has no --effort yet,
+so the why line says which effort the notes were about.
+
+Task kinds: edit, bugfix, feature, long-horizon, review, research, design,
+test, kernel, chat.
+
+--json prints {"task", "prefer", "pick", "runners_up": [...]}, each with
+"host", "key", "harness", "model", "effort", "score", "command" and "why".
+
+Usage:
+  agent roster pick --task KIND [flags]
+
+Examples:
+  agent roster pick --task edit
+  agent roster pick --task long-horizon --prefer fast
+  agent roster pick --task review --json
+
+Flags:
+  -h, --help            help for pick
+      --json            Print the pick and runners-up as one JSON document
+      --prefer string   Break ties: fast, cheap, or strong
+      --task string     Task kind: edit, bugfix, feature, long-horizon, review, research, design, test, kernel, chat
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
