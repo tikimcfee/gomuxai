@@ -15,11 +15,11 @@ use crate::contract::{
     CaptureRequest, CaptureResponse, DeliverResponse, FRICTION_ACTIONS, FRICTION_GET,
     FRICTION_RESOLVE, FleetHost, FleetRequest, FrictionRequest, FrictionResponse, KeysRequest,
     ListRequest, ListResponse, LogsRequest, LogsResponse, OP_CAPTURE, OP_FLEET, OP_FRICTION,
-    OP_KEYS, OP_LIST, OP_LOGS, OP_MANAGE, OP_RESPOND, OP_RESUME, OP_SEND, OP_SPAWN, OP_STATUS,
-    OP_TEMPLATE, RESPONSE_DELIVER, RPCResponse, RespondRequest, ResumeRequest, ResumeResponse,
-    SendRequest, SendResponse, SpawnRequest, SpawnResponse, StatusRequest, StatusResponse,
-    TEMPLATE_ACTIONS, TEMPLATE_LIST, TemplateRequest, TemplateResponse, parse_agent_ref,
-    subject_rpc, validate_agent, validate_host,
+    OP_KEYS, OP_LIST, OP_LOGS, OP_MANAGE, OP_RESPOND, OP_RESUME, OP_ROSTER, OP_SEND, OP_SPAWN,
+    OP_STATUS, OP_TEMPLATE, RESPONSE_DELIVER, RPCResponse, RespondRequest, ResumeRequest,
+    ResumeResponse, SendRequest, SendResponse, SpawnRequest, SpawnResponse, StatusRequest,
+    StatusResponse, TEMPLATE_ACTIONS, TEMPLATE_LIST, TemplateRequest, TemplateResponse,
+    parse_agent_ref, subject_rpc, validate_agent, validate_host,
 };
 use crate::runtime::{CancelFn, Context};
 
@@ -52,6 +52,13 @@ pub trait Handler: Send + Sync + 'static {
     ) -> anyhow::Result<agent_manage::HostView> {
         anyhow::bail!("this host's bus doesn't serve {OP_MANAGE}")
     }
+    fn roster(
+        &self,
+        _ctx: &Context,
+        _req: agent_roster::RosterRequest,
+    ) -> anyhow::Result<agent_roster::HostRoster> {
+        anyhow::bail!("this host's bus doesn't serve {OP_ROSTER}")
+    }
 }
 
 type OpRunner = fn(&Context, &dyn Handler, &[u8]) -> anyhow::Result<Option<Box<RawValue>>>;
@@ -70,6 +77,7 @@ const RPC_OPS: &[(&str, OpRunner)] = &[
     (OP_FLEET, run_fleet),
     (OP_TEMPLATE, run_template),
     (OP_MANAGE, run_manage),
+    (OP_ROSTER, run_roster),
 ];
 
 fn find_op(op: &str) -> Option<(&'static str, OpRunner)> {
@@ -205,6 +213,15 @@ fn run_manage(
 ) -> anyhow::Result<Option<Box<RawValue>>> {
     let req: agent_manage::Request = decode(OP_MANAGE, data)?;
     encode_opt(OP_MANAGE, h.manage(ctx, req)?)
+}
+
+fn run_roster(
+    ctx: &Context,
+    h: &dyn Handler,
+    data: &[u8],
+) -> anyhow::Result<Option<Box<RawValue>>> {
+    let req: agent_roster::RosterRequest = decode(OP_ROSTER, data)?;
+    encode_opt(OP_ROSTER, h.roster(ctx, req)?)
 }
 
 fn run_fleet(ctx: &Context, h: &dyn Handler, data: &[u8]) -> anyhow::Result<Option<Box<RawValue>>> {

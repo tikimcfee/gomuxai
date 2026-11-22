@@ -31,6 +31,8 @@ pub const OP_FLEET: &str = "fleet";
 pub const OP_TEMPLATE: &str = "template";
 /// The manager's view of a host (`agent manage view`): read-only.
 pub const OP_MANAGE: &str = "manage";
+/// A host's roster (`agent roster`): read-only.
+pub const OP_ROSTER: &str = "roster";
 
 /// Lists every RPC op a bus serves to local clients.
 pub const ALL_OPS: &[&str] = &[
@@ -47,6 +49,7 @@ pub const ALL_OPS: &[&str] = &[
     OP_FLEET,
     OP_TEMPLATE,
     OP_MANAGE,
+    OP_ROSTER,
 ];
 
 /// Ops a bus serves to other hosts unless configured otherwise.
@@ -61,6 +64,7 @@ pub const DEFAULT_REMOTE_OPS: &[&str] = &[
     OP_FLEET,
     OP_TEMPLATE,
     OP_MANAGE,
+    OP_ROSTER,
 ];
 
 static NAME_PATTERN: LazyLock<Regex> =

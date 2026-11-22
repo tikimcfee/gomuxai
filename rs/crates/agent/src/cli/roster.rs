@@ -13,8 +13,15 @@ use agent_roster::{
 };
 use serde::Serialize;
 
+use std::time::Duration;
+
+use agent_bus::{Context, RpcClient};
+
 use super::command::{ArgRule, Def, Doc};
 use super::friction::{friction_caller, stamp};
+use super::remote::{
+    call_remote, canonical_host, is_no_responders, is_remote_host, trusted_hosts,
+};
 use super::root::Ctx;
 use super::sessions::tab_align;
 
@@ -25,7 +32,8 @@ pub const DOC: Doc = Doc {
     short: "Which harness and model to spawn: this host's roster, its notes, and pick",
     long: r#"Roster is where to look before a spawn: which harness and model this host
 can run, what each is good at, how fast and costly it is, whether it is
-available now, and what past runs showed. It lists this host's entries:
+available now, and what past runs showed. It lists this host's entries,
+then every linked host's, asked at once over the bus (3s each):
 
   Roster on hub: harnesses and models this host can run
   ENTRY                    AVAILABLE            SPEED  COST  TASKS      NOTES
@@ -52,12 +60,17 @@ roster (or roster list), show, picks and pick only read (pick --save adds a
 saved pick's version); note only adds a note. set, enable, disable and
 remove change the entries.
 
---json prints this host's roster as one JSON document: {"host", "entries":
-[...], "unlisted": {...}}, each entry with its fields, "key", "available",
-"unavailable" (why not), "notes" (counts by verdict, and "sessions") and
-"by_task"."#,
+A linked host whose bus doesn't answer roster (it is down, or runs an
+older agent, or its --remote-ops leaves roster out) is listed as not read,
+with the fix to run there. --host HOST reads one host.
+
+--json prints {"hosts": [...]}, each host {"host", "entries": [...],
+"unlisted": {...}}, or {"host", "error", "fix"} when it wasn't read; each
+entry has its fields, "key", "available", "unavailable" (why not), "notes"
+(counts by verdict, and "sessions") and "by_task"."#,
     example: r#"  agent roster
   agent roster pick --task edit
+  agent roster --host hub
   agent roster show claude/claude-opus-5-5
   agent roster set claude/claude-haiku-5-5 --speed fast --cost low --tasks edit,test --good-at "small precise edits"
   agent roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "did the rename across 12 files cleanly"
@@ -70,7 +83,14 @@ remove change the entries.
 /// The flags and arguments of `agent roster` and `agent roster list`.
 #[derive(clap::Args, Debug, Clone)]
 pub struct Args {
-    #[arg(long = "json", help = "Print the roster as one JSON document")]
+    #[arg(
+        long = "host",
+        value_name = "string",
+        default_value = "",
+        help = "Read only this host (default: this host and every linked host)"
+    )]
+    pub host: String,
+    #[arg(long = "json", help = "Print the rosters as one JSON document")]
     pub json: bool,
     /// The positional arguments, checked against DOC.args.
     #[arg(hide = true)]
@@ -94,62 +114,189 @@ pub fn def() -> Def {
     }
 }
 
-/// This host's roster: what agent roster prints, and what a host will
-/// serve its peers.
+/// This host's roster: what agent roster prints first, and what this
+/// host's bus answers the roster op with.
 pub(crate) fn local_roster(ctx: &Ctx) -> anyhow::Result<HostRoster> {
     agent_roster::host_view(ctx.store()?, &ctx.cfg().host)
 }
 
-pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
-    let view = local_roster(ctx)?;
-    if args.json {
-        return ctx.print_json(&view);
-    }
-    ctx.write_out(&render_roster(&view))
+/// The fix for a host whose bus doesn't answer roster.
+fn serve_fix(host: &str) -> String {
+    format!(
+        "on {host}: agent bus restart --remote-ops <its list>,roster (agent bus status there shows its list); an older agent there needs updating first"
+    )
 }
 
-/// The roster: a header, the entries as a table, the notes on harnesses
-/// and models with no entry, and what to run next.
-fn render_roster(view: &HostRoster) -> String {
-    let mut out = format!(
-        "Roster on {}: harnesses and models this host can run\n",
-        view.host
-    );
-    if view.entries.is_empty() {
-        out.push_str("It has no entries yet.\n");
-    } else {
-        let mut rows = vec![vec![
-            "ENTRY".to_string(),
-            "AVAILABLE".into(),
-            "SPEED".into(),
-            "COST".into(),
-            "TASKS".into(),
-            "NOTES".into(),
-        ]];
-        for e in &view.entries {
-            rows.push(vec![
-                e.key.clone(),
-                availability(e),
-                dash(&e.entry.speed),
-                dash(&e.entry.cost),
-                dash(&e.entry.tasks.join(",")),
-                e.notes.describe(),
-            ]);
-        }
-        out.push_str(&tab_align(&rows, 2));
+/// One peer's roster through rpc; a peer that doesn't answer is listed as
+/// not read, with the fix.
+fn peer_roster(rpc: &RpcClient, host: &str) -> HostRoster {
+    match rpc.roster(&Context::background(), host) {
+        Ok(r) => r,
+        Err(e) if agent_bus::is_unanswered(&e) => HostRoster::unread(
+            host,
+            "its bus doesn't answer roster: it is down, not linked, runs an older agent, or leaves roster out of its --remote-ops",
+            serve_fix(host),
+        ),
+        Err(e) => HostRoster::unread(host, format!("{e:#}"), String::new()),
     }
-    if !view.unlisted.is_empty() {
-        out.push_str("\nNotes on harnesses and models with no entry (pick doesn't offer them):\n");
-        for (key, c) in &view.unlisted {
-            let _ = writeln!(out, "  {key}  {}", c.describe());
+}
+
+/// The rosters to read: host alone when given (this one, or a linked one
+/// through the bus), else this host's and every trusted peer's, asked at
+/// once. A peer that doesn't answer is listed as not read, never an error;
+/// with no bus running, each peer is, and a hint says so.
+pub(crate) fn gather_rosters(ctx: &Ctx, host: &str) -> anyhow::Result<Vec<HostRoster>> {
+    if !host.is_empty() {
+        agent_bus::validate_host(host)?;
+        let host = canonical_host(ctx, host);
+        if !is_remote_host(ctx, &host) {
+            return Ok(vec![local_roster(ctx)?]);
+        }
+        let trusted = trusted_hosts(ctx).iter().any(|p| p.eq_ignore_ascii_case(&host));
+        return match call_remote(ctx, &host, |c| c.roster(&Context::background(), &host)) {
+            Ok(r) => Ok(vec![r]),
+            // A linked host that doesn't serve roster is a row; one nobody
+            // knows is the command's error, naming the hosts there are.
+            Err(e) if trusted && (agent_bus::is_unanswered(&e) || is_no_responders(&e)) => {
+                Ok(vec![HostRoster::unread(
+                    &host,
+                    "its bus doesn't answer roster: it is down, not linked, runs an older agent, or leaves roster out of its --remote-ops",
+                    serve_fix(&host),
+                )])
+            }
+            Err(e) => Err(e),
+        };
+    }
+    let mut hosts = vec![local_roster(ctx)?];
+    let local = hosts[0].host.to_ascii_lowercase();
+    let peers: Vec<String> = trusted_hosts(ctx)
+        .into_iter()
+        .filter(|p| !p.is_empty() && p.to_ascii_lowercase() != local)
+        .collect();
+    if peers.is_empty() {
+        return Ok(hosts);
+    }
+    let nc = match ctx.bus_connect() {
+        Ok(nc) => nc,
+        Err(e) if agent_bus::is_no_bus(&e) => {
+            ctx.hint(format!(
+                "no agent bus runs here, so this is this host only, without {} (agent bus start)",
+                peers.join(", ")
+            ));
+            hosts.extend(peers.iter().map(|p| {
+                HostRoster::unread(p, "no agent bus runs here", "here: agent bus start")
+            }));
+            return Ok(hosts);
+        }
+        Err(e) => return Err(e.context("connecting to the agent bus")),
+    };
+    let rpc = RpcClient::new(nc.clone(), Duration::ZERO);
+    let read: Vec<HostRoster> = std::thread::scope(|s| {
+        let handles: Vec<_> = peers
+            .iter()
+            .map(|p| {
+                let rpc = &rpc;
+                s.spawn(move || peer_roster(rpc, p))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .zip(&peers)
+            .map(|(h, p)| {
+                h.join()
+                    .unwrap_or_else(|_| HostRoster::unread(p, "asking it failed", String::new()))
+            })
+            .collect()
+    });
+    nc.close();
+    hosts.extend(read);
+    Ok(hosts)
+}
+
+/// What roster --json prints.
+#[derive(Serialize)]
+struct RostersResult<'a> {
+    hosts: &'a [HostRoster],
+}
+
+pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
+    let hosts = gather_rosters(ctx, args.host.trim())?;
+    if args.json {
+        return ctx.print_json(&RostersResult { hosts: &hosts });
+    }
+    ctx.write_out(&render_rosters(&hosts, &ctx.cfg().host))
+}
+
+/// The rosters, host by host: a header, the entries as a table, the notes
+/// on harnesses and models with no entry; a host not read says why and the
+/// fix. Then what to run next.
+fn render_rosters(hosts: &[HostRoster], local_host: &str) -> String {
+    let mut out = String::new();
+    for (i, view) in hosts.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if !view.read() {
+            let _ = writeln!(out, "Roster on {}: not read: {}", view.host, view.error);
+            if !view.fix.is_empty() {
+                let _ = writeln!(out, "  fix: {}", view.fix);
+            }
+            continue;
+        }
+        let whose = if view.host.eq_ignore_ascii_case(local_host) {
+            "this host".to_string()
+        } else {
+            view.host.clone()
+        };
+        let _ = writeln!(
+            out,
+            "Roster on {}: harnesses and models {whose} can run",
+            view.host
+        );
+        if view.entries.is_empty() {
+            out.push_str("It has no entries yet.\n");
+        } else {
+            let mut rows = vec![vec![
+                "ENTRY".to_string(),
+                "AVAILABLE".into(),
+                "SPEED".into(),
+                "COST".into(),
+                "TASKS".into(),
+                "NOTES".into(),
+            ]];
+            for e in &view.entries {
+                rows.push(vec![
+                    e.key.clone(),
+                    availability(e),
+                    dash(&e.entry.speed),
+                    dash(&e.entry.cost),
+                    dash(&e.entry.tasks.join(",")),
+                    e.notes.describe(),
+                ]);
+            }
+            out.push_str(&tab_align(&rows, 2));
+        }
+        if !view.unlisted.is_empty() {
+            out.push_str(
+                "Notes on harnesses and models with no entry (pick doesn't offer them):\n",
+            );
+            for (key, c) in &view.unlisted {
+                let _ = writeln!(out, "  {key}  {}", c.describe());
+            }
         }
     }
     out.push('\n');
-    if view.entries.is_empty() {
+    let entries = hosts.iter().flat_map(|h| &h.entries);
+    let (mut any, mut available) = (false, false);
+    for e in entries {
+        any = true;
+        available |= e.available;
+    }
+    if !any {
         out.push_str(
             "Next: agent roster set HARNESS/MODEL --tasks KINDS --speed fast|medium|slow --cost low|medium|high adds an entry.\n",
         );
-    } else if !view.entries.iter().any(|e| e.available) {
+    } else if !available {
         out.push_str(
             "Next: no entry is available; agent roster enable ENTRY switches one on, or put its CLI on PATH.\n",
         );
@@ -329,14 +476,18 @@ fn render_show(s: &EntryShow) -> String {
 pub const ROSTER_PICK: Doc = Doc {
     use_line: "pick --task KIND",
     short: "Pick the best available harness and model for a task, as a spawn line",
-    long: r#"Pick ranks this host's available entries for a task kind and prints the
+    long: r#"Pick ranks the available entries of this host and every linked host (as
+agent roster reads them; --host HOST for one) for a task kind and prints the
 best as a ready spawn line, then the next two, each with one line of why.
-It never spawns: replace NAME and run the line yourself.
+An entry on another host spawns there (NAME@HOST). It never spawns: replace
+NAME and run the line yourself. A linked host whose roster couldn't be read
+is named, with the fix.
 
 Ranking: an entry whose tasks include the kind scores 2; each distinct
 session with a good note on that kind adds 1, each with a bad one takes 1
 away (superseded notes don't count). --prefer breaks ties: fast (by speed),
-cheap (by cost) or strong (dearest first). Then more good sessions win.
+cheap (by cost) or strong (dearest first). Then more good sessions win,
+then this host's entries.
 
 An entry at an effort is picked like any other; spawn has no --effort yet,
 so the why line says which effort the notes were about.
@@ -344,29 +495,43 @@ so the why line says which effort the notes were about.
 --save NAME keeps the chosen command as a saved pick: version 1 for a new
 name, a new version only when the command differs from its newest one.
 --saved NAME[@VERSION] prints a saved command again, exactly, whatever the
-roster says now, and says whether its entry is still available. "agent
-roster picks" lists them.
+roster says now, and says whether its entry is still available (asking
+its host, if that is another). "agent roster picks" lists them.
 
 Task kinds: edit, bugfix, feature, long-horizon, review, research, design,
 test, kernel, chat.
 
---json prints {"task", "prefer", "pick", "runners_up": [...], "saved"},
+--json prints {"task", "prefer", "pick", "runners_up": [...], "saved",
+"unread": [...]},
 each pick with "host", "key", "harness", "model", "effort", "score",
 "command", "argv" and "why"; with --saved, {"pick", "available",
 "status"}."#,
     example: r#"  agent roster pick --task edit
   agent roster pick --task long-horizon --prefer fast
+  agent roster pick --task review --host hub
   agent roster pick --task edit --save quick-edit
   agent roster pick --saved quick-edit@1
   agent roster pick --task review --json"#,
     args: ArgRule::None,
-    exclusive: &[&["saved", "task"], &["saved", "save"], &["saved", "prefer"]],
+    exclusive: &[
+        &["saved", "task"],
+        &["saved", "save"],
+        &["saved", "prefer"],
+        &["saved", "host"],
+    ],
     ..Doc::DEFAULT
 };
 
 /// The flags and arguments of `agent roster pick`.
 #[derive(clap::Args, Debug, Clone)]
 pub struct RosterPickArgs {
+    #[arg(
+        long = "host",
+        value_name = "string",
+        default_value = "",
+        help = "Pick from only this host's roster (default: this host and every linked host)"
+    )]
+    pub host: String,
     #[arg(long = "json", help = "Print the pick and runners-up as one JSON document")]
     pub json: bool,
     #[arg(
@@ -417,6 +582,9 @@ struct PickResult<'a> {
     runners_up: &'a [Pick],
     #[serde(skip_serializing_if = "Option::is_none")]
     saved: Option<&'a SaveResult>,
+    /// The hosts whose roster couldn't be read, with why and the fix.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    unread: &'a [HostRoster],
 }
 
 pub fn run_roster_pick(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
@@ -434,14 +602,30 @@ pub fn run_roster_pick(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
     } else {
         Some(agent_roster::check_pick_name(&args.save)?)
     };
-    let view = local_roster(ctx)?;
-    let host = view.host.clone();
     let opts = PickOptions {
         task: args.task.trim().to_string(),
         prefer: args.prefer.trim().to_string(),
     };
-    let picks = agent_roster::pick(std::slice::from_ref(&view), &host, &opts)
-        .map_err(|e| e.context(format!("picking for --task {}", opts.task)))?;
+    // The kinds and preference are checked before any host is asked.
+    agent_roster::check_task(&opts.task)?;
+    if !opts.prefer.is_empty() {
+        agent_roster::check_prefer(&opts.prefer)?;
+    }
+    let (read, unread): (Vec<HostRoster>, Vec<HostRoster>) = gather_rosters(ctx, args.host.trim())?
+        .into_iter()
+        .partition(HostRoster::read);
+    let local_host = ctx.cfg().host.clone();
+    let picks = agent_roster::pick(&read, &local_host, &opts).map_err(|e| {
+        let mut e = e.context(format!("picking for --task {}", opts.task));
+        if !unread.is_empty() {
+            let names: Vec<&str> = unread.iter().map(|h| h.host.as_str()).collect();
+            e = e.context(format!(
+                "not read: {} (agent roster says why, and the fix)",
+                names.join(", ")
+            ));
+        }
+        e
+    })?;
     let (first, rest) = picks.split_first().expect("pick returns one or more");
     let rest = &rest[..rest.len().min(2)];
     let saved = match &save {
@@ -461,16 +645,17 @@ pub fn run_roster_pick(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
             pick: first,
             runners_up: rest,
             saved: saved.as_ref(),
+            unread: &unread,
         });
     }
     let mut out = String::new();
-    let _ = writeln!(out, "Picked for {} on {}: {}", opts.task, host, first.key);
+    let _ = writeln!(out, "Picked for {}: {} on {}", opts.task, first.key, first.host);
     let _ = writeln!(out, "  {}", first.command);
     let _ = writeln!(out, "  why: {}", first.why);
     if !rest.is_empty() {
         out.push_str("\nRunners-up:\n");
         for (i, p) in rest.iter().enumerate() {
-            let _ = writeln!(out, "  {}. {}: {}", i + 2, p.key, p.command);
+            let _ = writeln!(out, "  {}. {} on {}: {}", i + 2, p.key, p.host, p.command);
             let _ = writeln!(out, "     why: {}", p.why);
         }
     }
@@ -481,6 +666,15 @@ pub fn run_roster_pick(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
             opts.task
         );
     }
+    if !unread.is_empty() {
+        out.push_str("\nNot read, so not in the running:\n");
+        for h in &unread {
+            let _ = writeln!(out, "  {}: {}", h.host, h.error);
+            if !h.fix.is_empty() {
+                let _ = writeln!(out, "    fix: {}", h.fix);
+            }
+        }
+    }
     if let Some(s) = &saved {
         out.push('\n');
         out.push_str(&describe_save(s));
@@ -490,10 +684,14 @@ pub fn run_roster_pick(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
     } else {
         "; add --save NAME to keep this command".to_string()
     };
+    let show = if first.host.eq_ignore_ascii_case(&local_host) {
+        format!("agent roster show {} lists its notes", first.key)
+    } else {
+        format!("agent roster show {} on {} lists its notes", first.key, first.host)
+    };
     let _ = writeln!(
         out,
-        "\nNext: run the spawn line with your agent's name for NAME; agent roster show {} lists its notes{keep}.",
-        first.key
+        "\nNext: run the spawn line with your agent's name for NAME; {show}{keep}."
     );
     ctx.write_out(&out)
 }
@@ -524,8 +722,22 @@ fn describe_save(s: &SaveResult) -> String {
 fn replay_saved(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
     let (name, version) = agent_roster::parse_saved_ref(&args.saved)?;
     let p = agent_roster::saved(ctx.store()?, &name, version)?;
-    let view = local_roster(ctx)?;
-    let check = agent_roster::check_saved(p, std::slice::from_ref(&view));
+    // Its own host's roster: this one's, or a linked one's through the bus
+    // (none read, if that fails: check_saved says it wasn't checked).
+    let hosts = if is_remote_host(ctx, &p.host) {
+        match ctx.bus_connect() {
+            Ok(nc) => {
+                let rpc = RpcClient::new(nc.clone(), Duration::ZERO);
+                let r = peer_roster(&rpc, &p.host);
+                nc.close();
+                if r.read() { vec![r] } else { Vec::new() }
+            }
+            Err(_) => Vec::new(),
+        }
+    } else {
+        vec![local_roster(ctx)?]
+    };
+    let check = agent_roster::check_saved(p, &hosts);
     if args.json {
         return ctx.print_json(&check);
     }

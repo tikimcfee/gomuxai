@@ -100,7 +100,8 @@ pub struct EntryView {
 }
 
 /// HostRoster is one host's roster: its entries, and its notes on
-/// harnesses and models it has no entry for.
+/// harnesses and models it has no entry for. It is what a host's bus
+/// answers the roster op with.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct HostRoster {
     pub host: String,
@@ -109,7 +110,35 @@ pub struct HostRoster {
     /// counts.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unlisted: BTreeMap<String, NoteCounts>,
+    /// Why this host's roster couldn't be read (set by the asking side);
+    /// "" when it was.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    /// What to run, and where, so it can be read next time.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fix: String,
 }
+
+impl HostRoster {
+    /// unread is a host whose roster couldn't be read, with why and the fix.
+    pub fn unread(host: &str, error: impl Into<String>, fix: impl Into<String>) -> HostRoster {
+        HostRoster {
+            host: host.to_string(),
+            error: error.into(),
+            fix: fix.into(),
+            ..Default::default()
+        }
+    }
+
+    /// read says whether the roster was read.
+    pub fn read(&self) -> bool {
+        self.error.is_empty()
+    }
+}
+
+/// RosterRequest is what the roster op asks: nothing yet (the whole roster).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RosterRequest {}
 
 /// NoteView is a note as show lists it: with the note that superseded it,
 /// if any.
@@ -248,6 +277,7 @@ pub fn host_view_with(
             .into_iter()
             .map(|(k, ns)| (k.to_string(), NoteCounts::count(ns)))
             .collect(),
+        ..Default::default()
     })
 }
 

@@ -133,10 +133,13 @@ so it would pre-allow `roster set` and the rest too; the briefing says
 
 ## Across hosts
 
-Reads federate, writes stay local. `agent roster` asks each linked host for
+**built** (op `roster` in agent-bus and agent-busd; the CLI's
+`gather_rosters`). Reads federate, writes stay local. `agent roster` asks each linked host for
 its roster over the bus (a new read-only op, `roster`), the way `fleet`
 does; nothing is copied between stores. A host that doesn't serve the op is
-shown as such. `roster` is added to the default remote ops, but hosts with
+shown as not read, with the fix, never as an error; `--host HOST` reads
+one. `pick` ranks every read host's entries, and `pick --saved` checks a
+saved pick on its own host. `roster` is added to the default remote ops, but hosts with
 saved bus settings need `agent bus restart --remote-ops <list>,roster`;
 that is a person's call on each host.
 

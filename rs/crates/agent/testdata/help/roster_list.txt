@@ -10,8 +10,9 @@ Examples:
   agent roster list --json
 
 Flags:
-  -h, --help   help for list
-      --json   Print the roster as one JSON document
+  -h, --help          help for list
+      --host string   Read only this host (default: this host and every linked host)
+      --json          Print the rosters as one JSON document
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

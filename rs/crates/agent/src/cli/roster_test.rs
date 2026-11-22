@@ -95,12 +95,14 @@ fn roster_set_list_show_remove() {
     assert!(last_line(&out).starts_with("Next: no entry is available"), "{out}");
     let out = must(&mut env, &["roster", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(v["host"], "local");
-    assert_eq!(v["entries"][1]["key"], "sh/fast-model@low");
-    assert_eq!(v["entries"][1]["available"], false);
-    assert_eq!(v["entries"][1]["unavailable"], "disabled");
-    assert_eq!(v["entries"][1]["avoid"], "debugging");
-    assert_eq!(v["entries"][1]["good_at"], "small edits");
+    let h = &v["hosts"][0];
+    assert_eq!(h["host"], "local");
+    assert_eq!(h["entries"][1]["key"], "sh/fast-model@low");
+    assert_eq!(h["entries"][1]["available"], false);
+    assert_eq!(h["entries"][1]["unavailable"], "disabled");
+    assert_eq!(h["entries"][1]["avoid"], "debugging");
+    assert_eq!(h["entries"][1]["good_at"], "small edits");
+    assert_eq!(v["hosts"].as_array().unwrap().len(), 1);
     must(&mut env, &["roster", "enable", "sh/fast-model@low"]);
 
     let out = must(&mut env, &["roster", "show", "sh/fast-model@low"]);
@@ -211,12 +213,12 @@ fn roster_pick() {
 
     let out = must(&mut env, &["roster", "pick", "--task", "edit", "--prefer", "fast"]);
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines[0], "Picked for edit on local: sh/small");
+    assert_eq!(lines[0], "Picked for edit: sh/small on local");
     assert_eq!(lines[1], "  agent spawn NAME --backend sh --model small");
     assert_eq!(lines[2], "  why: tasks include edit; no notes on edit; fast, low cost");
     assert_eq!(lines[4], "Runners-up:");
     // The default model spawns without --model.
-    assert_eq!(lines[5], "  2. sh/: agent spawn NAME --backend sh");
+    assert_eq!(lines[5], "  2. sh/ on local: agent spawn NAME --backend sh");
     assert_eq!(
         last_line(&out),
         "Next: run the spawn line with your agent's name for NAME; agent roster show sh/small lists its notes; add --save NAME to keep this command."
@@ -315,4 +317,106 @@ fn task_flag_help_names_the_kinds() {
             .unwrap();
         assert_eq!(help, want, "{}", def.name());
     }
+}
+
+// Across hosts: the hub reads its own roster and the leaf's over the bus,
+// and lists "old" (whose bus serves only list) and "gone" (no bus) as not
+// read, with the fix, never as an error.
+#[test]
+fn roster_across_hosts() {
+    crate::require_termd!();
+    let Some(mut h) = crate::cli::fleet::fleet_test::TwoHosts::new(false) else {
+        eprintln!("skipping: no agent-busd");
+        return;
+    };
+    let (_, _, res) = h.leaf.run(&[
+        "roster", "set", "sh/leafy", "--tasks", "edit", "--speed", "fast", "--cost", "low",
+    ]);
+    res.unwrap();
+    must(&mut h.hub, &["roster", "set", "sh/hubby", "--tasks", "review"]);
+
+    let out = must(&mut h.hub, &["roster"]);
+    eprintln!("agent roster (on hub):\n{out}");
+    for want in [
+        "Roster on hub: harnesses and models this host can run\n",
+        "Roster on leaf: harnesses and models leaf can run\n",
+        "Roster on old: not read: its bus doesn't answer roster",
+        "  fix: on old: agent bus restart --remote-ops <its list>,roster",
+        "Roster on gone: not read: ",
+    ] {
+        assert!(out.contains(want), "want {want:?} in:\n{out}");
+    }
+    assert!(out.starts_with("Roster on hub:"), "this host first:\n{out}");
+    let leaf_part = &out[out.find("Roster on leaf").unwrap()..];
+    assert!(leaf_part.contains("sh/leafy") && leaf_part.contains("available"), "{out}");
+    assert_eq!(h.hub.take_err(), "", "no hint with a bus running");
+
+    let v: serde_json::Value = serde_json::from_str(&must(&mut h.hub, &["roster", "--json"])).unwrap();
+    let mut hosts: Vec<(String, bool)> = v["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| (x["host"].as_str().unwrap().to_string(), x.get("error").is_none()))
+        .collect();
+    hosts.sort();
+    let want: Vec<(String, bool)> =
+        [("gone", false), ("hub", true), ("leaf", true), ("old", false)]
+            .iter()
+            .map(|(h, r)| (h.to_string(), *r))
+            .collect();
+    assert_eq!(hosts, want);
+
+    // pick ranks every read host's entries; the leaf's spawns there.
+    let out = must(&mut h.hub, &["roster", "pick", "--task", "edit"]);
+    eprintln!("agent roster pick (on hub):\n{out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "Picked for edit: sh/leafy on leaf");
+    assert_eq!(lines[1], "  agent spawn NAME@leaf --backend sh --model leafy");
+    assert!(
+        out.contains("Not read, so not in the running:\n") && out.contains("\n  old: its bus doesn't answer roster"),
+        "{out}"
+    );
+    assert!(last_line(&out).contains("agent roster show sh/leafy on leaf lists its notes"), "{out}");
+    let v: serde_json::Value =
+        serde_json::from_str(&must(&mut h.hub, &["roster", "pick", "--task", "edit", "--json"])).unwrap();
+    assert_eq!(v["pick"]["host"], "leaf");
+    assert_eq!(v["unread"].as_array().unwrap().len(), 2);
+
+    // --host: one host, through the bus; a linked one that doesn't serve
+    // roster is a row; one nobody knows is an error.
+    let out = must(&mut h.hub, &["roster", "--host", "LEAF"]);
+    assert!(out.starts_with("Roster on leaf:") && !out.contains("hub"), "{out}");
+    let out = must(&mut h.hub, &["roster", "--host", "old"]);
+    assert!(out.starts_with("Roster on old: not read:") && out.contains("fix: on old"), "{out}");
+    let e = fails(&mut h.hub, &["roster", "--host", "typo"]);
+    assert!(e.contains("no bus answering for host \"typo\""), "{e}");
+    let out = must(&mut h.hub, &["roster", "pick", "--task", "review", "--host", "hub"]);
+    assert!(out.starts_with("Picked for review: sh/hubby on hub\n  agent spawn NAME --backend sh"), "{out}");
+
+    // A saved pick from the leaf is checked on the leaf.
+    must(&mut h.hub, &["roster", "pick", "--task", "edit", "--save", "leafy"]);
+    let out = must(&mut h.hub, &["roster", "pick", "--saved", "leafy"]);
+    assert!(out.contains("  agent spawn NAME@leaf --backend sh --model leafy\n"), "{out}");
+    assert!(out.contains("Its entry sh/leafy on leaf now: available."), "{out}");
+    let (_, _, res) = h.leaf.run(&["roster", "disable", "sh/leafy"]);
+    res.unwrap();
+    let out = must(&mut h.hub, &["roster", "pick", "--saved", "leafy"]);
+    assert!(out.contains("Its entry sh/leafy on leaf now: off: disabled."), "{out}");
+}
+
+// No bus: this host's roster, each linked host not read, and a hint.
+#[test]
+fn roster_without_bus() {
+    let mut env = env();
+    env.no_bus();
+    crate::cli::remote_test::trust_peers(&env, &["hub"]);
+    must(&mut env, &["roster", "set", "sh/m", "--tasks", "edit"]);
+    let out = must(&mut env, &["roster"]);
+    assert!(
+        out.contains("Roster on hub: not read: no agent bus runs here\n  fix: here: agent bus start\n"),
+        "{out}"
+    );
+    assert!(env.take_err().contains("no agent bus runs here, so this is this host only, without hub"));
+    let out = must(&mut env, &["roster", "pick", "--task", "edit"]);
+    assert!(out.starts_with("Picked for edit: sh/m on local"), "{out}");
 }
