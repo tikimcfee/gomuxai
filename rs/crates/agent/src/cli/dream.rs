@@ -7,7 +7,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use agent_bus::Context;
 use agent_dream::gather::{
@@ -1147,7 +1147,7 @@ pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
             let put_back = restore_memory(ctx, &d)?;
             store.abandon_dream(d.id, &format!("abandoned: its agent {} is gone", d.agent))?;
             for f in put_back {
-                ctx.write_out(&format!("Put back {f} as dream #{} found it.\n", d.id))?;
+                ctx.write_out(&format!("{f}\n"))?;
             }
         }
         ctx.write_out(&format!(
@@ -1256,6 +1256,7 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
     if d.kind == DREAM_KIND_GLOBAL {
         text.push_str(&format_machine(&machine_memory_dir(ctx).to_string_lossy()));
     }
+    text.push_str(&format_memory_checks(g, &projects));
     std::fs::write(&digest, text).map_err(|e| anyhow::anyhow!("writing {digest_s}: {e}"))?;
     let brief = dir.join("brief.md");
     let brief_s = brief.to_string_lossy().into_owned();
@@ -1288,6 +1289,8 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
             // allow is refused, not judged by the person's own mode (auto
             // mode let dream #8 run a plain friction accept).
             permission_mode: "dontAsk".to_string(),
+            // Reading only, of the general commands: no send, no friction add.
+            agent_commands: Some(agent_service::DREAM_READ_COMMANDS.to_vec()),
             ..Default::default()
         },
     )?;
@@ -1370,7 +1373,10 @@ fn dream_tool_rules(ctx: &Ctx, dream_dir: &Path, items: &[Item]) -> (Vec<String>
     allow.push(read_rule("Edit", &dream_dir.to_string_lossy(), true));
     allow.sort();
     allow.dedup();
-    (allow, vec!["NotebookEdit".to_string()])
+    // Nobody approves anything in a dream (dontAsk), so these are refused
+    // anyway; saying so keeps a person's own allow rules from reaching them.
+    let deny = ["NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task"];
+    (allow, deny.iter().map(|t| t.to_string()).collect())
 }
 
 /// The digest's last section: the scoped projects, which a dream may read
@@ -1395,6 +1401,62 @@ pub fn format_machine(dir: &str) -> String {
          `start_here.md` goes into every agent's briefing on this host, before the \
          project's.\n  read: your Read tool, `agent dream memory get <file> --dir {dir}`\n"
     )
+}
+
+/// The most findings the digest lists per memory dir.
+const CHECK_LINES: usize = 40;
+
+/// The digest's memory check section: `agent dream memory check --repo`
+/// over each memory dir the dream reviews, against its projects, run before
+/// the dream starts so it reads leads instead of hunting for them. A dir
+/// that can't be checked says why.
+pub fn format_memory_checks(g: &Gathered, projects: &[String]) -> String {
+    let dirs: Vec<&Item> = g
+        .items
+        .iter()
+        .filter(|i| i.kind == gather::KIND_MEMORY)
+        .collect();
+    if dirs.is_empty() {
+        return String::new();
+    }
+    let roots: Vec<PathBuf> = projects
+        .iter()
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .map(|p| p.canonicalize().unwrap_or(p))
+        .collect();
+    let repos = agent_dream::stale::Repos {
+        roots,
+        agent: Some(super::dream_memory::agent_commands(super::root::tree())),
+    };
+    let mut b = String::from(
+        "\n## memory check\n\nWhat `agent dream memory check --repo` found before you started: \
+         leads to verify, not edits to apply.\n",
+    );
+    for i in dirs {
+        let _ = writeln!(b, "\n### `{}`\n", i.key);
+        match memory::check_with(Path::new(&i.key), Some(&repos)) {
+            Err(e) => {
+                let _ = writeln!(b, "- couldn't check it: {e:#}");
+            }
+            Ok(f) if f.is_empty() => {
+                let _ = writeln!(b, "- nothing to report");
+            }
+            Ok(f) => {
+                for x in f.iter().take(CHECK_LINES) {
+                    let _ = writeln!(b, "- {x}");
+                }
+                if f.len() > CHECK_LINES {
+                    let _ = writeln!(
+                        b,
+                        "- ({} more: run the check yourself for the rest)",
+                        f.len() - CHECK_LINES
+                    );
+                }
+            }
+        }
+    }
+    b
 }
 
 /// The digest: each item with its key, one line, and how to read it.
@@ -1630,9 +1692,10 @@ pub(crate) fn commit_in_repo(repo: &str, hash: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Puts back every memory dir dream d wrote, from the snapshot taken when
-/// it first wrote there: an abandoned dream leaves memory as it found it.
-/// Returns one line per file put back.
+/// Puts back what dream d wrote in each memory dir, from the snapshot taken
+/// when it opened: an abandoned dream leaves memory as it found it, except
+/// files someone else changed after the dream wrote them, which are kept
+/// (memory::restore_own). Returns one sentence per file.
 pub(crate) fn restore_memory(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>> {
     let data_dir = ctx.data_dir();
     let mut out = Vec::new();
@@ -1645,10 +1708,16 @@ pub(crate) fn restore_memory(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>
         if !snap.join("MANIFEST").exists() || !dir.is_dir() {
             continue;
         }
-        for f in memory::restore(dir, &snap)
-            .with_context(|| format!("restoring {} from dream #{}'s snapshot", i.key, d.id))?
-        {
-            out.push(format!("{}/{f}", i.key));
+        let r = memory::restore_own(dir, &snap)
+            .with_context(|| format!("restoring {} from dream #{}'s snapshot", i.key, d.id))?;
+        for f in r.put_back {
+            out.push(format!("Put back {}/{f} as dream #{} found it.", i.key, d.id));
+        }
+        for f in r.kept {
+            out.push(format!(
+                "Kept {}/{f}: someone changed it after dream #{} wrote it.",
+                i.key, d.id
+            ));
         }
     }
     Ok(out)
@@ -1717,7 +1786,7 @@ pub fn run_abandon(ctx: &Ctx, args: &AbandonArgs) -> anyhow::Result<()> {
     let put_back = restore_memory(ctx, &d)?;
     ctx.store()?.abandon_dream(d.id, &why)?;
     for f in &put_back {
-        ctx.write_out(&format!("Put back {f} as the dream found it.\n"))?;
+        ctx.write_out(&format!("{f}\n"))?;
     }
     ctx.write_out(&format!(
         "Abandoned dream #{}: its items wait for the next dream, and memory is as it found it.\n",

@@ -205,21 +205,28 @@ killing the agent's own shell (exit 144).
 abandoned (and starts nothing while a dream's agent is still at work),
 cleans up the agents of closed dreams, gathers, records the dream and its
 items, writes a digest (`.gomuxai/dreams/<id>/digest.md`), snapshots each
-memory directory in the batch (`memory-before/<folder>/` in the dream's
-directory, `memory::take_snapshot`), and spawns a Claude agent `dream-<id>`
+memory directory in the batch (`dream-snapshots/<id>/<folder>/` beside
+the store, outside the dream's own directory so its agent can't edit its
+baseline; `memory::take_snapshot`), runs the memory check against the
+dream's projects into the digest (`## memory check`), and spawns a Claude agent `dream-<id>`
 with the fixed brief (`agent_dream::brief`, or `brief_global` for the
 global dream, behind a line naming the dream and what it is over), in
 `.gomuxai/dreams` with its workspace trust answered, and its
 state key `dream` set to the id. `--dry-run` says what it would do.
 `agent dream list` and `show` read the record.
 
-The agent reads transcripts through `agent logs` and `agent transcript`
-(pre-allowed for every agent), and files through its Read tool, which its
-launch rules allow without a prompt for Claude Code's projects directories,
-the scoped projects, the machine memory, the repos its commits are in, and
-its handoff docs. It may edit files only
-in its own dream directory (drafts for `memory put --from`), and
-`NotebookEdit` is refused; any other edit asks a person. It writes only
+Nobody watches a dream, so its agent runs in Claude's `dontAsk` mode:
+whatever its launch rules and the PreToolUse hook don't allow is refused,
+never left to a person's own permission mode. Of the general agent
+commands it gets only the reading ones (`DREAM_READ_COMMANDS`: list,
+status, logs, sessions, transcript, history, friction list and show,
+roster list and show), in place of what other agents are pre-allowed: it
+sends no messages and files no friction or roster notes but through its
+verbs. It reads files through its Read tool, which its launch rules allow
+for Claude Code's projects directories, the scoped projects, the machine
+memory, the repos its commits are in, and its handoff docs. It may edit
+files only in its own dream directory (drafts for `memory put --from`);
+`NotebookEdit`, `WebFetch`, `WebSearch` and subagents are refused. It writes only
 through `agent dream` verbs, which the PreToolUse hook allows for that
 agent alone while its dream is open (`DREAM_AGENT_COMMANDS` in
 agent-service; never in the launch rules), and the hook also allows it
@@ -229,8 +236,10 @@ and refuses otherwise:
 
 - `agent dream memory get|put|check`: put takes the version it read
   (`--expect`), and refuses a rewrite that drops more than a quarter of the
-  file's entries or loses a source citation; the prior file is saved under
-  the dream's directory first.
+  file's entries or loses a source citation; the prior file is saved in the
+  dream's snapshot first, and each write is recorded there. Abandoning a
+  dream puts back only what it wrote and is still as it left it: a file
+  someone changed since is kept, and named (`memory::restore_own`).
 - `agent dream friction dup|link|accept`: triage only; it never resolves
   an entry as fixed. Only the global dream's brief asks for it.
 - `agent dream roster note`: a model evaluation on the roster (**built**),

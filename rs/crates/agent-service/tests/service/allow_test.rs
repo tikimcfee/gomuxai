@@ -139,6 +139,22 @@ fn test_pre_tool_use_allows_dream_verbs_for_the_open_dream_only() {
         !allowed("dream-1", &dreamer, &format!("{bin} friction accept 3")),
         "plain friction accept stays a person's"
     );
+    // A dream's agent reads, but sends and files nothing through the general
+    // commands, which every other agent keeps.
+    for cmd in [
+        format!("{bin} send worker hi"),
+        format!("{bin} friction add \"x\""),
+        format!("{bin} roster note claude/m --task edit --verdict good --session claude:s x"),
+    ] {
+        assert!(
+            !allowed("dream-1", &dreamer, &cmd),
+            "{cmd}: want refused for a dream"
+        );
+    }
+    assert!(
+        allowed("worker", &other, &format!("{bin} send dream-1 hi")),
+        "send for others"
+    );
     env.store.commit_dream(d.id).unwrap();
     assert!(!allowed("dream-1", &dreamer, &note), "the dream is closed");
 }

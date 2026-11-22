@@ -640,3 +640,32 @@ fn the_machine_memory_is_made_once_and_guarded_like_any() {
     assert!(out.contains("Put back"), "{out}");
     assert!(!dir.join("build.md").exists());
 }
+
+#[test]
+fn digest_runs_the_memory_check_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mem = tmp.path().join("memory");
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&mem).unwrap();
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(
+        mem.join("a.md"),
+        "---\nname: a\ndescription: d\nmetadata:\n  type: project\n---\nThe entry point is `src/main.rs`; the old one was `src/gone.rs`. See [[nowhere]].\n",
+    )
+    .unwrap();
+    std::fs::write(mem.join("MEMORY.md"), "- [A](a.md) — a\n").unwrap();
+    let g = agent_dream::gather::Gathered {
+        items: vec![agent_dream::gather::Item {
+            kind: "memory".into(),
+            key: mem.to_string_lossy().into_owned(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let s = super::format_memory_checks(&g, &[repo.to_string_lossy().into_owned()]);
+    assert!(s.contains("## memory check"), "{s}");
+    assert!(s.contains("src/gone.rs") && !s.contains("src/main.rs"), "{s}");
+    assert!(s.contains("nowhere"), "{s}");
+    assert_eq!(super::format_memory_checks(&Default::default(), &[]), "");
+}

@@ -155,6 +155,24 @@ pub const AGENT_SAFE_COMMANDS: &[&str] = &[
     "roster note",
 ];
 
+/// DREAM_READ_COMMANDS are what a dream's agent may run of the general
+/// agent commands, in place of AGENT_SAFE_COMMANDS: reading only. A dream
+/// sends no messages, files no friction (its own limitations go through
+/// `dream limitation`), and writes no roster note but through its verb.
+pub const DREAM_READ_COMMANDS: &[&str] = &[
+    "list",
+    "status",
+    "statuses",
+    "logs",
+    "sessions",
+    "transcript",
+    "history",
+    "friction list",
+    "friction show",
+    "roster list",
+    "roster show",
+];
+
 /// DREAM_AGENT_COMMANDS are the `agent dream` verbs a dream's own agent may
 /// run without a prompt while its dream is open (docs/DREAMING.md): they
 /// write only through the dream's narrow toolset. No other agent gets them,
@@ -316,18 +334,26 @@ impl AgentService {
         if hr.command.is_empty() {
             return None;
         }
-        if !self.cfg.agent_binary.is_empty() {
-            let c = Checker::new(self.cfg.agent_binary.clone(), AGENT_SAFE_COMMANDS);
-            if c.check(&hr.command, &hr.cwd).is_ok() {
-                return Some(ha.allow_output(
-                    "gomuxai: a safe agent command, pre-allowed for spawned agents",
-                ));
-            }
-        }
+        // A dream's agent gets its own, narrower list, never the general one
+        // (which sends messages and files friction).
         let Ok(Some(dream)) = self.storage.open_dream_of(name) else {
+            if !self.cfg.agent_binary.is_empty() {
+                let c = Checker::new(self.cfg.agent_binary.clone(), AGENT_SAFE_COMMANDS);
+                if c.check(&hr.command, &hr.cwd).is_ok() {
+                    return Some(ha.allow_output(
+                        "gomuxai: a safe agent command, pre-allowed for spawned agents",
+                    ));
+                }
+            }
             return None;
         };
         if !self.cfg.agent_binary.is_empty() {
+            let c = Checker::new(self.cfg.agent_binary.clone(), DREAM_READ_COMMANDS);
+            if c.check(&hr.command, &hr.cwd).is_ok() {
+                return Some(ha.allow_output(
+                    "gomuxai: a reading agent command, pre-allowed for a dream's agent",
+                ));
+            }
             let c = Checker::new(self.cfg.agent_binary.clone(), DREAM_AGENT_COMMANDS);
             if c.check(&hr.command, &hr.cwd).is_ok() {
                 return Some(ha.allow_output(
@@ -355,8 +381,13 @@ impl AgentService {
     /// allowedCommandPrefixes are AGENT_SAFE_COMMANDS as the agent may type them:
     /// bare (on PATH) or by the full path the briefing gives.
     pub(crate) fn allowed_command_prefixes(&self) -> Vec<String> {
+        self.command_prefixes(AGENT_SAFE_COMMANDS)
+    }
+
+    /// The launch rules for subcommands `subs`, as the agent may type them.
+    pub(crate) fn command_prefixes(&self, subs: &[&str]) -> Vec<String> {
         let mut prefixes = Vec::new();
-        for sub in AGENT_SAFE_COMMANDS {
+        for sub in subs {
             prefixes.push(format!("agent {sub}"));
             if !self.cfg.agent_binary.is_empty() {
                 prefixes.push(format!("{} {sub}", self.cfg.agent_binary));

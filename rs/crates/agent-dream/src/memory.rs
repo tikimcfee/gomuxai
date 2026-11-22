@@ -436,7 +436,85 @@ pub fn put(
         save_history(snapshot_dir, file, old_content.as_bytes())?;
     }
     write_atomic(&dir.join(file), content.as_bytes())?;
-    Ok(PutOutcome::Written(version(content.as_bytes())))
+    let v = version(content.as_bytes());
+    record_written(snapshot_dir, file, Some(&v))?;
+    Ok(PutOutcome::Written(v))
+}
+
+/// The file in a snapshot dir listing what the dream itself wrote: one line
+/// per write, `<file>\t<version>`, or `<file>\t-` for a removal; the last
+/// line for a file is what the dream left it as.
+const WRITTEN: &str = "WRITTEN";
+
+fn record_written(snapshot_dir: &Path, file: &str, v: Option<&str>) -> Result<()> {
+    fs::create_dir_all(snapshot_dir)?;
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(snapshot_dir.join(WRITTEN))
+        .with_context(|| format!("recording a write in {}", snapshot_dir.display()))?;
+    writeln!(f, "{file}\t{}", v.unwrap_or("-"))?;
+    Ok(())
+}
+
+/// What the dream left each file it wrote as: Some(version), or None for a
+/// file it removed.
+fn read_written(snapshot_dir: &Path) -> Result<BTreeMap<String, Option<String>>> {
+    let mut out = BTreeMap::new();
+    let Ok(text) = fs::read_to_string(snapshot_dir.join(WRITTEN)) else {
+        return Ok(out);
+    };
+    for line in text.lines() {
+        if let Some((file, v)) = line.split_once('\t') {
+            out.insert(file.to_string(), (v != "-").then(|| v.to_string()));
+        }
+    }
+    Ok(out)
+}
+
+/// What [`restore_own`] did: the files it put back as the snapshot had them,
+/// and those it left because someone changed them after the dream wrote.
+#[derive(Debug, Default, PartialEq)]
+pub struct Restored {
+    pub put_back: Vec<String>,
+    pub kept: Vec<String>,
+}
+
+/// Undoes the dream's own writes in `dir`: each file the dream wrote (or
+/// removed) goes back to the snapshot's version (or away, if the snapshot
+/// didn't have it), but only while it is still as the dream left it. A file
+/// someone else changed since is kept, and named in `kept`; files the dream
+/// never wrote aren't touched. What it replaces goes in the history first.
+pub fn restore_own(dir: &Path, snapshot_dir: &Path) -> Result<Restored> {
+    let files = snapshot_dir.join("files");
+    let before: BTreeSet<String> = read_manifest(snapshot_dir)?.into_iter().collect();
+    let mut out = Restored::default();
+    for (file, left) in read_written(snapshot_dir)? {
+        let now = fs::read(dir.join(&file)).ok();
+        let as_left = match (&now, &left) {
+            (Some(b), Some(v)) => version(b) == *v,
+            (None, None) => true,
+            _ => false,
+        };
+        if !as_left {
+            out.kept.push(file);
+            continue;
+        }
+        if let Some(b) = &now {
+            save_history(snapshot_dir, &file, b)?;
+        }
+        if before.contains(&file) {
+            let want =
+                fs::read(files.join(&file)).with_context(|| format!("reading snapshot {file}"))?;
+            write_atomic(&dir.join(&file), &want)?;
+        } else if now.is_some() {
+            fs::remove_file(dir.join(&file)).with_context(|| format!("removing {file}"))?;
+        } else {
+            continue;
+        }
+        out.put_back.push(file);
+    }
+    Ok(out)
 }
 
 /// Whether `new` differs from `old` only in `[[link]]` targets, each changed
@@ -551,6 +629,7 @@ pub fn remove(dir: &Path, file: &str, expect_version: &str, snapshot_dir: &Path)
     }
     save_history(snapshot_dir, file, content.as_bytes())?;
     fs::remove_file(dir.join(file)).with_context(|| format!("removing {file}"))?;
+    record_written(snapshot_dir, file, None)?;
     Ok(())
 }
 
@@ -1254,6 +1333,44 @@ mod tests {
         remove(&mem, "a.md", &v, &snap).unwrap();
         assert!(!mem.join("a.md").exists());
         assert_eq!(fs::read_to_string(snap.join("history/a.md.1")).unwrap(), a);
+    }
+
+    #[test]
+    fn restore_own_keeps_what_others_changed() {
+        let (_t, mem, snap) = dirs();
+        let src = "[source: commit:aaa; added: 2026-11-01]";
+        write(&mem, "a.md", &fact("a", src));
+        write(&mem, "b.md", &fact("b", src));
+        write(&mem, INDEX, "- [A](a.md)\n- [B](b.md)\n");
+        take_snapshot(&mem, &snap).unwrap();
+        let a0 = fs::read_to_string(mem.join("a.md")).unwrap();
+        let b0 = fs::read_to_string(mem.join("b.md")).unwrap();
+        let v = |f: &str| version(&fs::read(mem.join(f)).unwrap());
+
+        // The dream rewrites a and b and adds n.
+        let src2 = "[source: commit:aaa, commit:bbb; added: 2026-11-02]";
+        put(&mem, "a.md", &fact("a", src2), &v("a.md"), &snap).unwrap();
+        put(&mem, "b.md", &fact("b", src2), &v("b.md"), &snap).unwrap();
+        put(&mem, "n.md", &fact("n", src2), NEW, &snap).unwrap();
+        // Then a live session edits b and adds its own file.
+        let b_live = fact(
+            "b",
+            "[source: commit:ccc, commit:aaa, commit:bbb; added: 2026-11-02]",
+        );
+        write(&mem, "b.md", &b_live);
+        write(&mem, "live.md", &fact("live", src));
+
+        let r = restore_own(&mem, &snap).unwrap();
+        assert_eq!(r.put_back, vec!["a.md".to_string(), "n.md".to_string()]);
+        assert_eq!(r.kept, vec!["b.md".to_string()]);
+        assert_eq!(fs::read_to_string(mem.join("a.md")).unwrap(), a0);
+        assert!(!mem.join("n.md").exists(), "the dream's new file goes");
+        assert_eq!(fs::read_to_string(mem.join("b.md")).unwrap(), b_live);
+        assert_ne!(b_live, b0);
+        assert!(
+            mem.join("live.md").exists(),
+            "a file the dream never wrote stays"
+        );
     }
 
     #[test]

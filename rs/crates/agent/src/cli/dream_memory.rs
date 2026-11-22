@@ -411,8 +411,9 @@ fn expand_home(path: &str, home: &str) -> String {
 }
 
 /// The caller's open dream, and where put and remove save what they replace
-/// in `dir`: the dream's `memory-before/<project folder>/` under this host's
-/// data dir (`.gomuxai/dreams/<id>/`), holding the dir as the dream found it
+/// in `dir`: `dream-snapshots/<id>/<project folder>/` under this host's data
+/// dir, outside the dream's own folder (which its agent may edit, and so
+/// could change its baseline), holding the dir as the dream found it
 /// (taken now if the dream had no snapshot of it yet). Refuses a caller with
 /// no open dream.
 fn snapshot_dir(ctx: &Ctx, dir: &Path, verb: &str) -> anyhow::Result<(Dream, PathBuf)> {
@@ -427,9 +428,8 @@ fn snapshot_dir(ctx: &Ctx, dir: &Path, verb: &str) -> anyhow::Result<(Dream, Pat
 pub(crate) fn snapshot_dir_for(data_dir: &str, id: &str, dir: &Path) -> PathBuf {
     let abs = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     PathBuf::from(data_dir)
-        .join("dreams")
+        .join("dream-snapshots")
         .join(id)
-        .join("memory-before")
         .join(project_folder(&abs.to_string_lossy()))
 }
 
@@ -555,7 +555,7 @@ mod tests {
         let p = snapshot_dir_for("/data", "d7", Path::new("/p/-srv-app/memory"));
         assert_eq!(
             p,
-            PathBuf::from("/data/dreams/d7/memory-before/-p--srv-app-memory")
+            PathBuf::from("/data/dream-snapshots/d7/-p--srv-app-memory")
         );
     }
 

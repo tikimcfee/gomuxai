@@ -197,6 +197,10 @@ pub struct SpawnOptions {
     /// agent runs "dontAsk", so what its rules and the hook don't allow is
     /// refused rather than judged by the person's auto mode.
     pub permission_mode: String,
+    /// The agent subcommands its launch rules pre-allow, in place of
+    /// AGENT_SAFE_COMMANDS; None for those. A dream's agent gets
+    /// DREAM_READ_COMMANDS.
+    pub agent_commands: Option<Vec<&'static str>>,
 }
 
 /// The Go SpawnOptions' unexported fields, which only resume and adopt set:
@@ -781,12 +785,11 @@ impl AgentService {
             cmd = ip.with_instructions(&cmd, &path)?;
         }
         if let Some(ca) = provider.as_command_allower() {
-            cmd = ca.allow_tools(
-                &cmd,
-                &self.allowed_command_prefixes(),
-                &opts.allow_tools,
-                &opts.deny_tools,
-            );
+            let prefixes = match &opts.agent_commands {
+                Some(subs) => self.command_prefixes(subs),
+                None => self.allowed_command_prefixes(),
+            };
+            cmd = ca.allow_tools(&cmd, &prefixes, &opts.allow_tools, &opts.deny_tools);
         }
         if let Some(pfp) = provider.as_prompt_flag_provider()
             && !init_msg.is_empty()
