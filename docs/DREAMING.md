@@ -168,7 +168,7 @@ Turning it on is a person's call.
 
 ### Later
 
-- A Dreams view in the manager (`agent manage view` carries the dreams).
+- A Dreams view in the manager: an optional field on `HostView` (agent-manage), filled in `cli/manage.rs`'s `local_host`, with the page built by the manager's lead (the Usage tab is the pattern).
 - The act layer, above.
 - Model evaluations for the roster (branch `roster`, another tree): dreams
   review ended sessions, so they could feed its notes. The interface is
