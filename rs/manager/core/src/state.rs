@@ -44,15 +44,17 @@ pub enum Page {
     Friction,
     History,
     Data,
+    Usage,
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
         Page::Agents,
         Page::Sessions,
         Page::Friction,
         Page::History,
         Page::Data,
+        Page::Usage,
     ];
     pub fn label(&self) -> &'static str {
         match self {
@@ -61,6 +63,7 @@ impl Page {
             Page::Friction => "Friction",
             Page::History => "History",
             Page::Data => "Data",
+            Page::Usage => "Usage",
         }
     }
 }

@@ -15,6 +15,7 @@ use agent_manager_core::layout::Section;
 use agent_manager_core::runner::{self, Output, Source};
 use agent_manager_core::sessions;
 use agent_manager_core::state::{AUTO_REFRESH_SECS, Dialog, Effect, Job, Model, Page, SortList};
+use agent_manager_core::usage::{self, Level, UsageLine};
 use agent_manager_core::{SessionState, View as FleetView, data};
 use chrono::Utc;
 use makepad_widgets::*;
@@ -531,6 +532,124 @@ script_mod! {
         }
     }
 
+    // The usage page: a section per host (header, then each provider's limits with a bar
+    // and when they reset, then the transcripts' tokens), folded by pressing the header.
+    mod.widgets.UsageListBase = #(UsageList::register_widget(vm))
+    mod.widgets.UsageList = set_type_default() do mod.widgets.UsageListBase{
+        width: Fill
+        height: Fill
+        flow: Down
+        list := PortalList{
+            width: Fill
+            height: Fill
+            scan: [@Host, @Heading, @Limit, @Item, @Note, @Empty]
+            Empty := NoteItem{}
+            Host := View{
+                width: Fill
+                height: Fit
+                padding: Inset{top: 10}
+                row := Row{
+                    height: 32
+                    spacing: 8
+                    show_bg: true
+                    draw_bg +: {color: theme.color_surface_container}
+                    fold := Label{
+                        width: 14
+                        draw_text +: {
+                            color: theme.color_text_meta
+                            text_style: theme.font_bold{font_size: 10}
+                        }
+                    }
+                    host := Label{
+                        draw_text +: {
+                            color: theme.color_text
+                            text_style: theme.font_bold{font_size: 11}
+                        }
+                    }
+                    host_note := Meta{
+                        width: Fill
+                        max_lines: 1
+                        text_overflow: TextOverflow.Ellipsis
+                    }
+                }
+            }
+            Heading := View{
+                width: Fill
+                height: 30
+                flow: Right
+                spacing: 10
+                padding: Inset{left: 30 right: 8 top: 10}
+                align: Align{y: 0.5}
+                title := Label{
+                    width: 190
+                    max_lines: 1
+                    text_overflow: TextOverflow.Ellipsis
+                    draw_text +: {
+                        color: theme.color_text
+                        text_style: theme.font_bold{font_size: 9.5}
+                    }
+                }
+                summary := Meta{
+                    width: Fill
+                    max_lines: 1
+                    text_overflow: TextOverflow.Ellipsis
+                }
+            }
+            Limit := View{
+                width: Fill
+                height: 22
+                flow: Right
+                spacing: 10
+                padding: Inset{left: 46 right: 8}
+                align: Align{y: 0.5}
+                label := Cell{width: 150}
+                value := Cell{
+                    width: 150
+                    draw_text +: {text_style: theme.font_code{font_size: 8.5}}
+                }
+                well := SolidView{
+                    width: 160
+                    height: 8
+                    flow: Right
+                    show_bg: true
+                    draw_bg +: {color: #x5b5b5bff}
+                    bar := SolidView{
+                        width: 0
+                        height: Fill
+                        show_bg: true
+                        draw_bg +: {color: #x7aa2f7ff}
+                    }
+                }
+                resets_in := Cell{
+                    width: 76
+                    draw_text +: {color: theme.color_text}
+                }
+                resets := Cell{
+                    width: 220
+                    draw_text +: {color: theme.color_text_meta}
+                }
+            }
+            Item := View{
+                width: Fill
+                height: 22
+                flow: Right
+                spacing: 10
+                padding: Inset{left: 46 right: 8}
+                align: Align{y: 0.5}
+                name := Cell{width: 150}
+                value := Cell{
+                    width: 150
+                    draw_text +: {text_style: theme.font_code{font_size: 8.5}}
+                }
+                detail := Cell{
+                    width: 640
+                    draw_text +: {color: theme.color_text_meta}
+                }
+            }
+            Note := NoteItem{padding: Inset{left: 46 right: 8}}
+        }
+    }
+
     startup() do #(App::script_component(vm)){
         ui: Root{
             main_window := Window{
@@ -564,6 +683,7 @@ script_mod! {
                         tab_friction := SideTab{text: "Friction"}
                         tab_history := SideTab{text: "History"}
                         tab_data := SideTab{text: "Data"}
+                        tab_usage := SideTab{text: "Usage"}
                         Filler{}
                         auto := CheckBox{text: "auto refresh 10s" active: true}
                         refresh := Button{width: Fill text: "Refresh"}
@@ -578,6 +698,7 @@ script_mod! {
                         ntab_friction := SideTabNarrow{text: "F"}
                         ntab_history := SideTabNarrow{text: "H"}
                         ntab_data := SideTabNarrow{text: "D"}
+                        ntab_usage := SideTabNarrow{text: "U"}
                         Filler{}
                         nauto := CheckBox{text: "" active: true}
                         nrefresh := Button{width: Fill text: "↻"}
@@ -787,6 +908,19 @@ script_mod! {
                             data_why := Meta{}
                         }
                         data_list := mod.widgets.DataList{}
+                    }
+
+                    usage_page := View{
+                        visible: false
+                        width: Fill
+                        height: Fill
+                        flow: Down
+                        Bar{
+                            Meta{
+                                text: "Plan limits are llm-exp's own figures, from the snapshot its usage widget keeps on each host; the tokens below them are counted from transcripts."
+                            }
+                        }
+                        usage_list := mod.widgets.UsageList{}
                     }
                     }
                     }
@@ -1481,6 +1615,176 @@ impl Widget for DataList {
     }
 }
 
+/// The usage page's list. Which hosts are folded is the page's own state, as on the data
+/// page.
+#[derive(Script, ScriptHook, Widget)]
+pub struct UsageList {
+    #[deref]
+    view: View,
+    #[rust]
+    folded: std::collections::BTreeSet<String>,
+    /// The lines last drawn, to map a pressed header back to its host.
+    #[rust]
+    lines: Vec<UsageLine>,
+}
+
+/// The width of a limit's bar at 100%.
+const USAGE_BAR: f64 = 160.0;
+
+/// A limit's bar colour, as llm-exp's widget has them: blue, amber over 90%, red over 100%.
+fn level_color(level: Level) -> u32 {
+    match level {
+        Level::Ok => 0x7aa2f7ff,
+        Level::Warn => 0xe0af68ff,
+        Level::Over => 0xf7768eff,
+    }
+}
+
+impl Widget for UsageList {
+    fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
+        let now = Utc::now();
+        while let Some(step) = self.view.draw_walk(cx, scope, walk).step() {
+            let Some(mut list) = step.borrow_mut::<PortalList>() else {
+                continue;
+            };
+            let Some(m) = scope.data.get::<Model>() else {
+                continue;
+            };
+            self.lines = usage::lines(&m.view, now, &chrono::Local, &self.folded);
+            if self.lines.is_empty() {
+                list.set_item_range(cx, 0, 1);
+                while let Some(i) = list.next_visible_item(cx) {
+                    let item = list.item(cx, i, id!(Empty));
+                    let text = if m.read_at.is_none() {
+                        "reading…"
+                    } else {
+                        "no host answered"
+                    };
+                    item.label(cx, ids!(note)).set_text(cx, text);
+                    item.draw_all_unscoped(cx);
+                }
+                continue;
+            }
+            list.set_item_range(cx, 0, self.lines.len());
+            while let Some(i) = list.next_visible_item(cx) {
+                let Some(line) = self.lines.get(i) else {
+                    continue;
+                };
+                match line {
+                    UsageLine::Host {
+                        name,
+                        note,
+                        warn,
+                        reachable,
+                        folded,
+                        ..
+                    } => {
+                        let item = list.item(cx, i, id!(Host));
+                        item.label(cx, ids!(fold))
+                            .set_text(cx, if *folded { "▸" } else { "▾" });
+                        item.label(cx, ids!(host)).set_text(cx, name);
+                        let n = item.label(cx, ids!(host_note));
+                        n.set_text(cx, note);
+                        let color = match (*reachable, *warn) {
+                            (false, _) => BAD,
+                            (true, true) => WARN,
+                            (true, false) => META,
+                        };
+                        set_color(cx, n, color);
+                        item.draw_all_unscoped(cx);
+                    }
+                    UsageLine::Heading { title, summary } => {
+                        let item = list.item(cx, i, id!(Heading));
+                        item.label(cx, ids!(title)).set_text(cx, title);
+                        item.label(cx, ids!(summary)).set_text(cx, summary);
+                        item.draw_all_unscoped(cx);
+                    }
+                    UsageLine::Limit {
+                        label,
+                        value,
+                        share,
+                        level,
+                        resets,
+                        resets_in,
+                    } => {
+                        let item = list.item(cx, i, id!(Limit));
+                        item.label(cx, ids!(label)).set_text(cx, label);
+                        let v = item.label(cx, ids!(value));
+                        v.set_text(cx, value);
+                        set_color(
+                            cx,
+                            v,
+                            if *level == Level::Ok {
+                                TEXT
+                            } else {
+                                level_color(*level)
+                            },
+                        );
+                        let mut bar = item.widget(cx, ids!(bar));
+                        // A limit above zero shows at least a sliver.
+                        let w = if *share > 0.0 {
+                            (f64::from(*share) * USAGE_BAR).max(2.0)
+                        } else {
+                            0.0
+                        };
+                        script_apply_eval!(cx, bar, { width: #(w) });
+                        set_bg(cx, &bar, level_color(*level));
+                        item.label(cx, ids!(resets_in)).set_text(cx, resets_in);
+                        item.label(cx, ids!(resets)).set_text(
+                            cx,
+                            &if resets.is_empty() {
+                                String::new()
+                            } else {
+                                format!("resets {resets}")
+                            },
+                        );
+                        item.draw_all_unscoped(cx);
+                    }
+                    UsageLine::Item {
+                        name,
+                        value,
+                        detail,
+                    } => {
+                        let item = list.item(cx, i, id!(Item));
+                        item.label(cx, ids!(name)).set_text(cx, name);
+                        item.label(cx, ids!(value)).set_text(cx, value);
+                        item.label(cx, ids!(detail)).set_text(cx, detail);
+                        item.draw_all_unscoped(cx);
+                    }
+                    UsageLine::Note { text, bad } => {
+                        let item = list.item(cx, i, id!(Note));
+                        let n = item.label(cx, ids!(note));
+                        n.set_text(cx, text);
+                        set_color(cx, n, if *bad { BAD } else { META });
+                        item.draw_all_unscoped(cx);
+                    }
+                }
+            }
+        }
+        DrawStep::done()
+    }
+
+    fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        let actions = cx.capture_actions(|cx| self.view.handle_event(cx, event, scope));
+        let list = self.view.portal_list(cx, ids!(list));
+        for (i, item) in list.items_with_actions(&actions) {
+            let pressed = item
+                .view(cx, ids!(row))
+                .finger_up(&actions)
+                .is_some_and(|e| e.is_over);
+            if let (true, Some(UsageLine::Host { name, .. })) = (pressed, self.lines.get(i))
+                && !self.folded.remove(name)
+            {
+                self.folded.insert(name.clone());
+            }
+            if pressed {
+                self.view.redraw(cx);
+            }
+        }
+        cx.extend_actions(actions);
+    }
+}
+
 // --- the app --------------------------------------------------------------------------
 
 #[derive(Script, ScriptHook)]
@@ -1562,6 +1866,7 @@ impl App {
             (Page::Friction, ids!(ntab_friction)),
             (Page::History, ids!(ntab_history)),
             (Page::Data, ids!(ntab_data)),
+            (Page::Usage, ids!(ntab_usage)),
         ];
         for (page, tab) in narrow {
             let tab = ui.widget(cx, tab);
@@ -1657,6 +1962,7 @@ impl App {
             (Page::Friction, ids!(friction_page), ids!(tab_friction)),
             (Page::History, ids!(history_page), ids!(tab_history)),
             (Page::Data, ids!(data_page), ids!(tab_data)),
+            (Page::Usage, ids!(usage_page), ids!(tab_usage)),
         ];
         for (page, view, tab) in pages {
             ui.view(cx, view).set_visible(cx, m.page == page);
@@ -1858,6 +2164,7 @@ impl App {
 
         // Data: the list draws its lines from the model; this sets the buttons.
         ui.widget(cx, ids!(data_list)).redraw(cx);
+        ui.widget(cx, ids!(usage_list)).redraw(cx);
         let backup = agent_manager_core::commands::backup(&m.view);
         let busy = m.running.is_some();
         ui.button(cx, ids!(backup))
@@ -1940,6 +2247,7 @@ impl App {
             (ids!(ntab_friction), Page::Friction),
             (ids!(ntab_history), Page::History),
             (ids!(ntab_data), Page::Data),
+            (ids!(ntab_usage), Page::Usage),
         ];
         for (id, page) in narrow {
             if ui.button(cx, id).clicked(actions) {
@@ -2019,6 +2327,7 @@ impl MatchEvent for App {
             (ids!(tab_friction), Page::Friction),
             (ids!(tab_history), Page::History),
             (ids!(tab_data), Page::Data),
+            (ids!(tab_usage), Page::Usage),
         ];
         for (id, page) in tabs {
             if ui.button(cx, id).clicked(actions) {

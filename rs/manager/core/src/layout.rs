@@ -78,9 +78,9 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Whether a page has a list with a detail pane beside it (the Data page doesn't).
+    /// Whether a page has a list with a detail pane beside it (Data and Usage don't).
     pub fn has_detail(page: Page) -> bool {
-        page != Page::Data
+        !matches!(page, Page::Data | Page::Usage)
     }
 
     pub fn toggle_sidebar(&mut self) {
@@ -128,7 +128,11 @@ mod tests {
         let l = Layout::default();
         assert!(!l.sidebar_collapsed);
         for p in Page::ALL {
-            assert_eq!(l.detail_open(p), p != Page::Data, "{p:?}");
+            assert_eq!(
+                l.detail_open(p),
+                !matches!(p, Page::Data | Page::Usage),
+                "{p:?}"
+            );
         }
         for s in Section::ALL {
             assert!(l.section_open(s), "{s:?}");
