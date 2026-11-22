@@ -142,7 +142,9 @@ and refuses otherwise:
   answers are never taken as permissions.
 
 Rules the brief states are checked in code where they can be:
-`agent dream memory put` refuses an entry with no source line, and a
+`agent dream memory put` refuses an entry with no source line (except a
+change that only points `[[links]]` at memories that exist: a link fix has
+nothing to cite), and a
 rewrite that loses a citation the file had when the dream opened (one the
 dream added itself it may take back). **built**: `agent dream commit`
 refuses while a memory directory the dream holds a snapshot of fails the

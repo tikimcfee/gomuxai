@@ -388,7 +388,8 @@ pub enum PutOutcome {
 
 /// Writes `content` to `file` in `dir`, if the file is still at `expect_version`
 /// (NEW for a file that doesn't exist yet). Refuses content without valid
-/// frontmatter, a new or changed fact file with no source line, a rewrite that
+/// frontmatter, a new or changed fact file with no source line (unless the
+/// change only points `[[links]]` at memories that exist), a rewrite that
 /// loses a citation the file had when the dream opened (its copy in
 /// `snapshot_dir`; with no snapshot there, the file as it is now), and an
 /// index rewrite that drops more than a
@@ -425,7 +426,11 @@ pub fn put(
         } else {
             old.as_ref().map(|(c, _)| c.clone())
         };
-        check_fact_rewrite(file, baseline.as_deref(), content)?;
+        let link_fix = match &old {
+            Some((old_content, _)) => is_link_fix(dir, old_content, content)?,
+            None => false,
+        };
+        check_fact_rewrite(file, baseline.as_deref(), content, link_fix)?;
     }
     if let Some((old_content, _)) = &old {
         save_history(snapshot_dir, file, old_content.as_bytes())?;
@@ -434,11 +439,51 @@ pub fn put(
     Ok(PutOutcome::Written(version(content.as_bytes())))
 }
 
-fn check_fact_rewrite(file: &str, old: Option<&str>, content: &str) -> Result<()> {
+/// Whether `new` differs from `old` only in `[[link]]` targets, each changed
+/// one naming a memory in `dir` (a file's frontmatter name). Such a fix has
+/// nothing new to cite, so it needs no source line.
+fn is_link_fix(dir: &Path, old: &str, new: &str) -> Result<bool> {
+    fn split(text: &str) -> (Vec<&str>, Vec<&str>) {
+        let mut rest = Vec::new();
+        let mut links = Vec::new();
+        let mut at = 0;
+        for c in LINK_RE.captures_iter(text) {
+            let m = c.get(0).unwrap();
+            rest.push(&text[at..m.start()]);
+            links.push(c.get(1).unwrap().as_str().trim());
+            at = m.end();
+        }
+        rest.push(&text[at..]);
+        (rest, links)
+    }
+    let (old_rest, old_links) = split(old);
+    let (new_rest, new_links) = split(new);
+    if old_rest != new_rest || old_links.len() != new_links.len() {
+        return Ok(false);
+    }
+    let changed: Vec<&str> = old_links
+        .iter()
+        .zip(&new_links)
+        .filter(|(o, n)| o != n)
+        .map(|(_, n)| *n)
+        .collect();
+    if changed.is_empty() {
+        return Ok(false);
+    }
+    let md = parse_dir(dir)?;
+    let names: BTreeSet<&str> = md
+        .files
+        .iter()
+        .filter_map(|f| f.frontmatter.as_ref().map(|fm| fm.name.as_str()))
+        .collect();
+    Ok(changed.iter().all(|l| names.contains(l)))
+}
+
+fn check_fact_rewrite(file: &str, old: Option<&str>, content: &str, link_fix: bool) -> Result<()> {
     let (_, body) =
         parse_frontmatter(content).with_context(|| format!("refusing {file}: bad frontmatter"))?;
     let sources = parse_sources(body).with_context(|| format!("refusing {file}"))?;
-    if sources.is_empty() {
+    if sources.is_empty() && !link_fix {
         bail!(
             "refusing {file}: it has no source line; add [source: claude:<session-id>, friction:<uid>, commit:<hash>; added: YYYY-MM-DD]"
         );
@@ -996,6 +1041,62 @@ mod tests {
         let v = version_of(&mem, "b.md").unwrap();
         assert!(
             err(put(&mem, "b.md", &fact("beta", "New."), &v, &snap)).contains("no source line")
+        );
+    }
+
+    #[test]
+    fn put_takes_a_link_fix_with_no_source() {
+        let (_t, mem, snap) = dirs();
+        write(
+            &mem,
+            "n.md",
+            &fact("nats-project", &format!("NATS.\n{SRC}")),
+        );
+        let old = fact("beta", "See [[nats_project]] and [[beta]].");
+        write(&mem, "b.md", &old);
+        let v = version_of(&mem, "b.md").unwrap();
+        // A link pointed at a memory that doesn't exist: still refused.
+        let e = err(put(
+            &mem,
+            "b.md",
+            &fact("beta", "See [[nats-proj]] and [[beta]]."),
+            &v,
+            &snap,
+        ));
+        assert!(e.contains("no source line"), "{e}");
+        // A link fixed and the text changed too: refused.
+        let e = err(put(
+            &mem,
+            "b.md",
+            &fact("beta", "See [[nats-project]], and [[beta]]."),
+            &v,
+            &snap,
+        ));
+        assert!(e.contains("no source line"), "{e}");
+        // A link added: refused.
+        let e = err(put(
+            &mem,
+            "b.md",
+            &fact(
+                "beta",
+                "See [[nats_project]] and [[beta]]. [[nats-project]]",
+            ),
+            &v,
+            &snap,
+        ));
+        assert!(e.contains("no source line"), "{e}");
+        // Only the link's target, now naming a memory: written.
+        let fixed = fact("beta", "See [[nats-project]] and [[beta]].");
+        assert!(matches!(
+            put(&mem, "b.md", &fixed, &v, &snap).unwrap(),
+            PutOutcome::Written(_)
+        ));
+        assert_eq!(fs::read_to_string(mem.join("b.md")).unwrap(), fixed);
+        assert!(
+            check(&mem)
+                .unwrap()
+                .iter()
+                .all(|f| !matches!(f, Finding::BrokenLink { .. }))
         );
     }
 

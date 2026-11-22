@@ -50,7 +50,9 @@ memory and triages friction; fixing things is a later layer.
   by a verified retry, both cited.
 - Every fact you add or change carries a source line:
   `[source: claude:<session-id>, friction:<uid>, commit:<hash>; added: YYYY-MM-DD]`,
-  and keeps its why (`**Why:**`, `**How to apply:**`).
+  and keeps its why (`**Why:**`, `**How to apply:**`). Pointing a broken
+  `[[link]]` at the memory it meant, and changing nothing else, needs no
+  source line.
 - Prefer updating an existing memory to adding one. Keep scope, order,
   negations and exceptions when you merge entries. Remove a rule that
   recent sessions contradict, saying so in the diary with the sources.
