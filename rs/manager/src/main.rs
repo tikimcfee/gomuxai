@@ -1183,8 +1183,26 @@ impl Widget for SessionList {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if is_press_dragged_elsewhere(cx, event) {
+            return;
+        }
         self.view.handle_event(cx, event, scope);
     }
+}
+
+/// A press that a dragged control outside this list already owns (the splitter bar
+/// below a list stacked above its detail), which the list must not see.
+///
+/// Works around Makepad's `PortalList`: it notes which row a raw press lands in by the
+/// row's unclipped rect, so the half-shown last row, which reaches under the bar,
+/// counts a press on the bar as its own. When the drag shrinks the list until that row
+/// leaves view, the list cancels every other capture of the press as it recycles the
+/// row, the splitter's with them, and the bar stops short of the pointer. The splitter
+/// handles a press before its panes and claims its drag on the way, so the claim is
+/// already there when the list's turn comes.
+fn is_press_dragged_elsewhere(cx: &Cx, event: &Event) -> bool {
+    matches!(event, Event::MouseDown(_))
+        && cx.fingers.is_drag_claimed_by_widget(live_id!(mouse).into())
 }
 
 #[derive(Script, ScriptHook, Widget)]
@@ -1318,6 +1336,9 @@ impl Widget for HistoryList {
     }
 
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if is_press_dragged_elsewhere(cx, event) {
+            return;
+        }
         self.view.handle_event(cx, event, scope);
     }
 }
