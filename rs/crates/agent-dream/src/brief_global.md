@@ -104,6 +104,13 @@ thing every agent reads. Frontmatter: `name: start-here`, a one-line
 Only facts true across projects go in it, each checked and cited; no
 secrets, no tokens. Rewrite it rather than append to it.
 
+One rule belongs in the machine memory as its own fact if it isn't there
+yet, cited to the project dream that found the case: anything that mines
+other sessions' transcripts (a corpus, evidence, a summary) scrubs them
+first, dropping pasted blocks, code fences, key blocks, and lines with
+credentials, sign-in URLs or email addresses (`agent_dream::scrub::excerpt`
+in Rust).
+
 ## Cross-project lessons
 
 Read each project dream's diary (`agent dream show <id>`) and the
