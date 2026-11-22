@@ -172,12 +172,12 @@ regression), not opinions.
 
 ## 5. Size gate
 
-Act measures the diff with `git diff --numstat` and the file list. A
-change is **large** if any of these hold:
+Act measures the diff with `git diff --numstat` and the file list. What
+a change touches weighs more than how big it is: the risk categories
+below make a change large whatever its size, and the line and file counts
+are only a backstop for a change that touches none of them. A change is
+**large** if any of these hold:
 
-- more than 150 changed lines outside tests, or more than 400 with tests;
-- more than 6 files, or files in more than one crate, package or module
-  root;
 - it touches a public interface: the `agent` command tree (act compares
   `agent help --json` built from base and head), the store schema (a
   `*_SCHEMA` constant or a migration), the hook protocol or `report`
@@ -187,7 +187,10 @@ change is **large** if any of these hold:
   (`confine.rs`, `instructions.rs`' command lists, `dream_tool_rules`);
 - it is a UI system rewrite: more than 50 lines in `rs/manager`, or a new
   file there;
-- the reviewer passed `--large`.
+- the reviewer passed `--large`;
+- backstop, for a change in none of the categories above: more than 150
+  changed lines outside tests (400 with tests), more than 6 files, or files
+  in more than one crate, package or module root.
 
 A repo's registration may tighten the numbers, never the interface
 rules. A large run goes to `asked`: the branch stays local with the gate's
@@ -198,16 +201,17 @@ answers `agent dream act approve <run>` or `reject <run> "why"`.
 
 For an approved, small run:
 
-1. Rebase the branch on the current default branch in the worktree, then
-   run the checks again. A conflict or a red check fails the run, which is
+1. Rebase the branch on `act/landed` (or, before it exists, the default
+   branch) in the worktree, then run the checks again. A conflict or a red check fails the run, which is
    retried after the 7-day cooldown.
 2. Make the last commit carry the trailers
    `Fixes: friction:<uid>`, `Act-Run: <id>` and
    `Reviewed-by: <harness>/<model>`, plus the repo's attribution line.
-3. Fast-forward the default branch to it: with `git update-ref` when no
-   worktree has it checked out, else with `git merge --ff-only` in that
-   worktree, and only if it's clean. If it isn't clean, the run waits in
-   `approved`. Act never pushes.
+3. Fast-forward the repo's integration branch `act/landed` to it (made
+   from the default branch the first time; `git update-ref`, since nothing
+   checks it out). Act never touches the default branch and never pushes:
+   a person reads `act/landed` and merges it into the default branch by
+   hand. Each landed run rebases on `act/landed`, so they stack in order.
 4. Run `agent friction resolve <id> --commit <hash>`, a new flag on
    `FrictionResolveArgs`. It checks the commit exists in the entry's
    project (`git cat-file -e`) and carries the trailer, sets
@@ -330,20 +334,25 @@ Two agents (three sessions with a `changes` round), about 4 to 14 M
 cached input, 40 to 100 k output, 20 to 60 minutes: a few dreams' worth
 per item. One item a day at most keeps it in proportion.
 
+## Decided
+
+- Landing goes to a separate branch, `act/landed`, which Ivan merges by
+  hand (section 6).
+- The size gate keeps its numbers, but risk categories weigh more than raw
+  counts: what a change touches decides first, and the counts are a
+  backstop (section 5).
+- Project dreams and the global dream may both file; the global dream
+  alone accepts.
+- Improvements are eligible in version 1, with evidence: a cited source
+  and a `--detail` saying what would change and why.
+- Bold, cross-project proposals are a tier of their own, never acted on:
+  `docs/DREAMING-VISION.md`.
+
 ## Open questions
 
-1. Should landing fast-forward the local default branch, or a separate
-   integration branch (`act/landed`) that you merge by hand?
-2. Are the size gate's numbers (150 lines, 6 files, one crate) right for
-   gomuxai, or should the first runs be even smaller?
-3. When a run is `asked`, how should it reach you: `agent fleet` and the
+1. When a run is `asked`, how should it reach you: `agent fleet` and the
    digest, or a message to a session you name?
-4. May project dreams file items, or should only the global dream file,
-   so all filing and accepting happens in one place?
-5. Should improvements (not failures) be eligible in version 1, or only
-   items with an evidence signature, until the before-and-after check has
-   a record?
-6. Is a reviewer on another Claude model enough for version 1, or should
+2. Is a reviewer on another Claude model enough for version 1, or should
    act wait for the agy reviewer so the first runs get a different family?
-7. Which repos besides gomuxai should be registered for acting, and with
+3. Which repos besides gomuxai should be registered for acting, and with
    which checks?
