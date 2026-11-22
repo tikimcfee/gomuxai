@@ -39,6 +39,8 @@ pub mod remote_ops;
 pub mod root;
 
 mod bus_identity;
+// The evidence in a dream's digest: the host's side of agent_dream::evidence.
+mod dream_evidence;
 // `agent dream memory`, wired under `agent dream` by its group's def().
 mod dream_memory;
 // `agent dream schedule`, wired under `agent dream` by its group's def().

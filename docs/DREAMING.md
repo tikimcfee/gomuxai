@@ -92,6 +92,51 @@ taken from the floor on. Sources:
   cwd, skipped when it isn't a repo or is gone), since the last committed
   dream started, or the floor before any.
 
+### Evidence: what keeps tripping agents
+
+**built** (the rules in `agent-dream` `evidence.rs`, the host's side in the
+CLI's `dream_evidence.rs`). The start-here note's Tripwires come from
+evidence, not guesses: the digest ends with an `## evidence` section of
+what failed again and again in the batch, and `agent dream gather` says how
+much (`--json` carries it whole, as `evidence`). Its window is the batch's:
+since the last committed dream started (the floor before any).
+
+- **Failed `agent` commands**: the store's command log, rows that exited
+  non-zero in a scoped directory, grouped by command shape (its subcommand
+  words by the command tree, and its flags without values) and the error's
+  first line, normalized: quoted values, paths, uuids and hex ids, dashed
+  names (agents, hosts; not flags) and numbers replaced. Counted with the
+  distinct agents that ran them, first and last day. Left out: a wait that
+  timed out, `agent run` passing on its script's exit, and bursts (three or
+  more failures by one agent within a second: a test suite or a loop).
+- **Failed tool calls**: the result events with status `error` in the
+  batch's transcripts (and their subagents', under the parent's key), read
+  with `agent-transcript` as `agent transcript` reads them, grouped by tool
+  and normalized error. A shell call (Claude's Bash, agy's run_command) is
+  grouped by its program, with the subcommand for git, cargo, agent and the
+  like, and its exit code. Left out: builds and tests failing (the work
+  going on), grep, diff and test finding nothing, a wait timing out, and
+  agy's note that it cut a long output.
+- **Corrections**: messages into those sessions from a person or a peer
+  (envelopes dropped) that start by correcting the agent (no, don't, do
+  not, stop, wrong, actually, instead, again, that's not, I said, ...), or
+  say stop, wrong, that's not, I said, not what I, you didn't within their
+  first 60 characters. Not grouped: the latest three per session, newest
+  first, at most 20, each through `scrub::excerpt` and clipped to 160
+  characters.
+
+Each source lists at most 15 groups: those seen from two or more sessions
+(or agents) first, by count, then those seen from one, marked as such. The
+section stays near 6 KB; lines past a source's share are counted, not
+shown. The brief points the start-here note's Tripwires at it, with the
+three-session rule.
+
+On this host's data, the groups that come out on top are real trips:
+`agent send` to an agent whose session ended, `agent history --limit`
+(no such flag), agy's `read_file` on a path that doesn't exist, Edit's
+"String to replace not found" and "File has not been read yet", `pkill`
+killing the agent's own shell (exit 144).
+
 ### The dream agent and its narrow toolset
 
 **built**. `agent dream run` closes an open dream whose agent is gone as
