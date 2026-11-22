@@ -28,6 +28,13 @@ long one view spends counting (sessions it didn't reach come without
 usage, and "usage_pending" says how many); a peer is always asked with a
 budget of 2s, so its first answers fill in over a few views.
 
+A host's LLM plan limits ("llm_usage": the share of each Claude, GLM,
+Kimi Code and agy limit used and when it resets, Claude's extra-usage
+credits, OpenRouter spend) are llm-exp's, as its usage widget shows them:
+view reads the snapshot llm-exp caches in
+~/.cache/llm-exp/usage-snapshot.json, as it is, and asks no provider
+itself. A host without that file has none.
+
 Sessions a person stopped tracking (agent manage untrack) are left out
 unless --untracked. --host shows one host; --local this host only. A peer
 that doesn't answer (its bus is down, not linked, on an older agent, or

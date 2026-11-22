@@ -44,15 +44,17 @@ pub enum Page {
     Friction,
     History,
     Data,
+    Usage,
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
         Page::Agents,
         Page::Sessions,
         Page::Friction,
         Page::History,
         Page::Data,
+        Page::Usage,
     ];
     pub fn label(&self) -> &'static str {
         match self {
@@ -61,6 +63,7 @@ impl Page {
             Page::Friction => "Friction",
             Page::History => "History",
             Page::Data => "Data",
+            Page::Usage => "Usage",
         }
     }
 }
@@ -325,6 +328,26 @@ impl Model {
                 self.agent_logs = Some((key, why));
                 Effect::None
             }
+        }
+    }
+
+    /// Reads the selected agent's logs when nothing has (a selection restored at start).
+    pub fn load_selected_logs(&mut self) -> Effect {
+        let Some(key) = self.selected_agent.clone() else {
+            return Effect::None;
+        };
+        if self.agent_logs.as_ref().is_some_and(|(k, _)| *k == key) {
+            return Effect::None;
+        }
+        let Some((h, a)) = self.agent() else {
+            return Effect::None;
+        };
+        let line = self.agent_lines.iter().position(
+            |l| matches!(l, AgentLine::Agent { host, agent, .. } if (*host, *agent) == (h, a)),
+        );
+        match line {
+            Some(i) => self.select_agent_line(i),
+            None => Effect::None,
         }
     }
 

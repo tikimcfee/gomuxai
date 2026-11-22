@@ -5562,6 +5562,73 @@
           }
         ],
         "untracked": 19
+      },
+      "llm_usage": {
+        "path": "/home/user/.cache/llm-exp/usage-snapshot.json",
+        "captured_at": "2026-11-20T11:58:00Z",
+        "claude": {
+          "plan": "max",
+          "session": {
+            "pct": 37,
+            "reset_at": "2026-11-20T14:13:00Z"
+          },
+          "week_all": {
+            "pct": 94,
+            "reset_at": "2026-11-22T22:00:00Z"
+          },
+          "week_model": {
+            "pct": 61,
+            "reset_at": "2026-11-22T22:00:00Z"
+          },
+          "model_name": "Opus",
+          "extra_usage": {
+            "enabled": false,
+            "disabled_reason": "out_of_credits",
+            "used_dollars": 0.0,
+            "limit_dollars": 200.0,
+            "pct": 0
+          }
+        },
+        "glm": {
+          "plan": "pro",
+          "bars": [
+            {
+              "label": "5-hour",
+              "pct": 42,
+              "reset_at": "2026-11-20T13:11:00Z"
+            },
+            {
+              "label": "weekly",
+              "pct": 103,
+              "reset_at": "2026-11-24T12:00:00Z",
+              "used": 2060,
+              "limit": 2000
+            }
+          ]
+        },
+        "agy": {
+          "bars": [
+            {
+              "label": "gemini 5h",
+              "pct": 0,
+              "reset_at": "2026-11-20T17:00:00Z"
+            },
+            {
+              "label": "gemini week",
+              "pct": 8,
+              "reset_at": "2026-11-26T12:00:00Z"
+            }
+          ]
+        },
+        "openrouter": {
+          "used": 3.42,
+          "limit": 25.0,
+          "remaining": 21.58,
+          "currency": "USD"
+        },
+        "errors": {
+          "kimi": "refresh token rejected: run kimi login on this machine"
+        }
       }
     },
     {

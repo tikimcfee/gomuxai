@@ -696,7 +696,11 @@ session, with a second sum that includes its subagents. Counting reads whole
 transcripts, so the store caches each count by path and reads only what a
 transcript gained; `--usage-budget` bounds one view's counting
 (`usage_pending` says how many sessions are left), and a peer is always asked
-with 2s and for its newest 300 sessions.
+with 2s and for its newest 300 sessions. A host's LLM plan limits
+(`llm_usage`: Claude's session and week limits used and when they reset, GLM,
+Kimi Code, agy, OpenRouter) are llm-exp's own figures, read from the snapshot
+its usage widget's CLI caches (`~/.cache/llm-exp/usage-snapshot.json`); `agent`
+asks no provider, and a host without that file has none.
 
 Nothing in it is a second record: the store keeps only which sessions a
 person untracked and the token cache. `untrack` makes `manage view` leave a

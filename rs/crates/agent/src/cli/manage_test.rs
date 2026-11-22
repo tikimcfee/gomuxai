@@ -112,6 +112,38 @@ fn test_manage_view() {
 }
 
 #[test]
+fn test_manage_view_reads_llm_exps_usage_snapshot() {
+    crate::require_termd!();
+    let (mut env, home) = setup_sessions();
+    // No snapshot: no limits, and the summary says nothing of them.
+    assert_eq!(view(&mut env, &["--local"]).llm_usage, None);
+    assert!(!run(&mut env, &["manage", "view", "--local"]).contains("limits:"));
+
+    let path = format!("{home}/.cache/llm-exp/usage-snapshot.json");
+    std::fs::create_dir_all(format!("{home}/.cache/llm-exp")).unwrap();
+    write_test_file(
+        &path,
+        r#"{"captured_at": "2026-03-04T12:32:54-06:00",
+            "claude": {"plan": "max", "session": {"pct": 7, "reset_at": "2026-03-04T23:00:00Z"},
+                       "week_all": {"pct": 22}, "week_model": {"pct": 12}, "model_name": "Fable"}}"#,
+    );
+    let u = view(&mut env, &["--local"]).llm_usage.expect("the snapshot");
+    assert_eq!((u.path.as_str(), u.error.as_str()), (path.as_str(), ""));
+    let c = u.claude.expect("claude's limits");
+    assert_eq!((c.session.pct, c.session.reset_at.as_str()), (7, "2026-03-04T23:00:00Z"));
+    let text = run(&mut env, &["manage", "view", "--local"]);
+    assert!(
+        text.contains("limits:   claude max: session 7%, week 22%, week fable 12% (fetched "),
+        "{text}"
+    );
+
+    // A file that isn't a snapshot is shown with why.
+    write_test_file(&path, "not json");
+    let u = view(&mut env, &["--local"]).llm_usage.expect("the file, with its error");
+    assert!(u.error.starts_with("not an llm-exp usage snapshot"), "{u:?}");
+}
+
+#[test]
 fn test_manage_untrack_and_track() {
     crate::require_termd!();
     let mut env = setup();

@@ -1,13 +1,15 @@
 //! A realistic [`View`] for tests and screenshots: three hosts (one unreachable), an agent
 //! tree with a parent on another host, ~300 sessions over the three harnesses in every
 //! [`SessionState`], subagent sessions, stale and untracked ones, sessions whose tokens
-//! aren't counted yet, friction, history and a data report. Deterministic for a given `now`.
+//! aren't counted yet, friction, history, a data report, and made-up LLM plan limits on hub
+//! (phone has none). Deterministic for a given `now`.
 
 use std::collections::BTreeMap;
 
+use agent_manage::llm_usage::{ClaudeLimits, ExtraUsage, Limit, MoneyUsage, QuotaBar, QuotaBars};
 use agent_manage::{
-    AgentRow, Backup, DataReport, Footprint, FrictionRow, HistoryRow, HostView, SessionRow,
-    SessionState, Tokens, Usage, View,
+    AgentRow, Backup, DataReport, Footprint, FrictionRow, HistoryRow, HostView, LlmUsage,
+    SessionRow, SessionState, Tokens, Usage, View,
 };
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 
@@ -460,6 +462,69 @@ fn friction(now: DateTime<Utc>) -> Vec<FrictionRow> {
 }
 
 /// The fixture view.
+/// hub's plan limits, as llm-exp's snapshot has them: Claude near its weekly limit with
+/// its extra-usage credits off, GLM over one window, agy idle, OpenRouter spend, and Kimi
+/// failing.
+fn llm_usage(now: DateTime<Utc>) -> LlmUsage {
+    let at = |d: Duration| ts(now + d);
+    let limit = |pct, d| Limit {
+        pct,
+        reset_at: at(d),
+    };
+    let bar = |label: &str, pct, d, used, limit| QuotaBar {
+        label: label.to_string(),
+        pct,
+        reset_at: at(d),
+        used,
+        limit,
+    };
+    LlmUsage {
+        path: "/home/user/.cache/llm-exp/usage-snapshot.json".to_string(),
+        error: String::new(),
+        captured_at: at(-Duration::minutes(2)),
+        claude: Some(ClaudeLimits {
+            plan: "max".to_string(),
+            session: limit(37, Duration::minutes(133)),
+            week_all: limit(94, Duration::hours(58)),
+            week_model: limit(61, Duration::hours(58)),
+            model_name: "Opus".to_string(),
+            extra_usage: Some(ExtraUsage {
+                enabled: false,
+                disabled_reason: "out_of_credits".to_string(),
+                used_dollars: 0.0,
+                limit_dollars: 200.0,
+                pct: 0,
+            }),
+        }),
+        glm: Some(QuotaBars {
+            plan: "pro".to_string(),
+            bars: vec![
+                bar("5-hour", 42, Duration::minutes(71), 0, 0),
+                bar("weekly", 103, Duration::days(4), 2060, 2000),
+            ],
+        }),
+        kimi: None,
+        agy: Some(QuotaBars {
+            plan: String::new(),
+            bars: vec![
+                bar("gemini 5h", 0, Duration::hours(5), 0, 0),
+                bar("gemini week", 8, Duration::days(6), 0, 0),
+            ],
+        }),
+        openrouter: Some(MoneyUsage {
+            used: 3.42,
+            limit: 25.0,
+            remaining: 21.58,
+            currency: "USD".to_string(),
+            ..MoneyUsage::default()
+        }),
+        errors: BTreeMap::from([(
+            "kimi".to_string(),
+            "refresh token rejected: run kimi login on this machine".to_string(),
+        )]),
+    }
+}
+
 pub fn view(now: DateTime<Utc>) -> View {
     let mut rng = Rng(0x5eed_1234_abcd);
 
@@ -561,6 +626,7 @@ pub fn view(now: DateTime<Utc>) -> View {
         usage_pending: 0,
         friction: friction(now),
         history: history(&mut rng, now, &m_names, 80),
+        llm_usage: Some(llm_usage(now)),
     };
 
     let air = HostView {
@@ -622,6 +688,7 @@ pub fn view(now: DateTime<Utc>) -> View {
             ..FrictionRow::default()
         }],
         history: history(&mut rng, now, &["phone-shell", "phone-shell-ui"], 40),
+        llm_usage: None,
     };
 
     View {
@@ -652,6 +719,7 @@ mod tests {
         assert!(all.iter().any(|r| r.untracked));
         assert!(all.iter().any(|r| !r.parent_session.is_empty()));
         assert!(all.iter().any(|r| r.usage_with_subagents.is_some()));
+        assert!(v.hosts[0].llm_usage.is_some() && v.hosts[2].llm_usage.is_none());
         assert_eq!(
             v.hosts[2]
                 .sessions

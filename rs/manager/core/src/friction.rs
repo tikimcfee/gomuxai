@@ -13,7 +13,7 @@ pub enum FrictionLine {
 }
 
 /// Names an entry across reloads.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FrictionKey {
     pub host: String,
     pub id: i64,
