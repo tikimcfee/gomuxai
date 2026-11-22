@@ -115,6 +115,10 @@ Turning it on is a person's call.
 
 - A Dreams view in the manager (`agent manage view` carries the dreams).
 - The act layer, above.
+- Model evaluations for the roster (branch `roster`, another tree): dreams
+  review ended sessions, so they could feed its notes. The interface is
+  agreed with the roster's lead first; dreams write nothing to it until
+  then.
 
 ## Prior art
 
