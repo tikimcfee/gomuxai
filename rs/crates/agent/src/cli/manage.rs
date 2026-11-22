@@ -13,7 +13,7 @@ use agent_bus::{Context, FleetAgent, RpcClient};
 use agent_discovery::{self as discovery, Query, Session, sessions::Liveness};
 use agent_fleet::fleet;
 use agent_manage::{
-    AgentRow, Backup, DataReport, Facts, Footprint, FrictionRow, HistoryRow, HostView, LlmUsage, Request,
+    AgentRow, Backup, DataReport, Facts, Footprint, FrictionRow, HistoryRow, HostView, Request,
     SessionRow, SessionState, Tokens, View, classify, human_bytes, human_tokens, is_stale, llm_usage,
 };
 use agent_store::{CommandFilter, FrictionFilter, Time, Untracked, UsageRow};
@@ -315,20 +315,8 @@ pub(crate) fn local_host(ctx: &Ctx, req: &Request) -> anyhow::Result<HostView> {
         friction: friction_rows(ctx)?,
         history: history_rows(ctx, req.history)?,
         data: data_report(ctx, &recorded, footprint, untracked.len() as i64)?,
-        llm_usage: read_llm_usage(),
+        llm_usage: llm_usage::read_snapshot(),
     })
-}
-
-/// The snapshot llm-exp caches for its usage widget, when this host has one. Only the file
-/// is read: no provider is asked and no credential touched (`agent_manage::llm_usage`).
-fn read_llm_usage() -> Option<LlmUsage> {
-    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty())?;
-    let path = filepath::join(&[&home, llm_usage::SNAPSHOT_PATH]);
-    match std::fs::read(&path) {
-        Ok(data) => Some(LlmUsage::parse(&path, &data)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => Some(LlmUsage::failed(&path, &format!("reading it: {e}"))),
-    }
 }
 
 fn flatten_agents(tree: &[FleetAgent], adopted: &HashSet<&str>, out: &mut Vec<AgentRow>) {
