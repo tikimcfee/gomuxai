@@ -160,7 +160,31 @@ excerpt clipped).
 `agent dream memory check` is deterministic and report-only: exact and near
 duplicate entries (Dice similarity of 0.8 or more on word multisets of 5+
 words), `[[links]]` to no memory, index lines naming no file, and files the
-index doesn't name.
+index doesn't name. With `--repo DIR` (repeatable) it also reports, by file
+and line, what the memory's backticked text (outside code fences) says that
+those repos no longer bear out (`agent_dream::stale`; the CLI hands it the
+command tree it knows, so the library doesn't depend on the CLI):
+
+- `stale-path`: a token with a `/` or a known file extension that exists in
+  no repo. A relative path counts as there when it is at a repo's root, the
+  tail of a path in one (`crates/x/src/y.rs` under `rs/`), or ignored by the
+  repo's git (local settings, build output, runtime data). It is flagged when
+  its first component is at a repo's root, or, for a file, when its directory
+  is in a repo; otherwise (`origin/main`, another project's `lib/x.rs`) it is
+  left alone. Bare names are checked only for source files (`.rs`, `.py`,
+  ...), anywhere in a repo; absolute paths only under a repo; `~` paths,
+  URLs and placeholders never. The walk skips build output, `.git`, and
+  checkouts nested in the repo (worktrees, vendored clones).
+- `stale-make`: `make <target>` no repo's Makefile (with its `include`s)
+  defines; unchecked when a target is named by a variable, or with `-C`/`-f`.
+- `stale-agent`: `agent <sub>` this binary has no command for, and `--flags`
+  its command doesn't take: inside its backticks, or in their own on a line
+  that names just that one command and nothing else command-like.
+
+What it can't be sure of it leaves alone. A memory that talks about several
+repos needs each as a `--repo`, or its references to the others read as
+stale; each repo added also anchors more paths, so pass the repos the memory
+is about, not every checkout on the host.
 
 ### Schedule
 

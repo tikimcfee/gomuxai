@@ -16,7 +16,8 @@ only inside an open dream.
 
 check reports, changing nothing: exact and near duplicate entries, [[links]]
 naming no memory, index lines naming no file, and files the index doesn't
-name.
+name; with --repo, also paths, make targets and agent commands those repos
+no longer have.
 
 Usage:
   agent dream memory [flags]

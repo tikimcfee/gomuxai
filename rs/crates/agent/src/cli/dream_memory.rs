@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 
 use agent_base::gostd::filepath;
 use agent_dream::memory::{self, PutOutcome};
+use agent_dream::stale::{AgentCommand, AgentCommands, Repos};
 use anyhow::Context as _;
 
 use agent_store::Dream;
 
-use super::command::{ArgRule, Def, Doc};
+use super::command::{ArgRule, Def, Doc, Run};
 use super::dream::{own_open_dream, record_memory};
 use super::root::Ctx;
 
@@ -38,7 +39,8 @@ only inside an open dream.
 
 check reports, changing nothing: exact and near duplicate entries, [[links]]
 naming no memory, index lines naming no file, and files the index doesn't
-name."#,
+name; with --repo, also paths, make targets and agent commands those repos
+no longer have."#,
     example: r#"  agent dream memory get feedback_tests.md
   agent dream memory put feedback_tests.md --expect 3f9a0c1d2e4b5a69 --from draft.md
   agent dream memory put MEMORY.md --expect new --from index.md
@@ -224,9 +226,27 @@ pub const CHECK: Doc = Doc {
 frontmatter or source lines don't parse, exact duplicates and near ones
 (Dice similarity of 0.8 or more on the words of entries 5 words or longer;
 titles and source lines aside), [[links]] naming no memory, MEMORY.md lines
-naming no file, and files MEMORY.md doesn't name. The report is sorted, so
-the same directory always gives the same one."#,
-    example: "  agent dream memory check\n  agent dream memory check --dir ~/.claude/projects/-srv-app/memory --json",
+naming no file, and files MEMORY.md doesn't name.
+
+With --repo (one per repo the memory is about), it also reports what the
+memory says that those repos no longer bear out, by file and line, from
+backticked text outside code fences:
+
+  stale-path   a path (it has a / or a file extension) that exists in no
+               repo: relative to a repo's root, or a tail of a path in
+               one; absolute only under a repo; bare names only for
+               source files; ~ paths, URLs, placeholders (<name>, ..., *),
+               paths a repo's git ignores, and paths no repo's top level
+               starts (origin/main) are not checked
+  stale-make   make <target> no repo's Makefile defines (unchecked when a
+               target is named by a variable, or with -C/-f)
+  stale-agent  agent <sub> this binary has no command for, and --flags
+               the command doesn't take: in its backticks, or in their own
+               on a line naming just that one command
+
+What it can't be sure of it leaves alone. The report is sorted, so the same
+directory always gives the same one."#,
+    example: "  agent dream memory check\n  agent dream memory check --dir ~/.claude/projects/-srv-app/memory --json\n  agent dream memory check --repo /srv/app --repo /srv/app-tools",
     args: ArgRule::None,
     ..Doc::DEFAULT
 };
@@ -237,6 +257,13 @@ pub struct CheckArgs {
     pub json: bool,
     #[command(flatten)]
     pub dir: DirArg,
+    #[arg(
+        long = "repo",
+        value_name = "stringArray",
+        action = clap::ArgAction::Append,
+        help = "Also check paths, make targets and agent commands against this repo; repeatable"
+    )]
+    pub repo: Vec<String>,
     #[arg(hide = true)]
     pub args: Vec<String>,
 }
@@ -247,7 +274,24 @@ pub fn check_def() -> Def {
 
 pub fn run_check(ctx: &Ctx, args: &CheckArgs) -> anyhow::Result<()> {
     let dir = memory_dir(ctx, &args.dir.dir)?;
-    let findings = memory::check(&dir)?;
+    let repos = if args.repo.is_empty() {
+        None
+    } else {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mut roots = Vec::new();
+        for r in &args.repo {
+            let p = PathBuf::from(expand_home(r, &home));
+            if !p.is_dir() {
+                anyhow::bail!("--repo {r}: no such directory");
+            }
+            roots.push(p.canonicalize().unwrap_or(p));
+        }
+        Some(Repos {
+            roots,
+            agent: Some(agent_commands(super::root::tree())),
+        })
+    };
+    let findings = memory::check_with(&dir, repos.as_ref())?;
     if args.json {
         return ctx.print_json(&findings);
     }
@@ -260,6 +304,45 @@ pub fn run_check(ctx: &Ctx, args: &CheckArgs) -> anyhow::Result<()> {
         out.push('\n');
     }
     ctx.write_out(&out)
+}
+
+/// The commands this binary knows, for the stale check: every command by its
+/// path below `agent` (aliases as paths of their own), its subcommands, whether
+/// a word after it must be one, and its long flags (global ones and --help
+/// included).
+pub(crate) fn agent_commands(root: &Def) -> AgentCommands {
+    fn add(def: &Def, path: &str, is_root: bool, out: &mut AgentCommands) {
+        let parser = def.clap_command();
+        let flags = parser
+            .get_arguments()
+            .filter(|a| !a.is_positional())
+            .filter_map(|a| a.get_long().map(str::to_string))
+            .collect();
+        let mut subs = std::collections::BTreeSet::new();
+        for s in &def.subs {
+            for name in std::iter::once(s.name()).chain(s.doc.aliases.iter().copied()) {
+                subs.insert(name.to_string());
+                let p = if path.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{path} {name}")
+                };
+                add(s, &p, false, out);
+            }
+        }
+        let needs_sub = is_root || (!def.subs.is_empty() && !matches!(def.run, Run::Leaf(_)));
+        out.commands.insert(
+            path.to_string(),
+            AgentCommand {
+                subs,
+                needs_sub,
+                flags,
+            },
+        );
+    }
+    let mut out = AgentCommands::default();
+    add(root, "", true, &mut out);
+    out
 }
 
 // Where things are.
@@ -394,6 +477,7 @@ mod tests {
             dir: DirArg {
                 dir: d.to_string_lossy().into_owned(),
             },
+            repo: vec![],
             args: vec![],
         };
         run_check(&env.ctx, &check(false)).unwrap();
@@ -409,6 +493,7 @@ mod tests {
             dir: DirArg {
                 dir: d.join("nope").to_string_lossy().into_owned(),
             },
+            repo: vec![],
             args: vec![],
         };
         assert!(
@@ -479,5 +564,55 @@ mod tests {
         assert_eq!(expand_home("~/x", "/h"), "/h/x");
         assert_eq!(expand_home("~", "/h"), "/h");
         assert_eq!(expand_home("/a/~", "/h"), "/a/~");
+    }
+
+    #[test]
+    fn agent_commands_walk_the_real_tree() {
+        let c = agent_commands(super::super::root::tree());
+        let root = &c.commands[""];
+        assert!(root.needs_sub);
+        assert!(root.subs.contains("send") && root.subs.contains("dream"));
+        let check = &c.commands["dream memory check"];
+        assert!(check.flags.contains("repo") && check.flags.contains("dir"));
+        assert!(check.flags.contains("help"));
+        assert!(!check.needs_sub);
+        assert!(c.commands["dream memory"].needs_sub);
+        assert!(c.commands["send"].flags.contains("now"));
+    }
+
+    #[test]
+    fn check_with_repo_reports_stale_mentions() {
+        let env = TestEnv::new();
+        let d = mem_dir(&env);
+        let repo = env.dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src/main.rs"), "").unwrap();
+        std::fs::write(
+            d.join("a.md"),
+            format!(
+                "{FACT}See `src/main.rs`, not `src/old.rs`; `agent send x --now`, `agent sned x`, `agent dream memory check --repo .`.\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(d.join("MEMORY.md"), "- [A](a.md) — a\n").unwrap();
+        let args = CheckArgs {
+            json: false,
+            dir: DirArg {
+                dir: d.to_string_lossy().into_owned(),
+            },
+            repo: vec![repo.to_string_lossy().into_owned()],
+            args: vec![],
+        };
+        run_check(&env.ctx, &args).unwrap();
+        assert_eq!(
+            env.take_out(),
+            "a.md:9: `agent sned x`: agent has no subcommand \"sned\"\n\
+             a.md:9: `src/old.rs`: not in any repo\n"
+        );
+        let bad = CheckArgs {
+            repo: vec![repo.join("nope").to_string_lossy().into_owned()],
+            ..args
+        };
+        assert!(run_check(&env.ctx, &bad).is_err());
     }
 }
