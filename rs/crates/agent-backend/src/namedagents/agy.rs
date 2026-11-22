@@ -648,6 +648,24 @@ impl QuestionPrompter for AgyBackend {
     }
 }
 
+/// The model agy says it runs, from the right of its footer (the screen's
+/// last line): "Gemini 4 Argon · high", or with its mode first, "auto ·
+/// Gemini 4 Carbon · high". None if the footer shows no "model · effort".
+/// agy runs its default model when --model names one it doesn't know, with
+/// only a warning in its log, so this is how spawn tells what it got.
+pub fn agy_footer_model(screen: &str) -> Option<String> {
+    let footer = screen.lines().rev().find(|l| !l.trim().is_empty())?;
+    let footer = footer.trim_end();
+    let right = match footer.rfind("  ") {
+        Some(i) => footer[i..].trim(),
+        None => footer.trim(),
+    };
+    if !right.contains(" · ") || right.starts_with('>') {
+        return None;
+    }
+    Some(right.to_string())
+}
+
 /// How far a footer's text must start from the left for its left part to
 /// count as blank: agy right-aligns the model name there.
 const AGY_FOOTER_BLANK_COLS: usize = 16;

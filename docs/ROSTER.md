@@ -176,7 +176,11 @@ is written with the effort apart, `agy/gemini-4-carbon@high`, and spawn
 launches it as `--model gemini-4-carbon-high` (the backend's
 `model_at_effort`), keeping `_model gemini-4-carbon` and `_effort high`;
 effort without a model passes `--effort`. A model that already ends in an
-effort is refused alongside `--effort`.
+effort is refused alongside `--effort`. Since a wrong id falls back
+silently, an agy spawn with `--model` or `--effort` ends by saying what
+agy's footer shows it running (`agy reports running: auto · Gemini 4
+Carbon · high.`, `namedagents::agy_footer_model`), or that the footer
+isn't drawn yet.
 
 ## spawn --pick
 

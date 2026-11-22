@@ -74,7 +74,10 @@ high, xhigh or max, the roster's efforts. claude and agy take one; other
 backends refuse it. agy names each effort of a model as its own id, so
 with --model it launches on <model>-<effort> (--model gemini-4-carbon
 --effort high runs gemini-4-carbon-high, the id its transcripts record),
-and a model that already ends in an effort is refused with --effort. Like the model, the agent remembers it: agent resume
+and a model that already ends in an effort is refused with --effort.
+agy runs its default model when --model names one it doesn't know, so an
+agy spawn with --model or --effort says what agy's footer shows it
+running ("agy reports running: auto · Gemini 4 Carbon · high."). Like the model, the agent remembers it: agent resume
 and agent revive relaunch at it, and agent status -v and agent fleet show
 it.
 
