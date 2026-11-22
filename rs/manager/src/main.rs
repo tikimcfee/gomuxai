@@ -72,7 +72,7 @@ script_mod! {
                 text_style: theme.font_regular{font_size: 8.5}
             }
         }
-        sort_multi := CheckBox{text: "add columns (or shift-click)"}
+        sort_multi := CheckBox{text: "add columns"}
         sort_remove := DropDown{labels: ["remove a column…"]}
         sort_reset := ButtonFlat{text: "Default order"}
     }
