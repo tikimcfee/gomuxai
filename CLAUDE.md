@@ -124,7 +124,8 @@ commands take `--json`.
 Spawn pre-allows these for the agent's session: `send`, `deliver`, `list`,
 `status`, `statuses`, `wait`, `events`, `capture`, `logs`, `sessions`,
 `transcript`, `state get`, `history`, `friction add`, `friction +1`, `friction
-list`, `friction show`, `friction link`, `friction links`.
+list`, `friction show`, `friction link`, `friction links`, `roster list`,
+`roster show`, `roster pick`, `roster picks`, `roster note`.
 
 Everything else prompts the person, on purpose: `spawn`, `resume`, `revive`,
 `template`, and `cleanup` start and stop agents; `run` runs a script; `approve`,
@@ -156,7 +157,8 @@ the binary by name or path. The hook never denies anything, and a settings
 
 ```bash
 agent list                                          # reuse an agent before spawning another
-agent spawn helper --backend claude                 # no first message
+agent roster pick --task review                     # which harness, model and host suit it (below)
+agent spawn helper --backend agy --model MODEL      # no first message
 agent spawn helper --backend claude tasks/build.md  # first message: read and execute that file
 agent spawn helper --backend claude --handoff docs/lanes/helper.md tasks/build.md
 agent spawn helper --backend claude --task review   # first message: a stored task's content
@@ -524,6 +526,34 @@ when it's done. Store a task once to spawn several agents with it:
 agent task set review -f tasks/review.md   # stores the content, not the path
 agent spawn reviewer --backend claude --task review
 ```
+
+### Choosing a harness and model: the roster
+
+Don't default to your own harness and model. Each sees a problem from its
+own angle and runs at its own speed and cost; a review on another model
+catches what yours misses, a fast cheap model suits mechanical edits. The
+roster (`docs/ROSTER.md`) says what each host can run:
+
+```bash
+agent roster list                                  # entries: availability, speed, cost, tasks, notes
+agent roster show claude/claude-haiku-5-5          # one entry and its notes (HARNESS/MODEL[@EFFORT])
+agent roster pick --task edit                      # a ready spawn line, and two runners-up with why
+agent roster pick --task edit --save quick-edit    # keep that command as a revision of quick-edit
+agent roster pick --saved quick-edit               # print it again (NAME@VERSION for an older one)
+agent roster note claude/claude-haiku-5-5 --task edit --verdict good \
+    --session claude:3f3a9c "renamed across 12 files cleanly" --why "..."
+agent roster set agy/MODEL --tasks review,research --speed medium --cost medium --good-at "..."
+```
+
+Task kinds: `edit`, `bugfix`, `feature`, `long-horizon`, `review`,
+`research`, `design`, `test`, `kernel`, `chat`. A note is one run: it must
+cite the session it came from (`agent sessions` lists them), which must
+have run on this host, and `list` counts notes by distinct session, so one
+bad run doesn't read as a rule. `pick` scores an entry 2 for suiting the
+task and +1/-1 for each session with a good/bad note on it; it prints, never
+spawns. Inside Claude Code, the Agent tool's `model` option runs a subagent
+on another Claude model without a new agent. `set`, `enable`, `disable`
+and `remove` prompt the person.
 
 ### Heavy jobs: `agent run`
 
