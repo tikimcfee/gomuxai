@@ -10,11 +10,19 @@ cheap (by cost) or strong (dearest first). Then more good sessions win.
 An entry at an effort is picked like any other; spawn has no --effort yet,
 so the why line says which effort the notes were about.
 
+--save NAME keeps the chosen command as a saved pick: version 1 for a new
+name, a new version only when the command differs from its newest one.
+--saved NAME[@VERSION] prints a saved command again, exactly, whatever the
+roster says now, and says whether its entry is still available. "agent
+roster picks" lists them.
+
 Task kinds: edit, bugfix, feature, long-horizon, review, research, design,
 test, kernel, chat.
 
---json prints {"task", "prefer", "pick", "runners_up": [...]}, each with
-"host", "key", "harness", "model", "effort", "score", "command" and "why".
+--json prints {"task", "prefer", "pick", "runners_up": [...], "saved"},
+each pick with "host", "key", "harness", "model", "effort", "score",
+"command", "argv" and "why"; with --saved, {"pick", "available",
+"status"}.
 
 Usage:
   agent roster pick --task KIND [flags]
@@ -22,12 +30,16 @@ Usage:
 Examples:
   agent roster pick --task edit
   agent roster pick --task long-horizon --prefer fast
+  agent roster pick --task edit --save quick-edit
+  agent roster pick --saved quick-edit@1
   agent roster pick --task review --json
 
 Flags:
   -h, --help            help for pick
       --json            Print the pick and runners-up as one JSON document
       --prefer string   Break ties: fast, cheap, or strong
+      --save string     Keep the chosen command as this saved pick (a new version if it changed)
+      --saved string    Print a saved pick's command again: NAME[@VERSION] (default: its newest)
       --task string     Task kind: edit, bugfix, feature, long-horizon, review, research, design, test, kernel, chat
 
 Global Flags:

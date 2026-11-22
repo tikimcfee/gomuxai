@@ -39,12 +39,19 @@ fn fails(env: &mut TestEnv, words: &[&str]) -> String {
     }
 }
 
+fn last_line(out: &str) -> &str {
+    out.lines().last().unwrap_or("")
+}
+
 #[test]
 fn roster_set_list_show_remove() {
     let mut env = env();
     let out = must(&mut env, &["roster"]);
-    assert_eq!(out, "The roster on local is empty.\n");
-    assert!(env.take_err().contains("agent roster set"));
+    assert_eq!(
+        out,
+        "Roster on local: harnesses and models this host can run\nIt has no entries yet.\n\n\
+         Next: agent roster set HARNESS/MODEL --tasks KINDS --speed fast|medium|slow --cost low|medium|high adds an entry.\n"
+    );
 
     // sh is on every PATH; the other harness is on none.
     let out = must(
@@ -54,20 +61,38 @@ fn roster_set_list_show_remove() {
             "edit,test", "--good-at", "small edits",
         ],
     );
-    assert_eq!(out, "Added sh/fast-model@low.\n");
+    assert_eq!(
+        out,
+        "Added sh/fast-model@low.\nNext: agent roster show sh/fast-model@low shows it as pick sees it.\n"
+    );
+    let out = must(&mut env, &["roster", "set", "no-such-cli-x7/m"]);
+    assert!(out.contains("--tasks KINDS says which it suits"), "{out}");
     must(&mut env, &["roster", "set", "no-such-cli-x7/m", "--tasks", "review"]);
     let out = must(&mut env, &["roster", "set", "sh/fast-model@low", "--avoid", "debugging"]);
-    assert_eq!(out, "Updated sh/fast-model@low.\n");
+    assert!(out.starts_with("Updated sh/fast-model@low.\n"), "{out}");
 
     let out = must(&mut env, &["roster", "list"]);
     let lines: Vec<&str> = out.lines().collect();
-    assert!(lines[0].starts_with("ENTRY") && lines[0].contains("AVAILABLE"), "{out}");
-    assert!(lines[1].starts_with("no-such-cli-x7/m") && lines[1].contains("no: no-such-cli-x7 isn't on PATH"), "{out}");
-    assert!(lines[2].starts_with("sh/fast-model@low") && lines[2].contains("yes") && lines[2].contains("edit,test"), "{out}");
+    assert_eq!(lines[0], "Roster on local: harnesses and models this host can run");
+    assert!(lines[1].starts_with("ENTRY") && lines[1].contains("AVAILABLE"), "{out}");
+    assert!(
+        lines[2].starts_with("no-such-cli-x7/m")
+            && lines[2].contains("off: no-such-cli-x7 not on PATH")
+            && lines[2].ends_with("no notes"),
+        "{out}"
+    );
+    assert!(
+        lines[3].starts_with("sh/fast-model@low") && lines[3].contains("available") && lines[3].contains("edit,test"),
+        "{out}"
+    );
+    assert!(last_line(&out).starts_with("Next: agent roster pick --task KIND"), "{out}");
     assert_eq!(must(&mut env, &["roster"]), out);
 
     let out = must(&mut env, &["roster", "disable", "sh/fast-model@low"]);
-    assert_eq!(out, "Disabled sh/fast-model@low.\n");
+    assert!(out.starts_with("Disabled sh/fast-model@low: it stays listed"), "{out}");
+    let out = must(&mut env, &["roster"]);
+    assert!(out.contains("off: disabled"), "{out}");
+    assert!(last_line(&out).starts_with("Next: no entry is available"), "{out}");
     let out = must(&mut env, &["roster", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["host"], "local");
@@ -79,8 +104,12 @@ fn roster_set_list_show_remove() {
     must(&mut env, &["roster", "enable", "sh/fast-model@low"]);
 
     let out = must(&mut env, &["roster", "show", "sh/fast-model@low"]);
-    assert!(out.starts_with("sh/fast-model@low on local\n  available: yes\n"), "{out}");
-    assert!(out.contains("No notes yet"), "{out}");
+    assert!(
+        out.starts_with("Roster entry sh/fast-model@low on local\n  availability: available\n"),
+        "{out}"
+    );
+    assert!(out.contains("It has no notes yet."), "{out}");
+    assert!(last_line(&out).starts_with("Next: agent roster note sh/fast-model@low"), "{out}");
 
     let e = fails(&mut env, &["roster", "set", "sh/m", "--speed", "quick"]);
     assert!(e.contains("\"quick\" isn't a speed: use fast, medium, slow"), "{e}");
@@ -92,7 +121,7 @@ fn roster_set_list_show_remove() {
     assert!(e.contains("no roster entry or note for x/y"), "{e}");
 
     let out = must(&mut env, &["roster", "remove", "no-such-cli-x7/m"]);
-    assert_eq!(out, "Removed no-such-cli-x7/m; its notes stay.\n");
+    assert!(out.starts_with("Removed no-such-cli-x7/m; its notes stay"), "{out}");
     assert!(fails(&mut env, &["roster", "remove", "no-such-cli-x7/m"]).contains("no roster entry"));
 }
 
@@ -108,7 +137,10 @@ fn roster_note_checks_the_session() {
             "claude:3f3a", "--by", "lead", "renamed it cleanly", "--why", "small and precise",
         ],
     );
-    assert_eq!(out, "Noted #1 on sh/m: good on edit, from claude:3f3a9c00-1111.\n");
+    assert_eq!(
+        out,
+        "Noted #1 on sh/m: good on edit, from claude:3f3a9c00-1111.\nNext: agent roster show sh/m lists its notes.\n"
+    );
 
     let e = fails(
         &mut env,
@@ -124,39 +156,50 @@ fn roster_note_checks_the_session() {
     assert!(e.contains("\"fix\" isn't a task kind: use edit, bugfix"), "{e}");
 
     // A note on a harness and model with no entry is kept, and listed.
-    must(
+    let out = must(
         &mut env,
         &[
             "roster", "note", "kimi/k2", "--task", "chat", "--verdict", "mixed", "--session",
             "claude:3f3a9c00-1111", "slow to answer",
         ],
     );
-    assert!(env.take_err().contains("kimi/k2 has no roster entry"));
-    must(
+    assert!(out.contains("kimi/k2 has no roster entry, so pick won't offer it."), "{out}");
+    let out = must(
         &mut env,
         &[
             "roster", "note", "sh/m", "--task", "edit", "--verdict", "bad", "--session", "claude:3f3a",
             "--supersedes", "1", "it missed a caller after all",
         ],
     );
+    assert!(out.contains("(supersedes #1, which stops counting)"), "{out}");
 
     let out = must(&mut env, &["roster"]);
-    assert!(out.contains("Notes on harnesses and models with no entry:\n  kimi/k2  1 mixed\n"), "{out}");
+    assert!(
+        out.contains("Notes on harnesses and models with no entry (pick doesn't offer them):\n  kimi/k2  1 mixed from 1 session\n"),
+        "{out}"
+    );
     let out = must(&mut env, &["roster", "show", "sh/m"]);
-    assert!(out.contains("  notes:     1 bad\n"), "{out}");
-    assert!(out.contains("#1 ") && out.contains("by lead  from claude:3f3a9c00-1111  (superseded by #3)"), "{out}");
+    assert!(out.contains("  notes:        1 bad from 1 session (superseded notes don't count)\n"), "{out}");
+    assert!(
+        out.contains("#1 ") && out.contains("good on edit  by lead  from claude:3f3a9c00-1111  (superseded by #3)"),
+        "{out}"
+    );
     assert!(out.contains("      renamed it cleanly\n      why: small and precise\n"), "{out}");
     assert!(out.contains("supersedes #1"), "{out}");
     let v: serde_json::Value = serde_json::from_str(&must(&mut env, &["roster", "show", "sh/m", "--json"])).unwrap();
     assert_eq!(v["notes"][0]["superseded_by"], 3);
     assert_eq!(v["entry"]["notes"]["bad"]["notes"], 1);
+    assert_eq!(v["entry"]["notes"]["sessions"], 1);
+    let out = must(&mut env, &["roster", "show", "kimi/k2"]);
+    assert!(out.starts_with("Roster entry kimi/k2 on local: none, only notes"), "{out}");
+    assert!(last_line(&out).contains("agent roster set kimi/k2 --tasks KINDS adds it"), "{out}");
 }
 
 #[test]
 fn roster_pick() {
     let mut env = env();
     let e = fails(&mut env, &["roster", "pick"]);
-    assert!(e.contains("--task is required") && e.contains("long-horizon"), "{e}");
+    assert!(e.contains("--task is required") && e.contains("long-horizon") && e.contains("--saved"), "{e}");
     let e = fails(&mut env, &["roster", "pick", "--task", "edit"]);
     assert!(e.contains("no entries to pick from"), "{e}");
 
@@ -168,12 +211,16 @@ fn roster_pick() {
 
     let out = must(&mut env, &["roster", "pick", "--task", "edit", "--prefer", "fast"]);
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines[0], "agent spawn NAME --backend sh --model small");
-    assert!(lines[1].starts_with("  sh/small: suits edit; no notes on edit; fast, low cost"), "{out}");
-    assert_eq!(lines[3], "Runners-up:");
+    assert_eq!(lines[0], "Picked for edit on local: sh/small");
+    assert_eq!(lines[1], "  agent spawn NAME --backend sh --model small");
+    assert_eq!(lines[2], "  why: tasks include edit; no notes on edit; fast, low cost");
+    assert_eq!(lines[4], "Runners-up:");
     // The default model spawns without --model.
-    assert_eq!(lines[4], "  agent spawn NAME --backend sh");
-    assert_eq!(lines.len(), 8, "{out}");
+    assert_eq!(lines[5], "  2. sh/: agent spawn NAME --backend sh");
+    assert_eq!(
+        last_line(&out),
+        "Next: run the spawn line with your agent's name for NAME; agent roster show sh/small lists its notes; add --save NAME to keep this command."
+    );
 
     let out = must(&mut env, &["roster", "pick", "--task", "edit", "--prefer", "strong", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -181,12 +228,78 @@ fn roster_pick() {
     assert_eq!(v["prefer"], "strong");
     assert_eq!(v["pick"]["key"], "sh/");
     assert_eq!(v["pick"]["host"], "local");
+    assert_eq!(v["pick"]["argv"], serde_json::json!(["agent", "spawn", "NAME", "--backend", "sh"]));
     assert_eq!(v["runners_up"].as_array().unwrap().len(), 2);
+    assert!(v.get("saved").is_none());
 
     let e = fails(&mut env, &["roster", "pick", "--task", "edit", "--prefer", "best"]);
     assert!(e.contains("\"best\" isn't a preference: use fast, cheap, strong"), "{e}");
-    must(&mut env, &["roster", "pick", "--task", "kernel"]);
-    assert!(env.take_err().contains("nothing on record suits kernel"));
+    let out = must(&mut env, &["roster", "pick", "--task", "kernel"]);
+    assert!(out.contains("Nothing on record suits kernel"), "{out}");
+}
+
+#[test]
+fn roster_saved_picks() {
+    let mut env = env();
+    must(&mut env, &["roster", "set", "sh/small", "--tasks", "edit", "--speed", "fast", "--cost", "low"]);
+    must(&mut env, &["roster", "set", "sh/big", "--tasks", "edit", "--speed", "slow", "--cost", "high"]);
+
+    let out = must(&mut env, &["roster", "picks"]);
+    assert!(out.contains("There are none yet.") && last_line(&out).contains("--save NAME"), "{out}");
+
+    let out = must(&mut env, &["roster", "pick", "--task", "edit", "--prefer", "fast", "--save", "quick-edit"]);
+    assert!(
+        out.contains("Saved as quick-edit@1 (a new saved pick): agent roster pick --saved quick-edit prints it again.\n"),
+        "{out}"
+    );
+    assert!(!last_line(&out).contains("--save"), "{out}");
+    let out = must(&mut env, &["roster", "pick", "--task", "edit", "--prefer", "fast", "--save", "quick-edit"]);
+    assert!(out.contains("Not saved: quick-edit@1 already has this command."), "{out}");
+    let out = must(
+        &mut env,
+        &["roster", "pick", "--task", "edit", "--prefer", "strong", "--save", "quick-edit", "--json"],
+    );
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["saved"]["outcome"], "new_version");
+    assert_eq!(v["saved"]["pick"]["version"], 2);
+
+    let out = must(&mut env, &["roster", "picks"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines[0].starts_with("Saved picks on local: startup commands kept with pick --save"), "{out}");
+    assert!(lines[1].starts_with("NAME") && lines[1].contains("COMMAND"), "{out}");
+    assert!(
+        lines[2].starts_with("quick-edit@2") && lines[2].contains("sh/big") && lines[2].ends_with("agent spawn NAME --backend sh --model big"),
+        "{out}"
+    );
+    let out = must(&mut env, &["roster", "picks", "quick-edit"]);
+    assert!(out.starts_with("Saved pick quick-edit on local: every version, newest first\n"), "{out}");
+    assert!(out.contains("@2 ") && out.contains("@1 "), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&must(&mut env, &["roster", "picks", "--json"])).unwrap();
+    assert_eq!(v["picks"][0]["name"], "quick-edit");
+    let e = fails(&mut env, &["roster", "picks", "nope"]);
+    assert!(e.contains("no saved pick nope"), "{e}");
+
+    // Replayed exactly, whatever the roster says now.
+    must(&mut env, &["roster", "disable", "sh/small"]);
+    let out = must(&mut env, &["roster", "pick", "--saved", "quick-edit@1"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines[0].starts_with("Saved pick quick-edit@1: for edit, saved by "), "{out}");
+    assert_eq!(lines[1], "  agent spawn NAME --backend sh --model small");
+    assert!(out.contains("Its entry sh/small on local now: off: disabled.\n"), "{out}");
+    assert!(last_line(&out).contains("agent roster pick --task edit picks again"), "{out}");
+    let out = must(&mut env, &["roster", "pick", "--saved", "quick-edit"]);
+    assert!(out.contains("--model big") && out.contains("now: available."), "{out}");
+    let v: serde_json::Value =
+        serde_json::from_str(&must(&mut env, &["roster", "pick", "--saved", "quick-edit@1", "--json"])).unwrap();
+    assert_eq!(v["available"], false);
+    assert_eq!(v["status"], "off: disabled");
+
+    let e = fails(&mut env, &["roster", "pick", "--saved", "quick-edit@9"]);
+    assert!(e.contains("has no version 9: it has 1 to 2"), "{e}");
+    let e = fails(&mut env, &["roster", "pick", "--saved", "quick-edit", "--task", "edit"]);
+    assert!(e.contains("saved") && e.contains("task"), "{e}");
+    let e = fails(&mut env, &["roster", "pick", "--task", "edit", "--save", "bad name"]);
+    assert!(e.contains("can't name a saved pick"), "{e}");
 }
 
 #[test]

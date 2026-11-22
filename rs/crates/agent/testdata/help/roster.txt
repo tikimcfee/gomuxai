@@ -2,9 +2,10 @@ Roster is where to look before a spawn: which harness and model this host
 can run, what each is good at, how fast and costly it is, whether it is
 available now, and what past runs showed. It lists this host's entries:
 
-  ENTRY                    AVAILABLE              SPEED  COST  TASKS      NOTES
-  claude/claude-haiku-5-5  yes                    fast   low   edit,test  3 good (2 sessions)
-  agy/gemini-3-pro         no: agy isn't on PATH  slow   high  review     -
+  Roster on hub: harnesses and models this host can run
+  ENTRY                    AVAILABLE            SPEED  COST  TASKS      NOTES
+  claude/claude-haiku-5-5  available            fast   low   edit,test  3 good from 2 sessions
+  agy/gemini-3-pro         off: agy not on PATH  slow   high  review     no notes
 
 An entry is HARNESS/MODEL[@EFFORT]: the backend spawn takes, the model
 spawn --model takes (empty for the harness's default: claude/), and an
@@ -13,21 +14,23 @@ its own entry). It is available when it is enabled and its harness's CLI
 is on this host's PATH.
 
 Notes are evaluations, one per run, each citing the session it came from:
-NOTES counts them by verdict and by distinct session, so you can see
-whether a claim rests on one run or on five. A note another supersedes
-isn't counted.
+NOTES counts them by verdict and says how many distinct sessions they come
+from, so you can see whether a claim rests on one run or on five. A note
+another supersedes isn't counted.
 
 Task kinds: edit (small, well-specified change), bugfix, feature
 (multi-file), long-horizon (hours, many steps), review, research (reading
 and summarising), design, test, kernel (performance-critical low-level
 code), chat (quick question).
 
-roster (or roster list), show and pick only read; note only adds a note.
-set, enable, disable and remove change the entries.
+roster (or roster list), show, picks and pick only read (pick --save adds a
+saved pick's version); note only adds a note. set, enable, disable and
+remove change the entries.
 
 --json prints this host's roster as one JSON document: {"host", "entries":
 [...], "unlisted": {...}}, each entry with its fields, "key", "available",
-"unavailable" (why not), "notes" (counts by verdict) and "by_task".
+"unavailable" (why not), "notes" (counts by verdict, and "sessions") and
+"by_task".
 
 Usage:
   agent roster [flags]
@@ -39,11 +42,14 @@ Examples:
   agent roster show claude/claude-opus-5-5
   agent roster set claude/claude-haiku-5-5 --speed fast --cost low --tasks edit,test --good-at "small precise edits"
   agent roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "did the rename across 12 files cleanly"
+  agent roster pick --task edit --save quick-edit
+  agent roster picks
 
 Available Commands:
   list        List this host's roster (what agent roster prints)
   show        Show one roster entry with all its notes
   pick        Pick the best available harness and model for a task, as a spawn line
+  picks       List the saved picks, or one saved pick's versions
   note        Record how a harness and model did on a task, citing the session
   set         Add a roster entry, or change one
   enable      Switch a roster entry back on
