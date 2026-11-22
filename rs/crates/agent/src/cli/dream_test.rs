@@ -196,3 +196,83 @@ fn dream_verbs_act_on_the_callers_open_dream() {
     let err = run_err(&mut env, &["dream", "abandon"]);
     assert!(err.contains("dream #1 is committed"), "{err}");
 }
+
+/// Opens a dream with items as `dream run` would (snapshots included), as
+/// agent dream-<id>, and makes the env's caller that agent.
+fn open_dream_as_agent(env: &mut TestEnv, items: &[DreamItem]) -> agent_store::Dream {
+    let d = env.store().open_dream("local", items, |id| format!("dream-{id}")).unwrap();
+    for i in items.iter().filter(|i| i.kind == "memory") {
+        let dir = std::path::Path::new(&i.key);
+        let snap = crate::cli::dream_memory::snapshot_dir_for(&env.ctx.data_dir(), &d.id.to_string(), dir);
+        agent_dream::memory::take_snapshot(dir, &snap).unwrap();
+    }
+    env.store()
+        .create_agent(&agent_store::Agent {
+            name: d.agent.clone(),
+            session_name: format!("rpc-cli-{}", d.agent),
+            backend: "shell".into(),
+            created_at: Time::now(),
+            ..Default::default()
+        })
+        .unwrap();
+    env.set_env("AGENT_NAME", &d.agent);
+    env.ctx.set_caller_chain(|| Ok(Vec::new()));
+    d
+}
+
+const FACT: &str = "---\nname: tests\ndescription: run the tests first\nmetadata:\n  type: feedback\n---\nRun the tests before committing.\n**Why:** a broken build stalls every agent.\n[source: CITES; added: 2026-11-20]\n";
+
+#[test]
+fn dream_commit_guards_memory_and_its_citations() {
+    crate::require_termd!();
+    let mut env = TestEnv::with_termd_private();
+    let mem = env.dir.path().join("proj").join("memory");
+    std::fs::create_dir_all(&mem).unwrap();
+    std::fs::write(mem.join("old.md"), FACT.replace("CITES", "claude:s0")).unwrap();
+    let mem_s = mem.to_string_lossy().into_owned();
+    let item = |kind: &str, key: &str| DreamItem {
+        kind: kind.into(),
+        key: key.into(),
+        fingerprint: "f".into(),
+        ..Default::default()
+    };
+    let d = open_dream_as_agent(&mut env, &[item("session", "claude:s1"), item("memory", &mem_s)]);
+
+    let draft = env.dir.path().join("draft.md");
+    let put = |env: &mut TestEnv, file: &str, cites: &str, expect: &str| {
+        std::fs::write(&draft, FACT.replace("CITES", cites)).unwrap();
+        let draft = draft.to_string_lossy().into_owned();
+        env.run(&["dream", "memory", "put", file, "--dir", &mem_s, "--expect", expect, "--from", &draft])
+    };
+    let (out, res) = put(&mut env, "new.md", "claude:s1, claude:s9", "new");
+    res.unwrap();
+    assert!(out.starts_with("Wrote new.md"), "{out}");
+    // Its own write is recorded at the fingerprint gather sees.
+    let fp = agent_dream::gather::memory_fingerprint(&mem).unwrap().1;
+    let items = env.store().dream_items(d.id).unwrap();
+    assert!(items.iter().any(|i| i.kind == "memory" && i.key == mem_s && i.fingerprint == fp), "{items:?}");
+
+    // claude:s9 is nothing the store knows.
+    let (out, res) = env.run(&["dream", "commit"]);
+    assert!(res.is_err());
+    assert_eq!(
+        out,
+        format!(
+            "Not committed: dream #1's memory changes break 1 rule:\n  {mem_s}/new.md: cites claude:s9, which is no item of this dream and no reviewed one\n"
+        )
+    );
+    // Losing old.md's citation breaks the guard too.
+    std::fs::remove_file(mem.join("old.md")).unwrap();
+    let (out, _) = env.run(&["dream", "commit"]);
+    assert!(out.contains("source citation claude:s0 (was in old.md) is gone"), "{out}");
+    std::fs::write(mem.join("old.md"), FACT.replace("CITES", "claude:s0")).unwrap();
+
+    let v = agent_dream::memory::version(FACT.replace("CITES", "claude:s1, claude:s9").as_bytes());
+    let (_, res) = put(&mut env, "new.md", "claude:s1", &v);
+    res.unwrap();
+    assert_eq!(
+        run(&mut env, &["dream", "commit"]),
+        "Committed dream #1: its 2 items count as reviewed.\n"
+    );
+    assert_eq!(env.store().get_dream(d.id).unwrap().unwrap().status, DREAM_COMMITTED);
+}

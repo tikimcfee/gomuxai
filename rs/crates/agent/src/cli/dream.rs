@@ -31,11 +31,11 @@ use super::friction::{
     run_friction_add, run_friction_resolve, stamp,
 };
 use super::friction_links::{FrictionLinkArgs, run_friction_link};
+use super::dream_memory::snapshot_dir_for;
 use super::history::clip;
 use super::root::Ctx;
-
-/// The fixed brief every dream agent gets, after a header naming its dream.
-const BRIEF: &str = include_str!("../../../agent-dream/src/brief.md");
+use agent_dream::{memory, review};
+use anyhow::Context as _;
 
 /// The state key that names the dream an agent dreams.
 pub const STATE_KEY_DREAM: &str = "dream";
@@ -66,7 +66,8 @@ People (or a timer) run these:
 
 The dream agent runs these, on its own open dream only:
 
-  note, commit, abandon, friction dup|link|accept, limitation
+  note, commit, abandon, friction dup|link|accept, limitation,
+  memory put|remove (memory get and check only read)
 
 An item counts as reviewed once its dream commits, at the version it had
 then: a session written to again or a friction entry voted on comes back.
@@ -95,7 +96,7 @@ pub fn def() -> Def {
             abandon_def(),
             friction_def(),
             limitation_def(),
-            // memory: dream-lead wires dream_memory::def() here
+            super::dream_memory::def(),
         ],
     )
 }
@@ -237,25 +238,11 @@ impl Sources for HostSources<'_> {
             return None;
         }
         let dir = Path::new(&s.path).parent()?.join("memory");
-        let entries = std::fs::read_dir(&dir).ok()?;
-        let (mut files, mut bytes, mut newest) = (0usize, 0u64, 0i64);
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().is_none_or(|x| x != "md") {
-                continue;
-            }
-            let Ok(md) = e.metadata() else { continue };
-            if !md.is_file() {
-                continue;
-            }
-            files += 1;
-            bytes += md.len();
-            newest = newest.max(mtime_nanos(&md));
-        }
+        let (files, fingerprint) = gather::memory_fingerprint(&dir)?;
         Some(MemoryIn {
             dir: dir.to_string_lossy().into_owned(),
             files,
-            fingerprint: format!("{files}:{bytes}@{newest}"),
+            fingerprint,
         })
     }
 
@@ -442,9 +429,13 @@ pub const RUN: Doc = Doc {
    quiet dream, starts no agent, and says so.
 3. Otherwise it records the dream and its items, writes the digest
    (.gomuxai/dreams/<id>/digest.md: each item with its key, one line, and
-   how to read it), and spawns a Claude agent dream-<id> with the dream's
-   brief, its state key dream set to the id. The agent works in
-   .gomuxai/dreams, whose workspace trust run answers.
+   how to read it), saves each memory directory as it is (commit checks
+   the dream's changes against it), and spawns a Claude agent dream-<id>
+   with the dream's brief, its state key dream set to the id. The agent
+   works in .gomuxai/dreams, whose workspace trust run answers. It may read
+   Claude Code's projects (transcripts and memory), the repos its commits
+   are in and its handoff docs, edit files only in its dream's directory,
+   and run git -C <repo> log or show in those repos, without a prompt.
 
 --dry-run says what it would do and changes nothing."#,
     example: r#"  agent dream run --dry-run
@@ -583,6 +574,16 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
     std::fs::write(&brief, format_brief(d, &digest_s))
         .map_err(|e| anyhow::anyhow!("writing {brief_s}: {e}"))?;
 
+    // Each memory dir as the dream found it: commit guards against it.
+    let data_dir = ctx.data_dir();
+    for i in g.items.iter().filter(|i| i.kind == gather::KIND_MEMORY) {
+        let mem = Path::new(&i.key);
+        let snap = snapshot_dir_for(&data_dir, &d.id.to_string(), mem);
+        memory::take_snapshot(mem, &snap)
+            .with_context(|| format!("taking a snapshot of {}", i.key))?;
+    }
+
+    let (allow_tools, deny_tools) = dream_tool_rules(ctx, &dir, &g.items);
     let svc = ctx.service()?;
     svc.spawn(
         &Context::background(),
@@ -593,6 +594,8 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
             trust_workspace: true,
             spawned_by: ctx.non_interactive_caller_agent(),
             cwd: base.to_string_lossy().into_owned(),
+            allow_tools,
+            deny_tools,
             ..Default::default()
         },
     )?;
@@ -607,9 +610,50 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
 
 fn format_brief(d: &Dream, digest: &str) -> String {
     format!(
-        "You are {}, dreaming dream #{} on this host. Your digest, the items this dream reviews, is {digest}.\n\n{BRIEF}",
-        d.agent, d.id
+        "You are {}, dreaming dream #{} on this host.\n\n{}",
+        d.agent,
+        d.id,
+        agent_dream::brief(digest)
     )
+}
+
+/// Claude's rule for a path and everything under it ("//" is the root).
+fn read_rule(tool: &str, path: &str, tree: bool) -> String {
+    let path = path.trim_end_matches('/');
+    if tree {
+        format!("{tool}(/{path}/**)")
+    } else {
+        format!("{tool}(/{path})")
+    }
+}
+
+/// The dream agent's launch rules. It reads without a prompt: Claude Code's
+/// projects dirs (transcripts and memory), the repos its commits are in, and
+/// its handoff docs. It edits only its own dream directory (drafts for
+/// `memory put --from`); notebooks are refused. Bash beyond the agent verbs
+/// goes through the PreToolUse hook (`git -C <repo> log|show`).
+fn dream_tool_rules(ctx: &Ctx, dream_dir: &Path, items: &[Item]) -> (Vec<String>, Vec<String>) {
+    let mut allow: Vec<String> = Vec::new();
+    for dir in super::transcript::session_dirs(ctx) {
+        if dir.harness == agent_discovery::HARNESS_CLAUDE && !dir.path.is_empty() {
+            allow.push(read_rule("Read", &dir.path, true));
+        }
+    }
+    for i in items {
+        match i.kind.as_str() {
+            gather::KIND_COMMIT => {
+                if let Some((repo, _)) = i.key.rsplit_once('@') {
+                    allow.push(read_rule("Read", repo, true));
+                }
+            }
+            gather::KIND_HANDOFF => allow.push(read_rule("Read", &i.key, false)),
+            _ => {}
+        }
+    }
+    allow.push(read_rule("Edit", &dream_dir.to_string_lossy(), true));
+    allow.sort();
+    allow.dedup();
+    (allow, vec!["NotebookEdit".to_string()])
 }
 
 /// The digest: each item with its key, one line, and how to read it.
@@ -655,7 +699,7 @@ pub fn format_digest(d: &Dream, g: &Gathered) -> String {
 // The dream agent's own dream.
 
 /// The open dream the calling agent dreams, or why it has none.
-fn own_open_dream(ctx: &Ctx, verb: &str) -> anyhow::Result<Dream> {
+pub(crate) fn own_open_dream(ctx: &Ctx, verb: &str) -> anyhow::Result<Dream> {
     let caller = ctx.caller_agent();
     let refuse = |why: String| {
         anyhow::anyhow!(
@@ -721,7 +765,12 @@ pub const COMMIT: Doc = Doc {
     short: "Finish your dream: what it was given counts as reviewed",
     long: r#"Commit closes the dream you dream: every item it was given counts as
 reviewed, at the version it had, and the next dream leaves it out until it
-changes. Only a dream's own agent runs it."#,
+changes. Only a dream's own agent runs it.
+
+It refuses, listing why, while a memory directory the dream wrote has lost
+more than a quarter of its files or a source citation it had when the dream
+opened, or a file the dream changed cites a session, friction entry or
+commit that is no item of this dream and none a committed dream reviewed."#,
     example: "  agent dream commit",
     args: ArgRule::None,
     ..Doc::DEFAULT
@@ -739,6 +788,22 @@ pub fn commit_def() -> Def {
 
 pub fn run_commit(ctx: &Ctx, _args: &CommitArgs) -> anyhow::Result<()> {
     let d = own_open_dream(ctx, "commit")?;
+    let problems = memory_problems(ctx, &d)?;
+    if !problems.is_empty() {
+        let mut out = format!(
+            "Not committed: dream #{}'s memory changes break {} rule{}:\n",
+            d.id,
+            problems.len(),
+            if problems.len() == 1 { "" } else { "s" }
+        );
+        for p in &problems {
+            let _ = writeln!(out, "  {p}");
+        }
+        ctx.write_out(&out)?;
+        anyhow::bail!(
+            "fix them with agent dream memory put (cite sources the digest lists), or agent dream abandon \"why\""
+        );
+    }
     ctx.store()?.commit_dream(d.id)?;
     ctx.write_out(&format!(
         "Committed dream #{}: its {} item{} count as reviewed.\n",
@@ -746,6 +811,70 @@ pub fn run_commit(ctx: &Ctx, _args: &CommitArgs) -> anyhow::Result<()> {
         d.items,
         if d.items == 1 { "" } else { "s" }
     ))
+}
+
+/// What stands in the way of committing dream d, one line each: for every
+/// memory dir it has a snapshot of, the whole-dir guard (files gone, source
+/// citations lost), and citations in the files it changed that name no item
+/// of the dream and none a committed dream reviewed.
+fn memory_problems(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>> {
+    let store = ctx.store()?;
+    let items = store.dream_items(d.id)?;
+    let reviewed = store.reviewed_fingerprints()?;
+    let known = |kind: &str, key: &str| -> bool {
+        if kind == gather::KIND_COMMIT {
+            return items
+                .iter()
+                .map(|i| (i.kind.as_str(), i.key.as_str()))
+                .chain(reviewed.keys().map(|(k, v)| (k.as_str(), v.as_str())))
+                .any(|(k, item)| k == kind && review::commit_matches(key, item));
+        }
+        items.iter().any(|i| i.kind == kind && i.key == key)
+            || reviewed.contains_key(&(kind.to_string(), key.to_string()))
+    };
+    let data_dir = ctx.data_dir();
+    let mut out = Vec::new();
+    for i in items.iter().filter(|i| i.kind == gather::KIND_MEMORY) {
+        let dir = Path::new(&i.key);
+        let snap = snapshot_dir_for(&data_dir, &d.id.to_string(), dir);
+        if !snap.join("MANIFEST").exists() || !dir.is_dir() {
+            continue;
+        }
+        for v in memory::guard(dir, &snap)? {
+            out.push(format!("{}: {v}", i.key));
+        }
+        for u in review::unknown_citations(dir, &snap, &known)? {
+            out.push(format!("{}/{u}", i.key));
+        }
+    }
+    Ok(out)
+}
+
+/// Records memory dir `dir` in dream d at its fingerprint now, taking the
+/// dream's snapshot of it first if it has none: `memory put` and `remove`
+/// call it before they write (the snapshot) and after (the fingerprint), so
+/// commit guards every dir the dream wrote and the next gather doesn't take
+/// the dream's own write for news.
+pub(crate) fn record_memory(ctx: &Ctx, d: &Dream, dir: &Path) -> anyhow::Result<()> {
+    let snap = snapshot_dir_for(&ctx.data_dir(), &d.id.to_string(), dir);
+    if !snap.join("MANIFEST").exists() {
+        memory::take_snapshot(dir, &snap)
+            .with_context(|| format!("taking a snapshot of {}", dir.display()))?;
+    }
+    let Some((files, fingerprint)) = gather::memory_fingerprint(dir) else {
+        return Ok(());
+    };
+    let key = dir.to_string_lossy().into_owned();
+    ctx.store()?.set_dream_item(
+        d.id,
+        &DreamItem {
+            kind: gather::KIND_MEMORY.to_string(),
+            read: key.clone(),
+            key,
+            fingerprint,
+            summary: format!("memory ({files} file{})", if files == 1 { "" } else { "s" }),
+        },
+    )
 }
 
 // `agent dream abandon`

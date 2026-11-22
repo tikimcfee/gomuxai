@@ -7,9 +7,13 @@ Run starts a dream:
    quiet dream, starts no agent, and says so.
 3. Otherwise it records the dream and its items, writes the digest
    (.gomuxai/dreams/<id>/digest.md: each item with its key, one line, and
-   how to read it), and spawns a Claude agent dream-<id> with the dream's
-   brief, its state key dream set to the id. The agent works in
-   .gomuxai/dreams, whose workspace trust run answers.
+   how to read it), saves each memory directory as it is (commit checks
+   the dream's changes against it), and spawns a Claude agent dream-<id>
+   with the dream's brief, its state key dream set to the id. The agent
+   works in .gomuxai/dreams, whose workspace trust run answers. It may read
+   Claude Code's projects (transcripts and memory), the repos its commits
+   are in and its handoff docs, edit files only in its dream's directory,
+   and run git -C <repo> log or show in those repos, without a prompt.
 
 --dry-run says what it would do and changes nothing.
 

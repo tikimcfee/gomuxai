@@ -102,3 +102,8 @@ dream friction dup
 dream friction link
 dream friction accept
 dream limitation
+dream memory
+dream memory get
+dream memory put
+dream memory remove
+dream memory check

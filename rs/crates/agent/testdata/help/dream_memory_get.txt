@@ -1,0 +1,20 @@
+Get prints the file's version on the first line, then its content. A file
+that doesn't exist prints the version "new" and nothing else: put it with
+--expect new to create it.
+
+Usage:
+  agent dream memory get <file> [flags]
+
+Examples:
+  agent dream memory get feedback_tests.md
+  agent dream memory get MEMORY.md --dir ~/.claude/projects/-srv-app/memory
+
+Flags:
+      --dir string   The memory directory (default: this project's)
+  -h, --help         help for get
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

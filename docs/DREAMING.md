@@ -51,7 +51,9 @@ most 200 sessions, oldest first; the rest wait for the next.
 What a dream changes itself is recorded in it as it left it: each
 `agent dream friction` verb and `limitation` sets the entries it touched
 as items of the dream at their fingerprint afterwards (the store's
-`set_dream_item`; `memory put` is to do the same for the file it wrote).
+`set_dream_item`), and `memory put` and `remove` do the same for the memory
+directory they wrote, with the fingerprint gather computes
+(`gather::memory_fingerprint`, shared so the two can't disagree).
 
 ### Gather (deterministic)
 
@@ -77,21 +79,29 @@ get, without starting one. Sources:
 
 ### The dream agent and its narrow toolset
 
-**built**, except `memory` and the brief's text. `agent dream run` closes
-an open dream whose agent is gone as abandoned (and starts nothing while a
-dream's agent is still at work), cleans up the agents of closed dreams,
-gathers, records the dream and its items, writes a digest
-(`.gomuxai/dreams/<id>/digest.md`), and spawns a Claude agent `dream-<id>`
-with a fixed brief (`agent-dream/src/brief.md`, behind a header naming the
-dream and its digest), in `.gomuxai/dreams` with its workspace trust
-answered, and its state key `dream` set to the id. `--dry-run` says what it
-would do. `agent dream list` and `show` read the record. The agent reads
-(transcripts through `agent logs` and `agent transcript`, files through its
-Read tool) and writes only through `agent dream` verbs, which the
-PreToolUse hook allows for that agent alone while its dream is open
-(`DREAM_AGENT_COMMANDS` in agent-service; they are never in the launch
-rules). Each verb acts on the caller's own open dream and refuses
-otherwise:
+**built**. `agent dream run` closes an open dream whose agent is gone as
+abandoned (and starts nothing while a dream's agent is still at work),
+cleans up the agents of closed dreams, gathers, records the dream and its
+items, writes a digest (`.gomuxai/dreams/<id>/digest.md`), snapshots each
+memory directory in the batch (`memory-before/<folder>/` in the dream's
+directory, `memory::take_snapshot`), and spawns a Claude agent `dream-<id>`
+with the fixed brief (`agent_dream::brief`, behind a line naming the
+dream), in `.gomuxai/dreams` with its workspace trust answered, and its
+state key `dream` set to the id. `--dry-run` says what it would do.
+`agent dream list` and `show` read the record.
+
+The agent reads transcripts through `agent logs` and `agent transcript`
+(pre-allowed for every agent), and files through its Read tool, which its
+launch rules allow without a prompt for Claude Code's projects directories,
+the repos its commits are in, and its handoff docs. It may edit files only
+in its own dream directory (drafts for `memory put --from`), and
+`NotebookEdit` is refused; any other edit asks a person. It writes only
+through `agent dream` verbs, which the PreToolUse hook allows for that
+agent alone while its dream is open (`DREAM_AGENT_COMMANDS` in
+agent-service; never in the launch rules), and the hook also allows it
+`git -C <repo> log|show` for a repo its dream has commits of (no
+`--output`, no `--ext-diff`). Each verb acts on the caller's own open dream
+and refuses otherwise:
 
 - `agent dream memory get|put|check`: put takes the version it read
   (`--expect`), and refuses a rewrite that drops more than a quarter of the
@@ -117,9 +127,15 @@ otherwise:
   answers are never taken as permissions.
 
 Rules the brief states are checked in code where they can be:
-`agent dream memory put` refuses an entry with no source line, and
-`agent dream commit` checks that each rule's cited sources resolve to items
-the store knows, at least three distinct sessions for a preference. The
+`agent dream memory put` refuses an entry with no source line, and a
+rewrite that loses a citation the file had when the dream opened (one the
+dream added itself it may take back). **built**: `agent dream commit`
+refuses while a memory directory the dream holds a snapshot of fails the
+whole-dir guard (`memory::guard`: over a quarter of its files gone, or a
+citation lost), or while a file the dream changed cites a session, friction
+entry or commit that is no item of the dream and none a committed dream
+reviewed (`agent_dream::review`). The three-session rule for a preference
+stays in the brief: a preference can't be told from a fact mechanically. The
 digest's excerpts are scrubbed before the agent sees them (pasted blocks,
 code fences, key blocks, and lines with credential markers dropped; each
 excerpt clipped).

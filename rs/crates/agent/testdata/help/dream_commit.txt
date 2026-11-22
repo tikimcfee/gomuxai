@@ -2,6 +2,11 @@ Commit closes the dream you dream: every item it was given counts as
 reviewed, at the version it had, and the next dream leaves it out until it
 changes. Only a dream's own agent runs it.
 
+It refuses, listing why, while a memory directory the dream wrote has lost
+more than a quarter of its files or a source citation it had when the dream
+opened, or a file the dream changed cites a session, friction entry or
+commit that is no item of this dream and none a committed dream reviewed.
+
 Usage:
   agent dream commit [flags]
 

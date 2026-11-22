@@ -1,0 +1,21 @@
+Remove moves the file into the dream's directory, if it is still at
+--expect. It refuses MEMORY.md, and a file whose source citations no other
+memory carries: merge them into the memory that keeps the fact first. Put
+MEMORY.md again without its line afterwards.
+
+Usage:
+  agent dream memory remove <file> --expect VERSION [flags]
+
+Examples:
+  agent dream memory remove old_fact.md --expect 0a1b2c3d4e5f6071
+
+Flags:
+      --dir string      The memory directory (default: this project's)
+      --expect string   The version you read
+  -h, --help            help for remove
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

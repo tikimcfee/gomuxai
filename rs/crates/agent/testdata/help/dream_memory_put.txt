@@ -1,0 +1,25 @@
+Put writes the content of --from ("-" for stdin) to the file, if the file is
+still at --expect (the version get printed; "new" to create one). It
+refuses content without valid frontmatter, a new or changed fact with no
+source line, a rewrite that loses a citation the file had, and a MEMORY.md
+that drops more than a quarter of its lines. The prior file is saved under
+the dream's directory first; the write is atomic. It prints the new
+version.
+
+Usage:
+  agent dream memory put <file> --expect VERSION --from PATH [flags]
+
+Examples:
+  agent dream memory put feedback_tests.md --expect 3f9a0c1d2e4b5a69 --from draft.md
+
+Flags:
+      --dir string      The memory directory (default: this project's)
+      --expect string   The version you read ("new" for a new file)
+      --from string     Read the content from a file ("-" for stdin)
+  -h, --help            help for put
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

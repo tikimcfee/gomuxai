@@ -9,11 +9,11 @@ use agent_base::gostd::filepath;
 use agent_dream::memory::{self, PutOutcome};
 use anyhow::Context as _;
 
-use super::command::{ArgRule, Def, Doc};
-use super::root::Ctx;
+use agent_store::Dream;
 
-/// The state key, on a dream's agent, that holds its dream id.
-const DREAM_STATE_KEY: &str = "dream";
+use super::command::{ArgRule, Def, Doc};
+use super::dream::{own_open_dream, record_memory};
+use super::root::Ctx;
 
 // `agent dream memory`
 
@@ -145,8 +145,10 @@ pub fn run_put(ctx: &Ctx, args: &PutArgs) -> anyhow::Result<()> {
     let file = &args.args[0];
     memory::check_file_name(file)?;
     let content = read_from(&args.from)?;
-    let snap = snapshot_dir(ctx, &dir)?;
-    match memory::put(&dir, file, &content, &args.expect, &snap)? {
+    let (d, snap) = snapshot_dir(ctx, &dir, "memory put")?;
+    let outcome = memory::put(&dir, file, &content, &args.expect, &snap)?;
+    record_memory(ctx, &d, &dir)?;
+    match outcome {
         PutOutcome::Written(v) => ctx.write_out(&format!("Wrote {file} (version {v}).\n")),
         PutOutcome::Unchanged(v) => ctx.write_out(&format!(
             "{file} already holds that (version {v}); nothing written.\n"
@@ -203,8 +205,9 @@ pub fn run_remove(ctx: &Ctx, args: &RemoveArgs) -> anyhow::Result<()> {
     let dir = memory_dir(ctx, &args.dir.dir)?;
     let file = &args.args[0];
     memory::check_file_name(file)?;
-    let snap = snapshot_dir(ctx, &dir)?;
+    let (d, snap) = snapshot_dir(ctx, &dir, "memory remove")?;
     memory::remove(&dir, file, &args.expect, &snap)?;
+    record_memory(ctx, &d, &dir)?;
     ctx.write_out(&format!(
         "Removed {file} (kept in {}).\n",
         snap.join("history").display()
@@ -323,12 +326,16 @@ fn expand_home(path: &str, home: &str) -> String {
     }
 }
 
-/// Where put and remove save what they replace, for `dir`: the caller's open
-/// dream's `memory-before/<project folder>/` under this host's data dir
-/// (`.gomuxai/dreams/<id>/`). Refuses a caller with no dream.
-fn snapshot_dir(ctx: &Ctx, dir: &Path) -> anyhow::Result<PathBuf> {
-    let id = open_dream_id(ctx)?;
-    Ok(snapshot_dir_for(&ctx.data_dir(), &id, dir))
+/// The caller's open dream, and where put and remove save what they replace
+/// in `dir`: the dream's `memory-before/<project folder>/` under this host's
+/// data dir (`.gomuxai/dreams/<id>/`), holding the dir as the dream found it
+/// (taken now if the dream had no snapshot of it yet). Refuses a caller with
+/// no open dream.
+fn snapshot_dir(ctx: &Ctx, dir: &Path, verb: &str) -> anyhow::Result<(Dream, PathBuf)> {
+    let d = own_open_dream(ctx, verb)?;
+    record_memory(ctx, &d, dir)?;
+    let snap = snapshot_dir_for(&ctx.data_dir(), &d.id.to_string(), dir);
+    Ok((d, snap))
 }
 
 /// The snapshot dir of dream `id` for memory dir `dir`: one folder per memory dir,
@@ -342,42 +349,10 @@ pub(crate) fn snapshot_dir_for(data_dir: &str, id: &str, dir: &Path) -> PathBuf 
         .join(project_folder(&abs.to_string_lossy()))
 }
 
-/// The id of the dream the caller runs: the `dream` state key on its agent.
-//
-// TODO(dream-lead): once the store has the dreams table (dream-lead-core), also
-// check the dream is still `open` (not committed or abandoned) and take its dir
-// from the store rather than building it here; and take the opening snapshot
-// (agent_dream::memory::take_snapshot) when `agent dream run` opens the dream, so
-// commit can run memory::guard against it.
-fn open_dream_id(ctx: &Ctx) -> anyhow::Result<String> {
-    dream_id_of(ctx.store()?, &ctx.caller_agent())
-}
-
-/// The dream id in agent `me`'s `dream` state key, or why there is none.
-fn dream_id_of(store: &agent_store::Store, me: &str) -> anyhow::Result<String> {
-    let not_in_dream = || {
-        anyhow::anyhow!(
-            "put and remove run only inside an open dream (its agent's {DREAM_STATE_KEY:?} state key names it); agent dream run starts one"
-        )
-    };
-    if me.is_empty() {
-        return Err(not_in_dream());
-    }
-    let id = match store.get_state(me, DREAM_STATE_KEY)? {
-        Some(e) if !e.value.trim().is_empty() => e.value.trim().to_string(),
-        _ => return Err(not_in_dream()),
-    };
-    if id.contains(['/', '\\']) || id.starts_with('.') {
-        anyhow::bail!("the dream id {id:?} in {me}'s state isn't a plain name");
-    }
-    Ok(id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::testenv::TestEnv;
     use super::*;
-    use agent_store::StateEntry;
 
     const FACT: &str = "---\nname: alpha\ndescription: d\nmetadata:\n  type: user\n---\nRun the tests.\n[source: commit:abc123; added: 2026-11-01]\n";
 
@@ -446,31 +421,42 @@ mod tests {
     #[test]
     fn put_and_remove_need_an_open_dream() {
         let env = TestEnv::new();
-        let e = dream_id_of(env.store(), "dream-x").unwrap_err().to_string();
-        assert!(e.contains("only inside an open dream"), "{e}");
-        assert!(dream_id_of(env.store(), "").is_err());
-        env.store()
-            .create_agent(&agent_store::Agent {
-                name: "dream-x".into(),
-                session_name: "agent-dream-x".into(),
-                backend: "claude".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        let set = |v: &str| {
-            env.store()
-                .set_state(&StateEntry {
-                    agent_name: "dream-x".into(),
-                    key: DREAM_STATE_KEY.into(),
-                    value: v.into(),
-                    ..Default::default()
-                })
-                .unwrap()
+        let d = mem_dir(&env);
+        let from = env.dir.path().join("draft.md");
+        std::fs::write(&from, FACT).unwrap();
+        let dir = DirArg {
+            dir: d.to_string_lossy().into_owned(),
         };
-        set("../evil");
-        assert!(dream_id_of(env.store(), "dream-x").is_err());
-        set("d42");
-        assert_eq!(dream_id_of(env.store(), "dream-x").unwrap(), "d42");
+        let e = run_put(
+            &env.ctx,
+            &PutArgs {
+                expect: memory::NEW.into(),
+                from: from.to_string_lossy().into_owned(),
+                dir: dir.clone(),
+                args: vec!["a.md".into()],
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("agent dream memory put is for a dream's own agent"),
+            "{e}"
+        );
+        let e = run_remove(
+            &env.ctx,
+            &RemoveArgs {
+                expect: "x".into(),
+                dir,
+                args: vec!["a.md".into()],
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("agent dream memory remove is for a dream's own agent"),
+            "{e}"
+        );
+        assert!(!d.join("a.md").exists());
     }
 
     #[test]
