@@ -138,6 +138,35 @@ cargo test -p <crate>
   "Export", `docs/FLEET.md`, `docs/EVENTS.md`) and `Config::log_path` stable, or
   coordinate breaking changes across consumers.
 
+## The manager GUI, and changing it live
+
+`rs/manager` (`agent-manager`, Makepad) is a Cargo workspace of its own: `make manager`
+builds it, `make manager-test` runs its format check, lints and tests, `make
+install-manager` installs it beside `agent`. Its UI is one `script_mod!` block in
+`src/main.rs`; state and logic are in `core/`, with the tests.
+
+A UI change can be shown on a running manager without a rebuild, on the machine of the
+person who judges it, and committed only once they approve it. `rs/manager/tools/live`
+does it (its header has the settings, which name machines and so live outside the repo):
+
+```bash
+tools/live setup      # once: a live checkout and a live build on the target, started there as agent-manager-live
+tools/live push       # put HEAD on the target's live checkout
+tools/live status     # what the target shows that isn't approved
+tools/live approve    # make manager-test, push HEAD to the approved branch, install release builds here and there
+tools/live reset      # the live checkout back to the approved branch
+```
+
+The live build is the manager started with `--hot`: Makepad then watches the source it
+was built from and re-applies a `script_mod!` block when its file changes, keeping the
+window and the model's state (the manager puts what it sets on widgets back after each
+reload). `push` reports which kind a change was: one inside `script_mod!` shows at once;
+one that touches Rust is built on the target, and the live window must be restarted. A
+proposal is a commit ahead of `origin/<branch>`; to reject one, drop it and push again.
+The installed `agent-manager` is a separate binary that only `approve` replaces. Hot
+reload refuses an edit that doesn't parse, or that changes how many `script_mod!` blocks
+or `#(...)` placeholders a file has, and keeps the old UI.
+
 ## Parallel worktree workers
 
 When splitting `gomuxai` work across multiple coding agents in parallel:
