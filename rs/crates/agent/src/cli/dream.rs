@@ -874,7 +874,7 @@ pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
                 g.reason
             ));
         }
-        let d = store.record_quiet_dream(&host, &g.reason)?;
+        let d = store.record_quiet_dream(&host, &agent_store::DreamOf::project(""), &g.reason)?;
         return ctx.write_out(&format!(
             "Dream #{} is quiet: {}. No agent started.\n",
             d.id, g.reason

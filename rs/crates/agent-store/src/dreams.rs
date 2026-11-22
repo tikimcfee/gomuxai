@@ -23,6 +23,21 @@ pub const DREAM_ABANDONED: &str = "abandoned";
 /// A dream that found nothing new and started no agent.
 pub const DREAM_QUIET: &str = "quiet";
 
+/// A dream over one project of the dream scope (or, for a row from before
+/// projects, its `project` empty, over the whole scope).
+pub const DREAM_KIND_PROJECT: &str = "project";
+/// The machine-wide dream: committed project dreams, every scoped project's
+/// memory, the machine memory, and the host's friction.
+pub const DREAM_KIND_GLOBAL: &str = "global";
+
+/// The dreams columns added after the table was first shipped: migrate adds
+/// them to a store that lacks them. A row from before them is a project
+/// dream over the whole scope (`project` empty).
+pub(crate) const DREAMS_ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    ("dreams", "project", "TEXT NOT NULL DEFAULT ''"),
+    ("dreams", "kind", "TEXT NOT NULL DEFAULT 'project'"),
+];
+
 pub(crate) const DREAMS_SCHEMA: &str = r#"
 	CREATE TABLE IF NOT EXISTS dreams (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +50,7 @@ pub(crate) const DREAMS_SCHEMA: &str = r#"
 	);
 
 	-- What a dream was given to review. kind: session, friction, handoff,
-	-- memory, commit. key names the thing (a session's harness:id, a friction
+	-- memory, commit, dream (a project dream a global one reviews). key names the thing (a session's harness:id, a friction
 	-- entry's uid, a path, repo@commit); fingerprint says which version of it.
 	CREATE TABLE IF NOT EXISTS dream_items (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,6 +81,36 @@ pub struct Dream {
     pub diary: String,
     /// How many items it was given.
     pub items: i64,
+    /// [`DREAM_KIND_PROJECT`] or [`DREAM_KIND_GLOBAL`].
+    pub kind: String,
+    /// The scope directory a project dream covers; "" for a global dream,
+    /// and for a project dream from before projects (the whole scope).
+    pub project: String,
+}
+
+/// What a new dream is over: its kind, and for a project dream, its project.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DreamOf {
+    pub kind: String,
+    pub project: String,
+}
+
+impl DreamOf {
+    /// A project dream over dir.
+    pub fn project(dir: &str) -> DreamOf {
+        DreamOf {
+            kind: DREAM_KIND_PROJECT.to_string(),
+            project: dir.to_string(),
+        }
+    }
+
+    /// The global dream.
+    pub fn global() -> DreamOf {
+        DreamOf {
+            kind: DREAM_KIND_GLOBAL.to_string(),
+            project: String::new(),
+        }
+    }
 }
 
 /// One thing a dream was given to review.
@@ -83,7 +128,7 @@ pub struct DreamItem {
 }
 
 const DREAM_COLUMNS: &str = "id, host, agent, started_at, finished_at, status, diary,
-	(SELECT COUNT(*) FROM dream_items i WHERE i.dream_id = dreams.id)";
+	(SELECT COUNT(*) FROM dream_items i WHERE i.dream_id = dreams.id), kind, project";
 
 fn scan_dream(row: &Row<'_>) -> rusqlite::Result<Dream> {
     let finished = text(row, 4)?;
@@ -100,6 +145,8 @@ fn scan_dream(row: &Row<'_>) -> rusqlite::Result<Dream> {
         status: text(row, 5)?,
         diary: text(row, 6)?,
         items: int(row, 7)?,
+        kind: text(row, 8)?,
+        project: text(row, 9)?,
     })
 }
 
@@ -137,18 +184,31 @@ impl Store {
     }
 
     /// Records a new open dream on host with its items, its agent named by
-    /// agent_of from the dream's id, and returns it.
+    /// agent_of from the dream's id, and returns it: a project dream with no
+    /// project, as dreams were before projects (tests use it).
     pub fn open_dream(
         &self,
         host: &str,
         items: &[DreamItem],
         agent_of: impl FnOnce(i64) -> String,
     ) -> Result<Dream> {
+        self.open_dream_of_kind(host, &DreamOf::project(""), items, agent_of)
+    }
+
+    /// Records a new open dream over `of` on host with its items, its agent
+    /// named by agent_of from the dream's id, and returns it.
+    pub fn open_dream_of_kind(
+        &self,
+        host: &str,
+        of: &DreamOf,
+        items: &[DreamItem],
+        agent_of: impl FnOnce(i64) -> String,
+    ) -> Result<Dream> {
         let now = Time::now();
         let id = self.in_tx(|tx| {
             tx.execute(
-                "INSERT INTO dreams (host, started_at, status) VALUES (?, ?, ?)",
-                params![host, time_nanos(&now), DREAM_OPEN],
+                "INSERT INTO dreams (host, started_at, status, kind, project) VALUES (?, ?, ?, ?, ?)",
+                params![host, time_nanos(&now), DREAM_OPEN, of.kind, of.project],
             )
             .context("recording a dream")?;
             let id = tx.last_insert_rowid();
@@ -170,14 +230,14 @@ impl Store {
             .context("reading back the dream just recorded")
     }
 
-    /// Records a quiet dream (nothing new: no agent, no items), with why in
-    /// its diary, and returns it.
-    pub fn record_quiet_dream(&self, host: &str, why: &str) -> Result<Dream> {
+    /// Records a quiet dream over `of` (nothing new: no agent, no items),
+    /// with why in its diary, and returns it.
+    pub fn record_quiet_dream(&self, host: &str, of: &DreamOf, why: &str) -> Result<Dream> {
         let now = time_nanos(&Time::now());
         let id = self.insert(
             "recording a quiet dream",
-            "INSERT INTO dreams (host, started_at, finished_at, status, diary) VALUES (?, ?, ?, ?, ?)",
-            params![host, now, now, DREAM_QUIET, why],
+            "INSERT INTO dreams (host, started_at, finished_at, status, diary, kind, project) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![host, now, now, DREAM_QUIET, why, of.kind, of.project],
         )?;
         self.get_dream(id)?
             .context("reading back the dream just recorded")
@@ -264,6 +324,55 @@ impl Store {
             scan_dream,
         )
         .context("reading the last committed dream")
+    }
+
+    /// The newest committed dream that covered `of`: for a project dream,
+    /// the newest committed project dream over that project or over the
+    /// whole scope (from before projects); for the global dream, the newest
+    /// committed global one. None if there is none.
+    pub fn last_committed_dream_of(&self, of: &DreamOf) -> Result<Option<Dream>> {
+        let conn = self.conn();
+        if !has_table(self, &conn, "dreams")? {
+            return Ok(None);
+        }
+        let projects: Vec<&str> = if of.kind == DREAM_KIND_GLOBAL {
+            vec![""]
+        } else {
+            vec![of.project.as_str(), ""]
+        };
+        query_one(
+            &conn,
+            &format!(
+                "SELECT {DREAM_COLUMNS} FROM dreams WHERE status = ? AND kind = ? AND project IN (?, ?) ORDER BY id DESC LIMIT 1"
+            ),
+            params![DREAM_COMMITTED, of.kind, projects[0], projects[projects.len() - 1]],
+            scan_dream,
+        )
+        .context("reading the last committed dream")
+    }
+
+    /// The committed project dreams that finished at or after `since`,
+    /// oldest first: what the global dream reviews.
+    pub fn committed_project_dreams_since(&self, since: &Time) -> Result<Vec<Dream>> {
+        let conn = self.conn();
+        if !has_table(self, &conn, "dreams")? {
+            return Ok(Vec::new());
+        }
+        // Compared as times: stored stamps drop trailing zeros, so their
+        // text doesn't sort.
+        let all = query_all(
+            &conn,
+            &format!(
+                "SELECT {DREAM_COLUMNS} FROM dreams WHERE status = ? AND kind = ? ORDER BY id"
+            ),
+            params![DREAM_COMMITTED, DREAM_KIND_PROJECT],
+            scan_dream,
+        )
+        .context("listing committed project dreams")?;
+        Ok(all
+            .into_iter()
+            .filter(|d| d.finished_at.0 >= since.0)
+            .collect())
     }
 
     /// The names of every agent that has dreamt, whatever became of its
@@ -382,6 +491,15 @@ impl Store {
     /// Every item a committed dream reviewed, by (kind, key), at the
     /// fingerprint its latest review saw.
     pub fn reviewed_fingerprints(&self) -> Result<HashMap<(String, String), String>> {
+        self.reviewed_fingerprints_by("")
+    }
+
+    /// Every item a committed dream of kind `dream_kind` reviewed (any kind,
+    /// for ""), by (kind, key), at the fingerprint its latest review saw.
+    pub fn reviewed_fingerprints_by(
+        &self,
+        dream_kind: &str,
+    ) -> Result<HashMap<(String, String), String>> {
         let conn = self.conn();
         if !has_table(self, &conn, "dream_items")? {
             return Ok(HashMap::new());
@@ -389,8 +507,8 @@ impl Store {
         let rows = query_all(
             &conn,
             "SELECT i.kind, i.key, i.fingerprint FROM dream_items i JOIN dreams d ON d.id = i.dream_id
-			WHERE d.status = ? ORDER BY d.id",
-            [DREAM_COMMITTED],
+			WHERE d.status = ? AND (?2 = '' OR d.kind = ?2) ORDER BY d.id",
+            params![DREAM_COMMITTED, dream_kind],
             |r| Ok((text(r, 0)?, text(r, 1)?, text(r, 2)?)),
         )
         .context("reading what dreams reviewed")?;
