@@ -62,14 +62,23 @@ list.
 
 ## Availability
 
-Computed when read, never stored (**built**, but for limits):
+Computed when read, never stored (**built**):
 
 - the harness's CLI is on this host's `PATH` (`claude`, `agy`, `aider`; a
   custom backend isn't remembered after spawn, so its entry's harness name
   is looked for as its command);
 - the row is enabled;
-- later: plan limits from `agent manage view`'s usage data, so a model near
-  its weekly limit reads `near limit` and `pick` ranks it down.
+- its plan isn't at its limit, from the host's own llm-exp usage snapshot
+  (`agent_manage::llm_usage::read_snapshot`, the file `agent manage view`
+  reads), passed into the view (`agent_roster::Checks`): for claude the
+  fullest of the session, the week, and the named model's week when the
+  entry's model contains its name; for agy its fullest bar. At 90% an entry
+  reads `near limit: week 93%, resets <when>` and `pick` takes 2 from its
+  score; at 100% it is `off: at limit until <when>` and isn't picked. A
+  snapshot over 10 minutes old, unreadable, or one where the provider
+  failed counts as none: the entry says `limits not known`, in `show` and
+  `--json` only. Each host judges its own limits, so they come over the bus
+  with its view (`limit`, `near_limit`, `limits`; `limits_as_of` per host).
 
 ## Commands
 
