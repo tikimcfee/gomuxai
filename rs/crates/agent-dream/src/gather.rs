@@ -5,6 +5,12 @@
 //!
 //! The rules:
 //!
+//! - Dreaming is opt-in by directory ([`Cursor::scope`]): only sessions
+//!   run in a scoped directory, or below one, count, and the memory, commits
+//!   and handoff docs that go with them. An empty scope gathers nothing.
+//!   Friction is the host's whatever the scope.
+//! - Nothing last written before the floor counts ([`Cursor::floor`]): the
+//!   first dream looks back [`DUE_AFTER`], and later dreams keep its floor.
 //! - A session counts once it is no longer running, unless a person
 //!   untracked it, a dream agent ran it, or it is a subagent's (it is read
 //!   with the session that started it). At most [`MAX_SESSIONS`] are taken,
@@ -18,7 +24,7 @@
 //!   changed or not: they are where what the dream learns is written. Only a
 //!   changed one counts as new.
 //! - Commits in the repos the taken sessions ran in, since the last committed
-//!   dream (or [`DUE_AFTER`] back, before any).
+//!   dream (or the floor, before any).
 //! - Nothing new makes the dream quiet, unless the last committed dream is
 //!   [`DUE_AFTER`] old (or there has been none): then it runs anyway over the
 //!   memory directories of every project with a finished session.
@@ -149,6 +155,15 @@ pub struct Cursor {
     /// When the last committed dream started.
     pub last_committed: Option<DateTime<Utc>>,
     pub now: DateTime<Utc>,
+    /// The directories dreaming covers (absolute): only sessions run in one
+    /// of them or below are evidence, and their memory and commits with
+    /// them. Empty: nothing is in scope. Friction is the host's whatever the
+    /// scope: it is about agent itself.
+    pub scope: Vec<String>,
+    /// Sessions last written before this are never evidence: the first
+    /// dream's look back ([`DUE_AFTER`] before it), kept for later dreams.
+    /// None: [`DUE_AFTER`] before now.
+    pub floor: Option<DateTime<Utc>>,
 }
 
 impl Cursor {
@@ -156,6 +171,16 @@ impl Cursor {
         self.reviewed
             .get(&(kind.to_string(), key.to_string()))
             .is_none_or(|fp| fp != fingerprint)
+    }
+
+    /// The floor in effect: the recorded one, else [`DUE_AFTER`] before now.
+    pub fn floor(&self) -> DateTime<Utc> {
+        self.floor.unwrap_or(self.now - DUE_AFTER)
+    }
+
+    /// Whether path is one of the scope's directories or inside one.
+    pub fn in_scope(&self, path: &str) -> bool {
+        in_scope(path, &self.scope)
     }
 
     fn was_reviewed(&self, kind: &str, key: &str) -> bool {
@@ -195,6 +220,8 @@ pub struct Gathered {
     pub since: Option<DateTime<Utc>>,
     /// Nothing new, and not due: no agent is started.
     pub quiet: bool,
+    /// The scope is empty: nothing was gathered, and no dream is recorded.
+    pub no_scope: bool,
     /// Why it is quiet, or runs with nothing new.
     pub reason: String,
 }
@@ -226,6 +253,7 @@ fn session_fingerprint(s: &SessionIn) -> String {
 /// Sessions that can be evidence at all: finished, tracked, not a dream's,
 /// not a subagent's, with a transcript.
 fn finished_sessions<'a>(sessions: &'a [SessionIn], cur: &Cursor) -> Vec<&'a SessionIn> {
+    let floor = cur.floor();
     sessions
         .iter()
         .filter(|s| {
@@ -234,8 +262,17 @@ fn finished_sessions<'a>(sessions: &'a [SessionIn], cur: &Cursor) -> Vec<&'a Ses
                 && !s.path.is_empty()
                 && s.parent_session.is_empty()
                 && !cur.dream_agents.contains(&s.agent)
+                && cur.in_scope(&s.cwd)
+                && s.mtime.is_some_and(|t| t >= floor)
         })
         .collect()
+}
+
+/// Whether path is one of dirs or inside one (by path components, so
+/// /srv/app2 isn't inside /srv/app).
+pub fn in_scope(path: &str, dirs: &[String]) -> bool {
+    let p = Path::new(path);
+    !path.is_empty() && p.is_absolute() && dirs.iter().any(|d| p.starts_with(d))
 }
 
 fn session_item(s: &SessionIn) -> Item {
@@ -258,6 +295,14 @@ fn session_item(s: &SessionIn) -> Item {
 
 /// Works out what the next dream reviews.
 pub fn gather(src: &dyn Sources, cur: &Cursor) -> Result<Gathered> {
+    if cur.scope.is_empty() {
+        return Ok(Gathered {
+            quiet: true,
+            no_scope: true,
+            reason: "nothing is in scope".into(),
+            ..Default::default()
+        });
+    }
     let sessions = src.sessions()?;
     let finished = finished_sessions(&sessions, cur);
 
@@ -304,6 +349,7 @@ pub fn gather(src: &dyn Sources, cur: &Cursor) -> Result<Gathered> {
     let mut seen_docs = BTreeSet::new();
     for h in src.handoffs()? {
         if h.fingerprint.is_empty()
+            || !cur.in_scope(&h.path)
             || !seen_docs.insert(h.path.clone())
             || !cur.is_new(KIND_HANDOFF, &h.path, &h.fingerprint)
         {
@@ -319,7 +365,7 @@ pub fn gather(src: &dyn Sources, cur: &Cursor) -> Result<Gathered> {
         });
     }
 
-    let since = cur.last_committed.unwrap_or(cur.now - DUE_AFTER);
+    let since = cur.last_committed.unwrap_or_else(|| cur.floor());
     let mut seen_cwds = BTreeSet::new();
     let mut commits: BTreeMap<String, Item> = BTreeMap::new();
     for s in &fresh {

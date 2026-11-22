@@ -50,9 +50,13 @@ fn session(id: &str, day: u32, cwd: &str) -> SessionIn {
     }
 }
 
+/// A cursor at now with everything in scope and a floor before every
+/// fixture session (the scope and floor have tests of their own).
 fn cursor(now: DateTime<Utc>) -> Cursor {
     Cursor {
         now,
+        scope: vec!["/".into()],
+        floor: Some(at(1) - TimeDelta::days(1)),
         ..Default::default()
     }
 }
@@ -249,7 +253,7 @@ fn memory_and_commits_follow_the_sessions_taken() {
     );
     assert_eq!(g.items[3].summary, "memory of repo/sub (2 files)");
     assert_eq!(g.items[4].read, "git -C /repo show aaaa");
-    assert_eq!(g.since, Some(at(3)));
+    assert_eq!(g.since, cur.floor, "before any committed dream, the floor");
     commit(&mut cur, &g, at(10));
 
     // A new session in the repo brings its memory dir along, unchanged (not
@@ -299,6 +303,115 @@ fn nothing_new_is_quiet_until_due() {
     let g = gather(&Fake::default(), &cursor(at(10))).unwrap();
     assert!(g.quiet);
     assert_eq!(g.reason, "nothing new, and nothing to consolidate");
+}
+
+#[test]
+fn scope_picks_the_sessions_and_what_goes_with_them() {
+    let mut f = Fake::default();
+    f.sessions = vec![
+        session("in", 5, "/srv/app"),
+        session("below", 5, "/srv/app/sub"),
+        session("beside", 5, "/srv/app2"),
+        session("personal", 5, "/home/someone/notes"),
+        session("nowhere", 5, ""),
+    ];
+    for cwd in ["/srv/app", "/srv/app2", "/home/someone/notes"] {
+        f.memory.insert(
+            cwd.into(),
+            MemoryIn {
+                dir: format!("/m{cwd}"),
+                files: 1,
+                fingerprint: "1".into(),
+            },
+        );
+        f.commits.insert(
+            cwd.into(),
+            vec![CommitIn {
+                repo: cwd.into(),
+                hash: "aaaa".into(),
+                subject: "s".into(),
+            }],
+        );
+    }
+    f.handoffs = vec![
+        HandoffIn {
+            agent: "lead".into(),
+            path: "/srv/app/docs/lead.md".into(),
+            fingerprint: "1".into(),
+        },
+        HandoffIn {
+            agent: "other".into(),
+            path: "/home/someone/notes/h.md".into(),
+            fingerprint: "1".into(),
+        },
+    ];
+    f.friction = vec![FrictionIn {
+        id: 1,
+        uid: "h-1".into(),
+        status: "open".into(),
+        updated_at: "t".into(),
+        ..Default::default()
+    }];
+
+    // An empty scope gathers nothing, friction included.
+    let mut cur = cursor(at(10));
+    cur.scope.clear();
+    let g = gather(&f, &cur).unwrap();
+    assert!(g.no_scope && g.quiet && g.items.is_empty(), "{g:?}");
+
+    cur.scope = vec!["/srv/app".into()];
+    let g = gather(&f, &cur).unwrap();
+    assert_eq!(
+        keys(&g),
+        [
+            "session:claude:below",
+            "session:claude:in",
+            "friction:h-1",
+            "handoff:/srv/app/docs/lead.md",
+            "memory:/m/srv/app",
+            "commit:/srv/app@aaaa"
+        ],
+        "friction stays the host's; the rest follows the scope"
+    );
+    assert!(!g.no_scope);
+}
+
+#[test]
+fn the_floor_keeps_old_sessions_out() {
+    let mut f = Fake::default();
+    f.sessions = vec![session("old", 1, "/a"), session("recent", 8, "/a")];
+    // The first dream looks back 7 days from now.
+    let mut cur = Cursor {
+        now: at(10),
+        scope: vec!["/a".into()],
+        ..Default::default()
+    };
+    assert_eq!(cur.floor(), at(3));
+    let g = gather(&f, &cur).unwrap();
+    assert_eq!(keys(&g), ["session:claude:recent"]);
+    assert_eq!(g.since, Some(at(3)));
+
+    // Recorded, it stays: weeks later, old is still out, unless it is
+    // written to again.
+    cur.floor = Some(at(3));
+    commit(&mut cur, &g, at(10));
+    let mut later = cursor_after(&cur, 28);
+    later.last_committed = Some(at(27));
+    assert!(gather(&f, &later).unwrap().quiet);
+    f.sessions[0].mtime = Some(at(27));
+    f.sessions[0].size = 200;
+    assert_eq!(keys(&gather(&f, &later).unwrap()), ["session:claude:old"]);
+}
+
+#[test]
+fn in_scope_goes_by_path_components() {
+    let dirs = vec!["/srv/app".to_string()];
+    assert!(in_scope("/srv/app", &dirs));
+    assert!(in_scope("/srv/app/x/y", &dirs));
+    assert!(!in_scope("/srv/app2", &dirs));
+    assert!(!in_scope("/srv", &dirs));
+    assert!(!in_scope("", &dirs));
+    assert!(!in_scope("srv/app", &dirs), "relative");
 }
 
 #[test]
