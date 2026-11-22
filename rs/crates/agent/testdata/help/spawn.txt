@@ -75,6 +75,20 @@ backends refuse it. Like the model, the agent remembers it: agent resume
 and agent revive relaunch at it, and agent status -v and agent fleet show
 it.
 
+--pick KIND lets the roster choose instead of --backend, --model and
+--effort: it ranks this host's and every linked host's entries for that
+task kind exactly as agent roster pick --task KIND does, says what it
+chose and why in a line ("Picked claude/claude-haiku-5-5@low for edit:
+tasks include edit; notes on edit: 2 good from 2 sessions; fast"), and
+spawns that. NAME@HOST (or --host) picks from that host's roster only. A
+pick on another host spawns there as NAME@HOST does, so that host's bus
+must serve spawn; if it doesn't, spawn says so. --saved NAME[@VERSION]
+spawns a pick kept with agent roster pick --save NAME, on its own host, if
+its entry is still available there. Both refuse --backend,
+--backend-config, --model and --effort, and when nothing in the roster can
+be picked, the refusal lists each entry's availability (as agent roster
+list shows it) and how to add one.
+
 --attach opens the new agent's session in this terminal once it
 starts, as agent attach does (Ctrl-\ twice detaches; the agent keeps running).
 
@@ -117,6 +131,8 @@ Examples:
   agent spawn reviewer --backend agy --trust-workspace
   agent spawn quick --backend claude --model claude-fable-5-1
   agent spawn deep --backend claude --model claude-opus-5-5 --effort xhigh
+  agent spawn fixer --pick edit tasks/fix.md
+  agent spawn reviewer --saved quick-review@2
   agent spawn lead --backend claude --resume 3f34adff --attach
   agent spawn lead --backend claude --continue
   agent spawn builder@hub --backend claude --cwd /srv/repo tasks/build.md
@@ -131,7 +147,9 @@ Flags:
   -h, --help               help for spawn
       --host string        Start the agent on this host, through the agent bus (same as name@host)
       --model string       Model the CLI runs on, passed as its --model (claude, agy, aider); resume keeps it
+      --pick string        Let the roster choose backend, model, effort and host for this task kind (edit, bugfix, feature, long-horizon, review, research, design, test, kernel, chat), as agent roster pick does
       --resume string      Continue this ended Claude or agy session as the agent (an id, the start of one, or a transcript's path)
+      --saved string       Spawn a saved pick (agent roster pick --save): NAME[@VERSION], its newest by default
       --skip-permissions   Pass --dangerously-skip-permissions to Claude or Agy (use with caution)
       --task string        Reference a task from the repository by name
       --trust-workspace    Confirm the CLI's workspace trust prompt on launch (use with caution)

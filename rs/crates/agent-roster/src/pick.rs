@@ -66,7 +66,8 @@ fn tie_break(e: &EntryView, prefer: &str) -> i64 {
 }
 
 /// The spawn command's words for e on host: NAME@HOST when host isn't
-/// local_host, and no --model for the harness's default.
+/// local_host, no --model for the harness's default, and --effort when the
+/// entry names one.
 fn spawn_argv(host: &str, local_host: &str, e: &EntryView) -> Vec<String> {
     let mut name = String::from("NAME");
     if !host.eq_ignore_ascii_case(local_host) {
@@ -79,6 +80,10 @@ fn spawn_argv(host: &str, local_host: &str, e: &EntryView) -> Vec<String> {
     if !e.entry.model.is_empty() {
         argv.push("--model".into());
         argv.push(e.entry.model.clone());
+    }
+    if !e.entry.effort.is_empty() {
+        argv.push("--effort".into());
+        argv.push(e.entry.effort.clone());
     }
     argv
 }
@@ -109,12 +114,6 @@ fn why(e: &EntryView, task: &str, suits: bool, c: &NoteCounts) -> String {
     }
     if e.near_limit {
         parts.push(e.limits.clone());
-    }
-    if !e.entry.effort.is_empty() {
-        parts.push(format!(
-            "effort {} (spawn has no --effort yet)",
-            e.entry.effort
-        ));
     }
     if !e.entry.good_at.is_empty() {
         parts.push(format!("good at: {}", e.entry.good_at));

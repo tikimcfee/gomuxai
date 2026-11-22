@@ -323,7 +323,7 @@ fn render_rosters(hosts: &[HostRoster], local_host: &str) -> String {
 /// "near limit: week 93%, resets Fri 04:00", "off: disabled", "off: at
 /// limit until Fri 04:00". (Limits that aren't known aren't said here; show
 /// says so.)
-fn availability(e: &EntryView) -> String {
+pub(crate) fn availability(e: &EntryView) -> String {
     if e.available && e.near_limit {
         e.limits.clone()
     } else if e.available {
@@ -742,10 +742,20 @@ fn describe_save(s: &SaveResult) -> String {
 /// pick --saved: a saved command again, and whether its entry is
 /// available now.
 fn replay_saved(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
-    let (name, version) = agent_roster::parse_saved_ref(&args.saved)?;
+    let check = check_saved_ref(ctx, &args.saved)?;
+    if args.json {
+        return ctx.print_json(&check);
+    }
+    ctx.write_out(&render_saved(&check))
+}
+
+/// The saved pick NAME[@VERSION] names, checked against its own host's
+/// roster: this one's, or a linked one's through the bus (none read, if
+/// that fails: check_saved says it wasn't checked). pick --saved prints it;
+/// spawn --saved spawns it.
+pub(crate) fn check_saved_ref(ctx: &Ctx, saved_ref: &str) -> anyhow::Result<SavedCheck> {
+    let (name, version) = agent_roster::parse_saved_ref(saved_ref)?;
     let p = agent_roster::saved(ctx.store()?, &name, version)?;
-    // Its own host's roster: this one's, or a linked one's through the bus
-    // (none read, if that fails: check_saved says it wasn't checked).
     let hosts = if is_remote_host(ctx, &p.host) {
         match ctx.bus_connect() {
             Ok(nc) => {
@@ -759,11 +769,7 @@ fn replay_saved(ctx: &Ctx, args: &RosterPickArgs) -> anyhow::Result<()> {
     } else {
         vec![local_roster(ctx)?]
     };
-    let check = agent_roster::check_saved(p, &hosts);
-    if args.json {
-        return ctx.print_json(&check);
-    }
-    ctx.write_out(&render_saved(&check))
+    Ok(agent_roster::check_saved(p, &hosts))
 }
 
 fn render_saved(c: &SavedCheck) -> String {

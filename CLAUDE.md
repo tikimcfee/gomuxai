@@ -159,6 +159,7 @@ the binary by name or path. The hook never denies anything, and a settings
 agent list                                          # reuse an agent before spawning another
 agent roster pick --task review                     # which harness, model and host suit it (below)
 agent spawn helper --backend agy --model MODEL      # no first message
+agent spawn helper --pick review tasks/review.md    # the roster chooses backend, model, effort, host
 agent spawn helper --backend claude tasks/build.md  # first message: read and execute that file
 agent spawn helper --backend claude --handoff docs/lanes/helper.md tasks/build.md
 agent spawn helper --backend claude --task review   # first message: a stored task's content
@@ -184,7 +185,13 @@ too; `agent resume` relaunches on it, and `status -v` shows it.
 `--effort low|medium|high|xhigh|max` (the roster's efforts) does the same
 for the CLI's reasoning effort: claude and agy take one, others refuse it,
 and resume, revive, `status -v`, `fleet` and `template add --effort` carry
-it. `--handoff
+it. `--pick KIND` lets the roster choose instead: it ranks every
+reachable host's entries as `agent roster pick --task KIND` does, prints
+what it chose and why, and spawns that (on another host as `NAME@HOST`,
+which needs that host's `spawn` op; spawn says so if it's refused);
+`--saved NAME[@VERSION]` spawns a saved pick. Both refuse `--backend`,
+`--model` and `--effort`, and with nothing available say what `roster
+list` shows and how to add an entry. `--handoff
 <file>` stores the absolute path of the agent's handoff doc as its `handoff`
 state key, so `agent revive` knows what to re-brief it from and `agent fleet`
 flags it when commits outrun the doc. A spawned or resumed Claude agent gets
@@ -543,6 +550,7 @@ agent roster list                                  # entries: availability, spee
 agent roster show claude/claude-haiku-5-5          # one entry and its notes (HARNESS/MODEL[@EFFORT])
 agent roster pick --task edit                      # a ready spawn line, and two runners-up with why
 agent roster pick --task edit --save quick-edit    # keep that command as a revision of quick-edit
+agent spawn fixer --pick edit                      # spawn the top pick directly (--saved quick-edit: a saved one)
 agent roster pick --saved quick-edit               # print it again (NAME@VERSION for an older one)
 agent roster note claude/claude-haiku-5-5 --task edit --verdict good \
     --session claude:3f3a9c "renamed across 12 files cleanly" --why "..."
