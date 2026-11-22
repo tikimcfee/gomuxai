@@ -1,6 +1,7 @@
 Roster is where to look before a spawn: which harness and model this host
 can run, what each is good at, how fast and costly it is, whether it is
-available now, and what past runs showed. It lists this host's entries:
+available now, and what past runs showed. It lists this host's entries,
+then every linked host's, asked at once over the bus (3s each):
 
   Roster on hub: harnesses and models this host can run
   ENTRY                    AVAILABLE            SPEED  COST  TASKS      NOTES
@@ -27,10 +28,14 @@ roster (or roster list), show, picks and pick only read (pick --save adds a
 saved pick's version); note only adds a note. set, enable, disable and
 remove change the entries.
 
---json prints this host's roster as one JSON document: {"host", "entries":
-[...], "unlisted": {...}}, each entry with its fields, "key", "available",
-"unavailable" (why not), "notes" (counts by verdict, and "sessions") and
-"by_task".
+A linked host whose bus doesn't answer roster (it is down, or runs an
+older agent, or its --remote-ops leaves roster out) is listed as not read,
+with the fix to run there. --host HOST reads one host.
+
+--json prints {"hosts": [...]}, each host {"host", "entries": [...],
+"unlisted": {...}}, or {"host", "error", "fix"} when it wasn't read; each
+entry has its fields, "key", "available", "unavailable" (why not), "notes"
+(counts by verdict, and "sessions") and "by_task".
 
 Usage:
   agent roster [flags]
@@ -39,6 +44,7 @@ Usage:
 Examples:
   agent roster
   agent roster pick --task edit
+  agent roster --host hub
   agent roster show claude/claude-opus-5-5
   agent roster set claude/claude-haiku-5-5 --speed fast --cost low --tasks edit,test --good-at "small precise edits"
   agent roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "did the rename across 12 files cleanly"
@@ -57,8 +63,9 @@ Available Commands:
   remove      Delete a roster entry (its notes stay)
 
 Flags:
-  -h, --help   help for roster
-      --json   Print the roster as one JSON document
+  -h, --help          help for roster
+      --host string   Read only this host (default: this host and every linked host)
+      --json          Print the rosters as one JSON document
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
