@@ -7,7 +7,8 @@ get prints a file's version, then its content. put and remove take the
 version you read (--expect; "new" for a file that doesn't exist yet) and
 refuse if the file changed since. put refuses a file without valid
 frontmatter (name, description, metadata.type), a new or changed fact with
-no [source: ...; added: YYYY-MM-DD] line, a rewrite that loses a source
+no [source: ...; added: YYYY-MM-DD] line (a change that only points
+[[links]] at memories that exist needs none), a rewrite that loses a source
 citation the file had, and a MEMORY.md that drops more than a quarter of
 its lines. remove refuses a file whose citations no other memory carries.
 Both save the prior file under the dream's directory first, so they run

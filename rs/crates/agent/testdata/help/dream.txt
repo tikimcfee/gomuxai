@@ -17,6 +17,7 @@ People (or a timer) run these:
   run      start a dream: gather, record it, write its digest, spawn its agent
   list     the dreams so far
   show     one dream: its diary and what it was given
+  schedule run dreams on a timer (daily HH:MM, every Nh, off, status)
 
 The dream agent runs these, on its own open dream only:
 
@@ -53,6 +54,7 @@ Available Commands:
   friction    Triage friction for your dream: duplicates, links, accepting
   limitation  File friction about dreaming itself
   memory      Read, write and check a memory directory, under a dream's guard
+  schedule    Run dreams on a timer (a systemd user timer)
 
 Flags:
   -h, --help   help for dream

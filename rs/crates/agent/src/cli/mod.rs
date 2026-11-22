@@ -41,6 +41,8 @@ pub mod root;
 mod bus_identity;
 // `agent dream memory`, wired under `agent dream` by its group's def().
 mod dream_memory;
+// `agent dream schedule`, wired under `agent dream` by its group's def().
+mod dream_schedule;
 mod friction_links;
 mod orient;
 mod resume_all;

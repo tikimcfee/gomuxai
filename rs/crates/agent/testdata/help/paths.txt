@@ -111,6 +111,7 @@ dream memory get
 dream memory put
 dream memory remove
 dream memory check
+dream schedule
 roster
 roster list
 roster show

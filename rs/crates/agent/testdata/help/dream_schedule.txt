@@ -1,0 +1,38 @@
+Schedule runs agent dream run on a timer: a systemd user timer and service,
+gomuxai-dream.timer and gomuxai-dream.service in ~/.config/systemd/user.
+
+  daily HH:MM   once a day at that local time
+  every Nh      every N hours (1h to 24h), on the hour
+  off           stop the timer and remove both units
+  status        whether it's on, how often, and when it runs next (the
+                default)
+
+Turning it on writes both units, reloads systemd and enables the timer. The
+service runs this agent binary, from its directory, with the PATH schedule
+was run with (so a dream finds claude and git). It refuses while nothing is
+in the dream scope (agent dream scope add). A dream missed while the
+machine was off runs once when it's back. Schedule again to change the
+time.
+
+--dry-run prints the units and the systemctl commands, and changes nothing.
+Linux only for now.
+
+Usage:
+  agent dream schedule <daily HH:MM | every Nh | off | status> [flags]
+
+Examples:
+  agent dream schedule daily 04:00 --dry-run
+  agent dream schedule daily 04:00
+  agent dream schedule every 6h
+  agent dream schedule status
+  agent dream schedule off
+
+Flags:
+      --dry-run   Print the units and commands, and change nothing
+  -h, --help      help for schedule
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -69,6 +69,7 @@ People (or a timer) run these:
   run      start a dream: gather, record it, write its digest, spawn its agent
   list     the dreams so far
   show     one dream: its diary and what it was given
+  schedule run dreams on a timer (daily HH:MM, every Nh, off, status)
 
 The dream agent runs these, on its own open dream only:
 
@@ -105,6 +106,7 @@ pub fn def() -> Def {
             friction_def(),
             limitation_def(),
             super::dream_memory::def(),
+            super::dream_schedule::def(),
         ],
     )
 }
@@ -309,7 +311,7 @@ pub const HOST_KEY_SCOPE: &str = "dream.scope";
 /// before it are never evidence. The first `dream run` records it.
 pub const HOST_KEY_FLOOR: &str = "dream.floor";
 
-fn read_scope(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
+pub(crate) fn read_scope(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
     match ctx.store()?.get_host_state(HOST_KEY_SCOPE)? {
         None => Ok(Vec::new()),
         Some(v) if v.is_empty() => Ok(Vec::new()),

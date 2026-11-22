@@ -164,9 +164,18 @@ index doesn't name.
 
 ### Schedule
 
-`agent dream schedule` writes a systemd user timer (a launchd agent on
-macOS) that runs `agent dream run` daily at a set time, or every N hours.
-Turning it on is a person's call.
+**built** (Linux; macOS later, as a launchd agent). `agent dream schedule
+daily HH:MM | every Nh` writes `gomuxai-dream.service` and `.timer` in
+`~/.config/systemd/user` (`agent_dream::schedule` renders them): the
+service runs this agent binary's `dream run` from the binary's directory
+with the caller's PATH, and the timer is persistent, so a dream missed
+while the machine was off runs once when it is back. Then it reloads
+systemd and enables the timer. It refuses with an empty dream scope, and
+with a path a unit would misread (whitespace, `%`, quotes). `off` disables
+the timer and removes both units; `status` (the default) says whether it is
+on, how often, and the next run (`systemctl --user list-timers`).
+`--dry-run` prints the units and commands. Turning it on is a person's
+call.
 
 ### Later
 
