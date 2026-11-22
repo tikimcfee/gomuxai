@@ -26,7 +26,7 @@ Only the consolidate layer is being built now.
 
 ### The record and the reviewed cursor
 
-Two tables in the host's store (`gomuxai.db`):
+**built** (`agent-store` `dreams.rs`). Two tables in the host's store (`gomuxai.db`):
 
 - `dreams`: one row per dream: id, host, the agent that dreamt it,
   started/finished, status (`open`, `committed`, `abandoned`, `quiet`),
@@ -48,26 +48,50 @@ itself (its memory puts, its friction triage) is not new evidence. A dream
 runs anyway once the last committed one is 7 days old. Each dream takes at
 most 200 sessions, oldest first; the rest wait for the next.
 
+What a dream changes itself is recorded in it as it left it: each
+`agent dream friction` verb and `limitation` sets the entries it touched
+as items of the dream at their fingerprint afterwards (the store's
+`set_dream_item`; `memory put` is to do the same for the file it wrote).
+
 ### Gather (deterministic)
 
-`agent dream gather` lists what the next dream would get, without starting
-one. Sources:
+**built** (the rules in `agent-dream` `gather.rs`, the host's side in the
+CLI's `dream.rs`). `agent dream gather` lists what the next dream would
+get, without starting one. Sources:
 
 - sessions that are no longer running (`agent sessions`' discovery), not
-  untracked, not the dream agents' own;
-- this host's friction entries, open or changed;
+  untracked, not the dream agents' own. A session whose state can't be told
+  counts as running, and a subagent's session goes with the session that
+  started it, not as an item of its own;
+- this host's friction entries: open and accepted ones not reviewed as they
+  are, and closed ones that changed since a dream reviewed them;
 - handoff docs named by agents' `handoff` state keys;
-- memory directories (Claude Code's per-project `memory/`);
-- commits in the repos those sessions ran in, since the last dream.
+- memory directories (Claude Code's per-project `memory/`, beside the
+  transcripts) of the projects whose sessions the dream takes, changed or
+  not: they are where it writes. Only a changed one counts as new. A dream
+  that runs with nothing new (7 days on) takes the memory directories of
+  every project with a finished session;
+- commits in the repos those sessions ran in (`git log` in each session's
+  cwd, skipped when it isn't a repo or is gone), since the last committed
+  dream started, or 7 days back before any.
 
 ### The dream agent and its narrow toolset
 
-`agent dream run` gathers, records the dream and its items, writes a digest
+**built**, except `memory` and the brief's text. `agent dream run` closes
+an open dream whose agent is gone as abandoned (and starts nothing while a
+dream's agent is still at work), cleans up the agents of closed dreams,
+gathers, records the dream and its items, writes a digest
 (`.gomuxai/dreams/<id>/digest.md`), and spawns a Claude agent `dream-<id>`
-with a fixed brief. The agent reads (transcripts through `agent logs` and
-`agent transcript`, files through its Read tool) and writes only through
-`agent dream` verbs, which the PreToolUse hook allows for that agent alone
-while its dream is open:
+with a fixed brief (`agent-dream/src/brief.md`, behind a header naming the
+dream and its digest), in `.gomuxai/dreams` with its workspace trust
+answered, and its state key `dream` set to the id. `--dry-run` says what it
+would do. `agent dream list` and `show` read the record. The agent reads
+(transcripts through `agent logs` and `agent transcript`, files through its
+Read tool) and writes only through `agent dream` verbs, which the
+PreToolUse hook allows for that agent alone while its dream is open
+(`DREAM_AGENT_COMMANDS` in agent-service; they are never in the launch
+rules). Each verb acts on the caller's own open dream and refuses
+otherwise:
 
 - `agent dream memory get|put|check`: put takes the version it read
   (`--expect`), and refuses a rewrite that drops more than a quarter of the
