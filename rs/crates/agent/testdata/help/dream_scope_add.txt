@@ -1,0 +1,18 @@
+Add puts a directory in the dream scope: sessions run in it or below it are
+reviewed from the next dream on (back to the floor the first dream set,
+7 days before it).
+
+Usage:
+  agent dream scope add <dir> [flags]
+
+Examples:
+  agent dream scope add ~/src/app
+
+Flags:
+  -h, --help   help for add
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

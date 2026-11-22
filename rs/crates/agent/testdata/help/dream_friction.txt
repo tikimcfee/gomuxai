@@ -1,0 +1,35 @@
+The dream agent's friction triage. It never resolves an entry as fixed:
+that is for the people working on the tool.
+
+  dup <id> <original>     close an entry as a duplicate of another here
+  link <id> <id@host>     link an entry to the same problem on another host
+  accept <id>             accept an open entry: it is clearly real
+
+Each records the entries it changed in the dream as it left them, so the
+next dream doesn't take its own triage for news. Only a dream's own agent
+runs them.
+
+Usage:
+  agent dream friction [flags]
+  agent dream friction [command]
+
+Examples:
+  agent dream friction dup 14 12
+  agent dream friction link 12 34@hub --note "same trust prompt"
+  agent dream friction accept 12 --note "three sessions hit it"
+
+Available Commands:
+  dup         Close a friction entry as a duplicate of another
+  link        Link a friction entry to the same problem on another host
+  accept      Accept an open friction entry
+
+Flags:
+  -h, --help   help for friction
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent dream friction [command] --help" for more information about a command.

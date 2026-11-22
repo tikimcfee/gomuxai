@@ -1,0 +1,36 @@
+Gather lists what agent dream run would give the next dream, and records
+nothing:
+
+  sessions    run in the dream scope (agent dream scope), no longer
+              running, not untracked, not a dream agent's own (subagents'
+              sessions go with the session that started them), last written
+              after the floor; at most 200, oldest first, the rest wait
+  friction    this host's open and accepted entries, and closed ones that
+              changed since a dream saw them, whatever the scope
+  handoff     the docs agents' handoff state keys name, in the scope
+  memory      Claude Code's memory/ directory of each session's project
+  commit      commits in the repos those sessions ran in, since the last
+              committed dream (before any, since the floor)
+
+The floor is set by the first agent dream run, 7 days before it: nothing
+last written earlier is ever taken, unless it is written to again. Until
+then gather looks back 7 days. An item a committed dream reviewed is left
+out until it changes. With nothing new, the dream would be quiet; with
+nothing in scope, there is nothing to gather: it says which.
+
+Usage:
+  agent dream gather [flags]
+
+Examples:
+  agent dream gather
+  agent dream gather --json
+
+Flags:
+  -h, --help   help for gather
+      --json   Print as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -1,0 +1,18 @@
+List prints the directories in the dream scope, one per line.
+
+Usage:
+  agent dream scope list [flags]
+
+Examples:
+  agent dream scope list
+  agent dream scope list --json
+
+Flags:
+  -h, --help   help for list
+      --json   Print as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

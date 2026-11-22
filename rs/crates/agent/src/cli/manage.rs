@@ -873,7 +873,7 @@ pub fn untrack_def() -> Def {
 }
 
 /// Every session of this host as a row, untracked ones marked.
-fn all_rows(ctx: &Ctx) -> anyhow::Result<Vec<SessionRow>> {
+pub(crate) fn all_rows(ctx: &Ctx) -> anyhow::Result<Vec<SessionRow>> {
     let req = Request::default();
     let (mut rows, _, _) = local_sessions(ctx, &req, Utc::now())?;
     let hidden: HashSet<String> = ctx

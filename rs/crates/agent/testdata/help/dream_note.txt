@@ -1,0 +1,18 @@
+Note appends to the diary of the dream you dream, stamped with the time:
+what you reviewed, what you changed and why, what you left for later.
+Only a dream's own agent runs it.
+
+Usage:
+  agent dream note "text" [flags]
+
+Examples:
+  agent dream note "merged two entries on held messages; sources cited"
+
+Flags:
+  -h, --help   help for note
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

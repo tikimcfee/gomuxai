@@ -1,0 +1,46 @@
+Memory reads and writes a memory directory: Claude Code's per-project
+memory/, one fact per .md file, with MEMORY.md as its index. --dir names
+the directory; without it, the memory directory of the project this
+directory belongs to.
+
+get prints a file's version, then its content. put and remove take the
+version you read (--expect; "new" for a file that doesn't exist yet) and
+refuse if the file changed since. put refuses a file without valid
+frontmatter (name, description, metadata.type), a new or changed fact with
+no [source: ...; added: YYYY-MM-DD] line, a rewrite that loses a source
+citation the file had, and a MEMORY.md that drops more than a quarter of
+its lines. remove refuses a file whose citations no other memory carries.
+Both save the prior file under the dream's directory first, so they run
+only inside an open dream.
+
+check reports, changing nothing: exact and near duplicate entries, [[links]]
+naming no memory, index lines naming no file, and files the index doesn't
+name.
+
+Usage:
+  agent dream memory [flags]
+  agent dream memory [command]
+
+Examples:
+  agent dream memory get feedback_tests.md
+  agent dream memory put feedback_tests.md --expect 3f9a0c1d2e4b5a69 --from draft.md
+  agent dream memory put MEMORY.md --expect new --from index.md
+  agent dream memory remove old_fact.md --expect 0a1b2c3d4e5f6071
+  agent dream memory check --json
+
+Available Commands:
+  get         Print a memory file's version, then its content
+  put         Write a memory file, if it hasn't changed since you read it
+  remove      Move a memory file out, into the dream's directory
+  check       Report duplicates, broken links and index gaps in a memory directory
+
+Flags:
+  -h, --help   help for memory
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent dream memory [command] --help" for more information about a command.

@@ -39,6 +39,8 @@ pub mod remote_ops;
 pub mod root;
 
 mod bus_identity;
+// `agent dream memory`, wired under `agent dream` by its group's def().
+mod dream_memory;
 mod friction_links;
 mod orient;
 mod resume_all;
@@ -119,7 +121,7 @@ macro_rules! commands {
 commands! {
     // revive is new in the Rust build, like run below.
     agents "Agents:" { spawn adopt resume revive attach list cleanup export sessions }
-    fleet "Fleet:" { fleet focus template manage }
+    fleet "Fleet:" { fleet focus template manage dream }
     messages "Messages:" { send queue deliver watch }
     status "Status and waiting:" {
         status statuses wait approve [approve::deny_def] capture logs transcript events report

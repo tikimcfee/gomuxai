@@ -1,0 +1,66 @@
+A dream is a pass over finished work: sessions that have ended, the friction
+box, handoff docs, memory directories, and the commits in the repos those
+sessions ran in. A Claude agent, dream-<id>, reads them and writes back only
+through agent dream's own verbs: it consolidates memory, triages friction
+(duplicates, links, accepting what is clearly real; it never resolves an
+entry as fixed), and keeps a diary.
+
+Dreaming is opt-in by directory: only sessions run in a directory of the
+dream scope (or below one) are reviewed, with their memory and commits;
+the friction box is the host's whatever the scope. The first dream looks
+back 7 days, and nothing older is ever taken unless it is written to again.
+
+People (or a timer) run these:
+
+  scope    choose the directories dreaming covers (add, remove, list)
+  gather   what the next dream would review, without starting one
+  run      start a dream: gather, record it, write its digest, spawn its agent
+  list     the dreams so far
+  show     one dream: its diary and what it was given
+
+The dream agent runs these, on its own open dream only:
+
+  note, commit, abandon, friction dup|link|accept, limitation,
+  memory put|remove (memory get and check only read)
+
+An item counts as reviewed once its dream commits, at the version it had
+then: a session written to again or a friction entry voted on comes back.
+A dream that is abandoned, or whose agent goes away, leaves its items for
+the next one. With nothing new, a dream is recorded as quiet and no agent
+starts, until the last committed dream is 7 days old.
+
+Usage:
+  agent dream [flags]
+  agent dream [command]
+
+Examples:
+  agent dream scope add ~/src/app
+  agent dream gather
+  agent dream run --dry-run
+  agent dream run
+  agent dream list
+  agent dream show 3
+
+Available Commands:
+  scope       Choose the project directories dreaming covers
+  gather      List what the next dream would review, without starting one
+  run         Start a dream: gather, record it, and spawn its agent
+  list        List the dreams so far
+  show        Show a dream: its diary and what it was given
+  note        Add a line to your dream's diary
+  commit      Finish your dream: what it was given counts as reviewed
+  abandon     Give up your dream: its items wait for the next one
+  friction    Triage friction for your dream: duplicates, links, accepting
+  limitation  File friction about dreaming itself
+  memory      Read, write and check a memory directory, under a dream's guard
+
+Flags:
+  -h, --help   help for dream
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent dream [command] --help" for more information about a command.

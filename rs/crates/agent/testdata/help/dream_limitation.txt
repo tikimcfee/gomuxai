@@ -1,0 +1,20 @@
+Limitation files a friction entry (kind other) about what got in the way of
+dreaming: a verb that was missing, an item that couldn't be read. If the
+summary is close to an open or accepted entry's, it files nothing and
+names that entry. Only a dream's own agent runs it.
+
+Usage:
+  agent dream limitation "summary" [flags]
+
+Examples:
+  agent dream limitation "no way to read a subagent's transcript from the digest"
+
+Flags:
+      --detail string   More detail
+  -h, --help            help for limitation
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

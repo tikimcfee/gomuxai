@@ -3,4 +3,4 @@
 
 mod allowcmd;
 
-pub use allowcmd::{Checker, LookPathFn, look_path};
+pub use allowcmd::{Checker, LookPathFn, literal_words, look_path};

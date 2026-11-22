@@ -65,3 +65,80 @@ fn test_pre_tool_use_allows_safe_agent_commands() {
     let out = hook("Read", "./bin/agent list");
     assert!(out.is_none(), "Read: hook output {out:?}, want none");
 }
+
+// The dream verbs are approved only for the agent whose dream is open, and
+// only while it is (docs/DREAMING.md).
+#[test]
+fn test_pre_tool_use_allows_dream_verbs_for_the_open_dream_only() {
+    require_termd!();
+    let mut env = setup_test_env();
+    let root = tempdir();
+    let rootp = root.path().display().to_string();
+    let bin = root.path().join("agent");
+    std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = bin.display().to_string();
+    env.cfg_mut().agent_binary = bin.clone();
+    let dreamer = spawn_fake(&env, "dream-1");
+    let other = spawn_fake(&env, "worker");
+
+    let allowed = |name: &str, fake: &FakeHook, command: &str| -> bool {
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse", "session_id": fake.session_id(), "cwd": rootp,
+            "tool_name": "Bash", "tool_input": {"command": command},
+        })
+        .to_string();
+        let (out, err) = env.service.handle_hook(name, "", "", payload.as_bytes());
+        if let Err(e) = err {
+            panic!("HandleHook {payload}: {e:#}");
+        }
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.unwrap_or_default()).unwrap_or_default();
+        v["hookSpecificOutput"]["permissionDecision"] == "allow"
+    };
+    let note = format!("{bin} dream note \"read 3 sessions\"");
+
+    assert!(!allowed("dream-1", &dreamer, &note), "no dream yet");
+    let commit = agent_store::DreamItem {
+        kind: "commit".into(),
+        key: "/srv/app@abcdef1234".into(),
+        fingerprint: "abcdef1234".into(),
+        ..Default::default()
+    };
+    let d = env
+        .store
+        .open_dream("h", &[commit], |id| format!("dream-{id}"))
+        .unwrap();
+    assert_eq!(d.agent, "dream-1");
+    for cmd in [
+        note.clone(),
+        format!("{bin} dream friction accept 3 --note x"),
+        format!("{bin} dream commit"),
+        format!("{bin} logs worker"),
+        "git -C /srv/app show abcdef1 --stat".to_string(),
+    ] {
+        assert!(allowed("dream-1", &dreamer, &cmd), "{cmd}: want allowed");
+    }
+    assert!(
+        !allowed("worker", &other, &note),
+        "another agent's dream verbs"
+    );
+    assert!(
+        !allowed("worker", &other, "git -C /srv/app log"),
+        "git in a dream's repo, for another agent"
+    );
+    assert!(
+        !allowed("dream-1", &dreamer, "git -C /srv/other log"),
+        "a repo the dream has no commits of"
+    );
+    assert!(
+        !allowed("dream-1", &dreamer, &format!("{bin} dream run")),
+        "run is a person's"
+    );
+    assert!(
+        !allowed("dream-1", &dreamer, &format!("{bin} friction accept 3")),
+        "plain friction accept stays a person's"
+    );
+    env.store.commit_dream(d.id).unwrap();
+    assert!(!allowed("dream-1", &dreamer, &note), "the dream is closed");
+}

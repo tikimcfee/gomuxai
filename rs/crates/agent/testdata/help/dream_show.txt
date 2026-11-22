@@ -1,0 +1,19 @@
+Show prints a dream (the newest, without an id): its status, agent and
+times, its diary, and each item it was given, with how to read it.
+
+Usage:
+  agent dream show [id] [flags]
+
+Examples:
+  agent dream show
+  agent dream show 3 --json
+
+Flags:
+  -h, --help   help for show
+      --json   Print as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

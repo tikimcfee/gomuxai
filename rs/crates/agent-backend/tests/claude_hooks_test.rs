@@ -530,6 +530,30 @@ fn test_claude_launch_restartable() {
 }
 
 #[test]
+fn test_claude_allow_tools() {
+    let b = namedagents::new_claude_backend();
+    let cmd = b.allow_tools(
+        "claude",
+        &["agent status".to_string()],
+        &["Read(//srv/app/**)".to_string()],
+        &["Edit".to_string(), "Write".to_string()],
+    );
+    let args = shell_args(cmd.strip_prefix("claude ").unwrap());
+    assert_eq!(
+        args,
+        [
+            "--allowedTools",
+            "Bash(agent status:*)",
+            "Read(//srv/app/**)",
+            "--disallowedTools",
+            "Edit",
+            "Write"
+        ]
+    );
+    assert_eq!(b.allow_tools("claude", &[], &[], &[]), "claude");
+}
+
+#[test]
 fn test_claude_allow_commands() {
     let cmd = namedagents::new_claude_backend().allow_commands(
         "claude",

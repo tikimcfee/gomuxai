@@ -546,6 +546,32 @@ impl CommandAllower for ClaudeBackend {
             .collect();
         format!("{launch_cmd} --allowedTools {}", rules.join(" "))
     }
+
+    /// One --allowedTools with the Bash prefixes and `allow`, and a
+    /// --disallowedTools with `deny`.
+    fn allow_tools(
+        &self,
+        launch_cmd: &str,
+        prefixes: &[String],
+        allow: &[String],
+        deny: &[String],
+    ) -> String {
+        let mut cmd = launch_cmd.to_string();
+        let rules: Vec<String> = prefixes
+            .iter()
+            .map(|p| format!("Bash({p}:*)"))
+            .chain(allow.iter().cloned())
+            .map(|r| shell_quote(&r))
+            .collect();
+        if !rules.is_empty() {
+            cmd = format!("{cmd} --allowedTools {}", rules.join(" "));
+        }
+        if !deny.is_empty() {
+            let rules: Vec<String> = deny.iter().map(|r| shell_quote(r)).collect();
+            cmd = format!("{cmd} --disallowedTools {}", rules.join(" "));
+        }
+        cmd
+    }
 }
 
 /// Claude's folder trust dialog. Its highlighted option is "No, exit", so a

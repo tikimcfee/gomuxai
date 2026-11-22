@@ -1,0 +1,21 @@
+List shows the dreams on this host, newest first: id, status (open,
+committed, abandoned, quiet), its agent, when it started, how many items it
+was given, and the first line of its diary.
+
+Usage:
+  agent dream list [flags]
+
+Examples:
+  agent dream list
+  agent dream list --limit 5 --json
+
+Flags:
+  -h, --help        help for list
+      --json        Print as JSON
+      --limit int   At most this many (0: all) (default 20)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

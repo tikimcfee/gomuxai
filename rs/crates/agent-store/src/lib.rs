@@ -5,6 +5,7 @@
 //! see [`gotime`] for timestamps and [`gojson`] for the JSON columns.
 
 pub mod commands;
+pub mod dreams;
 pub mod friction;
 pub mod friction_links;
 pub mod gojson;
@@ -22,6 +23,8 @@ pub mod tree;
 #[cfg(test)]
 mod commands_test;
 #[cfg(test)]
+mod dreams_test;
+#[cfg(test)]
 mod friction_links_test;
 #[cfg(test)]
 mod friction_test;
@@ -30,6 +33,7 @@ mod host_rename_test;
 #[cfg(test)]
 mod tree_test;
 
+pub use dreams::{DREAM_ABANDONED, DREAM_COMMITTED, DREAM_OPEN, DREAM_QUIET, Dream, DreamItem};
 pub use gotime::Time;
 pub use host_rename::HostRenamed;
 pub use jobs::{Job, PromotedScript};

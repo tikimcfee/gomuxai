@@ -7,6 +7,7 @@ use rusqlite::types::{Type, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Params, Row, Transaction, params};
 
 use crate::commands::COMMAND_LOG_SCHEMA;
+use crate::dreams::DREAMS_SCHEMA;
 use crate::friction::FRICTION_SCHEMA;
 use crate::friction_links::FRICTION_LINKS_SCHEMA;
 use crate::gotime::Time;
@@ -145,7 +146,8 @@ impl Store {
             + JOBS_SCHEMA
             + SCRIPTS_SCHEMA
             + HOST_STATE_SCHEMA
-            + MANAGE_SCHEMA;
+            + MANAGE_SCHEMA
+            + DREAMS_SCHEMA;
 
         let conn = self.conn();
         conn.execute_batch(&schema)?;

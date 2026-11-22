@@ -1,0 +1,24 @@
+Check reads the memory directory and reports, changing nothing: files whose
+frontmatter or source lines don't parse, exact duplicates and near ones
+(Dice similarity of 0.8 or more on the words of entries 5 words or longer;
+titles and source lines aside), [[links]] naming no memory, MEMORY.md lines
+naming no file, and files MEMORY.md doesn't name. The report is sorted, so
+the same directory always gives the same one.
+
+Usage:
+  agent dream memory check [flags]
+
+Examples:
+  agent dream memory check
+  agent dream memory check --dir ~/.claude/projects/-srv-app/memory --json
+
+Flags:
+      --dir string   The memory directory (default: this project's)
+  -h, --help         help for check
+      --json         Print as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -283,7 +283,7 @@ fn clean(path: &Path) -> PathBuf {
 //   - a backslash before CR LF is no continuation: bash and zsh escape the
 //     CR and end the command at the LF, so it stays refused (the Go's parser
 //     takes it for one; this is stricter).
-pub(crate) fn literal_words(command: &str) -> Result<Vec<String>> {
+pub fn literal_words(command: &str) -> Result<Vec<String>> {
     if command.contains('\0') {
         bail!("has a NUL");
     }
