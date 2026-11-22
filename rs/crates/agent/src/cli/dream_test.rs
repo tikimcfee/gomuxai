@@ -435,3 +435,26 @@ fn a_commit_in_a_scoped_repo_counts() {
     assert!(!super::commit_in_repo(&repo, &hash[..5]), "too short");
     assert!(!super::commit_in_repo(&repo, "HEAD"), "not a hash");
 }
+
+#[test]
+fn dream_roster_note_cites_only_the_dreams_sessions() {
+    crate::require_termd!();
+    let mut env = TestEnv::with_termd_private();
+    let item = |kind: &str, key: &str| DreamItem {
+        kind: kind.into(),
+        key: key.into(),
+        fingerprint: "f".into(),
+        ..Default::default()
+    };
+    open_dream_as_agent(&mut env, &[item("session", "claude:s1")]);
+    let note = |env: &mut TestEnv, extra: &[&str]| {
+        let mut words = vec!["dream", "roster", "note", "claude/m", "--task", "edit", "--verdict", "good"];
+        words.extend_from_slice(extra);
+        words.push("did it");
+        run_err(env, &words)
+    };
+    let err = note(&mut env, &["--session", "claude:other"]);
+    assert!(err.contains("is no session dream #1 was given"), "{err}");
+    let err = note(&mut env, &["--session", "claude:s1", "--by", "someone"]);
+    assert!(err.contains("--by is the dream's own agent"), "{err}");
+}

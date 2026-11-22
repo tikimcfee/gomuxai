@@ -985,6 +985,17 @@ pub fn roster_note_def() -> Def {
 }
 
 pub fn run_roster_note(ctx: &Ctx, args: &RosterNoteArgs) -> anyhow::Result<()> {
+    let by = if args.by.trim().is_empty() {
+        friction_caller(ctx).0
+    } else {
+        args.by.trim().to_string()
+    };
+    roster_note_by(ctx, args, by)
+}
+
+/// Records the note args describe as written by `by` (agent dream roster
+/// note fills it from the dream).
+pub(crate) fn roster_note_by(ctx: &Ctx, args: &RosterNoteArgs, by: String) -> anyhow::Result<()> {
     let key = entry_key(&args.args[0])?;
     for (flag, v) in [
         ("--task", &args.task),
@@ -1001,11 +1012,6 @@ pub fn run_roster_note(ctx: &Ctx, args: &RosterNoteArgs) -> anyhow::Result<()> {
             anyhow::bail!("{flag} is required: {what}");
         }
     }
-    let by = if args.by.trim().is_empty() {
-        friction_caller(ctx).0
-    } else {
-        args.by.trim().to_string()
-    };
     let n = agent_roster::add_note(
         ctx.store()?,
         ctx.cfg(),

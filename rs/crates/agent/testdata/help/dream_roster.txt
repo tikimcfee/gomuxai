@@ -1,0 +1,25 @@
+Roster note records a model evaluation on this host's roster (agent roster
+note) from a dream: --by is the dream's agent, and --session must be one of
+the sessions the dream was given to review. It takes roster note's flags
+otherwise. Only a dream's own agent runs it.
+
+Usage:
+  agent dream roster [flags]
+  agent dream roster [command]
+
+Examples:
+  agent dream roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "renamed across 12 files cleanly"
+
+Available Commands:
+  note        Record a roster note from a session your dream reviewed
+
+Flags:
+  -h, --help   help for roster
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent dream roster [command] --help" for more information about a command.

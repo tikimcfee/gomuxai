@@ -106,6 +106,8 @@ dream friction dup
 dream friction link
 dream friction accept
 dream limitation
+dream roster
+dream roster note
 dream memory
 dream memory get
 dream memory put
