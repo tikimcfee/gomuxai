@@ -326,7 +326,6 @@ impl Store {
             msg.urgency.clone()
         };
         let created_str = msg.created_at.format_rfc3339();
-        let now_str = Time::now().format_rfc3339_nano();
         let delivered_str = if msg.delivered_at.is_zero() {
             String::new()
         } else {
@@ -370,8 +369,8 @@ impl Store {
                 if target.status == MESSAGE_STATUS_PENDING {
                     let n = tx
                         .execute(
-                            "UPDATE messages SET status = 'superseded', superseded_by = ?, delivered_at = ? WHERE id = ? AND status = 'pending'",
-                            params![new_id, now_str, supersede_id],
+                            "UPDATE messages SET status = 'superseded', superseded_by = ? WHERE id = ? AND status = 'pending'",
+                            params![new_id, supersede_id],
                         )
                         .context("superseding message")?;
                     if n == 1 {
@@ -388,10 +387,9 @@ impl Store {
                 let rows: Vec<i64> = if !msg.topic.is_empty() {
                     query_all(
                         tx,
-                        "UPDATE messages SET status = 'superseded', superseded_by = ?, delivered_at = ? WHERE receiver_id = ? AND sender_id = ? AND topic = ? AND status = 'pending' AND id != ? RETURNING id",
+                        "UPDATE messages SET status = 'superseded', superseded_by = ? WHERE receiver_id = ? AND sender_id = ? AND topic = ? AND status = 'pending' AND id != ? RETURNING id",
                         params![
                             new_id,
-                            now_str,
                             msg.receiver_id,
                             msg.sender_id,
                             msg.topic,
@@ -403,8 +401,8 @@ impl Store {
                 } else {
                     query_all(
                         tx,
-                        "UPDATE messages SET status = 'superseded', superseded_by = ?, delivered_at = ? WHERE receiver_id = ? AND sender_id = ? AND status = 'pending' AND id != ? RETURNING id",
-                        params![new_id, now_str, msg.receiver_id, msg.sender_id, new_id],
+                        "UPDATE messages SET status = 'superseded', superseded_by = ? WHERE receiver_id = ? AND sender_id = ? AND status = 'pending' AND id != ? RETURNING id",
+                        params![new_id, msg.receiver_id, msg.sender_id, new_id],
                         |row| int(row, 0),
                     )
                     .context("superseding sender messages")?
@@ -415,7 +413,10 @@ impl Store {
                     }
                 }
 
-                if replace_sender && superseded.is_empty() && already_delivered.is_none() {
+                if (replace_sender || !msg.topic.is_empty())
+                    && superseded.is_empty()
+                    && already_delivered.is_none()
+                {
                     already_delivered = if !msg.topic.is_empty() {
                         query_one(
                             tx,
@@ -567,10 +568,12 @@ impl Store {
             for mut s in sup_candidates {
                 if included.contains(&s.id) {
                     tx.execute(
-                        "UPDATE messages SET delivery_batch = ? WHERE id = ? AND status = 'superseded'",
-                        params![id, s.id],
+                        "UPDATE messages SET delivered_at = ?, delivery_via = ?, delivery_batch = ? WHERE id = ? AND status = 'superseded'",
+                        params![now_str, delivery_via, id, s.id],
                     )
                     .context("stamping superseded batch")?;
+                    s.delivered_at = parse_time(&now_str);
+                    s.delivery_via = delivery_via.to_string();
                     s.delivery_batch = id;
                     batch.push(s);
                 }
@@ -712,10 +715,12 @@ impl Store {
             for mut s in sup_candidates {
                 if included.contains(&s.id) {
                     tx.execute(
-                        "UPDATE messages SET delivery_batch = ? WHERE id = ? AND status = 'superseded'",
-                        params![batch_id, s.id],
+                        "UPDATE messages SET delivered_at = ?, delivery_via = ?, delivery_batch = ? WHERE id = ? AND status = 'superseded'",
+                        params![now_str, delivery_via, batch_id, s.id],
                     )
                     .context("claiming superseded message for batch")?;
+                    s.delivered_at = parse_time(&now_str);
+                    s.delivery_via = delivery_via.to_string();
                     s.delivery_batch = batch_id;
                     claimed.push(s);
                 }
@@ -737,14 +742,14 @@ impl Store {
 
     /// Puts previously claimed active messages back to `pending` (clearing
     /// `delivered_at`, `delivery_via`, `delivery_batch`), and clears
-    /// `delivery_batch` on any `superseded` rows from that batch so they ride
-    /// along with the retried delivery.
+    /// `delivered_at` / `delivery_via` / `delivery_batch` on any `superseded`
+    /// rows from that batch so they ride along with the retried delivery.
     pub fn requeue_batch(&self, msgs: &[Message]) -> Result<()> {
         self.in_tx(|tx| {
             for m in msgs {
                 if m.status == MESSAGE_STATUS_SUPERSEDED {
                     tx.execute(
-                        "UPDATE messages SET delivery_batch = 0 WHERE id = ? AND status = 'superseded'",
+                        "UPDATE messages SET delivered_at = '', delivery_via = '', delivery_batch = 0 WHERE id = ? AND status = 'superseded'",
                         [m.id],
                     )
                     .context("requeueing superseded message")?;
@@ -756,6 +761,51 @@ impl Store {
                     .context("requeueing message")?;
                 }
             }
+            Ok(())
+        })
+    }
+
+    /// Aborts a newly inserted send (`failed_id`) whose immediate typing failed:
+    /// marks `failed_id` `failed` (so it never lingers as a ghost `pending`
+    /// message), restores any rows in `superseded_ids` back to `pending`
+    /// (`superseded_by = 0`), and requeues any *earlier* held rows in `claimed`.
+    pub fn abort_failed_send(
+        &self,
+        failed_id: i64,
+        superseded_ids: &[i64],
+        claimed: &[Message],
+    ) -> Result<()> {
+        self.in_tx(|tx| {
+            for m in claimed {
+                if m.id == failed_id || superseded_ids.contains(&m.id) {
+                    continue;
+                }
+                if m.status == MESSAGE_STATUS_SUPERSEDED {
+                    tx.execute(
+                        "UPDATE messages SET delivered_at = '', delivery_via = '', delivery_batch = 0 WHERE id = ? AND status = 'superseded'",
+                        [m.id],
+                    )
+                    .context("requeueing superseded message")?;
+                } else {
+                    tx.execute(
+                        "UPDATE messages SET status = 'pending', delivered_at = '', delivery_via = '', delivery_batch = 0 WHERE id = ?",
+                        [m.id],
+                    )
+                    .context("requeueing message")?;
+                }
+            }
+            for &sup_id in superseded_ids {
+                tx.execute(
+                    "UPDATE messages SET status = 'pending', superseded_by = 0, delivered_at = '', delivery_via = '', delivery_batch = 0 WHERE id = ? AND superseded_by = ?",
+                    params![sup_id, failed_id],
+                )
+                .context("restoring superseded message after failed send")?;
+            }
+            tx.execute(
+                "UPDATE messages SET status = 'failed', delivered_at = '', delivery_via = '', delivery_batch = 0 WHERE id = ?",
+                [failed_id],
+            )
+            .context("marking aborted send failed")?;
             Ok(())
         })
     }

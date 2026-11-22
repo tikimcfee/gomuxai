@@ -867,6 +867,18 @@ pub struct StatusEvent {
     pub tool: String,
     #[serde(default)]
     pub at: Time,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub delivered_ids: Vec<i64>,
+    #[serde(
+        default,
+        deserialize_with = "null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub superseded_ids: Vec<i64>,
 }
 
 /// Published on `subject_focus` whenever a host's focused agent changes.

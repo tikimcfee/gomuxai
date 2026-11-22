@@ -422,7 +422,9 @@ impl AgentService {
                 if err.downcast_ref::<UnsubmittedError>().is_none()
                     && err.downcast_ref::<HandoverError>().is_none()
                 {
-                    let _ = self.storage.requeue_batch(&claimed);
+                    let _ = self
+                        .storage
+                        .abort_failed_send(msg_id, &res.superseded_ids, &claimed);
                 }
                 Err(err)
             }
@@ -494,6 +496,13 @@ impl AgentService {
                 res.held_count = self.held_count(&agent.name).max(1);
                 let _ = self.start_deliverer(&agent.name);
                 return Ok(res);
+            }
+            if err.downcast_ref::<UnsubmittedError>().is_none()
+                && err.downcast_ref::<HandoverError>().is_none()
+            {
+                let _ = self
+                    .storage
+                    .abort_failed_send(msg_id, &res.superseded_ids, &[]);
             }
             return Err(err);
         }
@@ -851,6 +860,16 @@ impl AgentService {
         }
         let _ = MESSAGE_STATUS_DELIVERED;
         delivering.detail = detail;
+        delivering.delivered_ids = claimed
+            .iter()
+            .filter(|m| m.status != MESSAGE_STATUS_SUPERSEDED)
+            .map(|m| m.id)
+            .collect();
+        delivering.superseded_ids = claimed
+            .iter()
+            .filter(|m| m.status == MESSAGE_STATUS_SUPERSEDED)
+            .map(|m| m.id)
+            .collect();
         self.publish_status(name, &delivering, &now);
         let batch = to_coalesced(&claimed, &now);
         let out = hd.delivery_output_for(&r.event, &batch);

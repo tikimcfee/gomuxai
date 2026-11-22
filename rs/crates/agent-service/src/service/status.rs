@@ -111,6 +111,9 @@ pub struct StatusReport {
     /// DropPrompts are pending prompts' state keys to delete: the prompts
     /// approve or deny answered.
     pub drop_prompts: Vec<String>,
+    /// Message IDs delivered or reported superseded on `event == "delivered"`.
+    pub delivered_ids: Vec<i64>,
+    pub superseded_ids: Vec<i64>,
 }
 
 /// stateKeyPromptPrefix starts the key of each pending permission prompt,

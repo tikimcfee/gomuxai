@@ -18,14 +18,15 @@ If the turn ends without that hook (Esc, a deny, a failed turn), the held
 messages are typed in once it has sat at its prompt for 10s, or ahead of the
 next message sent to it. Use --later to hold until the entire turn ends,
 --replace to supersede your earlier pending messages (scoped to --key when
-given; keeping superseded text as context), --supersede <id> to supersede a
-specific pending message ID (with a note if it was already delivered), or
---interrupt (people and spawning ancestors) to block the agent's next tool
-call via PreToolUse and deliver urgently. Messages are never typed into an
-agent's input line while it has text in it (a person typing there): they're
-held until it's empty. "agent status <name> -v" shows how many are held and
-what they wait for, and "agent status <name> --receipt <id>" inspects a
-message's delivery receipt.
+given; keeping superseded text as context), --key <topic> to auto-supersede
+your earlier pending messages with the same topic key, --supersede <id> to
+supersede a specific pending message ID (with a note if it was already
+delivered), or --interrupt (people and spawning ancestors) to block the
+agent's next tool call via PreToolUse and deliver urgently. Messages are never
+typed into an agent's input line while it has text in it (a person typing
+there): they're held until it's empty. "agent status <name> -v" shows how many
+are held and what they wait for, and "agent status <name> --receipt <id>"
+inspects a message's delivery receipt.
 
 --now types the message in even while the agent is busy (sweeping any held
 messages ahead of it when the input line is empty; Claude takes it at its

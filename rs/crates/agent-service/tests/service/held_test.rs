@@ -887,3 +887,224 @@ fn test_interrupt_enforces_host_aware_spawned_by_ancestry() {
         .unwrap();
     assert!(ok.held && ok.interrupted);
 }
+
+// Regression test for final-review Blockers #1 & #2:
+// (1) Failed `send --now` and failed idle `send_held` mark the failed send
+//     `failed`, undo any supersedes it applied, and keep earlier held rows
+//     intact (never leaving a ghost `pending` row behind).
+// (2) Hook delivery publishes `delivered_ids` and `superseded_ids` on
+//     `StatusEvent`.
+#[test]
+fn test_failed_send_now_and_idle_send_undo_supersedes_and_publish_event_ids() {
+    use std::sync::{Arc, Mutex};
+
+    struct CapturingPublisher(Arc<Mutex<Vec<agent_bus::StatusEvent>>>);
+    impl EventPublisher for CapturingPublisher {
+        fn publish_status(&self, ev: &agent_bus::StatusEvent) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(ev.clone());
+            Ok(())
+        }
+    }
+
+    // Part A: `DialogTookError` inside `send_message` (after `check_can_send` +
+    // `insert_pending_message` + `claim_*` have already run!) exercises the real
+    // post-insert abort path for both `send_now` and idle `send_held`.
+    let term = ClaudeTerminal::new(|_| {});
+    let ce = setup_claude_terminal(&term, SUBMIT_TEST_WAIT);
+    ce.set_state(STATE_KEY_SPAWN_ID, "s1");
+    turn_started(&ce.store, "worker");
+    ce.svc
+        .report(
+            "worker",
+            StatusReport {
+                status: AGENT_STATUS_PROCESSING,
+                event: "PreToolUse".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let m1 = ce
+        .svc
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] keep me if replace fails",
+            SendOptions {
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let m2 = ce
+        .svc
+        .send(
+            &bg(),
+            "worker",
+            "[from peer@h] peer note",
+            SendOptions {
+                from: "peer".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(ce.svc.held_count("worker"), 2);
+
+    // 1. Failed `send --now --replace`: dialog appears during typing (`DialogTookError`).
+    term.set(|s| {
+        s.offer = false;
+        s.offer_on_read = true;
+    });
+    let err_now = ce
+        .svc
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] doomed now replace",
+            SendOptions {
+                now: true,
+                replace: true,
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        err_now.downcast_ref::<DialogTookError>().is_some(),
+        "expected DialogTookError: {err_now:#}"
+    );
+    assert_eq!(
+        ce.svc.held_count("worker"),
+        2,
+        "failed send --now must leave held_count unchanged and no ghost pending row"
+    );
+    let m1_after_now = ce.store.get_message(m1.message_id).unwrap().unwrap();
+    assert_eq!(m1_after_now.status.as_str(), "pending");
+    assert_eq!(m1_after_now.superseded_by, 0);
+    let m2_after_now = ce.store.get_message(m2.message_id).unwrap().unwrap();
+    assert_eq!(m2_after_now.status.as_str(), "pending");
+    let doomed_now = &ce.store.list_messages("worker", 10).unwrap()[0];
+    assert_eq!(doomed_now.status.as_str(), "failed");
+
+    // 2. Failed idle `send_held` with `--replace`: clear offer, report Idle, and
+    //    let `offer_on_read` fail `type_held`'s `send_message`!
+    term.set(|s| {
+        s.offer = false;
+        s.offer_on_read = true;
+    });
+    ce.svc
+        .report(
+            "worker",
+            StatusReport {
+                status: AGENT_STATUS_IDLE,
+                event: "Stop".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let err_idle = ce
+        .svc
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] doomed idle replace",
+            SendOptions {
+                replace: true,
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        err_idle.downcast_ref::<DialogTookError>().is_some(),
+        "expected DialogTookError: {err_idle:#}"
+    );
+    assert_eq!(
+        ce.svc.held_count("worker"),
+        2,
+        "failed idle send_held must undo supersede and leave no ghost pending row"
+    );
+    let m1_after_idle = ce.store.get_message(m1.message_id).unwrap().unwrap();
+    assert_eq!(m1_after_idle.status.as_str(), "pending");
+    assert_eq!(m1_after_idle.superseded_by, 0);
+    let doomed_idle = &ce.store.list_messages("worker", 10).unwrap()[0];
+    assert_eq!(doomed_idle.status.as_str(), "failed");
+
+    // Part B: Verify `PostToolBatch` publishes `StatusEvent` with exact
+    // `delivered_ids` and `superseded_ids`, and stamps `delivered_at` only on
+    // batch delivery!
+    require_termd!();
+    let mut env = setup_test_env();
+    let published: Arc<Mutex<Vec<agent_bus::StatusEvent>>> = Arc::default();
+    env.svc_mut()
+        .set_event_publisher(Some(Box::new(CapturingPublisher(Arc::clone(&published)))));
+    let fake = spawn_holding(&mut env, "worker");
+    busy(&env, &fake, "worker");
+
+    let e1 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] old draft",
+            SendOptions {
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let e2 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from peer@h] peer note",
+            SendOptions {
+                from: "peer".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let e3 = env
+        .service
+        .send(
+            &bg(),
+            "worker",
+            "[from lead@h] valid replacement",
+            SendOptions {
+                replace: true,
+                from: "lead".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(e3.superseded_ids, vec![e1.message_id]);
+
+    // Before batch delivery, superseded e1 has `delivered_at` zero!
+    let rec_before = env
+        .service
+        .message_receipt("worker", e1.message_id)
+        .unwrap();
+    assert!(rec_before.delivered_at.is_zero());
+
+    published.lock().unwrap().clear();
+    let _out = stop_hook(
+        &env,
+        &fake,
+        "worker",
+        r#"{"hook_event_name":"PostToolBatch"}"#,
+    )
+    .expect("PostToolBatch delivery");
+    let evs = published.lock().unwrap().clone();
+    assert_eq!(evs.len(), 1);
+    assert_eq!(evs[0].event, "delivered");
+    assert_eq!(evs[0].delivered_ids, vec![e2.message_id, e3.message_id]);
+    assert_eq!(evs[0].superseded_ids, vec![e1.message_id]);
+
+    // After batch delivery, superseded e1 now has `delivered_at` stamped!
+    let rec_after = env
+        .service
+        .message_receipt("worker", e1.message_id)
+        .unwrap();
+    assert!(!rec_after.delivered_at.is_zero());
+}

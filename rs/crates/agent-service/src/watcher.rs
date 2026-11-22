@@ -438,10 +438,14 @@ impl Inner {
             .and_then(|_| self.service.send_message(ctx, agent_name, &text, true));
         if let Err(e) = res {
             logger.error("failed to send message", &[("error", &GoError(&e))]);
-            if let Err(e) = self.storage.requeue_batch(&claimed) {
+            if e.downcast_ref::<crate::service::UnsubmittedError>()
+                .is_none()
+                && e.downcast_ref::<crate::service::HandoverError>().is_none()
+                && let Err(re) = self.storage.requeue_batch(&claimed)
+            {
                 logger.error(
                     "failed to update message status",
-                    &[("error", &GoError(&e))],
+                    &[("error", &GoError(&re))],
                 );
             }
             self.handle_delivery_failure(msg, logger);
