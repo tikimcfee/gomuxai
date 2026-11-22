@@ -12,6 +12,7 @@ dependencies = [
  "agent-bus",
  "agent-claudereg",
  "agent-discovery",
+ "agent-dream",
  "agent-export",
  "agent-fleet",
  "agent-manage",
@@ -117,6 +118,17 @@ dependencies = [
  "anyhow",
  "chrono",
  "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "agent-dream"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",

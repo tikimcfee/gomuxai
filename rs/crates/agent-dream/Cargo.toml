@@ -1,0 +1,19 @@
+[package]
+name = "agent-dream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Dreaming (docs/DREAMING.md): the rules a dream works under, kept out of the CLI so they can be
+# tested alone. memory: memory files, the rewrite guard and the deterministic check. scrub:
+# excerpts of transcripts made safe to show a dream. gather: what the next dream reviews.
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

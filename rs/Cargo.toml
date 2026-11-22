@@ -25,6 +25,7 @@ agent-service = { path = "crates/agent-service" }
 agent-fleet = { path = "crates/agent-fleet" }
 agent-export = { path = "crates/agent-export" }
 agent-manage = { path = "crates/agent-manage" }
+agent-dream = { path = "crates/agent-dream" }
 
 # The termd client and protocol, from glyph3d-js (public), pinned by commit. To work against a
 # local checkout: [patch."https://github.com/tikimcfee/glyph3d-js"] in .cargo/config.toml.
