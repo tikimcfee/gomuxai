@@ -1,0 +1,269 @@
+//! A host's roster as it reads now: its entries with their availability and
+//! note counts (agent roster), and one entry with its notes (agent roster
+//! show). host_view is what a host serves its peers, so its types are plain
+//! serde.
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::Path;
+
+use agent_store::{RosterEntry, RosterNote, Store};
+use serde::{Deserialize, Serialize};
+
+use crate::key::Key;
+
+/// Tally counts notes of one verdict, and the distinct sessions they cite,
+/// so a reader sees whether a claim rests on one run or on five.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tally {
+    pub notes: i64,
+    pub sessions: i64,
+}
+
+/// NoteCounts counts an entry's notes by verdict, leaving out superseded
+/// ones.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteCounts {
+    pub good: Tally,
+    pub mixed: Tally,
+    pub bad: Tally,
+}
+
+impl NoteCounts {
+    pub fn total(&self) -> i64 {
+        self.good.notes + self.mixed.notes + self.bad.notes
+    }
+
+    /// count adds up notes, which are all of one entry and none superseded.
+    fn count<'a>(notes: impl IntoIterator<Item = &'a RosterNote>) -> NoteCounts {
+        let mut sessions: [BTreeSet<&str>; 3] = Default::default();
+        let mut c = NoteCounts::default();
+        for n in notes {
+            let (t, s) = match n.verdict.as_str() {
+                "good" => (&mut c.good, &mut sessions[0]),
+                "mixed" => (&mut c.mixed, &mut sessions[1]),
+                "bad" => (&mut c.bad, &mut sessions[2]),
+                _ => continue,
+            };
+            t.notes += 1;
+            s.insert(n.source.as_str());
+        }
+        c.good.sessions = sessions[0].len() as i64;
+        c.mixed.sessions = sessions[1].len() as i64;
+        c.bad.sessions = sessions[2].len() as i64;
+        c
+    }
+}
+
+/// EntryView is an entry as read now: whether it is available, and its
+/// notes counted, in all and by task kind.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EntryView {
+    /// HARNESS/MODEL[@EFFORT].
+    pub key: String,
+    #[serde(flatten)]
+    pub entry: RosterEntry,
+    pub available: bool,
+    /// Why it isn't available ("disabled", "agy isn't on PATH"); "" when it is.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unavailable: String,
+    pub notes: NoteCounts,
+    /// The notes counted by the task kind they were about.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_task: BTreeMap<String, NoteCounts>,
+}
+
+/// HostRoster is one host's roster: its entries, and its notes on
+/// harnesses and models it has no entry for.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostRoster {
+    pub host: String,
+    pub entries: Vec<EntryView>,
+    /// HARNESS/MODEL[@EFFORT] of each set of notes with no entry, with their
+    /// counts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unlisted: BTreeMap<String, NoteCounts>,
+}
+
+/// NoteView is a note as show lists it: with the note that superseded it,
+/// if any.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NoteView {
+    #[serde(flatten)]
+    pub note: RosterNote,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub superseded_by: i64,
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
+}
+
+/// EntryShow is one entry with all its notes, oldest first. entry is None
+/// when there are notes on a harness and model with no entry.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct EntryShow {
+    pub host: String,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<EntryView>,
+    pub notes: Vec<NoteView>,
+}
+
+/// on_path says whether cmd is an executable file in a directory of this
+/// process's PATH.
+pub fn on_path(cmd: &str) -> bool {
+    if cmd.is_empty() {
+        return false;
+    }
+    if cmd.contains('/') {
+        return is_executable(Path::new(cmd));
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path)
+        .filter(|d| !d.as_os_str().is_empty())
+        .any(|d| is_executable(&d.join(cmd)))
+}
+
+fn is_executable(p: &Path) -> bool {
+    let Ok(m) = std::fs::metadata(p) else {
+        return false;
+    };
+    if !m.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        m.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// The command a harness's CLI runs as: its own name for the built-in
+/// backends (claude, agy, aider). A custom backend isn't remembered after
+/// spawn, so its entry's harness name is taken for its command too.
+fn harness_command(harness: &str) -> &str {
+    harness
+}
+
+fn availability(e: &RosterEntry, on_path: &dyn Fn(&str) -> bool) -> (bool, String) {
+    if !e.enabled {
+        return (false, "disabled".into());
+    }
+    let cmd = harness_command(&e.harness);
+    if !on_path(cmd) {
+        return (false, format!("{cmd} isn't on PATH"));
+    }
+    (true, String::new())
+}
+
+/// The ids of notes another note supersedes.
+fn superseded(notes: &[RosterNote]) -> HashSet<i64> {
+    notes
+        .iter()
+        .filter(|n| n.supersedes != 0)
+        .map(|n| n.supersedes)
+        .collect()
+}
+
+fn entry_view(e: RosterEntry, notes: &[&RosterNote], on_path: &dyn Fn(&str) -> bool) -> EntryView {
+    let (available, unavailable) = availability(&e, on_path);
+    let mut by_task: BTreeMap<String, Vec<&RosterNote>> = BTreeMap::new();
+    for n in notes {
+        by_task.entry(n.task.clone()).or_default().push(n);
+    }
+    EntryView {
+        key: Key::of_entry(&e).to_string(),
+        entry: e,
+        available,
+        unavailable,
+        notes: NoteCounts::count(notes.iter().copied()),
+        by_task: by_task
+            .into_iter()
+            .map(|(t, ns)| (t, NoteCounts::count(ns)))
+            .collect(),
+    }
+}
+
+/// host_view reads this host's roster, checking each harness's CLI against
+/// this process's PATH.
+pub fn host_view(store: &Store, host: &str) -> anyhow::Result<HostRoster> {
+    host_view_with(store, host, &on_path)
+}
+
+/// host_view_with is host_view with the PATH check given.
+pub fn host_view_with(
+    store: &Store,
+    host: &str,
+    on_path: &dyn Fn(&str) -> bool,
+) -> anyhow::Result<HostRoster> {
+    let entries = store.list_roster_entries()?;
+    let notes = store.list_roster_notes()?;
+    let gone = superseded(&notes);
+    let mut by_key: BTreeMap<Key, Vec<&RosterNote>> = BTreeMap::new();
+    for n in notes.iter().filter(|n| !gone.contains(&n.id)) {
+        by_key.entry(Key::of_note(n)).or_default().push(n);
+    }
+    let mut views = Vec::with_capacity(entries.len());
+    for e in entries {
+        let ns = by_key.remove(&Key::of_entry(&e)).unwrap_or_default();
+        views.push(entry_view(e, &ns, on_path));
+    }
+    Ok(HostRoster {
+        host: host.to_string(),
+        entries: views,
+        unlisted: by_key
+            .into_iter()
+            .map(|(k, ns)| (k.to_string(), NoteCounts::count(ns)))
+            .collect(),
+    })
+}
+
+/// show reads one entry and all its notes, superseded ones included. It
+/// fails when there is neither an entry nor a note for key.
+pub fn show(store: &Store, host: &str, key: &Key) -> anyhow::Result<EntryShow> {
+    show_with(store, host, key, &on_path)
+}
+
+/// show_with is show with the PATH check given.
+pub fn show_with(
+    store: &Store,
+    host: &str,
+    key: &Key,
+    on_path: &dyn Fn(&str) -> bool,
+) -> anyhow::Result<EntryShow> {
+    let entry = store.get_roster_entry(&key.harness, &key.model, &key.effort)?;
+    let notes = store.list_roster_notes_for(&key.harness, &key.model, &key.effort)?;
+    if entry.is_none() && notes.is_empty() {
+        anyhow::bail!(
+            "no roster entry or note for {key} on this host (agent roster lists them; agent roster set {key} adds it)"
+        );
+    }
+    let mut superseded_by: BTreeMap<i64, i64> = BTreeMap::new();
+    for n in &notes {
+        if n.supersedes != 0 {
+            superseded_by.entry(n.supersedes).or_insert(n.id);
+        }
+    }
+    let current: Vec<&RosterNote> = notes
+        .iter()
+        .filter(|n| !superseded_by.contains_key(&n.id))
+        .collect();
+    let entry = entry.map(|e| entry_view(e, &current, on_path));
+    Ok(EntryShow {
+        host: host.to_string(),
+        key: key.to_string(),
+        entry,
+        notes: notes
+            .iter()
+            .map(|n| NoteView {
+                note: n.clone(),
+                superseded_by: superseded_by.get(&n.id).copied().unwrap_or(0),
+            })
+            .collect(),
+    })
+}
