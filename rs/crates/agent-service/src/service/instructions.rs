@@ -167,6 +167,9 @@ pub const DREAM_AGENT_COMMANDS: &[&str] = &[
     "dream limitation",
     "dream memory",
     "dream roster note",
+    // Reading only: the global dream reads its project dreams' diaries.
+    "dream show",
+    "dream list",
 ];
 
 /// The dream item kind whose key is `<repo>@<hash>` (agent_dream::gather).

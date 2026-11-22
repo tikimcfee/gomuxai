@@ -193,6 +193,10 @@ pub struct SpawnOptions {
     /// spawned with them; resume doesn't carry them.
     pub allow_tools: Vec<String>,
     pub deny_tools: Vec<String>,
+    /// Claude's --permission-mode, "" for the person's default. A dream's
+    /// agent runs "dontAsk", so what its rules and the hook don't allow is
+    /// refused rather than judged by the person's auto mode.
+    pub permission_mode: String,
 }
 
 /// The Go SpawnOptions' unexported fields, which only resume and adopt set:
@@ -347,6 +351,7 @@ impl AgentService {
             &opts.backend,
             ProviderConfig {
                 skip_permissions: opts.skip_permissions,
+                permission_mode: opts.permission_mode.clone(),
                 agent_dir: self.cfg.agent_dir(&opts.name),
                 cwd,
                 resume: opts.resume.clone(),

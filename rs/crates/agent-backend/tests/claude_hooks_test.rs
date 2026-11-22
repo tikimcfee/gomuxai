@@ -508,6 +508,7 @@ fn test_claude_launch_restartable() {
         ClaudeConfig {
             skip_permissions: true,
             resume: "r1".to_string(),
+            ..Default::default()
         },
     ] {
         let b = namedagents::new_claude_backend_with_config(cfg.clone());

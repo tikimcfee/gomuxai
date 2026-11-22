@@ -12,6 +12,8 @@ pub struct ClaudeConfig {
     pub skip_permissions: bool,
     /// The session id claude continues (--resume), or "".
     pub resume: String,
+    /// --permission-mode, or "" for the person's default.
+    pub permission_mode: String,
 }
 
 /// Implements [`Provider`] for Claude Code CLI.
@@ -63,6 +65,10 @@ impl ClaudeBackend {
         let mut cmd = String::from("claude");
         if self.config.skip_permissions {
             cmd.push_str(" --dangerously-skip-permissions");
+        }
+        if !self.config.permission_mode.is_empty() {
+            cmd.push_str(" --permission-mode ");
+            cmd.push_str(&shell_quote(&self.config.permission_mode));
         }
         cmd.push_str(" --settings ");
         cmd.push_str(&shell_quote(CLAUDE_SPAWN_SETTINGS));

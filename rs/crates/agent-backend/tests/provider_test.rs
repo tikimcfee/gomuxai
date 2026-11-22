@@ -263,6 +263,7 @@ fn test_with_session_name() {
     let resumed = namedagents::new_claude_backend_with_config(ClaudeConfig {
         skip_permissions: true,
         resume: "r1".to_string(),
+        ..Default::default()
     });
     assert_eq!(
         resumed.with_session_name(&resumed.launch_command_with_session("ignored"), "worker-1"),
@@ -272,6 +273,19 @@ fn test_with_session_name() {
         )
     );
     assert_eq!(claude.with_session_name("claude", ""), "claude");
+
+    // A dream's agent runs dontAsk: what isn't pre-allowed is refused.
+    let dream = namedagents::new_claude_backend_with_config(ClaudeConfig {
+        permission_mode: "dontAsk".to_string(),
+        ..Default::default()
+    });
+    assert_eq!(
+        dream.launch_command(),
+        format!(
+            "claude --permission-mode 'dontAsk' --settings {}",
+            shell_quote(namedagents::CLAUDE_SPAWN_SETTINGS)
+        )
+    );
 }
 
 /// Claude takes text over 800 characters, or with 3+ line breaks, as a

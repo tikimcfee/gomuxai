@@ -16,6 +16,10 @@ pub struct ProviderConfig {
     /// Makes Claude and Agy pass --dangerously-skip-permissions.
     pub skip_permissions: bool,
 
+    /// Claude's --permission-mode, or "" for the person's default (a
+    /// dream's agent runs dontAsk: what isn't pre-allowed is refused).
+    pub permission_mode: String,
+
     /// The per-agent bundle directory under .gomuxai/agents/<name>.
     pub agent_dir: String,
 
@@ -71,6 +75,7 @@ pub fn new_registry() -> Registry {
             namedagents::ClaudeConfig {
                 skip_permissions: cfg.skip_permissions,
                 resume: cfg.resume,
+                permission_mode: cfg.permission_mode,
             },
         ))
     });

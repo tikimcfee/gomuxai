@@ -1284,6 +1284,10 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
             cwd: base.to_string_lossy().into_owned(),
             allow_tools,
             deny_tools,
+            // Nobody watches a dream: what its rules and the hook don't
+            // allow is refused, not judged by the person's own mode (auto
+            // mode let dream #8 run a plain friction accept).
+            permission_mode: "dontAsk".to_string(),
             ..Default::default()
         },
     )?;

@@ -42,7 +42,9 @@ repo the digest names, and your Read tool for files. Read every item the
 digest lists before you commit.
 
 You may not send messages to other agents, spawn agents, edit code or
-docs, run builds, or change anything outside these verbs. A project dream
+docs, run builds, or change anything outside these verbs. Your session
+refuses any other command without asking anyone (nobody is watching to
+approve one): read files with your Read tool, not `cat` or `sed`. A project dream
 changes its project's memory; fixing things is a later layer.
 
 ## Evidence rules
