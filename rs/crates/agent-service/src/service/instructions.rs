@@ -146,6 +146,7 @@ pub const AGENT_SAFE_COMMANDS: &[&str] = &[
     "roster list",
     "roster show",
     "roster pick",
+    "roster picks",
     "roster note",
 ];
 
