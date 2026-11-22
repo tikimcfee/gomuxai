@@ -4,7 +4,8 @@
 //!   selections and the last action's result, and derives the lines each page draws.
 //! - [`agents`], [`sessions`], [`friction`], [`history`] and [`data`] turn a [`View`] into
 //!   rows of display strings, without assuming how wide the screen is; each list's
-//!   columns sort it through a [`sort::SortOrder`].
+//!   columns sort it through a [`sort::SortOrder`]. [`usage`] does the same for each host's
+//!   LLM plan limits (llm-exp's figures) and the tokens counted in its transcripts.
 //! - [`commands`] decides which actions a row offers (or why not) and the `agent` command
 //!   line each runs, and what a confirmation names.
 //! - [`runner`] runs the `agent` binary (or reads a fixture) off the UI thread.
@@ -18,9 +19,11 @@ pub mod friction;
 pub mod history;
 pub mod layout;
 pub mod runner;
+pub mod saved;
 pub mod sessions;
 pub mod sort;
 pub mod state;
+pub mod usage;
 
 pub use agent_manage::{
     AgentRow, DataReport, FrictionRow, HistoryRow, HostView, SessionRow, SessionState, View,

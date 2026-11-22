@@ -156,7 +156,9 @@ pub fn value(host: &str, s: &SessionRow, c: Column) -> Value {
 }
 
 /// Names a session across reloads and hosts.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct SessionKey {
     pub host: String,
     /// `harness:session_id`, what `agent manage untrack` takes.

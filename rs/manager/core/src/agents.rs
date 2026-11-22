@@ -21,7 +21,9 @@ pub enum AgentLine {
 }
 
 /// Names an agent across reloads.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct AgentKey {
     pub host: String,
     pub name: String,

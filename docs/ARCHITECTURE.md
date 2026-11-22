@@ -67,7 +67,7 @@ The Rust workspace lives in `rs/` (`rs/Cargo.toml`), with the Go bus sidecar in
 | `rs/crates/agent-fleet` | Fleet features ([`docs/FLEET.md`](FLEET.md)): cross-host `fleet` view and baseline `--report` (`fleet.rs`), host `focus` and `--follow` (`focus.rs`), `templates.json` management (`templates.rs`) and `template` RPC handler (`template_op.rs`), handoff lookup, staleness, and re-brief (`handoff.rs`), heavy-job runner `run` with Linux systemd scopes (`run.rs`, `run/`), and `skill` installer/viewer (`skill.rs`). |
 | `rs/crates/agent-service` | `AgentService` (`service/`): spawn, adopt, resume, revive, send, handover, submit checks, held-message delivery, capture, cleanup, status resolution, reports, hooks, permission/trust/dialog answers, shared `skill_text` and agent briefing (`instructions.rs`), friction link helpers, and `RpcHandler` (`rpc.rs`); plus `watcher` (`watcher.rs`, the `agent watch` loop). |
 | `rs/crates/agent-export` | The tree `agent export` prints (`export.rs`): a snapshot across stores and hosts, kept current from agent events, sessions, and transcripts, opening stores read-only. |
-| `rs/crates/agent-manage` | The manager's view as types and rules, with no store, bus or service code (`lib.rs`): `View`, `HostView`, `AgentRow`, `SessionRow`, `SessionState` and `classify`, `is_stale`, `FrictionRow`, `HistoryRow`, `DataReport`, and the `human_*` formatters. What `agent manage view --json` prints, what op `manage` answers with, and what the GUI deserializes. |
+| `rs/crates/agent-manage` | The manager's view as types and rules, with no store, bus or service code (`lib.rs`): `View`, `HostView`, `AgentRow`, `SessionRow`, `SessionState` and `classify`, `is_stale`, `FrictionRow`, `HistoryRow`, `DataReport`, `LlmUsage` (llm-exp's cached plan limits, `llm_usage.rs`), and the `human_*` formatters. What `agent manage view --json` prints, what op `manage` answers with, and what the GUI deserializes. |
 | `rs/crates/agent-bus` | Bus client and RPC server behind plain blocking functions (`tokio`, `async-nats`, and `rustls` stay internal): contract (`contract.rs`: subjects, ops, wire types), identity and pinned TLS (`identity.rs`), local client and `RpcClient` (`client.rs`), `RpcServer` (`rpc.rs`), status and focus events and `wait` (`events.rs`), and `agent-busd` child management (`daemon.rs`). |
 | `busd/` (`agent-busd`, Go) | Standalone Go module wrapping `nats-server/v2` and `nkeys` (`main.go`, `daemon.go`, `identity.go`, `contract.go`): runs the embedded NATS server for the local client port and TLS 1.3 SPKI-pinned hub/leaf links, started as a child by `agent bus run`. |
 | `rs/crates/agent-backend` | Backend traits (`Backend`, `Provider`, and optional capability traits in `provider.rs`), `Registry` (`registry.rs`), custom JSON backends (`generic.rs`), recorded session-name lookup (`session_name.rs`), and `namedagents/` (`claude.rs`, `claude_hooks.rs`, `claude_settings.rs`, `claude_dialog.rs`, `agy.rs`, `aider.rs`, `shell.rs`, `trust.rs`, `hooks.rs`). |
@@ -1765,6 +1765,15 @@ builds it in `local_host`, from what other commands already compute:
   newest N of `command_log`), and **data**: file sizes of the database and
   `logs/`, the logs of agents no longer recorded, rows per table
   (`Store::table_counts`), transcripts per harness, and the backups.
+- **llm_usage**: the host's LLM plan limits, as llm-exp's usage widget shows
+  them (`agent_manage::llm_usage`): Claude's session, week and per-model week
+  (share used and reset time) with its extra-usage credits, GLM, Kimi Code and
+  agy quota windows, OpenRouter key spend, and the providers llm-exp couldn't
+  ask. They are llm-exp's figures, not counted here: `read_llm_usage` reads
+  only the snapshot `llm-exp usage --json` caches for its widget,
+  `$HOME/.cache/llm-exp/usage-snapshot.json`, as it is (`captured_at` says how
+  old), and never runs llm-exp, reads a credential or asks a provider. No file:
+  the field is absent; a file that isn't a snapshot: `path` and `error` only.
 
 `run_view` adds every trusted peer's answer to op `manage`, asked at once on
 threads (`RpcClient::manage`, which sanitizes every string of the reply); a

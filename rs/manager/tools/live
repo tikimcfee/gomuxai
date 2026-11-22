@@ -19,7 +19,9 @@
 # A proposal is a commit ahead of the approved branch as the remote has it
 # (origin/manager). `push` sends it over ssh and checks it out in the live checkout. A
 # change inside `script_mod!` shows at once; any other change (Rust code, the core crate)
-# is built there, and the live window must then be restarted. `approve` runs the checks,
+# is built there, and the live window then relaunches itself on the new build, coming back
+# with its page, selections, sorts, folds, splitters and size (`agent-manager-live` runs it
+# in a loop; a failed build leaves the old window as it is). `approve` runs the checks,
 # pushes the commit to the approved branch, and installs release builds here and on the
 # target. To reject a proposal, drop its commit and `push` again (or `reset`).
 #
@@ -63,6 +65,7 @@ case \$repo in /*) ;; *) repo="\$HOME/\$repo" ;; esac
 case \$live in /*) ;; *) live="\$HOME/\$live" ;; esac
 approved=origin/\$branch
 note="\$tdir/live-note"
+relaunch="\$tdir/relaunch"
 ${1:-}
 EOF
         cat <<'EOF'
@@ -72,8 +75,16 @@ fetch_approved() {
     url=$(git -C "$repo" remote get-url origin | sed -E 's#^(ssh://)?git@([^:/]+)[:/]#https://\2/#')
     git -C "$repo" fetch -q "$url" "+refs/heads/$branch:refs/remotes/origin/$branch"
 }
+# Builds the live checkout; on failure prints the end of cargo's output and fails. Cargo
+# replaces the binary only once it has linked, so a failed build leaves the old one.
 build() {
-    (cd "$live/rs/manager" && CARGO_TARGET_DIR="$tdir" cargo build --release 2>&1 | tail -2)
+    mkdir -p "$tdir"
+    if (cd "$live/rs/manager" && CARGO_TARGET_DIR="$tdir" cargo build --release) >"$tdir/build.log" 2>&1; then
+        tail -1 "$tdir/build.log"
+    else
+        tail -25 "$tdir/build.log" >&2
+        return 1
+    fi
 }
 # The file without its script_mod! blocks: what hot reload can't apply.
 rust_of() {
@@ -99,6 +110,20 @@ effect() {
     echo $e
 }
 running() { pgrep -f "$tdir/release/agent-manager" >/dev/null 2>&1; }
+# Asks the running live window to relaunch on the new build, and waits (up to 10s) for its
+# launcher to take the request: it removes the file as it starts the new build.
+relaunch() {
+    : >"$relaunch"
+    i=0
+    while [ -e "$relaunch" ] && [ $i -lt 50 ]; do
+        sleep 0.2
+        i=$((i + 1))
+    done
+    if [ -e "$relaunch" ]; then
+        rm -f "$relaunch"
+        return 1
+    fi
+}
 write_note() {
     mkdir -p "$tdir"
     n=$(git -C "$live" rev-list --count "$approved..HEAD")
@@ -153,9 +178,20 @@ mkdir -p "$HOME/.local/bin"
 cat >"$bin" <<LAUNCH
 #!/bin/sh
 # Written by rs/manager/tools/live setup: the manager built from the live checkout,
-# re-applying its UI source as it changes.
-AGENT_MANAGER_LIVE='$note' AGENT_MANAGER_AGENT="\${AGENT_MANAGER_AGENT:-\$HOME/.local/bin/agent}" \\
-    exec '$tdir/release/agent-manager' --hot "\$@"
+# re-applying its UI source as it changes. When tools/live push has rebuilt it, push
+# creates the relaunch file; the window saves its state and exits with status 75, and this
+# starts the new build, which comes back where it was. Any other exit (closing the window)
+# ends this too.
+relaunch='$relaunch'
+export AGENT_MANAGER_LIVE='$note' AGENT_MANAGER_RELAUNCH="\$relaunch"
+export AGENT_MANAGER_STATE="\${AGENT_MANAGER_STATE:-$tdir/state.json}"
+export AGENT_MANAGER_AGENT="\${AGENT_MANAGER_AGENT:-\$HOME/.local/bin/agent}"
+while :; do
+    rm -f "\$relaunch"
+    '$tdir/release/agent-manager' --hot "\$@"
+    status=\$?
+    [ \$status -eq 75 ] || exit \$status
+done
 LAUNCH
 chmod 755 "$bin"
 echo "start it with: $bin"
@@ -194,8 +230,18 @@ hot)
     fi
     ;;
 rebuild)
-    build
-    echo "live checkout at $short: Rust changed, so it was rebuilt: RESTART agent-manager-live to see it"
+    if ! build; then
+        cat "$note"
+        echo "live: live checkout at $short: Rust changed and the build FAILED (above): the live window keeps the previous build" >&2
+        exit 1
+    fi
+    if ! running; then
+        echo "live checkout at $short: Rust changed, so it was rebuilt; the live manager isn't running, and starts on it"
+    elif relaunch; then
+        echo "live checkout at $short: Rust changed, so it was rebuilt and the live window relaunched on it"
+    else
+        echo "live checkout at $short: Rust changed, so it was rebuilt, but the live window didn't relaunch (started by an older agent-manager-live? run tools/live setup): RESTART agent-manager-live to see it"
+    fi
     ;;
 esac
 cat "$note"
