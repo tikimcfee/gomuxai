@@ -325,3 +325,54 @@ fn digest_lists_the_scoped_projects() {
     assert!(s.contains("## projects"), "{s}");
     assert!(s.contains("git -C /srv/app log"), "{s}");
 }
+
+#[test]
+fn dream_abandon_puts_memory_back() {
+    crate::require_termd!();
+    let mut env = TestEnv::with_termd_private();
+    let mem = env.dir.path().join("proj").join("memory");
+    std::fs::create_dir_all(&mem).unwrap();
+    let old = FACT.replace("CITES", "claude:s0");
+    std::fs::write(mem.join("old.md"), &old).unwrap();
+    let mem_s = mem.to_string_lossy().into_owned();
+    let item = |kind: &str, key: &str| DreamItem {
+        kind: kind.into(),
+        key: key.into(),
+        fingerprint: "f".into(),
+        ..Default::default()
+    };
+    open_dream_as_agent(&mut env, &[item("session", "claude:s1"), item("memory", &mem_s)]);
+    let draft = env.dir.path().join("draft.md");
+    std::fs::write(&draft, FACT.replace("CITES", "claude:s0, claude:s1")).unwrap();
+    let v = agent_dream::memory::version(old.as_bytes());
+    let draft_s = draft.to_string_lossy().into_owned();
+    let (_, res) = env.run(&["dream", "memory", "put", "old.md", "--dir", &mem_s, "--expect", &v, "--from", &draft_s]);
+    res.unwrap();
+    assert_ne!(std::fs::read_to_string(mem.join("old.md")).unwrap(), old);
+
+    let out = run(&mut env, &["dream", "abandon", "testing"]);
+    assert!(out.contains("Put back"), "{out}");
+    assert_eq!(std::fs::read_to_string(mem.join("old.md")).unwrap(), old);
+}
+
+#[test]
+fn a_commit_in_a_scoped_repo_counts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().to_string_lossy().into_owned();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(["-C", &repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(ok.status.success(), "{ok:?}");
+        String::from_utf8(ok.stdout).unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "x"]);
+    let hash = git(&["rev-parse", "HEAD"]).trim().to_string();
+    assert!(super::commit_in_repo(&repo, &hash[..8]));
+    assert!(!super::commit_in_repo(&repo, "deadbee1"));
+    assert!(!super::commit_in_repo(&repo, &hash[..5]), "too short");
+    assert!(!super::commit_in_repo(&repo, "HEAD"), "not a hash");
+}

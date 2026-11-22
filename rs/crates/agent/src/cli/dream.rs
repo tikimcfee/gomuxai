@@ -674,7 +674,11 @@ pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
             ));
         }
         if !args.dry_run {
+            let put_back = restore_memory(ctx, &d)?;
             store.abandon_dream(d.id, &format!("abandoned: its agent {} is gone", d.agent))?;
+            for f in put_back {
+                ctx.write_out(&format!("Put back {f} as dream #{} found it.\n", d.id))?;
+            }
         }
         ctx.write_out(&format!(
             "{would} dream #{} as abandoned: its agent {} is gone.\n",
@@ -1033,13 +1037,15 @@ fn memory_problems(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>> {
     let store = ctx.store()?;
     let items = store.dream_items(d.id)?;
     let reviewed = store.reviewed_fingerprints()?;
+    let scope = read_scope(ctx)?;
     let known = |kind: &str, key: &str| -> bool {
         if kind == gather::KIND_COMMIT {
             return items
                 .iter()
                 .map(|i| (i.kind.as_str(), i.key.as_str()))
                 .chain(reviewed.keys().map(|(k, v)| (k.as_str(), v.as_str())))
-                .any(|(k, item)| k == kind && review::commit_matches(key, item));
+                .any(|(k, item)| k == kind && review::commit_matches(key, item))
+                || scope.iter().any(|repo| commit_in_repo(repo, key));
         }
         items.iter().any(|i| i.kind == kind && i.key == key)
             || reviewed.contains_key(&(kind.to_string(), key.to_string()))
@@ -1057,6 +1063,46 @@ fn memory_problems(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>> {
         }
         for u in review::unknown_citations(dir, &snap, &known)? {
             out.push(format!("{}/{u}", i.key));
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `hash` (7 or more hex digits) names a commit in the git repo at
+/// `repo`: a dream may cite any commit of a scoped project it checked
+/// memory against, not only the new ones its digest listed.
+pub(crate) fn commit_in_repo(repo: &str, hash: &str) -> bool {
+    if hash.len() < 7 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    std::process::Command::new("git")
+        .args(["-C", repo, "cat-file", "-e", &format!("{hash}^{{commit}}")])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Puts back every memory dir dream d wrote, from the snapshot taken when
+/// it first wrote there: an abandoned dream leaves memory as it found it.
+/// Returns one line per file put back.
+pub(crate) fn restore_memory(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>> {
+    let data_dir = ctx.data_dir();
+    let mut out = Vec::new();
+    for i in ctx.store()?.dream_items(d.id)? {
+        if i.kind != gather::KIND_MEMORY {
+            continue;
+        }
+        let dir = Path::new(&i.key);
+        let snap = snapshot_dir_for(&data_dir, &d.id.to_string(), dir);
+        if !snap.join("MANIFEST").exists() || !dir.is_dir() {
+            continue;
+        }
+        for f in memory::restore(dir, &snap)
+            .with_context(|| format!("restoring {} from dream #{}'s snapshot", i.key, d.id))?
+        {
+            out.push(format!("{}/{f}", i.key));
         }
     }
     Ok(out)
@@ -1095,8 +1141,10 @@ pub const ABANDON: Doc = Doc {
     use_line: "abandon [\"why\"]",
     short: "Give up your dream: its items wait for the next one",
     long: r#"Abandon closes the dream you dream without reviewing anything: its items
-wait for the next dream. The reason, if given, goes in its diary. Only a
-dream's own agent runs it."#,
+wait for the next dream, and every memory directory it wrote is put back as
+it found it, from the snapshot taken before its first write. The reason, if
+given, goes in its diary. Only a dream's own agent runs it; agent dream run
+does the same for a dream whose agent is gone."#,
     example: r#"  agent dream abandon "the transcripts were too large to read in one pass""#,
     args: ArgRule::Range(0, 1),
     ..Doc::DEFAULT
@@ -1120,9 +1168,13 @@ pub fn run_abandon(ctx: &Ctx, args: &AbandonArgs) -> anyhow::Result<()> {
     } else {
         format!("abandoned: {why}")
     };
+    let put_back = restore_memory(ctx, &d)?;
     ctx.store()?.abandon_dream(d.id, &why)?;
+    for f in &put_back {
+        ctx.write_out(&format!("Put back {f} as the dream found it.\n"))?;
+    }
     ctx.write_out(&format!(
-        "Abandoned dream #{}: its items wait for the next dream.\n",
+        "Abandoned dream #{}: its items wait for the next dream, and memory is as it found it.\n",
         d.id
     ))
 }

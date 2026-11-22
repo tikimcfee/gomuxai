@@ -1,6 +1,8 @@
 Abandon closes the dream you dream without reviewing anything: its items
-wait for the next dream. The reason, if given, goes in its diary. Only a
-dream's own agent runs it.
+wait for the next dream, and every memory directory it wrote is put back as
+it found it, from the snapshot taken before its first write. The reason, if
+given, goes in its diary. Only a dream's own agent runs it; agent dream run
+does the same for a dream whose agent is gone.
 
 Usage:
   agent dream abandon ["why"] [flags]
