@@ -1,0 +1,26 @@
+Picks lists this host's saved picks: startup commands kept with "agent
+roster pick --save NAME", the newest version of each, with the task it was
+picked for, its entry, who saved it and when. Given a NAME, it lists every
+version of that one, newest first.
+
+"agent roster pick --saved NAME[@VERSION]" prints a saved command again.
+
+--json prints {"host", "picks": [...]}.
+
+Usage:
+  agent roster picks [NAME] [flags]
+
+Examples:
+  agent roster picks
+  agent roster picks quick-edit
+  agent roster picks --json
+
+Flags:
+  -h, --help   help for picks
+      --json   Print the saved picks as one JSON document
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

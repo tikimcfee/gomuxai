@@ -36,6 +36,10 @@ pub type FleetFn = Box<dyn Fn(&Context, FleetRequest) -> Result<FleetHost> + Sen
 /// The manage op's logic, which lives in the CLI.
 pub type ManageFn =
     Box<dyn Fn(&Context, agent_manage::Request) -> Result<agent_manage::HostView> + Send + Sync>;
+/// The roster op's logic, which lives in the CLI (over `agent-roster`).
+pub type RosterFn = Box<
+    dyn Fn(&Context, agent_roster::RosterRequest) -> Result<agent_roster::HostRoster> + Send + Sync,
+>;
 /// The template op's logic, which lives in `agent-fleet`.
 pub type TemplateFn =
     Box<dyn Fn(&Context, TemplateRequest) -> Result<TemplateResponse> + Send + Sync>;
@@ -50,6 +54,7 @@ pub struct RpcExtras {
     pub fleet: Option<FleetFn>,
     pub template: Option<TemplateFn>,
     pub manage: Option<ManageFn>,
+    pub roster: Option<RosterFn>,
 }
 
 /// rpcHandler serves bus RPC ops through an AgentService.
@@ -108,6 +113,17 @@ impl Handler for RpcHandler {
             bail!("this host's bus doesn't serve {}", agent_bus::OP_MANAGE);
         };
         manage(ctx, req).map_err(remote_err)
+    }
+
+    fn roster(
+        &self,
+        ctx: &Context,
+        req: agent_roster::RosterRequest,
+    ) -> Result<agent_roster::HostRoster> {
+        let Some(roster) = &self.x.roster else {
+            bail!("this host's bus doesn't serve {}", agent_bus::OP_ROSTER);
+        };
+        roster(ctx, req).map_err(remote_err)
     }
 
     fn list(&self, _ctx: &Context) -> Result<ListResponse> {

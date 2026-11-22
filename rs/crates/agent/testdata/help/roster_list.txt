@@ -1,0 +1,21 @@
+List prints this host's roster, as "agent roster" does: each entry, whether
+it is available, its speed, cost and tasks, and its notes counted by verdict
+and session.
+
+Usage:
+  agent roster list [flags]
+
+Examples:
+  agent roster list
+  agent roster list --json
+
+Flags:
+  -h, --help          help for list
+      --host string   Read only this host (default: this host and every linked host)
+      --json          Print the rosters as one JSON document
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

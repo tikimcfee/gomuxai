@@ -111,3 +111,13 @@ dream memory get
 dream memory put
 dream memory remove
 dream memory check
+roster
+roster list
+roster show
+roster pick
+roster picks
+roster note
+roster set
+roster enable
+roster disable
+roster remove

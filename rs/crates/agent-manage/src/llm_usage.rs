@@ -134,6 +134,23 @@ fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
+/// read_snapshot reads the snapshot llm-exp caches for its usage widget, when this host
+/// has one (`$HOME/` [`SNAPSHOT_PATH`]). Only the file is read: no provider is asked and no
+/// credential touched. A file that can't be read gives a [`LlmUsage`] saying why; no file
+/// (or no `$HOME`) gives None. `agent manage view` and the roster both read it here.
+pub fn read_snapshot() -> Option<LlmUsage> {
+    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty())?;
+    let path = std::path::Path::new(&home)
+        .join(SNAPSHOT_PATH)
+        .to_string_lossy()
+        .into_owned();
+    match std::fs::read(&path) {
+        Ok(data) => Some(LlmUsage::parse(&path, &data)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(LlmUsage::failed(&path, &format!("reading it: {e}"))),
+    }
+}
+
 impl LlmUsage {
     /// The snapshot in `data`, read from `path`. A file that isn't a snapshot gives a
     /// [`LlmUsage`] with only `path` and `error`.

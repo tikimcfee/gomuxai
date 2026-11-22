@@ -34,9 +34,9 @@ use crate::contract::{
     FleetFriction, FleetHost, FleetReport, FleetRequest, FocusEvent, FrictionRequest,
     FrictionResponse, KeysRequest, ListRequest, ListResponse, LogsRequest, LogsResponse,
     OP_CAPTURE, OP_FLEET, OP_FRICTION, OP_KEYS, OP_LIST, OP_LOGS, OP_MANAGE, OP_RESPOND, OP_RESUME,
-    OP_SEND, OP_SPAWN, OP_STATUS, OP_TEMPLATE, RESPONSE_DELIVER, RPCResponse, RespondRequest,
-    ResumeRequest, ResumeResponse, SendRequest, SendResponse, SpawnRequest, SpawnResponse,
-    StatusRequest, StatusResponse, TEMPLATE_RESUME, TEMPLATE_START, TemplateRequest,
+    OP_ROSTER, OP_SEND, OP_SPAWN, OP_STATUS, OP_TEMPLATE, RESPONSE_DELIVER, RPCResponse,
+    RespondRequest, ResumeRequest, ResumeResponse, SendRequest, SendResponse, SpawnRequest,
+    SpawnResponse, StatusRequest, StatusResponse, TEMPLATE_RESUME, TEMPLATE_START, TemplateRequest,
     TemplateResponse, inbox_prefix, subject_rpc, validate_host,
 };
 use crate::daemon::BUS_URL_FILE;
@@ -859,6 +859,28 @@ impl RpcClient {
         // The host is the one asked, whatever it calls itself.
         view.host = host.to_string();
         view.reachable = true;
+        Ok(view)
+    }
+
+    /// Asks `host` for its roster (`agent roster`; the fleet timeout, 3s),
+    /// with every string in the answer sanitized. When `host` doesn't allow
+    /// `roster` (an older `agent`, or its `--remote-ops`), fails with
+    /// [`NoRespondersError`] or [`TimeoutError`] (see [`is_unanswered`]).
+    pub fn roster(&self, ctx: &Context, host: &str) -> anyhow::Result<agent_roster::HostRoster> {
+        let client = self.with_fleet_timeout();
+        let mut raw: serde_json::Value = client.call(
+            ctx,
+            host,
+            OP_ROSTER,
+            &agent_roster::RosterRequest::default(),
+        )?;
+        clean_json(&mut raw);
+        let mut view: agent_roster::HostRoster = serde_json::from_value(raw)?;
+        // The host is the one asked, whatever it calls itself, and its
+        // answer is read.
+        view.host = host.to_string();
+        view.error.clear();
+        view.fix.clear();
         Ok(view)
     }
 

@@ -551,7 +551,7 @@ fn bus_start_keeps_saved_ops_without_the_new_defaults() {
     assert_eq!(
         (s.to_string(), from.as_str()),
         (
-            "--client-port 7420 --remote-ops list,status,capture,send,respond,friction,logs,fleet,template,manage".to_string(),
+            "--client-port 7420 --remote-ops list,status,capture,send,respond,friction,logs,fleet,template,manage,roster".to_string(),
             ""
         ),
         "nothing saved: the new defaults"
@@ -581,7 +581,8 @@ fn bus_start_keeps_saved_ops_without_the_new_defaults() {
     );
     let (s, _) = start_settings(ctx, &args, &|f| f == "remote-ops").unwrap();
     assert!(
-        s.to_string().ends_with(",logs,fleet,template,manage"),
+        s.to_string()
+            .ends_with(",logs,fleet,template,manage,roster"),
         "--remote-ops given: {s}"
     );
 }

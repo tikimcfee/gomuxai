@@ -124,7 +124,8 @@ commands take `--json`.
 Spawn pre-allows these for the agent's session: `send`, `deliver`, `list`,
 `status`, `statuses`, `wait`, `events`, `capture`, `logs`, `sessions`,
 `transcript`, `state get`, `history`, `friction add`, `friction +1`, `friction
-list`, `friction show`, `friction link`, `friction links`.
+list`, `friction show`, `friction link`, `friction links`, `roster list`,
+`roster show`, `roster pick`, `roster picks`, `roster note`.
 
 Everything else prompts the person, on purpose: `spawn`, `resume`, `revive`,
 `template`, and `cleanup` start and stop agents; `run` runs a script; `approve`,
@@ -156,7 +157,8 @@ the binary by name or path. The hook never denies anything, and a settings
 
 ```bash
 agent list                                          # reuse an agent before spawning another
-agent spawn helper --backend claude                 # no first message
+agent roster pick --task review                     # which harness, model and host suit it (below)
+agent spawn helper --backend agy --model MODEL      # no first message
 agent spawn helper --backend claude tasks/build.md  # first message: read and execute that file
 agent spawn helper --backend claude --handoff docs/lanes/helper.md tasks/build.md
 agent spawn helper --backend claude --task review   # first message: a stored task's content
@@ -525,6 +527,35 @@ agent task set review -f tasks/review.md   # stores the content, not the path
 agent spawn reviewer --backend claude --task review
 ```
 
+### Choosing a harness and model: the roster
+
+Don't default to your own harness and model. Each sees a problem from its
+own angle and runs at its own speed and cost; a review on another model
+catches what yours misses, a fast cheap model suits mechanical edits. The
+roster (`docs/ROSTER.md`) says what each host can run:
+
+```bash
+agent roster list                                  # entries: availability, speed, cost, tasks, notes
+agent roster show claude/claude-haiku-5-5          # one entry and its notes (HARNESS/MODEL[@EFFORT])
+agent roster pick --task edit                      # a ready spawn line, and two runners-up with why
+agent roster pick --task edit --save quick-edit    # keep that command as a revision of quick-edit
+agent roster pick --saved quick-edit               # print it again (NAME@VERSION for an older one)
+agent roster note claude/claude-haiku-5-5 --task edit --verdict good \
+    --session claude:3f3a9c "renamed across 12 files cleanly" --why "..."
+agent roster set agy/MODEL --tasks review,research --speed medium --cost medium --good-at "..."
+```
+
+Task kinds: `edit`, `bugfix`, `feature`, `long-horizon`, `review`,
+`research`, `design`, `test`, `kernel`, `chat`. A note is one run: it must
+cite the session it came from (`agent sessions` lists them), which must
+have run on this host, and `list` counts notes by distinct session, so one
+bad run doesn't read as a rule. `pick` scores an entry 2 for suiting the
+task and +1/-1 for each session with a good/bad note on it; it prints, never
+spawns. Inside Claude Code, the Agent tool's `model` option runs a subagent
+on another Claude model without a new agent. `pick --save` only adds a
+revision, as `note` adds a note, so it goes with `pick`; `set`, `enable`,
+`disable` and `remove` prompt the person.
+
 ### Heavy jobs: `agent run`
 
 ```bash
@@ -730,7 +761,7 @@ hosts this one knows. Not across hosts: `state` (ask the agent to send what
 you need, or `capture`), `queue` (use `send`), `revive` (use `resume
 name@host`, or run `revive` on that host), `cleanup` (clean up on that host).
 The other host's bus serves only its `--remote-ops` (default
-`list,status,capture,send,respond,friction,logs,fleet,template,manage`), so `keys`,
+`list,status,capture,send,respond,friction,logs,fleet,template,manage,roster`), so `keys`,
 `spawn` and `resume` to another host are refused unless it lists them. "no bus
 answering for host X" means that host's bus is down, not linked, or doesn't
 serve that op.
@@ -901,7 +932,7 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `send` says the message is still in the input box; `status` shows `unsent:` | Enter didn't submit it: `agent key agent-<name> Enter` does. Don't send it again. |
 | Leftover session blocks a spawn | `agent session list`, then `agent session kill agent-<name>`. |
 | Spawn says the agent already exists | Pick another name, or clean up the old one; if it has ended, `agent resume <name>` or `agent revive <name>` continues it. |
-| `agent fleet` shows a linked host as `unreachable` | Its bus doesn't list `fleet` in `--remote-ops` (settings saved before `fleet` existed win over the defaults): on that host, `agent bus restart --remote-ops <its list>,fleet,template,manage`. |
+| `agent fleet` shows a linked host as `unreachable` | Its bus doesn't list `fleet` in `--remote-ops` (settings saved before `fleet` existed win over the defaults): on that host, `agent bus restart --remote-ops <its list>,fleet,template,manage,roster`. |
 | `agent run` says `runs without memory limits` or `couldn't ask systemd to spare g3d-termd's units` | On macOS or Linux without a user `systemd` manager, jobs run plainly with provenance only (`agent run --show <id>`); where `systemd-oomd` watches the root-owned user slice rather than user units, the job's own `MemoryMax` + `MemorySwapMax=0` scope is what protects the terminal (`--no-protect` skips the `g3d-termd` check). |
 | After `agent revive`, an agy agent says it runs without hooks | A person started `agy` by hand in its pane, without the `--add-dir` hooks `agent` wires at launch (status comes from its screen and messages are typed): quit `agy` there and run `agent revive <name>` again so `agent` launches it. |
 | What did I (or a helper) just run? | `agent history --agent <name> --failed`. |

@@ -1,0 +1,86 @@
+Roster is where to look before a spawn: which harness and model this host
+can run, what each is good at, how fast and costly it is, whether it is
+available now, and what past runs showed. It lists this host's entries,
+then every linked host's, asked at once over the bus (3s each):
+
+  Roster on hub: harnesses and models this host can run
+  ENTRY                    AVAILABLE            SPEED  COST  TASKS      NOTES
+  claude/claude-haiku-5-5  available            fast   low   edit,test  3 good from 2 sessions
+  agy/gemini-3-pro         off: agy not on PATH  slow   high  review     no notes
+
+An entry is HARNESS/MODEL[@EFFORT]: the backend spawn takes, the model
+spawn --model takes (empty for the harness's default: claude/), and an
+effort for harnesses that take one (the same model at another effort is
+its own entry). It is available when it is enabled, its harness's CLI is
+on this host's PATH, and its plan isn't at its limit.
+
+Limits come from the host's own llm-exp usage snapshot
+(~/.cache/llm-exp/usage-snapshot.json), when it is under 10 minutes old:
+for claude the fullest of the session, the week, and the named model's
+week when the entry is that model; for agy its fullest window. At 90% an
+entry reads "near limit: week 93%, resets Fri 04:00" and pick ranks it
+down by 2; at 100% it is "off: at limit until ...". With no fresh
+snapshot, show says "limits not known".
+
+Notes are evaluations, one per run, each citing the session it came from:
+NOTES counts them by verdict and says how many distinct sessions they come
+from, so you can see whether a claim rests on one run or on five. A note
+another supersedes isn't counted.
+
+Task kinds: edit (small, well-specified change), bugfix, feature
+(multi-file), long-horizon (hours, many steps), review, research (reading
+and summarising), design, test, kernel (performance-critical low-level
+code), chat (quick question).
+
+roster (or roster list), show, picks and pick only read (pick --save adds a
+saved pick's version); note only adds a note. set, enable, disable and
+remove change the entries.
+
+A linked host whose bus doesn't answer roster (it is down, or runs an
+older agent, or its --remote-ops leaves roster out) is listed as not read,
+with the fix to run there. --host HOST reads one host.
+
+--json prints {"hosts": [...]}, each host {"host", "entries": [...],
+"unlisted": {...}}, or {"host", "error", "fix"} when it wasn't read; each
+entry has its fields, "key", "available", "unavailable" (why not), "notes"
+(counts by verdict, and "sessions"), "by_task", and, when the host's usage
+snapshot is fresh, "limit" ({"window", "pct", "reset_at", "captured_at"}),
+"near_limit" and "limits" (in words); each host also has "limits_as_of".
+
+Usage:
+  agent roster [flags]
+  agent roster [command]
+
+Examples:
+  agent roster
+  agent roster pick --task edit
+  agent roster --host hub
+  agent roster show claude/claude-opus-5-5
+  agent roster set claude/claude-haiku-5-5 --speed fast --cost low --tasks edit,test --good-at "small precise edits"
+  agent roster note claude/claude-haiku-5-5 --task edit --verdict good --session claude:3f3a9c "did the rename across 12 files cleanly"
+  agent roster pick --task edit --save quick-edit
+  agent roster picks
+
+Available Commands:
+  list        List this host's roster (what agent roster prints)
+  show        Show one roster entry with all its notes
+  pick        Pick the best available harness and model for a task, as a spawn line
+  picks       List the saved picks, or one saved pick's versions
+  note        Record how a harness and model did on a task, citing the session
+  set         Add a roster entry, or change one
+  enable      Switch a roster entry back on
+  disable     Switch a roster entry off, keeping it and its notes
+  remove      Delete a roster entry (its notes stay)
+
+Flags:
+  -h, --help          help for roster
+      --host string   Read only this host (default: this host and every linked host)
+      --json          Print the rosters as one JSON document
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent roster [command] --help" for more information about a command.

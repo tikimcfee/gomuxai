@@ -39,6 +39,7 @@ Fleet:
   template    Start agents from the templates a host agrees to run, from any host
   manage      See every agent and session with its tokens and state, and manage the data: untrack, back up, prune
   dream       Review finished work: consolidate memory and triage friction
+  roster      Which harness and model to spawn: this host's roster, its notes, and pick
 
 Messages:
   send        Send a message to an agent: typed in now, or held while it's busy

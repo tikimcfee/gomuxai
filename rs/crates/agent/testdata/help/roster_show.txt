@@ -1,0 +1,27 @@
+Show prints one entry: whether it is available, its tasks, speed, cost,
+limits (its notes, and its plan's usage now, or "limits not known"), what
+it is good at and what to avoid, who set it, and its notes counted. Then every note on it, oldest first: its task kind, verdict, who
+wrote it, the session it cites, what happened and why. A superseded note is
+listed, marked, and not counted.
+
+It also shows the notes on a harness and model that have no entry.
+
+--json prints {"host", "key", "entry", "notes": [...]}.
+
+Usage:
+  agent roster show HARNESS/MODEL[@EFFORT] [flags]
+
+Examples:
+  agent roster show claude/claude-opus-5-5
+  agent roster show claude/claude-haiku-5-5@low --json
+  agent roster show agy/
+
+Flags:
+  -h, --help   help for show
+      --json   Print the entry and its notes as one JSON document
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
