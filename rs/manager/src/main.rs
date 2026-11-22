@@ -2714,4 +2714,12 @@ impl AppMain for App {
             self.keep_state(cx, true);
         }
     }
+
+    /// Under Makepad's JIT (`makepad run`, the live build with LIVE_JIT), a change it can't
+    /// patch into the running window restarts the app, which asks this first: write what
+    /// changed since the last tick, so the new run comes back in this state.
+    fn can_restart(&mut self, cx: &mut Cx) -> Result<(), String> {
+        self.keep_state(cx, true);
+        Ok(())
+    }
 }
