@@ -100,10 +100,77 @@ pub fn cells(view: &View, l: &HistoryLine, now: DateTime<Utc>) -> HistoryCells {
     }
 }
 
+/// Names one command across refreshes: its host, when it ran and what it ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryKey {
+    pub host: String,
+    pub at: String,
+    pub args: Vec<String>,
+}
+
+pub fn key(view: &View, l: &HistoryLine) -> HistoryKey {
+    let h = &view.hosts[l.host];
+    let r = &h.history[l.index];
+    HistoryKey {
+        host: h.host.clone(),
+        at: r.at.clone(),
+        args: r.args.clone(),
+    }
+}
+
+pub fn find(view: &View, k: &HistoryKey) -> Option<HistoryLine> {
+    let host = view.hosts.iter().position(|h| h.host == k.host)?;
+    let index = view.hosts[host]
+        .history
+        .iter()
+        .position(|r| r.at == k.at && r.args == k.args)?;
+    Some(HistoryLine { host, index })
+}
+
+/// The detail of one command, as lines of text: the whole command line and error, which
+/// the list cuts short.
+pub fn detail(view: &View, l: &HistoryLine, now: DateTime<Utc>) -> String {
+    let c = cells(view, l, now);
+    let r = &view.hosts[l.host].history[l.index];
+    let mut out = format!("{}\n\n", c.command);
+    let age = if c.when.is_empty() {
+        String::new()
+    } else {
+        format!(" ({} ago)", c.when)
+    };
+    out.push_str(&format!("host     {}\n", c.host));
+    out.push_str(&format!("who      {}\n", c.who));
+    out.push_str(&format!("at       {}{age}\n", r.at));
+    out.push_str(&format!("exit     {}\n", c.exit));
+    out.push_str(&format!("took     {}\n", c.duration));
+    if !c.error.is_empty() {
+        out.push_str(&format!("\nerror\n{}\n", c.error));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fixture;
+
+    #[test]
+    fn a_key_finds_its_command_again() {
+        let v = fixture::view(fixture::default_now());
+        let all = lines(&v, "", false);
+        let k = key(&v, &all[3]);
+        assert_eq!(find(&v, &k), Some(all[3]));
+        let d = detail(&v, &all[3], fixture::default_now());
+        assert!(d.starts_with("agent "));
+        assert!(d.contains("\nexit "));
+        let failed = lines(&v, "", true);
+        let with_error = failed
+            .iter()
+            .find(|l| !v.hosts[l.host].history[l.index].error.is_empty());
+        if let Some(l) = with_error {
+            assert!(detail(&v, l, fixture::default_now()).contains("\nerror\n"));
+        }
+    }
 
     #[test]
     fn quoting() {

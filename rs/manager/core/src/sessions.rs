@@ -374,6 +374,46 @@ pub fn detail(view: &View, line: &SessionLine) -> String {
     out
 }
 
+/// A session's tokens by kind and by model, as lines of text.
+pub fn tokens(view: &View, line: &SessionLine) -> String {
+    let s = line.row(view);
+    let Some(u) = &s.usage else {
+        return "not counted".to_string();
+    };
+    let t = &u.tokens;
+    let mut out = String::new();
+    let mut put = |k: &str, v: i64| out.push_str(&format!("{k:<12} {:>8}\n", human_tokens(v)));
+    put("input", t.input);
+    put("output", t.output);
+    put("cache read", t.cache_read);
+    put("cache write", t.cache_creation);
+    put("total", t.total());
+    put("context now", u.context_tokens);
+    out.push_str(&format!("{:<12} {:>8}\n", "calls", t.calls));
+    if u.compactions > 0 {
+        out.push_str(&format!("{:<12} {:>8}\n", "compactions", u.compactions));
+    }
+    if let Some(w) = &s.usage_with_subagents {
+        out.push_str(&format!(
+            "{:<12} {:>8}\n",
+            "+subagents",
+            human_tokens(w.total())
+        ));
+    }
+    if !u.by_model.is_empty() {
+        out.push_str("\nby model\n");
+        for (m, t) in &u.by_model {
+            out.push_str(&format!(
+                "  {m}\n    {} in {} calls ({} out)\n",
+                human_tokens(t.total()),
+                t.calls,
+                human_tokens(t.output)
+            ));
+        }
+    }
+    out
+}
+
 /// The state filter's choices, "all" first.
 pub fn state_choices() -> Vec<(String, Option<SessionState>)> {
     let mut v = vec![("all states".to_string(), None)];
@@ -402,6 +442,20 @@ mod tests {
 
     fn v() -> View {
         fixture::view(fixture::default_now())
+    }
+
+    #[test]
+    fn tokens_break_down_by_kind_and_model() {
+        let v = v();
+        let ls = lines(&v, &Filter::default(), Sort::Tokens);
+        let t = tokens(&v, &ls[0]);
+        assert!(t.starts_with("input"), "{t}");
+        assert!(t.contains("\ncache write "));
+        assert!(t.contains("\ncalls "));
+        let uncounted = ls.iter().find(|l| l.row(&v).usage.is_none());
+        if let Some(l) = uncounted {
+            assert_eq!(tokens(&v, l), "not counted");
+        }
     }
 
     #[test]

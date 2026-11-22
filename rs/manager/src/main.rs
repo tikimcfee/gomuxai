@@ -11,6 +11,7 @@ use agent_manager_core::commands::Offer;
 use agent_manager_core::data::DataLine;
 use agent_manager_core::friction::{self, FrictionLine};
 use agent_manager_core::history;
+use agent_manager_core::layout::Section;
 use agent_manager_core::runner::{self, Output, Source};
 use agent_manager_core::sessions::{self, Sort};
 use agent_manager_core::state::{AUTO_REFRESH_SECS, Dialog, Effect, Job, Model, Page};
@@ -111,6 +112,125 @@ script_mod! {
         cursor: MouseCursor.Hand
         show_bg: true
         draw_bg +: {color: #x00000000}
+    }
+
+    // --- the shell: sidebar, split panes, detail sections ---
+    let SideTab = ButtonFlat{
+        width: Fill
+        align: Align{x: 0.0 y: 0.5}
+        padding: Inset{left: 12 right: 8 top: 7 bottom: 7}
+        margin: 0
+        draw_text +: {text_style: theme.font_regular{font_size: 10}}
+    }
+    let SideTabNarrow = SideTab{
+        align: Align{x: 0.5 y: 0.5}
+        padding: Inset{left: 0 right: 0 top: 7 bottom: 7}
+        draw_text +: {text_style: theme.font_bold{font_size: 10}}
+    }
+    let Side = SolidView{
+        height: Fill
+        flow: Down
+        spacing: 2
+        padding: Inset{left: 6 right: 6 top: 8 bottom: 8}
+        show_bg: true
+        draw_bg +: {color: theme.color_surface_container}
+    }
+    let VRule = SolidView{
+        width: 1
+        height: Fill
+        show_bg: true
+        draw_bg +: {color: theme.color_outline_variant}
+    }
+    let HRule = SolidView{
+        width: Fill
+        height: 1
+        show_bg: true
+        draw_bg +: {color: theme.color_outline_variant}
+    }
+    // A list beside its detail: the bar between them drags, and a double click on it (or
+    // the detail's Hide) folds the detail away.
+    let SideSplit = SplitPane{
+        width: Fill
+        height: Fill
+        axis: Horizontal
+        align: FromB(290.)
+        min_vertical: 260.
+        max_vertical: 220.
+        fold: mod.widgets.SplitterCollapse.B
+        draw_bg +: {color_bg: theme.color_surface_container}
+    }
+    // A wide list above its detail.
+    let StackSplit = SplitPane{
+        width: Fill
+        height: Fill
+        axis: Vertical
+        align: FromB(240.)
+        min_horizontal: 120.
+        max_horizontal: 90.
+        fold: mod.widgets.SplitterCollapse.B
+        draw_bg +: {color_bg: theme.color_surface_container}
+    }
+    let ListPane = View{
+        width: Fill
+        height: Fill
+        flow: Down
+    }
+    let DetailHead = View{
+        width: Fill
+        height: Fit
+        flow: Right
+        spacing: 6
+        align: Align{y: 0.5}
+    }
+    let DetailTitle = Label{
+        width: Fill
+        max_lines: 1
+        text_overflow: TextOverflow.Ellipsis
+        draw_text +: {text_style: theme.font_bold{font_size: 11}}
+    }
+    let HideButton = ButtonFlat{text: "Hide ▸"}
+    let DetailScroll = ScrollYView{
+        width: Fill
+        height: Fill
+        flow: Down
+        spacing: 4
+        padding: Inset{right: 10}
+    }
+    let SectionHead = ButtonFlat{
+        width: Fill
+        align: Align{x: 0.0 y: 0.5}
+        padding: Inset{left: 0 right: 4 top: 6 bottom: 4}
+        margin: 0
+        draw_text +: {
+            color: theme.color_text_meta
+            text_style: theme.font_bold{font_size: 9.5}
+        }
+    }
+    let SectionBody = View{
+        width: Fill
+        height: Fit
+        flow: Down
+        spacing: 6
+        padding: Inset{left: 12 bottom: 6}
+    }
+    // What is left of a folded detail pane beside the list: the way to bring it back.
+    let SideStrip = SolidView{
+        visible: false
+        width: Fit
+        height: Fill
+        flow: Down
+        padding: Inset{left: 2 right: 2 top: 6}
+        show_bg: true
+        draw_bg +: {color: theme.color_surface_container_low}
+    }
+    let StackStrip = SolidView{
+        visible: false
+        width: Fill
+        height: Fit
+        flow: Right
+        padding: Inset{left: 8 right: 8 top: 2 bottom: 2}
+        show_bg: true
+        draw_bg +: {color: theme.color_surface_container_low}
     }
 
     mod.widgets.AgentListBase = #(AgentList::register_widget(vm))
@@ -251,7 +371,6 @@ script_mod! {
                 width: Fill
                 height: Fit
                 row := Row{
-                    cursor: MouseCursor.Default
                     when := Cell{width: 40}
                     host := Cell{width: 80}
                     who := Cell{width: 150}
@@ -373,53 +492,91 @@ script_mod! {
                     flow: Down
                     spacing: 0
 
-                    top := BgBar{
-                        show_bg: true
-                        draw_bg +: {color: theme.color_surface_container}
-                        Label{
-                            text: "agent manager"
-                            margin: Inset{right: 12}
-                            draw_text +: {text_style: theme.font_bold{font_size: 11}}
+                    shell := View{
+                    width: Fill
+                    height: Fill
+                    flow: Right
+
+                    side_wide := Side{
+                        width: 148
+                        DetailHead{
+                            padding: Inset{left: 6 bottom: 6}
+                            Label{
+                                width: Fill
+                                max_lines: 1
+                                text: "agent manager"
+                                draw_text +: {text_style: theme.font_bold{font_size: 10}}
+                            }
+                            side_fold := ButtonFlat{text: "«"}
                         }
-                        tab_agents := ButtonFlat{text: "Agents"}
-                        tab_sessions := ButtonFlat{text: "Sessions"}
-                        tab_friction := ButtonFlat{text: "Friction"}
-                        tab_history := ButtonFlat{text: "History"}
-                        tab_data := ButtonFlat{text: "Data"}
+                        tab_agents := SideTab{text: "Agents"}
+                        tab_sessions := SideTab{text: "Sessions"}
+                        tab_friction := SideTab{text: "Friction"}
+                        tab_history := SideTab{text: "History"}
+                        tab_data := SideTab{text: "Data"}
                         Filler{}
-                        source := Meta{width: Fit}
                         auto := CheckBox{text: "auto refresh 10s" active: true}
-                        refresh := Button{text: "Refresh"}
+                        refresh := Button{width: Fill text: "Refresh"}
                     }
+                    side_narrow := Side{
+                        visible: false
+                        width: 48
+                        padding: Inset{left: 4 right: 4 top: 8 bottom: 8}
+                        side_unfold := SideTabNarrow{text: "»"}
+                        ntab_agents := SideTabNarrow{text: "A"}
+                        ntab_sessions := SideTabNarrow{text: "S"}
+                        ntab_friction := SideTabNarrow{text: "F"}
+                        ntab_history := SideTabNarrow{text: "H"}
+                        ntab_data := SideTabNarrow{text: "D"}
+                        Filler{}
+                        nauto := CheckBox{text: "" active: true}
+                        nrefresh := Button{width: Fill text: "↻"}
+                    }
+                    VRule{}
+
+                    pages := View{
+                    width: Fill
+                    height: Fill
+                    flow: Down
 
                     agents_page := View{
                         width: Fill
                         height: Fill
                         flow: Right
-                        agent_list := mod.widgets.AgentList{}
-                        Panel{
-                            width: 330
-                            agent_title := Label{
-                                width: Fill
-                                text: "Select an agent"
-                                draw_text +: {text_style: theme.font_bold{font_size: 11}}
+                        agent_split := SideSplit{
+                            a: ListPane{
+                                agent_list := mod.widgets.AgentList{}
                             }
-                            Bar{
-                                padding: 0
-                                resume := Button{text: "Resume"}
-                                revive := Button{text: "Revive"}
-                                cleanup := Button{text: "Clean up…"}
-                            }
-                            agent_why := Meta{}
-                            agent_detail := Mono{}
-                            Meta{text: "recent logs"}
-                            ScrollYView{
+                            b: Panel{
                                 width: Fill
-                                height: Fill
-                                agent_logs := Mono{
-                                    draw_text +: {text_style: theme.font_code{font_size: 8}}
+                                DetailHead{
+                                    agent_title := DetailTitle{text: "Select an agent"}
+                                    agent_hide := HideButton{}
+                                }
+                                Bar{
+                                    padding: 0
+                                    resume := Button{text: "Resume"}
+                                    revive := Button{text: "Revive"}
+                                    cleanup := Button{text: "Clean up…"}
+                                }
+                                HRule{}
+                                DetailScroll{
+                                    sec_agent_detail := SectionHead{}
+                                    sec_agent_detail_body := SectionBody{
+                                        agent_why := Meta{}
+                                        agent_detail := Mono{}
+                                    }
+                                    sec_agent_logs := SectionHead{}
+                                    sec_agent_logs_body := SectionBody{
+                                        agent_logs := Mono{
+                                            draw_text +: {text_style: theme.font_code{font_size: 8}}
+                                        }
+                                    }
                                 }
                             }
+                        }
+                        agent_strip := SideStrip{
+                            agent_show := ButtonFlat{text: "◂"}
                         }
                     }
 
@@ -440,21 +597,40 @@ script_mod! {
                             stale_cb := CheckBox{text: "stale only"}
                             untracked_cb := CheckBox{text: "show untracked"}
                         }
-                        session_list := mod.widgets.SessionList{}
-                        session_detail := Mono{
-                            height: Fit
-                            padding: Inset{left: 10 right: 10 top: 4 bottom: 4}
-                            max_lines: 2
-                            text_overflow: TextOverflow.Ellipsis
-                            draw_text +: {
-                                color: theme.color_text_meta
-                                text_style: theme.font_code{font_size: 8}
+                        session_split := StackSplit{
+                            a: ListPane{
+                                session_list := mod.widgets.SessionList{}
                             }
+                            b: Panel{
+                                width: Fill
+                                DetailHead{
+                                    session_title := DetailTitle{text: "Session"}
+                                    session_hide := HideButton{text: "Hide ▾"}
+                                }
+                                HRule{}
+                                DetailScroll{
+                                    sec_session_detail := SectionHead{}
+                                    sec_session_detail_body := SectionBody{
+                                        session_detail := Mono{}
+                                    }
+                                    sec_session_tokens := SectionHead{}
+                                    sec_session_tokens_body := SectionBody{
+                                        session_tokens := Mono{}
+                                    }
+                                }
+                            }
+                        }
+                        session_strip := StackStrip{
+                            session_show := ButtonFlat{text: "▴ Show detail"}
                         }
                         BgBar{
                             show_bg: true
                             draw_bg +: {color: theme.color_surface_container}
-                            totals := Label{width: Fill}
+                            totals := Label{
+                                width: Fill
+                                max_lines: 1
+                                text_overflow: TextOverflow.Ellipsis
+                            }
                             selected := Meta{width: Fit}
                             select_all := ButtonFlat{text: "Select shown"}
                             clear_sel := ButtonFlat{text: "Clear"}
@@ -469,23 +645,44 @@ script_mod! {
                         width: Fill
                         height: Fill
                         flow: Right
-                        friction_list := mod.widgets.FrictionList{}
-                        Panel{
-                            width: 400
-                            friction_detail := Label{
+                        friction_split := SideSplit{
+                            align: FromB(400.)
+                            a: ListPane{
+                                friction_list := mod.widgets.FrictionList{}
+                            }
+                            b: Panel{
                                 width: Fill
-                                text: "Select an entry"
-                                draw_text +: {text_style: theme.font_regular{font_size: 9.5}}
+                                DetailHead{
+                                    friction_title := DetailTitle{text: "Select an entry"}
+                                    friction_hide := HideButton{}
+                                }
+                                HRule{}
+                                DetailScroll{
+                                    sec_friction_detail := SectionHead{}
+                                    sec_friction_detail_body := SectionBody{
+                                        friction_detail := Label{
+                                            width: Fill
+                                            text: "Select an entry"
+                                            draw_text +: {text_style: theme.font_regular{font_size: 9.5}}
+                                        }
+                                    }
+                                    sec_friction_resolve := SectionHead{}
+                                    sec_friction_resolve_body := SectionBody{
+                                        friction_note := TextInput{
+                                            width: Fill
+                                            empty_text: "how it was resolved"
+                                        }
+                                        Bar{
+                                            padding: 0
+                                            resolve := Button{text: "Resolve"}
+                                            friction_why := Meta{}
+                                        }
+                                    }
+                                }
                             }
-                            friction_note := TextInput{
-                                width: Fill
-                                empty_text: "how it was resolved"
-                            }
-                            Bar{
-                                padding: 0
-                                resolve := Button{text: "Resolve"}
-                                friction_why := Meta{}
-                            }
+                        }
+                        friction_strip := SideStrip{
+                            friction_show := ButtonFlat{text: "◂"}
                         }
                     }
 
@@ -502,7 +699,29 @@ script_mod! {
                             failed_cb := CheckBox{text: "failed only"}
                             history_count := Meta{}
                         }
-                        history_list := mod.widgets.HistoryList{}
+                        history_split := StackSplit{
+                            align: FromB(200.)
+                            a: ListPane{
+                                history_list := mod.widgets.HistoryList{}
+                            }
+                            b: Panel{
+                                width: Fill
+                                DetailHead{
+                                    history_title := DetailTitle{text: "Command"}
+                                    history_hide := HideButton{text: "Hide ▾"}
+                                }
+                                HRule{}
+                                DetailScroll{
+                                    sec_history_detail := SectionHead{}
+                                    sec_history_detail_body := SectionBody{
+                                        history_detail := Mono{}
+                                    }
+                                }
+                            }
+                        }
+                        history_strip := StackStrip{
+                            history_show := ButtonFlat{text: "▴ Show detail"}
+                        }
                     }
 
                     data_page := View{
@@ -520,6 +739,8 @@ script_mod! {
                         }
                         data_list := mod.widgets.DataList{}
                     }
+                    }
+                    }
 
                     status_bar := BgBar{
                         show_bg: true
@@ -528,6 +749,7 @@ script_mod! {
                             max_lines: 1
                             text_overflow: TextOverflow.Ellipsis
                         }
+                        source := Meta{width: Fit}
                     }
 
                     dialog := Modal{
@@ -632,6 +854,86 @@ fn set_bg(cx: &mut Cx, w: &WidgetRef, color: u32) {
     let mut w = w.clone();
     let c = hex(color);
     script_apply_eval!(cx, w, { draw_bg +: {color: #(c)} });
+}
+
+// --- the shell ------------------------------------------------------------------------
+
+type Ids = &'static [LiveId];
+
+/// Each page with a detail pane: its splitter, the strip that brings a folded pane back,
+/// and the buttons that hide and show it.
+fn details() -> [(Page, Ids, Ids, Ids, Ids); 4] {
+    [
+        (
+            Page::Agents,
+            ids!(agent_split),
+            ids!(agent_strip),
+            ids!(agent_hide),
+            ids!(agent_show),
+        ),
+        (
+            Page::Sessions,
+            ids!(session_split),
+            ids!(session_strip),
+            ids!(session_hide),
+            ids!(session_show),
+        ),
+        (
+            Page::Friction,
+            ids!(friction_split),
+            ids!(friction_strip),
+            ids!(friction_hide),
+            ids!(friction_show),
+        ),
+        (
+            Page::History,
+            ids!(history_split),
+            ids!(history_strip),
+            ids!(history_hide),
+            ids!(history_show),
+        ),
+    ]
+}
+
+/// Each foldable section: its header button and its body.
+fn sections() -> [(Section, Ids, Ids); 7] {
+    [
+        (
+            Section::AgentDetail,
+            ids!(sec_agent_detail),
+            ids!(sec_agent_detail_body),
+        ),
+        (
+            Section::AgentLogs,
+            ids!(sec_agent_logs),
+            ids!(sec_agent_logs_body),
+        ),
+        (
+            Section::SessionDetail,
+            ids!(sec_session_detail),
+            ids!(sec_session_detail_body),
+        ),
+        (
+            Section::SessionTokens,
+            ids!(sec_session_tokens),
+            ids!(sec_session_tokens_body),
+        ),
+        (
+            Section::FrictionDetail,
+            ids!(sec_friction_detail),
+            ids!(sec_friction_detail_body),
+        ),
+        (
+            Section::FrictionResolve,
+            ids!(sec_friction_resolve),
+            ids!(sec_friction_resolve_body),
+        ),
+        (
+            Section::HistoryDetail,
+            ids!(sec_history_detail),
+            ids!(sec_history_detail_body),
+        ),
+    ]
 }
 
 // --- the lists ------------------------------------------------------------------------
@@ -886,6 +1188,7 @@ impl Widget for HistoryList {
                 continue;
             }
             list.set_item_range(cx, 0, m.history_lines.len());
+            let shown = m.history_line();
             while let Some(i) = list.next_visible_item(cx) {
                 let Some(line) = m.history_lines.get(i) else {
                     continue;
@@ -907,6 +1210,16 @@ impl Widget for HistoryList {
                 exit.set_text(cx, &c.exit);
                 set_color(cx, exit, if c.failed { BAD } else { META });
                 item.label(cx, ids!(took)).set_text(cx, &c.duration);
+                let row = item.widget(cx, ids!(row));
+                set_bg(
+                    cx,
+                    &row,
+                    if shown == Some(*line) {
+                        SELECTED
+                    } else {
+                        CLEAR
+                    },
+                );
                 item.draw_all_unscoped(cx);
             }
         }
@@ -1118,8 +1431,56 @@ impl App {
         self.sync(cx);
     }
 
+    /// Puts the model's layout into the shell: which sidebar shows and which tab it
+    /// marks, which detail panes and sections are folded.
+    fn sync_shell(&mut self, cx: &mut Cx) {
+        let m = &self.model;
+        let ui = &self.ui;
+        let l = &m.layout;
+        ui.view(cx, ids!(side_wide))
+            .set_visible(cx, !l.sidebar_collapsed);
+        ui.view(cx, ids!(side_narrow))
+            .set_visible(cx, l.sidebar_collapsed);
+        let narrow = [
+            (Page::Agents, ids!(ntab_agents)),
+            (Page::Sessions, ids!(ntab_sessions)),
+            (Page::Friction, ids!(ntab_friction)),
+            (Page::History, ids!(ntab_history)),
+            (Page::Data, ids!(ntab_data)),
+        ];
+        for (page, tab) in narrow {
+            let tab = ui.widget(cx, tab);
+            set_bg(cx, &tab, if m.page == page { 0x3b82f6a0 } else { CLEAR });
+        }
+        for id in [ids!(auto), ids!(nauto)] {
+            let cb = ui.check_box(cx, id);
+            if cb.active(cx) != m.auto_refresh {
+                cb.set_active(cx, m.auto_refresh, Animate::No);
+            }
+        }
+        for (page, split, strip, _, _) in details() {
+            let open = l.detail_open(page);
+            let s = ui.splitter(cx, split);
+            let want = if open {
+                SplitterCollapse::None
+            } else {
+                SplitterCollapse::B
+            };
+            if s.collapse() != want {
+                s.set_collapse(cx, want);
+            }
+            ui.view(cx, strip).set_visible(cx, !open);
+        }
+        for (section, head, body) in sections() {
+            let open = l.section_open(section);
+            ui.button(cx, head).set_text(cx, &section.header(open));
+            ui.view(cx, body).set_visible(cx, open);
+        }
+    }
+
     /// Puts the model's state into everything that isn't a list.
     fn sync(&mut self, cx: &mut Cx) {
+        self.sync_shell(cx);
         let m = &self.model;
         let ui = &self.ui;
         let now = Utc::now();
@@ -1181,6 +1542,9 @@ impl App {
                     }
                 }
                 ui.label(cx, ids!(agent_why)).set_text(cx, &why.join("\n"));
+                // An empty label still takes a line.
+                ui.widget(cx, ids!(agent_why))
+                    .set_visible(cx, !why.is_empty());
                 ui.label(cx, ids!(agent_detail))
                     .set_text(cx, &agents::detail(&m.view, h, a));
                 let logs = match &m.agent_logs {
@@ -1252,24 +1616,45 @@ impl App {
         let all = ui.button(cx, ids!(untrack_all));
         all.set_text(cx, &format!("Stop tracking all {nr} shown not running…"));
         all.enable(cx, nr > 0);
-        let detail = match m.focused_line() {
-            Some(l) => sessions::brief(&m.view, &l),
-            None => {
-                "Click a session to select it (and see its detail here); click again to unselect."
-                    .to_string()
+        let (title, detail, tokens) = match m.focused_line() {
+            Some(l) => {
+                let s = l.row(&m.view);
+                let title = if s.title.is_empty() {
+                    s.key()
+                } else {
+                    s.title.clone()
+                };
+                (
+                    title,
+                    sessions::detail(&m.view, &l),
+                    sessions::tokens(&m.view, &l),
+                )
             }
+            None => (
+                "Session".to_string(),
+                "Click a session to select it (and see its detail here); click again to unselect."
+                    .to_string(),
+                String::new(),
+            ),
         };
+        ui.label(cx, ids!(session_title)).set_text(cx, &title);
         ui.label(cx, ids!(session_detail)).set_text(cx, &detail);
+        ui.label(cx, ids!(session_tokens)).set_text(cx, &tokens);
 
         // Friction.
         match m.friction() {
             Some((h, i)) => {
+                let f = &m.view.hosts[h].friction[i];
+                ui.label(cx, ids!(friction_title))
+                    .set_text(cx, &format!("#{} on {}", f.id, m.view.hosts[h].host));
                 ui.label(cx, ids!(friction_detail))
                     .set_text(cx, &friction::detail(&m.view, h, i, now));
             }
-            None => ui
-                .label(cx, ids!(friction_detail))
-                .set_text(cx, "Select an entry"),
+            None => {
+                ui.label(cx, ids!(friction_title))
+                    .set_text(cx, "Select an entry");
+                ui.label(cx, ids!(friction_detail)).set_text(cx, "");
+            }
         }
         let note = ui.text_input(cx, ids!(friction_note)).text();
         let offer = m.resolve_offer(&note);
@@ -1284,6 +1669,21 @@ impl App {
             cx,
             &format!("{} of {total} commands", m.history_lines.len()),
         );
+        let (title, detail) = match m.history_line() {
+            Some(l) => {
+                let c = history::cells(&m.view, &l, now);
+                (
+                    format!("{} on {}, exit {}", c.who, c.host, c.exit),
+                    history::detail(&m.view, &l, now),
+                )
+            }
+            None => (
+                "Command".to_string(),
+                "Click a command to see the whole of it here.".to_string(),
+            ),
+        };
+        ui.label(cx, ids!(history_title)).set_text(cx, &title);
+        ui.label(cx, ids!(history_detail)).set_text(cx, &detail);
 
         // Data: the list draws its lines from the model; this sets the buttons.
         ui.widget(cx, ids!(data_list)).redraw(cx);
@@ -1352,6 +1752,67 @@ impl App {
     }
 }
 
+impl App {
+    /// The sidebar's narrow form, and folding and unfolding detail panes and sections.
+    fn shell_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        let ui = self.ui.clone();
+        let mut changed = false;
+        if ui.button(cx, ids!(side_fold)).clicked(actions)
+            || ui.button(cx, ids!(side_unfold)).clicked(actions)
+        {
+            self.model.layout.toggle_sidebar();
+            changed = true;
+        }
+        let narrow = [
+            (ids!(ntab_agents), Page::Agents),
+            (ids!(ntab_sessions), Page::Sessions),
+            (ids!(ntab_friction), Page::Friction),
+            (ids!(ntab_history), Page::History),
+            (ids!(ntab_data), Page::Data),
+        ];
+        for (id, page) in narrow {
+            if ui.button(cx, id).clicked(actions) {
+                self.model.page = page;
+                changed = true;
+            }
+        }
+        if ui.button(cx, ids!(nrefresh)).clicked(actions) {
+            self.refresh(cx);
+        }
+        if let Some(on) = ui.check_box(cx, ids!(nauto)).changed(actions) {
+            self.model.auto_refresh = on;
+            changed = true;
+        }
+        for (page, split, _, hide, show) in details() {
+            if ui.button(cx, hide).clicked(actions) {
+                self.model.layout.set_detail_open(page, false);
+                changed = true;
+            }
+            if ui.button(cx, show).clicked(actions) {
+                self.model.layout.set_detail_open(page, true);
+                changed = true;
+            }
+            // Folded or brought back by a hand on the bar.
+            if let Some(c) = ui.splitter(cx, split).collapsed(actions) {
+                let open = c == SplitterCollapse::None;
+                if self.model.layout.detail_open(page) != open {
+                    self.model.layout.set_detail_open(page, open);
+                    changed = true;
+                }
+            }
+        }
+        for (section, head, _) in sections() {
+            if ui.button(cx, head).clicked(actions) {
+                self.model.layout.toggle_section(section);
+                changed = true;
+            }
+        }
+        if changed {
+            self.sync(cx);
+        }
+    }
+}
+
 impl MatchEvent for App {
     fn handle_startup(&mut self, cx: &mut Cx) {
         self.model = Model::new();
@@ -1399,6 +1860,7 @@ impl MatchEvent for App {
         if let Some(on) = ui.check_box(cx, ids!(auto)).changed(actions) {
             self.model.auto_refresh = on;
         }
+        self.shell_actions(cx, actions);
 
         // Agents.
         let list = ui.widget(cx, ids!(agent_list)).portal_list(cx, ids!(list));
@@ -1536,6 +1998,19 @@ impl MatchEvent for App {
         if let Some(on) = ui.check_box(cx, ids!(failed_cb)).changed(actions) {
             self.model.set_history_failed_only(on);
             self.sync(cx);
+        }
+        let list = ui
+            .widget(cx, ids!(history_list))
+            .portal_list(cx, ids!(list));
+        for (i, item) in list.items_with_actions(actions) {
+            if item
+                .view(cx, ids!(row))
+                .finger_up(actions)
+                .is_some_and(|e| e.is_over)
+            {
+                self.model.select_history_line(i);
+                self.sync(cx);
+            }
         }
 
         // Data.

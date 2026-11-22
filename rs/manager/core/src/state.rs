@@ -12,11 +12,12 @@ use chrono::{DateTime, Local, Utc};
 use crate::agents::{self, AgentKey, AgentLine};
 use crate::commands::{self, Command, Confirm, Offer};
 use crate::friction::{self, FrictionKey, FrictionLine};
-use crate::history::{self, HistoryLine};
+use crate::history::{self, HistoryKey, HistoryLine};
+use crate::layout::Layout;
 use crate::runner::Output;
 use crate::sessions::{self, Filter, SessionKey, SessionLine, Sort, Totals};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Page {
     #[default]
     Agents,
@@ -117,9 +118,14 @@ pub struct Model {
     pub history_text: String,
     pub history_failed_only: bool,
     pub history_lines: Vec<HistoryLine>,
+    /// The command whose detail shows.
+    pub selected_history: Option<HistoryKey>,
 
     /// The prune field, in days.
     pub prune_days: String,
+
+    /// What is folded away: the sidebar, detail panes, sections.
+    pub layout: Layout,
 }
 
 impl Model {
@@ -169,6 +175,11 @@ impl Model {
             && friction::find(&self.view, k).is_none()
         {
             self.selected_friction = None;
+        }
+        if let Some(k) = &self.selected_history
+            && history::find(&self.view, k).is_none()
+        {
+            self.selected_history = None;
         }
         // A filter naming a host or harness that's gone shows nothing; keep it anyway,
         // so a host that's briefly unreachable comes back filtered as it was.
@@ -421,6 +432,24 @@ impl Model {
     pub fn set_history_failed_only(&mut self, on: bool) {
         self.history_failed_only = on;
         self.set_history_text(&self.history_text.clone());
+    }
+
+    /// Shows a command's detail; clicking the shown one again hides it.
+    pub fn select_history_line(&mut self, i: usize) {
+        let Some(l) = self.history_lines.get(i) else {
+            return;
+        };
+        let k = history::key(&self.view, l);
+        if self.selected_history.as_ref() == Some(&k) {
+            self.selected_history = None;
+        } else {
+            self.selected_history = Some(k);
+        }
+    }
+
+    /// The command whose detail shows, if it is still in the view.
+    pub fn history_line(&self) -> Option<HistoryLine> {
+        history::find(&self.view, self.selected_history.as_ref()?)
     }
 
     // --- data ------------------------------------------------------------------------
@@ -742,5 +771,35 @@ mod tests {
         assert!(m.resolve_offer("").why_off().is_some());
         assert_eq!(m.resolve("fixed"), Effect::None);
         assert!(matches!(m.dialog, Some(Dialog::Confirm(_))));
+    }
+
+    #[test]
+    fn history_selection_toggles_and_survives_a_refresh() {
+        let mut m = model();
+        assert_eq!(m.history_line(), None);
+        m.select_history_line(2);
+        let l = m.history_line().unwrap();
+        assert_eq!(l, m.history_lines[2]);
+        m.set_view(
+            fixture::view(fixture::default_now()),
+            fixture::default_now(),
+        );
+        assert_eq!(m.history_line(), Some(l), "the same command after a read");
+        m.select_history_line(2);
+        assert_eq!(m.history_line(), None, "clicking it again hides it");
+    }
+
+    #[test]
+    fn layout_is_part_of_the_model() {
+        let mut m = model();
+        m.layout.toggle_detail(Page::Friction);
+        m.set_view(
+            fixture::view(fixture::default_now()),
+            fixture::default_now(),
+        );
+        assert!(
+            !m.layout.detail_open(Page::Friction),
+            "a read leaves it alone"
+        );
     }
 }

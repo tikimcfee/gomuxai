@@ -15,6 +15,7 @@ pub mod data;
 pub mod fixture;
 pub mod friction;
 pub mod history;
+pub mod layout;
 pub mod runner;
 pub mod sessions;
 pub mod state;
