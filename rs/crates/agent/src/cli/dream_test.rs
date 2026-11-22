@@ -76,34 +76,49 @@ fn dream_gather_run_list_and_show() {
     let out = run(&mut env, &["dream", "gather"]);
     assert!(!out.contains("elsewhere") && !out.contains("ancient"), "out of scope, before the floor: {out}");
     assert!(
-        out.starts_with("The next dream would review 1 session, 1 friction entry, 1 memory directory (3 new).\n"),
+        out.starts_with(&format!(
+            "The next dream over {shop} would review 1 session, 1 memory directory (2 new).\n"
+        )),
         "{out}"
     );
     assert!(out.contains("  claude:old  claude session in shop: Old work\n"), "{out}");
     assert!(!out.contains("sess-l") && !out.contains("sess-w"), "running sessions: {out}");
     assert!(out.contains(&format!("  {memory}  memory of shop (1 file)\n")), "{out}");
-    assert!(out.contains("#1 bug +0: wait misses a turn"), "{out}");
+    assert!(!out.contains("wait misses a turn"), "friction is the global dream's: {out}");
+    let global = run(&mut env, &["dream", "gather", "--global"]);
+    assert!(global.contains("#1 bug +0: wait misses a turn"), "{global}");
 
     let out = run(&mut env, &["dream", "gather", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["quiet"], false);
+    assert_eq!((v["kind"].as_str(), v["project"].as_str()), (Some("project"), Some(shop.as_str())));
     let items: Vec<DreamItem> = v["items"]
         .as_array()
         .unwrap()
         .iter()
         .map(|i| serde_json::from_value(i.clone()).unwrap())
         .collect();
-    assert_eq!(items.len(), 3);
+    assert_eq!(items.len(), 2);
 
     let out = run(&mut env, &["dream", "run", "--dry-run"]);
-    assert!(out.starts_with("Would start a dream: The next dream would review"), "{out}");
+    assert!(out.starts_with(&format!("Would start a dream: The next dream over {shop} would review")), "{out}");
     assert!(env.store().list_dreams(0).unwrap().is_empty(), "dry run recorded a dream");
 
-    // As if a dream reviewed them and committed.
+    // As if a dream from before project dreams reviewed them and committed:
+    // it counts as the project's last.
     let d = env.store().open_dream("local", &items, |id| format!("dream-{id}")).unwrap();
     env.store().commit_dream(d.id).unwrap();
     let out = run(&mut env, &["dream", "gather"]);
-    assert_eq!(out, "Nothing for a dream: nothing new since the last committed dream.\n");
+    assert_eq!(
+        out,
+        format!("Nothing for a dream: no project has anything new.\n  {shop}: nothing new since the last committed dream\n")
+    );
+    let out = run(&mut env, &["dream", "gather", "--project", &shop]);
+    assert_eq!(out, format!("Nothing for a dream over {shop}: nothing new since the last committed dream.\n"));
+    let err = run_err(&mut env, &["dream", "gather", "--project", "/srv/personal"]);
+    assert!(err.contains("/srv/personal isn't in the dream scope"), "{err}");
+    let err = run_err(&mut env, &["dream", "run", "--project", &shop, "--global"]);
+    assert!(err.contains("--project and --global can't go together"), "{err}");
 
     // An open dream whose agent is gone is abandoned; then nothing is new.
     let gone = env.store().open_dream("local", &[], |id| format!("dream-{id}")).unwrap();
@@ -113,7 +128,7 @@ fn dream_gather_run_list_and_show() {
     assert_eq!(
         out,
         format!(
-            "Closed dream #{} as abandoned: its agent {} is gone.\nDream #3 is quiet: nothing new since the last committed dream. No agent started.\n",
+            "Closed dream #{} as abandoned: its agent {} is gone.\nDream #3 is quiet: no project has anything new. No agent started.\n",
             gone.id, gone.agent
         )
     );
@@ -127,25 +142,50 @@ fn dream_gather_run_list_and_show() {
     let out = run(&mut env, &["dream", "list"]);
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 4, "{out}");
+    assert!(lines[0].contains("ITEMS  OVER"), "{out}");
     assert!(lines[1].starts_with("#3    quiet      -"), "{out}");
     assert!(lines[2].starts_with("#2    abandoned  dream-2"), "{out}");
     assert!(lines[3].starts_with("#1    committed  dream-1"), "{out}");
-    assert!(lines[3].contains("    3  "), "{out}");
+    assert!(lines[3].contains("    2  all  "), "{out}");
 
     let out = run(&mut env, &["dream", "show", "1"]);
-    assert!(out.starts_with("Dream #1 (committed) on local\nAgent:    dream-1\n"), "{out}");
+    assert!(
+        out.starts_with("Dream #1 (committed) on local\nOver:     every project in scope\nAgent:    dream-1\n"),
+        "{out}"
+    );
     assert!(out.contains("  session  claude:old  claude session in shop: Old work\n           read: agent transcript old\n"), "{out}");
     let out = run(&mut env, &["dream", "show"]);
     assert!(out.starts_with("Dream #3 (quiet)"), "the newest: {out}");
     let err = run_err(&mut env, &["dream", "show", "9"]);
     assert!(err.contains("there is no dream #9"), "{err}");
 
-    // A vote brings the entry back.
+    // The global dream: the committed project dream and the friction entry
+    // are new; once reviewed, a vote brings the entry back.
+    let out = run(&mut env, &["dream", "gather", "--global"]);
+    assert!(
+        out.starts_with("The next dream over the machine (global) would review 1 project dream, 1 friction entry, "),
+        "{out}"
+    );
+    assert!(out.contains("  1  dream #1 over the whole scope (2 items)\n"), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&run(&mut env, &["dream", "gather", "--global", "--json"])).unwrap();
+    assert_eq!(v["kind"], "global");
+    let items: Vec<DreamItem> = v["items"].as_array().unwrap().iter().map(|i| serde_json::from_value(i.clone()).unwrap()).collect();
+    let g = env
+        .store()
+        .open_dream_of_kind("local", &agent_store::DreamOf::global(), &items, |id| format!("dream-{id}"))
+        .unwrap();
+    env.store().commit_dream(g.id).unwrap();
+    let out = run(&mut env, &["dream", "gather", "--global"]);
+    assert_eq!(
+        out,
+        "Nothing for a dream over the machine (global): no project dream has committed and no friction changed since the last global dream.\n"
+    );
     let mut f = env.store().get_friction(1).unwrap().unwrap();
     f.updated_at = Time::now();
     env.store().update_friction(&f).unwrap();
-    let out = run(&mut env, &["dream", "gather"]);
-    assert!(out.starts_with("The next dream would review 1 friction entry (1 new).\n"), "{out}");
+    let out = run(&mut env, &["dream", "gather", "--global"]);
+    assert!(out.contains("1 friction entry"), "{out}");
+    assert!(!out.contains("project dream"), "{out}");
 
     assert_eq!(
         run(&mut env, &["dream", "scope", "remove", &shop]),
@@ -369,6 +409,13 @@ fn dream_gather_carries_evidence() {
     assert_eq!(e["tools"][0]["error"], "exit 144");
     assert_eq!(e["tools"][0]["sources"], serde_json::json!(["claude:work"]));
     assert_eq!(e["corrections"][0]["excerpt"], "no, don't kill the server");
+    assert!(e["tools"][0].get("projects").is_none(), "one project's evidence names none");
+
+    // The global dream pools the evidence, each group with its projects.
+    let v: serde_json::Value = serde_json::from_str(&run(&mut env, &["dream", "gather", "--global", "--json"])).unwrap();
+    let e = &v["evidence"];
+    assert_eq!(e["tools"][0]["projects"], serde_json::json!([shop]));
+    assert_eq!(e["commands"][0]["projects"], serde_json::json!([shop]));
 }
 
 /// Sets a transcript's mtime an hour back, so it reads as finished.
@@ -485,4 +532,111 @@ fn dream_scope_maps_removed_worktrees_to_their_repo() {
 
     run(&mut env, &["dream", "scope", "remove", &shop]);
     assert!(env.store().get_host_state("dream.worktrees").unwrap().as_deref() == Some("{}"));
+}
+
+#[test]
+fn a_run_picks_the_project_whose_last_dream_is_oldest() {
+    crate::require_termd!();
+    let (mut env, home) = setup_sessions();
+    let mut dirs = Vec::new();
+    for name in ["alpha", "beta"] {
+        let d = env.dir.path().join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        let d = d.to_string_lossy().into_owned();
+        claude_transcript(&home, &format!("{name}-1"), &d, name, Duration::from_secs(2 * 86400));
+        run(&mut env, &["dream", "scope", "add", &d]);
+        dirs.push(d);
+    }
+    let (alpha, beta) = (dirs[0].clone(), dirs[1].clone());
+    let gather_json = |env: &mut TestEnv, extra: &[&str]| -> serde_json::Value {
+        let mut words = vec!["dream", "gather", "--json"];
+        words.extend_from_slice(extra);
+        serde_json::from_str(&run(env, &words)).unwrap()
+    };
+    let items_of = |v: &serde_json::Value| -> Vec<DreamItem> {
+        v["items"].as_array().unwrap().iter().map(|i| serde_json::from_value(i.clone()).unwrap()).collect()
+    };
+    let commit = |env: &mut TestEnv, dir: &str, items: &[DreamItem]| {
+        let d = env
+            .store()
+            .open_dream_of_kind("local", &agent_store::DreamOf::project(dir), items, |id| format!("dream-{id}"))
+            .unwrap();
+        env.store().commit_dream(d.id).unwrap();
+    };
+
+    // Neither has dreamt: the first in order, with only its own sessions.
+    let v = gather_json(&mut env, &[]);
+    assert_eq!(v["project"], alpha.as_str());
+    let keys: Vec<String> = items_of(&v).iter().map(|i| i.key.clone()).collect();
+    assert!(keys.contains(&"claude:alpha-1".to_string()) && !keys.contains(&"claude:beta-1".to_string()), "{keys:?}");
+    commit(&mut env, &alpha, &items_of(&v));
+
+    // alpha has dreamt; beta, never, is next.
+    let v = gather_json(&mut env, &[]);
+    assert_eq!(v["project"], beta.as_str());
+    commit(&mut env, &beta, &items_of(&v));
+    let out = run(&mut env, &["dream", "gather"]);
+    assert!(out.starts_with("Nothing for a dream: no project has anything new.\n"), "{out}");
+    assert!(out.contains(&format!("  {alpha}: ")) && out.contains(&format!("  {beta}: ")), "{out}");
+
+    // Both have something new: alpha, whose last dream is older, goes first;
+    // --project picks the other.
+    claude_transcript(&home, "alpha-2", &alpha, "more", Duration::from_secs(3600));
+    claude_transcript(&home, "beta-2", &beta, "more", Duration::from_secs(3600));
+    assert_eq!(gather_json(&mut env, &[])["project"], alpha.as_str());
+    let v = gather_json(&mut env, &["--project", &beta]);
+    assert_eq!(v["project"], beta.as_str());
+    let keys: Vec<String> = items_of(&v).iter().map(|i| i.key.clone()).collect();
+    assert!(keys.contains(&"claude:beta-2".to_string()) && !keys.iter().any(|k| k.starts_with("claude:alpha")), "{keys:?}");
+
+    // A quiet run over one project records it as that project's.
+    commit(&mut env, &beta, &items_of(&v));
+    let out = run(&mut env, &["dream", "run", "--project", &beta]);
+    assert!(out.contains(&format!("is quiet over {beta}: nothing new since the last committed dream.")), "{out}");
+    let quiet = env.store().list_dreams(1).unwrap().remove(0);
+    assert_eq!((quiet.kind.as_str(), quiet.project.as_str()), ("project", beta.as_str()));
+}
+
+#[test]
+fn the_machine_memory_is_made_once_and_guarded_like_any() {
+    crate::require_termd!();
+    let mut env = TestEnv::with_termd_private();
+    let dir = super::machine_memory_dir(&env.ctx);
+    assert!(!dir.exists());
+    super::ensure_machine_memory(&env.ctx).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("MEMORY.md")).unwrap(), "");
+    std::fs::write(dir.join("MEMORY.md"), "- [x](x.md) — x\n").unwrap();
+    super::ensure_machine_memory(&env.ctx).unwrap();
+    assert_eq!(std::fs::read_to_string(dir.join("MEMORY.md")).unwrap(), "- [x](x.md) — x\n", "left as it is");
+
+    // A committed project dream a global dream may cite.
+    let p = env
+        .store()
+        .open_dream_of_kind("local", &agent_store::DreamOf::project("/srv/app"), &[], |id| format!("dream-{id}"))
+        .unwrap();
+    env.store().commit_dream(p.id).unwrap();
+    let dir_s = dir.to_string_lossy().into_owned();
+    let item = DreamItem {
+        kind: "memory".into(),
+        key: dir_s.clone(),
+        fingerprint: "f".into(),
+        ..Default::default()
+    };
+    open_dream_as_agent(&mut env, &[item]);
+    let draft = env.dir.path().join("draft.md");
+    let put = |env: &mut TestEnv, cites: &str, expect: &str| {
+        std::fs::write(&draft, FACT.replace("CITES", cites)).unwrap();
+        let draft = draft.to_string_lossy().into_owned();
+        env.run(&["dream", "memory", "put", "build.md", "--dir", &dir_s, "--expect", expect, "--from", &draft])
+    };
+    put(&mut env, &format!("dream:{}, dream:99", p.id), "new").1.unwrap();
+    let (out, res) = env.run(&["dream", "commit"]);
+    assert!(res.is_err());
+    assert!(out.contains(&format!("{dir_s}/build.md: cites dream:99, which is no item")), "{out}");
+    let v = agent_dream::memory::version(FACT.replace("CITES", &format!("dream:{}, dream:99", p.id)).as_bytes());
+    put(&mut env, &format!("dream:{}", p.id), &v).1.unwrap();
+    // Abandoning puts the machine memory back as the dream found it.
+    let out = run(&mut env, &["dream", "abandon", "testing"]);
+    assert!(out.contains("Put back"), "{out}");
+    assert!(!dir.join("build.md").exists());
 }

@@ -4,6 +4,7 @@
 //! into the batch's sessions from their transcripts, since the window's start;
 //! `agent_dream::evidence` groups and ranks them.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
 
 use agent_dream::evidence::{self, Evidence, FailedCommand, FailedTool, Prompt};
@@ -15,45 +16,95 @@ use agent_transcript::{
 };
 use chrono::{DateTime, Utc};
 
-use super::dream::read_scope;
+use super::dream::read_worktrees;
 use super::root::Ctx;
 
 /// The most bytes read of one transcript: a longer one is read from its start
 /// up to here.
 const MAX_TRANSCRIPT_BYTES: u64 = 256 << 20;
 
-/// The evidence for the batch g gathered.
-pub(crate) fn evidence(ctx: &Ctx, g: &Gathered) -> anyhow::Result<Evidence> {
+/// The scope dir `cwd` is in: the deepest one it is in, else the repo
+/// whose worktree prefix it starts with (`agent dream scope add
+/// --worktrees`), if that repo is in scope; "" if none.
+fn project_of_cwd(
+    cwd: &str,
+    scope: &[String],
+    worktrees: &std::collections::BTreeMap<String, String>,
+) -> String {
+    if let Some(d) = scope
+        .iter()
+        .filter(|d| gather::in_scope(cwd, std::slice::from_ref(d)))
+        .max_by_key(|d| d.len())
+    {
+        return d.clone();
+    }
+    worktrees
+        .iter()
+        .find(|(prefix, repo)| {
+            !cwd.is_empty() && cwd.starts_with(prefix.as_str()) && scope.contains(repo)
+        })
+        .map(|(_, repo)| repo.clone())
+        .unwrap_or_default()
+}
+
+/// The evidence for the batch g gathered over `scope`. Pooled (the global
+/// dream's, over several projects), each group names the projects it was
+/// seen in.
+pub(crate) fn evidence(
+    ctx: &Ctx,
+    g: &Gathered,
+    scope: &[String],
+    pooled: bool,
+) -> anyhow::Result<Evidence> {
     let since = g.since.unwrap_or_else(|| Utc::now() - gather::DUE_AFTER);
-    let scope = read_scope(ctx)?;
+    let worktrees = read_worktrees(ctx)?;
     let rows = ctx.store()?.list_commands(&CommandFilter {
         failed: true,
         since: since.into(),
         ..Default::default()
     })?;
-    let cmds: Vec<FailedCommand> = rows
-        .into_iter()
-        .filter(|r| gather::in_scope(&r.cwd, &scope))
-        .map(|r| FailedCommand {
+    let mut projects_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut cmds: Vec<FailedCommand> = Vec::new();
+    for r in rows {
+        let project = project_of_cwd(&r.cwd, scope, &worktrees);
+        if project.is_empty() {
+            continue;
+        }
+        let source = if r.agent.is_empty() {
+            "(person)".to_string()
+        } else {
+            r.agent.clone()
+        };
+        projects_of.entry(source).or_default().insert(project);
+        cmds.push(FailedCommand {
             agent: r.agent,
             args: r.args,
             exit_code: r.exit_code,
             error: r.error,
             at: r.started_at.0.with_timezone(&Utc),
-        })
-        .collect();
+        });
+    }
     let tree = super::dream_memory::agent_commands(super::root::tree());
-    let (commands, commands_failed) = evidence::group_commands(&cmds, Some(&tree));
+    let (mut commands, commands_failed) = evidence::group_commands(&cmds, Some(&tree));
 
     let mut tools = Vec::new();
     let mut prompts = Vec::new();
-    let mut read = std::collections::BTreeSet::new();
+    let mut read = BTreeSet::new();
+    let mut session_projects: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for t in &g.transcripts {
+        session_projects
+            .entry(t.session.clone())
+            .or_default()
+            .insert(t.project.clone());
         if read_transcript(t, since, &mut tools, &mut prompts).is_ok() {
             read.insert(t.session.clone());
         }
     }
-    let (tool_groups, tools_failed) = evidence::group_tools(&tools);
+    let (mut tool_groups, tools_failed) = evidence::group_tools(&tools);
+    if pooled {
+        evidence::set_projects(&mut commands, &projects_of);
+        evidence::set_projects(&mut tool_groups, &session_projects);
+    }
     Ok(Evidence {
         since: Some(since),
         commands_failed,

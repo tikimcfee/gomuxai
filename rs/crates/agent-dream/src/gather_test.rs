@@ -325,7 +325,8 @@ fn the_global_dream_takes_project_dreams_memory_and_pooled_evidence() {
             diary: String::new(),
         },
     ];
-    f.project_memory.insert("/srv/app".into(), mem("/m/app", "1"));
+    f.project_memory
+        .insert("/srv/app".into(), mem("/m/app", "1"));
     f.machine = Some(mem("/data/memory", "0"));
     let mut cur = cursor(at(7));
     cur.scope = vec!["/srv/app".into(), "/srv/tools".into()];
@@ -352,7 +353,8 @@ fn the_global_dream_takes_project_dreams_memory_and_pooled_evidence() {
 
     // Nothing new: quiet, though a project's memory changed (a project
     // dream wrote it; it is news only alongside a new project dream).
-    f.project_memory.insert("/srv/app".into(), mem("/m/app", "2"));
+    f.project_memory
+        .insert("/srv/app".into(), mem("/m/app", "2"));
     let g = gather_global(&f, &cursor_after(&cur, 8)).unwrap();
     assert!(g.quiet, "{g:?}");
     assert_eq!(
@@ -368,11 +370,17 @@ fn the_global_dream_takes_project_dreams_memory_and_pooled_evidence() {
         ..Default::default()
     });
     let g = gather_global(&f, &cursor_after(&cur, 9)).unwrap();
-    assert_eq!(keys(&g), ["dream:6", "memory:/m/app", "memory:/data/memory"]);
+    assert_eq!(
+        keys(&g),
+        ["dream:6", "memory:/m/app", "memory:/data/memory"]
+    );
     let news: Vec<bool> = g.items.iter().map(|i| i.new).collect();
     assert_eq!(news, [true, true, false]);
     assert_eq!(g.since, Some(at(7)));
-    assert!(g.transcripts.is_empty(), "no session written since the last global dream");
+    assert!(
+        g.transcripts.is_empty(),
+        "no session written since the last global dream"
+    );
 
     // Seven days on, it runs with nothing new.
     f.dreams.pop();

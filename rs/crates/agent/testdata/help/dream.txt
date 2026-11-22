@@ -1,8 +1,12 @@
-A dream is a pass over finished work: sessions that have ended, the friction
-box, handoff docs, memory directories, and the commits in the repos those
-sessions ran in. A Claude agent, dream-<id>, reads them and writes back only
-through agent dream's own verbs: it consolidates memory, triages friction
-(duplicates, links, accepting what is clearly real; it never resolves an
+A dream is a pass over finished work. A project dream covers one directory
+of the dream scope: its sessions that have ended, handoff docs, memory, and
+the commits in its repo. The global dream covers the machine: the project
+dreams committed since the last one, every project's memory, the machine
+memory (<data dir>/memory, whose start_here.md goes into every agent's
+briefing), the friction box, and the evidence across projects. A Claude
+agent, dream-<id>, reads them and writes back only through agent dream's
+own verbs: it consolidates memory, triages friction (the global dream;
+duplicates, links, accepting what is clearly real; it never resolves an
 entry as fixed), and keeps a diary.
 
 Dreaming is opt-in by directory: only sessions run in a directory of the
@@ -28,7 +32,8 @@ An item counts as reviewed once its dream commits, at the version it had
 then: a session written to again or a friction entry voted on comes back.
 A dream that is abandoned, or whose agent goes away, leaves its items for
 the next one. With nothing new, a dream is recorded as quiet and no agent
-starts, until the last committed dream is 7 days old.
+starts, until the last committed dream (the project's, or the last global
+one) is 7 days old. Only one dream is open at a time.
 
 Usage:
   agent dream [flags]
@@ -39,6 +44,7 @@ Examples:
   agent dream gather
   agent dream run --dry-run
   agent dream run
+  agent dream run --global
   agent dream list
   agent dream show 3
 

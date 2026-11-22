@@ -484,14 +484,23 @@ fn pooled_groups_name_their_projects() {
         ..Default::default()
     }];
     let mut of: BTreeMap<String, std::collections::BTreeSet<String>> = BTreeMap::new();
-    of.entry("claude:1".into()).or_default().insert("/srv/app".into());
-    of.entry("claude:2".into()).or_default().insert("/srv/tools".into());
-    of.entry("helper".into()).or_default().insert("/srv/app".into());
+    of.entry("claude:1".into())
+        .or_default()
+        .insert("/srv/app".into());
+    of.entry("claude:2".into())
+        .or_default()
+        .insert("/srv/tools".into());
+    of.entry("helper".into())
+        .or_default()
+        .insert("/srv/app".into());
     set_projects(&mut groups, &of);
     assert_eq!(groups[0].projects, ["/srv/app", "/srv/tools"]);
     let s = format(&Evidence {
         tools: groups,
         ..Default::default()
     });
-    assert!(s.contains("  in 2 projects: `/srv/app`, `/srv/tools`\n"), "{s}");
+    assert!(
+        s.contains("  in 2 projects: `/srv/app`, `/srv/tools`\n"),
+        "{s}"
+    );
 }

@@ -181,7 +181,10 @@ mod tests {
         let (path, text) = machine_note(&data).unwrap();
         let s = machine_section(&path, &text);
         assert!(s.starts_with("## This machine\n"), "{s}");
-        assert!(s.contains("Build in /var/tmp.") && !s.contains("name:"), "{s}");
+        assert!(
+            s.contains("Build in /var/tmp.") && !s.contains("name:"),
+            "{s}"
+        );
         assert_eq!(machine_section(&path, "---\nname: x\n---\n"), "");
     }
 

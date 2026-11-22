@@ -1,5 +1,6 @@
-Show prints a dream (the newest, without an id): its status, agent and
-times, its diary, and each item it was given, with how to read it.
+Show prints a dream (the newest, without an id): its status, what it was
+over (a project directory, or the machine for the global dream), its agent
+and times, its diary, and each item it was given, with how to read it.
 
 Usage:
   agent dream show [id] [flags]

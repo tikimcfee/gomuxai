@@ -115,7 +115,10 @@ fn dreams_abandoned_and_quiet() {
     let q = s
         .record_quiet_dream("h", &DreamOf::project("/srv/app"), "nothing new")
         .unwrap();
-    assert_eq!((q.kind.as_str(), q.project.as_str()), ("project", "/srv/app"));
+    assert_eq!(
+        (q.kind.as_str(), q.project.as_str()),
+        ("project", "/srv/app")
+    );
     assert_eq!(q.status, DREAM_QUIET);
     assert_eq!(q.agent, "");
     assert_eq!(q.items, 0);
@@ -150,11 +153,22 @@ fn dreams_migrate_to_kinds_and_projects() {
 
     let s = Store::open(&path).unwrap();
     let d = s.get_dream(1).unwrap().unwrap();
-    assert_eq!((d.kind.as_str(), d.project.as_str()), (DREAM_KIND_PROJECT, ""));
+    assert_eq!(
+        (d.kind.as_str(), d.project.as_str()),
+        (DREAM_KIND_PROJECT, "")
+    );
     // The legacy dream covered every project, and no global one.
-    let of = |dir: &str| s.last_committed_dream_of(&DreamOf::project(dir)).unwrap().map(|d| d.id);
+    let of = |dir: &str| {
+        s.last_committed_dream_of(&DreamOf::project(dir))
+            .unwrap()
+            .map(|d| d.id)
+    };
     assert_eq!(of("/srv/app"), Some(1));
-    assert!(s.last_committed_dream_of(&DreamOf::global()).unwrap().is_none());
+    assert!(
+        s.last_committed_dream_of(&DreamOf::global())
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -166,12 +180,22 @@ fn dreams_per_project_and_global() {
     };
     let legacy = open(&DreamOf::project(""), &[]);
     s.commit_dream(legacy.id).unwrap();
-    let app = open(&DreamOf::project("/srv/app"), &[item("memory", "/m/app", "1")]);
-    assert_eq!((app.kind.as_str(), app.project.as_str()), ("project", "/srv/app"));
+    let app = open(
+        &DreamOf::project("/srv/app"),
+        &[item("memory", "/m/app", "1")],
+    );
+    assert_eq!(
+        (app.kind.as_str(), app.project.as_str()),
+        ("project", "/srv/app")
+    );
     s.commit_dream(app.id).unwrap();
     let last = |of: DreamOf| s.last_committed_dream_of(&of).unwrap().map(|d| d.id);
     assert_eq!(last(DreamOf::project("/srv/app")), Some(app.id));
-    assert_eq!(last(DreamOf::project("/srv/tools")), Some(legacy.id), "the legacy dream covered it");
+    assert_eq!(
+        last(DreamOf::project("/srv/tools")),
+        Some(legacy.id),
+        "the legacy dream covered it"
+    );
     assert_eq!(last(DreamOf::global()), None);
 
     let since = s.get_dream(app.id).unwrap().unwrap().finished_at;
@@ -186,9 +210,19 @@ fn dreams_per_project_and_global() {
     let g = open(&DreamOf::global(), &[item("memory", "/m/app", "2")]);
     s.commit_dream(g.id).unwrap();
     assert_eq!(last(DreamOf::global()), Some(g.id));
-    assert_eq!(last(DreamOf::project("/srv/app")), Some(app.id), "a global dream is no project's");
+    assert_eq!(
+        last(DreamOf::project("/srv/app")),
+        Some(app.id),
+        "a global dream is no project's"
+    );
     let key = ("memory".to_string(), "/m/app".to_string());
     assert_eq!(s.reviewed_fingerprints().unwrap()[&key], "2");
-    assert_eq!(s.reviewed_fingerprints_by(DREAM_KIND_PROJECT).unwrap()[&key], "1");
-    assert_eq!(s.reviewed_fingerprints_by(DREAM_KIND_GLOBAL).unwrap()[&key], "2");
+    assert_eq!(
+        s.reviewed_fingerprints_by(DREAM_KIND_PROJECT).unwrap()[&key],
+        "1"
+    );
+    assert_eq!(
+        s.reviewed_fingerprints_by(DREAM_KIND_GLOBAL).unwrap()[&key],
+        "2"
+    );
 }

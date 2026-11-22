@@ -534,8 +534,9 @@ pub fn gather_global(src: &dyn Sources, cur: &Cursor) -> Result<Gathered> {
     if news == 0 {
         if cur.due() {
             g.reason = match cur.last_committed {
-                None => "no new project dream or friction, but no global dream has committed yet"
-                    .into(),
+                None => {
+                    "no new project dream or friction, but no global dream has committed yet".into()
+                }
                 Some(t) => format!(
                     "no new project dream or friction, but the last committed global dream is {} days old",
                     cur.now.signed_duration_since(t).num_days()

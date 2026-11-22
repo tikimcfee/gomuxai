@@ -1,16 +1,30 @@
 Gather lists what agent dream run would give the next dream, and records
-nothing:
+nothing. A project dream covers one directory of the dream scope: the one
+--project names, or else the one with something new (or due) whose last
+committed dream is oldest. It gets:
 
-  sessions    run in the dream scope (agent dream scope), no longer
-              running, not untracked, not a dream agent's own (subagents'
-              sessions go with the session that started them), last written
-              after the floor; at most 200, oldest first, the rest wait
-  friction    this host's open and accepted entries, and closed ones that
-              changed since a dream saw them, whatever the scope
-  handoff     the docs agents' handoff state keys name, in the scope
+  sessions    run in the project (agent dream scope), or in a worktree of
+              it, no longer running, not untracked, not a dream agent's
+              own (subagents' sessions go with the session that started
+              them), last written after the floor; at most 200, oldest
+              first, the rest wait
+  handoff     the docs agents' handoff state keys name, in the project
   memory      Claude Code's memory/ directory of each session's project
-  commit      commits in the repos those sessions ran in, since the last
-              committed dream (before any, since the floor)
+  commit      commits in the repos those sessions ran in, since the
+              project's last committed dream (before any, since the floor)
+
+The global dream (--global) gets:
+
+  dream       the project dreams committed since the last global dream
+  friction    this host's open and accepted entries, and closed ones that
+              changed since a dream saw them
+  memory      every scoped project's memory and the machine memory
+              (<data dir>/memory), new when changed since a global dream
+              reviewed them
+
+and the evidence of every scoped project's sessions since the last global
+dream. It is quiet with no new project dream and no changed friction,
+until the last global dream is 7 days old.
 
 The floor is set by the first agent dream run, 7 days before it: nothing
 last written earlier is ever taken, unless it is written to again. Until
@@ -19,20 +33,23 @@ out until it changes. With nothing new, the dream would be quiet; with
 nothing in scope, there is nothing to gather: it says which.
 
 It also counts the evidence the digest's evidence section lists: failed
-agent commands run in the scope, failed tool calls in those sessions'
-transcripts, and messages that corrected an agent, grouped and ranked
-(--json has them whole).
+agent commands run in the dream's directories, failed tool calls in those
+sessions' transcripts, and messages that corrected an agent, grouped and
+ranked (--json has them whole).
 
 Usage:
   agent dream gather [flags]
 
 Examples:
   agent dream gather
-  agent dream gather --json
+  agent dream gather --project ~/src/app
+  agent dream gather --global --json
 
 Flags:
-  -h, --help   help for gather
-      --json   Print as JSON
+      --global           Gather for the global dream
+  -h, --help             help for gather
+      --json             Print as JSON
+      --project string   Gather for a dream over this scope directory
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
