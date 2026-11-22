@@ -134,6 +134,12 @@ pub const AGENT_SAFE_COMMANDS: &[&str] = &[
     "friction show",
     "friction link",
     "friction links",
+    // Not bare "roster": safe commands match as a prefix, so it would allow
+    // roster set, disable and remove too. "roster list" is the same read.
+    "roster list",
+    "roster show",
+    "roster pick",
+    "roster note",
 ];
 
 impl AgentService {
