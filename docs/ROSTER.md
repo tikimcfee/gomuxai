@@ -93,8 +93,8 @@ it, when). Saving the same name again adds version 2 only when the command
 differs, and says so. `agent roster picks` lists them; `agent roster picks
 quick-edit` shows every version; `agent roster pick --saved
 quick-edit[@VERSION]` prints that exact command again, whatever the roster
-says now, with a line saying whether its entry is still available. Old
-versions are kept to go back to.
+says now, with a line saying whether its entry is still available. Each
+saved pick keeps its revisions; the roster has no revert of its own.
 
 ### Self-explaining output
 
