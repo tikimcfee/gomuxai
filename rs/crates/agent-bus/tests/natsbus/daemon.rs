@@ -529,16 +529,28 @@ fn test_daemon_pipeless_waits_out_a_slow_launch() {
     )
     .unwrap();
     std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let start = Instant::now();
-    let d = agent_bus::start_daemon_pipeless(agent_bus::DaemonConfig {
-        dir: host.dir().to_path_buf(),
-        host: "slow".to_string(),
-        client_port: -1,
-        leaf_listen: String::new(),
-        remote_ops: None,
-        busd_path: Some(slow),
-    })
-    .expect("a slow agent-busd comes up");
+    // A just-written script can be briefly busy (ETXTBSY) while another
+    // test thread's fork still holds its write descriptor: that fails the
+    // launch at once, before the sleep, so try again.
+    let mut tries = 0;
+    let (start, d) = loop {
+        let start = Instant::now();
+        let r = agent_bus::start_daemon_pipeless(agent_bus::DaemonConfig {
+            dir: host.dir().to_path_buf(),
+            host: "slow".to_string(),
+            client_port: -1,
+            leaf_listen: String::new(),
+            remote_ops: None,
+            busd_path: Some(slow.clone()),
+        });
+        match r {
+            Err(e) if tries < 20 && format!("{e:#}").contains("Text file busy") => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            r => break (start, r.expect("a slow agent-busd comes up")),
+        }
+    };
     assert!(start.elapsed() >= Duration::from_secs(7));
     assert!(!d.client_url().is_empty());
     let nc = connect_local(host.dir(), "slow").expect("connecting to the slow bus");

@@ -4,7 +4,9 @@ use crate::cli::testenv::TestEnv;
 /// A CLI whose sessions are under its temp dir, with one Claude session,
 /// 3f3a9c00-1111.
 fn env() -> TestEnv {
-    let mut env = TestEnv::new();
+    // Roster reads PATH (which CLIs are installed) and HOME (plan limits),
+    // which roster_plan_limits changes: hold the env lock for reading.
+    let mut env = TestEnv::reads_env();
     let projects = env.dir.path().join("projects");
     let dir = projects.join("-work");
     std::fs::create_dir_all(&dir).unwrap();

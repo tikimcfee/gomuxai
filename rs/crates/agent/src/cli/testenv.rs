@@ -48,6 +48,9 @@ pub struct TestEnv {
     // Dropped in this order: the client stops its namespace's daemon while the
     // socket dir's guard is still held.
     termd: Option<(TestClient, Guard)>,
+    /// Held by an env that reads HOME or PATH (reads_env), so a test
+    /// changing them (set_env, which takes the lock for writing) waits.
+    env_read: Option<SharedGuard>,
     pub dir: tempfile::TempDir,
 }
 
@@ -298,8 +301,19 @@ impl TestEnv {
             bus: None,
             dialed_forbidden: Arc::new(AtomicBool::new(false)),
             termd: None,
+            env_read: None,
             dir,
         }
+    }
+
+    /// new, holding the environment lock for reading until it drops: for a
+    /// test whose commands read HOME or PATH (where CLIs are, plan limits),
+    /// which a with_termd_private test's set_env would otherwise change
+    /// under it.
+    pub fn reads_env() -> TestEnv {
+        let mut env = TestEnv::new();
+        env.env_read = Some(testing::init());
+        env
     }
 
     /// new, isolated (isolate()), with a termd client for a namespace of this
