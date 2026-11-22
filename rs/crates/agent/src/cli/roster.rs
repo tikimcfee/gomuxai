@@ -43,8 +43,16 @@ then every linked host's, asked at once over the bus (3s each):
 An entry is HARNESS/MODEL[@EFFORT]: the backend spawn takes, the model
 spawn --model takes (empty for the harness's default: claude/), and an
 effort for harnesses that take one (the same model at another effort is
-its own entry). It is available when it is enabled and its harness's CLI
-is on this host's PATH.
+its own entry). It is available when it is enabled, its harness's CLI is
+on this host's PATH, and its plan isn't at its limit.
+
+Limits come from the host's own llm-exp usage snapshot
+(~/.cache/llm-exp/usage-snapshot.json), when it is under 10 minutes old:
+for claude the fullest of the session, the week, and the named model's
+week when the entry is that model; for agy its fullest window. At 90% an
+entry reads "near limit: week 93%, resets Fri 04:00" and pick ranks it
+down by 2; at 100% it is "off: at limit until ...". With no fresh
+snapshot, show says "limits not known".
 
 Notes are evaluations, one per run, each citing the session it came from:
 NOTES counts them by verdict and says how many distinct sessions they come
@@ -67,7 +75,9 @@ with the fix to run there. --host HOST reads one host.
 --json prints {"hosts": [...]}, each host {"host", "entries": [...],
 "unlisted": {...}}, or {"host", "error", "fix"} when it wasn't read; each
 entry has its fields, "key", "available", "unavailable" (why not), "notes"
-(counts by verdict, and "sessions") and "by_task"."#,
+(counts by verdict, and "sessions"), "by_task", and, when the host's usage
+snapshot is fresh, "limit" ({"window", "pct", "reset_at", "captured_at"}),
+"near_limit" and "limits" (in words); each host also has "limits_as_of"."#,
     example: r#"  agent roster
   agent roster pick --task edit
   agent roster --host hub
@@ -117,7 +127,8 @@ pub fn def() -> Def {
 /// This host's roster: what agent roster prints first, and what this
 /// host's bus answers the roster op with.
 pub(crate) fn local_roster(ctx: &Ctx) -> anyhow::Result<HostRoster> {
-    agent_roster::host_view(ctx.store()?, &ctx.cfg().host)
+    let usage = agent_manage::llm_usage::read_snapshot();
+    agent_roster::host_view(ctx.store()?, &ctx.cfg().host, usage.as_ref())
 }
 
 /// The fix for a host whose bus doesn't answer roster.
@@ -308,10 +319,14 @@ fn render_rosters(hosts: &[HostRoster], local_host: &str) -> String {
     out
 }
 
-/// An entry's availability in words: "available", "off: disabled", "off:
-/// agy not on PATH".
+/// An entry's availability in words, as the roster lists it: "available",
+/// "near limit: week 93%, resets Fri 04:00", "off: disabled", "off: at
+/// limit until Fri 04:00". (Limits that aren't known aren't said here; show
+/// says so.)
 fn availability(e: &EntryView) -> String {
-    if e.available {
+    if e.available && e.near_limit {
+        e.limits.clone()
+    } else if e.available {
         "available".into()
     } else {
         format!("off: {}", e.unavailable)
@@ -351,8 +366,8 @@ pub const ROSTER_SHOW: Doc = Doc {
     use_line: "show HARNESS/MODEL[@EFFORT]",
     short: "Show one roster entry with all its notes",
     long: r#"Show prints one entry: whether it is available, its tasks, speed, cost,
-limits, what it is good at and what to avoid, who set it, and its notes
-counted. Then every note on it, oldest first: its task kind, verdict, who
+limits (its notes, and its plan's usage now, or "limits not known"), what
+it is good at and what to avoid, who set it, and its notes counted. Then every note on it, oldest first: its task kind, verdict, who
 wrote it, the session it cites, what happened and why. A superseded note is
 listed, marked, and not counted.
 
@@ -382,7 +397,12 @@ pub fn roster_show_def() -> Def {
 
 pub fn run_roster_show(ctx: &Ctx, args: &RosterShowArgs) -> anyhow::Result<()> {
     let key = entry_key(&args.args[0])?;
-    let show = agent_roster::show(ctx.store()?, &ctx.cfg().host, &key)?;
+    let show = agent_roster::show(
+        ctx.store()?,
+        &ctx.cfg().host,
+        &key,
+        agent_manage::llm_usage::read_snapshot().as_ref(),
+    )?;
     if args.json {
         return ctx.print_json(&show);
     }
@@ -420,6 +440,7 @@ fn render_show(s: &EntryShow) -> String {
                 dash(&e.entry.set_by),
                 stamp(&e.entry.updated_at)
             );
+            let _ = writeln!(out, "  limits:       {}", e.limits);
             let _ = writeln!(
                 out,
                 "  notes:        {} (superseded notes don't count)",
@@ -485,7 +506,8 @@ is named, with the fix.
 
 Ranking: an entry whose tasks include the kind scores 2; each distinct
 session with a good note on that kind adds 1, each with a bad one takes 1
-away (superseded notes don't count). --prefer breaks ties: fast (by speed),
+away (superseded notes don't count); one near its plan's limit loses 2,
+and one at its limit isn't available. --prefer breaks ties: fast (by speed),
 cheap (by cost) or strong (dearest first). Then more good sessions win,
 then this host's entries.
 

@@ -11,8 +11,16 @@ then every linked host's, asked at once over the bus (3s each):
 An entry is HARNESS/MODEL[@EFFORT]: the backend spawn takes, the model
 spawn --model takes (empty for the harness's default: claude/), and an
 effort for harnesses that take one (the same model at another effort is
-its own entry). It is available when it is enabled and its harness's CLI
-is on this host's PATH.
+its own entry). It is available when it is enabled, its harness's CLI is
+on this host's PATH, and its plan isn't at its limit.
+
+Limits come from the host's own llm-exp usage snapshot
+(~/.cache/llm-exp/usage-snapshot.json), when it is under 10 minutes old:
+for claude the fullest of the session, the week, and the named model's
+week when the entry is that model; for agy its fullest window. At 90% an
+entry reads "near limit: week 93%, resets Fri 04:00" and pick ranks it
+down by 2; at 100% it is "off: at limit until ...". With no fresh
+snapshot, show says "limits not known".
 
 Notes are evaluations, one per run, each citing the session it came from:
 NOTES counts them by verdict and says how many distinct sessions they come
@@ -35,7 +43,9 @@ with the fix to run there. --host HOST reads one host.
 --json prints {"hosts": [...]}, each host {"host", "entries": [...],
 "unlisted": {...}}, or {"host", "error", "fix"} when it wasn't read; each
 entry has its fields, "key", "available", "unavailable" (why not), "notes"
-(counts by verdict, and "sessions") and "by_task".
+(counts by verdict, and "sessions"), "by_task", and, when the host's usage
+snapshot is fresh, "limit" ({"window", "pct", "reset_at", "captured_at"}),
+"near_limit" and "limits" (in words); each host also has "limits_as_of".
 
 Usage:
   agent roster [flags]

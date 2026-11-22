@@ -1,6 +1,6 @@
 Show prints one entry: whether it is available, its tasks, speed, cost,
-limits, what it is good at and what to avoid, who set it, and its notes
-counted. Then every note on it, oldest first: its task kind, verdict, who
+limits (its notes, and its plan's usage now, or "limits not known"), what
+it is good at and what to avoid, who set it, and its notes counted. Then every note on it, oldest first: its task kind, verdict, who
 wrote it, the session it cites, what happened and why. A superseded note is
 listed, marked, and not counted.
 

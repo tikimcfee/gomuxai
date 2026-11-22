@@ -420,3 +420,74 @@ fn roster_without_bus() {
     let out = must(&mut env, &["roster", "pick", "--task", "edit"]);
     assert!(out.starts_with("Picked for edit: sh/m on local"), "{out}");
 }
+
+// Plan limits from this host's llm-exp snapshot ($HOME/.cache/llm-exp/...):
+// near the limit in the list and ranked down, at it off; show says limits
+// it doesn't know.
+#[test]
+fn roster_plan_limits() {
+    crate::require_termd!();
+    let mut env = TestEnv::with_termd_private();
+    let home = env.dir.path().join("home");
+    let bin = env.dir.path().join("bin");
+    std::fs::create_dir_all(home.join(".cache/llm-exp")).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+    for cli in ["claude", "agy", "aider"] {
+        let p = bin.join(cli);
+        std::fs::write(&p, "#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let now = chrono::Utc::now();
+    let reset = (now + chrono::TimeDelta::hours(30)).to_rfc3339();
+    std::fs::write(
+        home.join(".cache/llm-exp/usage-snapshot.json"),
+        format!(
+            r#"{{"captured_at": "{}",
+                "claude": {{"session": {{"pct": 10}}, "week_all": {{"pct": 50, "reset_at": "{reset}"}},
+                           "week_model": {{"pct": 93, "reset_at": "{reset}"}}, "model_name": "Fable"}},
+                "agy": {{"bars": [{{"label": "gemini week", "pct": 100, "reset_at": "{reset}"}}]}}}}"#,
+            now.to_rfc3339()
+        ),
+    )
+    .unwrap();
+    env.set_env("HOME", &home);
+    env.set_env("PATH", &bin);
+    let when = agent_roster::limits::when(&reset, now);
+
+    for (key, tasks) in [
+        ("claude/claude-fable-5-2", "edit"),
+        ("claude/claude-opus-5-5", "edit"),
+        ("agy/gemini", "edit"),
+        ("aider/x", "review"),
+    ] {
+        must(&mut env, &["roster", "set", key, "--tasks", tasks]);
+    }
+    let out = must(&mut env, &["roster"]);
+    eprintln!("{out}");
+    let line = |k: &str| out.lines().find(|l| l.starts_with(k)).unwrap().to_string();
+    assert!(line("claude/claude-fable-5-2").contains(&format!("near limit: week fable 93%, resets {when}")), "{out}");
+    assert!(line("claude/claude-opus-5-5").contains("  available  "), "{out}");
+    assert!(line("agy/gemini").contains(&format!("off: at limit until {when}")), "{out}");
+    assert!(!out.contains("limits not known"), "the list doesn't say it:\n{out}");
+
+    let out = must(&mut env, &["roster", "show", "aider/x"]);
+    assert!(out.contains("  limits:       limits not known\n"), "{out}");
+    let out = must(&mut env, &["roster", "show", "claude/claude-opus-5-5"]);
+    assert!(out.contains(&format!("  limits:       week 50%, resets {when}\n")), "{out}");
+
+    let out = must(&mut env, &["roster", "pick", "--task", "edit"]);
+    assert!(out.starts_with("Picked for edit: claude/claude-opus-5-5 on local\n"), "{out}");
+    // Near its limit, fable falls from a tie with opus to one with aider/x
+    // (which doesn't list edit), and sorts after it by name.
+    assert!(out.contains("3. claude/claude-fable-5-2 on local"), "{out}");
+    assert!(!out.contains("agy/gemini"), "at its limit, not picked:\n{out}");
+
+    let v: serde_json::Value = serde_json::from_str(&must(&mut env, &["roster", "--json"])).unwrap();
+    let h = &v["hosts"][0];
+    assert!(h["limits_as_of"].as_str().is_some_and(|s| !s.is_empty()), "{h}");
+    let fable = h["entries"].as_array().unwrap().iter().find(|e| e["key"] == "claude/claude-fable-5-2").unwrap();
+    assert_eq!(fable["near_limit"], true);
+    assert_eq!(fable["limit"]["pct"], 93);
+    assert_eq!(fable["limit"]["window"], "week fable");
+}

@@ -7,7 +7,8 @@ is named, with the fix.
 
 Ranking: an entry whose tasks include the kind scores 2; each distinct
 session with a good note on that kind adds 1, each with a bad one takes 1
-away (superseded notes don't count). --prefer breaks ties: fast (by speed),
+away (superseded notes don't count); one near its plan's limit loses 2,
+and one at its limit isn't available. --prefer breaks ties: fast (by speed),
 cheap (by cost) or strong (dearest first). Then more good sessions win,
 then this host's entries.
 
