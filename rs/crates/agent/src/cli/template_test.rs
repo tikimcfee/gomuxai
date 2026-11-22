@@ -76,11 +76,34 @@ fn test_template_add_list_remove() {
             "templates are edited only on their own host: run agent template remove on hub",
         ),
         (vec!["template", "add", "x"], "required flag(s) \"cwd\" not set"),
+        (
+            vec!["template", "add", "x", "--backend", "claude", "--effort", "ultra", "--cwd", dir.as_str()],
+            "invalid effort \"ultra\": use low, medium, high, xhigh, max",
+        ),
+        (
+            vec!["template", "add", "x", "--backend", "shell", "--effort", "high", "--cwd", dir.as_str()],
+            "backend shell takes no effort: claude and agy do",
+        ),
     ] {
         let (_, res) = env.run(&words);
         let err = format!("{:#}", res.unwrap_err());
         assert!(err.contains(want), "{words:?}: {err}");
     }
+
+    // --effort is kept with the template, and list shows it.
+    let (out, res) = env.run(&[
+        "template", "add", "deep", "--backend", "agy", "--model", "m1", "--effort", "xhigh", "--cwd", &dir,
+    ]);
+    res.unwrap();
+    assert!(
+        out.starts_with(&format!("Added template deep: agy, model m1, effort xhigh, in {dir} (")),
+        "{out}"
+    );
+    let (out, res) = env.run(&["template", "list"]);
+    res.unwrap();
+    assert!(out.contains("deep: agy, model m1, effort xhigh\n"), "{out}");
+    let (_, res) = env.run(&["template", "remove", "deep"]);
+    res.unwrap();
 
     let (out, res) = env.run(&["template", "remove", "builder"]);
     res.unwrap();

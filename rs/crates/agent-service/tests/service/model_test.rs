@@ -212,3 +212,166 @@ fn test_rpc_spawn_model() {
         );
     }
 }
+
+// spawn --effort goes on the CLI's launch line beside --model, ahead of agy's
+// exit report, and resume relaunches at the same effort.
+#[test]
+fn test_spawn_effort_is_passed_and_kept_on_resume() {
+    require_termd!();
+    let mut env = setup_test_env();
+    env.cfg_mut().agent_binary = "/opt/gomuxai/agent".into();
+    let resumed_fake = register_fake_agy(&env);
+    let spawned = spawn_fake_agy(
+        &env,
+        SpawnOptions {
+            name: "e".into(),
+            model: "gemini-3.8-flash-high".into(),
+            effort: "xhigh".into(),
+            ..Default::default()
+        },
+    );
+    let launch = spawned.launched_cmd();
+    let effort = launch.find(" --effort 'xhigh'");
+    let exit = launch.find("; ");
+    assert!(
+        effort.is_some() && exit.is_some() && effort < exit,
+        "launch line {launch:?}: want --effort before the exit report"
+    );
+    assert_eq!(env.state_value("e", STATE_KEY_EFFORT), "xhigh");
+
+    env.service
+        .spawn(
+            &bg(),
+            SpawnOptions {
+                name: "r".into(),
+                backend: "agy".into(),
+                effort: "low".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(env.service.status_info("r").unwrap().effort, "low");
+    env.tmux.kill_session(&env.session_name("r")).unwrap();
+    env.service
+        .resume(
+            &bg(),
+            ResumeOptions {
+                name: "r".into(),
+                session_id: "conv-9".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("Resume: {e:#}"));
+    let launched = resumed_fake
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|f| f.launched_cmd());
+    assert!(
+        launched
+            .as_deref()
+            .is_some_and(|c| c.contains("--effort 'low'")),
+        "resumed with {launched:?}, want --effort low"
+    );
+    assert_eq!(
+        env.state_value("r", STATE_KEY_EFFORT),
+        "low",
+        "after resume"
+    );
+}
+
+// A backend that takes no effort refuses --effort, and an effort that isn't
+// one of the roster's is refused before anything starts.
+#[test]
+fn test_spawn_effort_refusals() {
+    require_termd!();
+    let env = setup_test_env();
+    for (backend, effort, want) in [
+        ("shell", "high", "backend shell takes no --effort"),
+        ("aider", "high", "backend aider takes no --effort"),
+        ("claude", "extreme", "invalid effort"),
+        ("claude", "--model", "invalid effort"),
+    ] {
+        let err = env
+            .service
+            .spawn(
+                &bg(),
+                SpawnOptions {
+                    name: "x".into(),
+                    backend: backend.into(),
+                    effort: effort.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains(want),
+            "spawn --backend {backend} --effort {effort:?}: {err:#}, want {want:?}"
+        );
+        assert!(
+            !env.tmux.session_exists(&env.session_name("x")).unwrap(),
+            "--effort {effort:?} left a session behind"
+        );
+    }
+}
+
+// The efforts spawn takes are the roster's.
+#[test]
+fn test_validate_effort_is_the_rosters() {
+    for e in agent_roster::EFFORTS {
+        validate_effort(e).unwrap_or_else(|err| panic!("validate_effort({e:?}) = {err:#}"));
+        agent_roster::check_effort(e).unwrap();
+    }
+    for bad in ["", "High", "ultra", "low ", "$(id)"] {
+        assert!(
+            validate_effort(bad).is_err(),
+            "validate_effort({bad:?}) passed"
+        );
+    }
+}
+
+// A spawn over the bus carries --effort; the serving host checks it and says
+// in its response which effort the agent runs at.
+#[test]
+fn test_rpc_spawn_effort() {
+    require_termd!();
+    let env = setup_test_env();
+    let bus = crate::require_bus!();
+    let (_server, client) = serve_spawn(&env, &bus);
+    register_fake_agy(&env);
+
+    let cwd = tempdir();
+    let resp = client
+        .spawn(
+            &bg(),
+            &agent_bus::AgentRef::new("e", "h1"),
+            agent_bus::SpawnRequest {
+                backend: "agy".into(),
+                cwd: cwd.path().display().to_string(),
+                effort: "high".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("Spawn: {e:#}"));
+    assert_eq!(resp.effort, "high", "response effort");
+    assert_eq!(env.state_value("e", STATE_KEY_EFFORT), "high");
+    let st = client
+        .status(&bg(), &agent_bus::AgentRef::new("e", "h1"))
+        .unwrap();
+    assert_eq!(st.effort, "high", "Status: want its effort");
+
+    let cwd = tempdir();
+    let err = client
+        .spawn(
+            &bg(),
+            &agent_bus::AgentRef::new("bad", "h1"),
+            agent_bus::SpawnRequest {
+                backend: "agy".into(),
+                cwd: cwd.path().display().to_string(),
+                effort: "x; touch /tmp/pwned".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("invalid effort"), "{err:#}");
+}

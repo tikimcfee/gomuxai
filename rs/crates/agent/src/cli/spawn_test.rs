@@ -411,6 +411,14 @@ fn test_remote_spawn_refuses_local_only_flags() {
     }
     env.ctx.globals.backend_config = String::new();
 
+    // An effort that isn't one is refused before it crosses the bus.
+    let err =
+        spawn::run(&env.ctx, &spawn_args(&["x@hub", "--effort", "ultra"])).expect_err("bad effort");
+    assert!(
+        format!("{err:#}").contains("invalid effort \"ultra\""),
+        "--effort ultra: err = {err:#}"
+    );
+
     let err =
         spawn::run(&env.ctx, &spawn_args(&["x@hub", "--cwd", "src/repo"])).expect_err("relative");
     assert!(

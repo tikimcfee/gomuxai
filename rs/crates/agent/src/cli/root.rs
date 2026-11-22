@@ -688,8 +688,9 @@ impl Ctx {
         cfg.validate_termd()?;
         self.setup_backends(&mut cfg);
 
-        // Only spawn needs a backend.
-        if cmd.name() == "spawn" {
+        // Only spawn needs a backend, and not with --pick or --saved, which
+        // let the roster choose it.
+        if cmd.name() == "spawn" && !self.changed("pick") && !self.changed("saved") {
             cfg.validate()
                 .map_err(|e| self.with_backend_config_err(e))?;
         }

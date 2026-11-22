@@ -22,7 +22,7 @@ use agent_bus::{
 use agent_discovery::{Overrides as DiscoveryOverrides, dirs as discovery_dirs, new_index};
 use agent_service::{
     AGENT_STATUS_ENDED, AGENT_STATUS_UNKNOWN, AGENT_STATUS_WAITING, AgentService, FleetFn,
-    STATE_KEY_MODEL, friction_is_open, one_line,
+    STATE_KEY_EFFORT, STATE_KEY_MODEL, friction_is_open, one_line,
 };
 use agent_store::{
     AGENT_STATUS, Agent, AgentEvent, FRICTION_RESOLVED, FrictionFilter, Store, Time as StoreTime,
@@ -126,26 +126,30 @@ pub fn local(
     let mut transcripts_by_agent: HashMap<String, String> = HashMap::new();
 
     for a in &tree_state.agents {
-        let (status, end_reason, detail, model, updated_at, reported_status) =
+        let (status, end_reason, detail, model, effort, updated_at, reported_status) =
             match service.status_info(&a.name) {
                 Ok(info) => (
                     info.status.to_string(),
                     info.end_reason.as_str().to_string(),
                     info.detail,
                     info.model,
+                    info.effort,
                     info.updated_at,
                     info.reported_status.to_string(),
                 ),
                 Err(_) => {
-                    let fallback_model = store
-                        .get_state(&a.name, STATE_KEY_MODEL)?
-                        .map(|e| e.value)
-                        .unwrap_or_default();
+                    let state = |key: &str| -> Result<String> {
+                        Ok(store
+                            .get_state(&a.name, key)?
+                            .map(|e| e.value)
+                            .unwrap_or_default())
+                    };
                     (
                         AGENT_STATUS_UNKNOWN.to_string(),
                         String::new(),
                         String::new(),
-                        fallback_model,
+                        state(STATE_KEY_MODEL)?,
+                        state(STATE_KEY_EFFORT)?,
                         StoreTime::default(),
                         String::new(),
                     )
@@ -190,6 +194,7 @@ pub fn local(
             spawned_by: a.spawned_by.clone(),
             backend: a.backend.clone(),
             model,
+            effort,
             status,
             end_reason,
             detail,
@@ -665,11 +670,15 @@ fn render_agent(out: &mut String, agent: &FleetAgent, depth: usize) {
     } else {
         agent.backend.as_str()
     };
-    let backend_label = if agent.model.is_empty() {
+    let mut backend_label = if agent.model.is_empty() {
         backend.to_string()
     } else {
         format!("{backend} {}", agent.model)
     };
+    if !agent.effort.is_empty() {
+        let sep = if agent.model.is_empty() { " " } else { "" };
+        let _ = write!(backend_label, "{sep}@{}", agent.effort);
+    }
 
     let (head_indent, meta_indent) = if depth == 0 {
         ("  ".to_string(), "    ".to_string())

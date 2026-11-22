@@ -7,7 +7,7 @@ use agent_discovery::{HARNESS_AGY, HARNESS_CLAUDE, STATUS_ENDED, Session};
 use agent_service::{
     AGENT_STATUS_ENDED, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_WAITING,
     AgentStatus, SpawnOptions, dialog_title, one_line, trust_backend_name, trust_prompt_folder,
-    validate_model,
+    validate_effort, validate_model,
 };
 use agent_fleet::handoff;
 use agent_store::{Agent, StateEntry, Time};
@@ -19,6 +19,7 @@ use super::friction::age;
 use super::logs::abs_path;
 use super::remote::{call_remote, canonical_host, is_remote_host, parse_target};
 use super::root::Ctx;
+use super::spawn_pick;
 use super::task::get_task;
 use super::transcript::{live_for, resolve_transcript, session_at, session_index};
 
@@ -98,6 +99,26 @@ agent resume relaunches it on the same model, and agent status -v shows it.
 A model switched inside the session (Claude's /model, which agent send
 types in as a command) lasts for that run only.
 
+--effort runs the CLI at that reasoning effort (its --effort): low, medium,
+high, xhigh or max, the roster's efforts. claude and agy take one; other
+backends refuse it. Like the model, the agent remembers it: agent resume
+and agent revive relaunch at it, and agent status -v and agent fleet show
+it.
+
+--pick KIND lets the roster choose instead of --backend, --model and
+--effort: it ranks this host's and every linked host's entries for that
+task kind exactly as agent roster pick --task KIND does, says what it
+chose and why in a line ("Picked claude/claude-haiku-5-5@low for edit:
+tasks include edit; notes on edit: 2 good from 2 sessions; fast"), and
+spawns that. NAME@HOST (or --host) picks from that host's roster only. A
+pick on another host spawns there as NAME@HOST does, so that host's bus
+must serve spawn; if it doesn't, spawn says so. --saved NAME[@VERSION]
+spawns a pick kept with agent roster pick --save NAME, on its own host, if
+its entry is still available there. Both refuse --backend,
+--backend-config, --model and --effort, and when nothing in the roster can
+be picked, the refusal lists each entry's availability (as agent roster
+list shows it) and how to add one.
+
 --attach opens the new agent's session in this terminal once it
 starts, as agent attach does (Ctrl-\ twice detaches; the agent keeps running).
 
@@ -134,6 +155,9 @@ for docs/lanes/<name>.md in the agent's directory)."#,
   agent spawn auto-worker --backend claude --skip-permissions
   agent spawn reviewer --backend agy --trust-workspace
   agent spawn quick --backend claude --model claude-fable-5-1
+  agent spawn deep --backend claude --model claude-opus-5-5 --effort xhigh
+  agent spawn fixer --pick edit tasks/fix.md
+  agent spawn reviewer --saved quick-review@2
   agent spawn lead --backend claude --resume 3f34adff --attach
   agent spawn lead --backend claude --continue
   agent spawn builder@hub --backend claude --cwd /srv/repo tasks/build.md
@@ -161,6 +185,13 @@ pub struct Args {
     )]
     pub cwd: String,
     #[arg(
+        long = "effort",
+        value_name = "string",
+        default_value = "",
+        help = "Reasoning effort the CLI runs at, passed as its --effort (claude, agy): low, medium, high, xhigh or max; resume keeps it",
+    )]
+    pub effort: String,
+    #[arg(
         long = "handoff",
         value_name = "string",
         default_value = "",
@@ -181,6 +212,14 @@ pub struct Args {
         help = "Model the CLI runs on, passed as its --model (claude, agy, aider); resume keeps it",
     )]
     pub model: String,
+    // The help names TASK_KINDS (a test checks).
+    #[arg(
+        long = "pick",
+        value_name = "string",
+        default_value = "",
+        help = "Let the roster choose backend, model, effort and host for this task kind (edit, bugfix, feature, long-horizon, review, research, design, test, kernel, chat), as agent roster pick does",
+    )]
+    pub pick: String,
     #[arg(
         long = "resume",
         value_name = "string",
@@ -188,6 +227,13 @@ pub struct Args {
         help = "Continue this ended Claude or agy session as the agent (an id, the start of one, or a transcript's path)",
     )]
     pub resume: String,
+    #[arg(
+        long = "saved",
+        value_name = "string",
+        default_value = "",
+        help = "Spawn a saved pick (agent roster pick --save): NAME[@VERSION], its newest by default",
+    )]
+    pub saved: String,
     #[arg(
         long = "skip-permissions",
         help = "Pass --dangerously-skip-permissions to Claude or Agy (use with caution)",
@@ -215,14 +261,51 @@ pub fn def() -> Def {
 }
 
 pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
+    let Some(c) = spawn_pick::choose(ctx, args)? else {
+        return spawn_as(ctx, args, &ctx.cfg().backend);
+    };
+    ctx.write_out(&c.said)?;
+    let (r, _) = spawn_target(ctx, &args.args[0], &args.host)?;
+    let mut picked = Args {
+        model: c.model.clone(),
+        effort: c.effort.clone(),
+        host: if c.remote { c.host.clone() } else { String::new() },
+        pick: String::new(),
+        saved: String::new(),
+        ..args.clone()
+    };
+    picked.args[0] = r.name.clone();
+    let res = spawn_as(ctx, &picked, &c.backend);
+    if c.remote {
+        // Another host starts it only if its bus serves spawn to this one.
+        let local = ctx.cfg().host.clone();
+        return res.map_err(|e| {
+            e.context(format!(
+                "the pick runs on {host}, so {host} was asked to spawn {name} and didn't: a host starts agents for others only if its bus's --remote-ops lists spawn (agent bus status there shows its list); agent spawn {name}@{local} {flag} picks from this host only",
+                host = c.host,
+                name = r.name,
+                flag = if args.pick.trim().is_empty() {
+                    "--pick KIND".to_string()
+                } else {
+                    format!("--pick {}", args.pick.trim())
+                },
+            ))
+        });
+    }
+    res
+}
+
+/// Spawns as args say, on backend (the --backend flag's, or the one --pick
+/// or --saved chose).
+fn spawn_as(ctx: &Ctx, args: &Args, backend: &str) -> anyhow::Result<()> {
     let (r, remote) = spawn_target(ctx, &args.args[0], &args.host)?;
     if remote {
-        return run_remote_spawn(ctx, args, &r, &args.args[1..]);
+        return run_remote_spawn(ctx, args, backend, &r, &args.args[1..]);
     }
     let name = r.name;
     let mut task_file = String::new();
     let mut task_content = String::new();
-    let backend = ctx.cfg().backend.clone();
+    let backend = backend.to_string();
     // Checked before anything starts; stored once the agent's record is.
     let handoff_doc = if args.handoff.is_empty() {
         String::new()
@@ -306,6 +389,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         resume: resume.clone(),
         cwd: session_dir,
         model: args.model.clone(),
+        effort: args.effort.clone(),
         ..Default::default()
     };
 
@@ -323,9 +407,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         format!("in {cwd}")
     };
     let mut out = spawn_summary(&agent, &where_, &args.task, &task_file, &resume);
-    if !args.model.is_empty() {
-        out += &format!("It runs on model {}.\n", args.model);
-    }
+    out += &runs_on(&args.model, &args.effort);
     if !handoff_doc.is_empty() {
         ctx.store()?.set_state(&StateEntry {
             agent_name: name.clone(),
@@ -459,12 +541,18 @@ pub fn spawn_target(ctx: &Ctx, arg: &str, host: &str) -> anyhow::Result<(AgentRe
 
 /// Starts r.name on r.host through the agent bus. rest is spawn's arguments
 /// after the name: the task file, if any (Go: runRemoteSpawn).
-fn run_remote_spawn(ctx: &Ctx, args: &Args, r: &AgentRef, rest: &[String]) -> anyhow::Result<()> {
+fn run_remote_spawn(
+    ctx: &Ctx,
+    args: &Args,
+    backend: &str,
+    r: &AgentRef,
+    rest: &[String],
+) -> anyhow::Result<()> {
     // The local spawn's checks on the task, which hold whatever host the
     // agent starts on. (The Go skips them for another host: a [task-file]
     // beside --task went unsent, and a shell agent got --task typed in as
     // commands.) That the file is there is checked there.
-    check_task_args(&ctx.cfg().backend, &args.task, rest.first())?;
+    check_task_args(backend, &args.task, rest.first())?;
     for (set, flag) in [
         (!args.resume.is_empty(), "--resume"),
         (args.continue_, "--continue"),
@@ -493,10 +581,14 @@ fn run_remote_spawn(ctx: &Ctx, args: &Args, r: &AgentRef, rest: &[String]) -> an
         // Checked here too, so a bad name fails before it crosses the bus.
         validate_model(&args.model)?;
     }
+    if !args.effort.is_empty() {
+        validate_effort(&args.effort)?;
+    }
     let mut req = SpawnRequest {
-        backend: ctx.cfg().backend.clone(),
+        backend: backend.to_string(),
         cwd: args.cwd.clone(),
         model: args.model.clone(),
+        effort: args.effort.clone(),
         ..Default::default()
     };
     let me = ctx.non_interactive_caller_agent();
@@ -544,18 +636,34 @@ fn run_remote_spawn(ctx: &Ctx, args: &Args, r: &AgentRef, rest: &[String]) -> an
         &resp.task_file,
         "",
     );
-    if !resp.model.is_empty() {
-        out += &format!("It runs on model {}.\n", resp.model);
-    } else if !args.model.is_empty() {
-        // A host that predates --model ignores it.
+    out += &runs_on(&resp.model, &resp.effort);
+    // A host that predates --model or --effort ignores it.
+    if resp.model.is_empty() && !args.model.is_empty() {
         out += &format!(
             "{} didn't take --model (its agent predates it): {r} runs on its CLI's default model.\n",
+            r.host
+        );
+    }
+    if resp.effort.is_empty() && !args.effort.is_empty() {
+        out += &format!(
+            "{} didn't take --effort (its agent predates it): {r} runs at its CLI's default effort.\n",
             r.host
         );
     }
     out += &remote_spawn_readiness(r, &resp, !args.task.is_empty() || !resp.task_file.is_empty());
     out.push('\n');
     ctx.write_out(&out)
+}
+
+/// Says the model and effort the agent runs on, if spawn named either ("" if
+/// neither).
+pub fn runs_on(model: &str, effort: &str) -> String {
+    match (model.is_empty(), effort.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!("It runs on model {model}.\n"),
+        (true, false) => format!("It runs at effort {effort}.\n"),
+        (false, false) => format!("It runs on model {model} at effort {effort}.\n"),
+    }
 }
 
 /// spawn_readiness for an agent on another host, where logs don't reach (Go:

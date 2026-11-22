@@ -654,6 +654,7 @@ impl RpcClient {
         resp.tool_input = clean_tool_input(&resp.tool_input);
         resp.reported_status = clean(&resp.reported_status);
         resp.model = clean(&resp.model);
+        resp.effort = clean(&resp.effort);
         Ok(resp)
     }
 
@@ -775,6 +776,7 @@ impl RpcClient {
         resp.cwd = clean(&resp.cwd);
         resp.task_file = clean(&resp.task_file);
         resp.model = clean(&resp.model);
+        resp.effort = clean(&resp.effort);
         resp.status = clean(&resp.status);
         resp.detail = clean(&resp.detail);
         resp.end_reason = clean(&resp.end_reason);
@@ -912,6 +914,7 @@ impl RpcClient {
             t.name = clean(&t.name);
             t.backend = clean(&t.backend);
             t.model = clean(&t.model);
+            t.effort = clean(&t.effort);
             t.cwd = clean(&t.cwd);
             t.brief = clean(&t.brief);
             t.problem = clean(&t.problem);
@@ -1167,6 +1170,7 @@ fn clean_fleet_agent(a: &mut FleetAgent) {
     a.spawned_by = clean(&a.spawned_by);
     a.backend = clean(&a.backend);
     a.model = clean(&a.model);
+    a.effort = clean(&a.effort);
     a.status = clean(&a.status);
     a.end_reason = clean(&a.end_reason);
     a.detail = clean(&a.detail);

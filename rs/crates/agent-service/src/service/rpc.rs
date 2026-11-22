@@ -156,6 +156,7 @@ impl Handler for RpcHandler {
             turn_at: bus_time(&info.turn_at),
             held: info.held as i64,
             model: info.model,
+            effort: info.effort,
         })
     }
 
@@ -291,6 +292,7 @@ impl Handler for RpcHandler {
                 spawned_by: req.spawned_by.clone(),
                 cwd,
                 model: req.model.clone(),
+                effort: req.effort.clone(),
                 ..Default::default()
             },
         )?;
@@ -302,6 +304,7 @@ impl Handler for RpcHandler {
             cwd: agent.cwd.clone(),
             task_file,
             model: req.model,
+            effort: req.effort,
             status: AGENT_STATUS_UNKNOWN.to_string(),
             ..Default::default()
         };

@@ -120,6 +120,7 @@ fn test_rpc_all_ops_round_trip() {
                 task_content: "do the thing".to_string(),
                 spawned_by: "lead@laptop".to_string(),
                 model: String::new(),
+                effort: "high".to_string(),
             },
         )
         .unwrap();
@@ -131,6 +132,7 @@ fn test_rpc_all_ops_round_trip() {
         task_content: "do the thing".to_string(),
         spawned_by: "lead@laptop".to_string(),
         model: String::new(),
+        effort: "high".to_string(),
     };
     assert_eq!(fake.last(), Some(RecordedReq::Spawn(want_req)));
     assert_eq!(

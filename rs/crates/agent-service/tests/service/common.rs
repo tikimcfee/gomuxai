@@ -21,8 +21,8 @@ use anyhow::{Result, anyhow, bail};
 
 use agent_backend::namedagents::{self, AgyBackend, AgyConfig, ClaudeBackend};
 use agent_backend::{
-    Backend, CommandAllower, Dialog, DialogReader, GlobalHooker, HookAllower, HookDeliverer,
-    HookProvider, HookReport, InputReader, InstructionsProvider, ModelChooser,
+    Backend, CommandAllower, Dialog, DialogReader, EffortChooser, GlobalHooker, HookAllower,
+    HookDeliverer, HookProvider, HookReport, InputReader, InstructionsProvider, ModelChooser,
     NativeStatusProvider, PaneSession, PaneSessionProvider, PermissionResponder,
     PermissionResponse, PromptFlagProvider, PromptHandover, Provider, ProviderConfig,
     QuestionPrompter, Registry, SpawnHooker, Status, SubmitChecker, TranscriptProvider,
@@ -544,6 +544,9 @@ impl Provider for ClaudeFake {
     fn as_model_chooser(&self) -> Option<&dyn ModelChooser> {
         Some(self)
     }
+    fn as_effort_chooser(&self) -> Option<&dyn EffortChooser> {
+        Some(self)
+    }
     fn as_dialog_reader(&self) -> Option<&dyn DialogReader> {
         Some(self)
     }
@@ -655,6 +658,12 @@ impl TrustPrompter for ClaudeFake {
 impl ModelChooser for ClaudeFake {
     fn with_model(&self, launch_cmd: &str, model: &str) -> String {
         self.inner.with_model(launch_cmd, model)
+    }
+}
+
+impl EffortChooser for ClaudeFake {
+    fn with_effort(&self, launch_cmd: &str, effort: &str) -> String {
+        self.inner.with_effort(launch_cmd, effort)
     }
 }
 
@@ -866,6 +875,7 @@ pub struct AgyOverrides {
     pub name: String,
     pub launch_command_with_hooks: AgyOver<(String, String), String>,
     pub with_model: AgyOver<(String, String), String>,
+    pub with_effort: AgyOver<(String, String), String>,
     pub append_prompt_flag: AgyOver<(String, String), String>,
     pub at_prompt: AgyOver<String, Option<String>>,
     pub question_prompt_visible: AgyOver<String, bool>,
@@ -944,6 +954,9 @@ impl Provider for AgyFake {
         Some(self)
     }
     fn as_model_chooser(&self) -> Option<&dyn ModelChooser> {
+        Some(self)
+    }
+    fn as_effort_chooser(&self) -> Option<&dyn EffortChooser> {
         Some(self)
     }
     fn as_prompt_flag_provider(&self) -> Option<&dyn PromptFlagProvider> {
@@ -1041,6 +1054,15 @@ impl ModelChooser for AgyFake {
     }
 }
 
+impl EffortChooser for AgyFake {
+    fn with_effort(&self, launch_cmd: &str, effort: &str) -> String {
+        match &self.built.with_effort {
+            Some(f) => f(&self.inner, (launch_cmd.to_string(), effort.to_string())),
+            None => self.inner.with_effort(launch_cmd, effort),
+        }
+    }
+}
+
 impl PromptFlagProvider for AgyFake {
     fn append_prompt_flag(&self, launch_cmd: &str, prompt: &str) -> String {
         match &self.built.append_prompt_flag {
@@ -1083,7 +1105,12 @@ pub type AgyRec = Arc<Mutex<AgyRecord>>;
 
 /// A fakeAgyBackend over agy configured by cfg, recording into rec.
 pub fn fake_agy(name: &str, cfg: AgyConfig, rec: &AgyRec) -> AgyFake {
-    let (r1, r2, r3) = (Arc::clone(rec), Arc::clone(rec), Arc::clone(rec));
+    let (r1, r2, r3, r4) = (
+        Arc::clone(rec),
+        Arc::clone(rec),
+        Arc::clone(rec),
+        Arc::clone(rec),
+    );
     let o = Arc::new(AgyOverrides {
         name: name.to_string(),
         launch_command_with_hooks: Some(Box::new(
@@ -1098,6 +1125,11 @@ pub fn fake_agy(name: &str, cfg: AgyConfig, rec: &AgyRec) -> AgyFake {
         with_model: Some(Box::new(move |inner: &AgyBackend, (_, model)| {
             let mut r = r2.lock().unwrap();
             r.launched_cmd = inner.with_model(&r.launched_cmd, &model);
+            "true".to_string()
+        })),
+        with_effort: Some(Box::new(move |inner: &AgyBackend, (_, effort)| {
+            let mut r = r4.lock().unwrap();
+            r.launched_cmd = inner.with_effort(&r.launched_cmd, &effort);
             "true".to_string()
         })),
         append_prompt_flag: Some(Box::new(move |inner: &AgyBackend, (_, prompt)| {

@@ -48,6 +48,7 @@ mod dream_schedule;
 mod friction_links;
 mod orient;
 mod resume_all;
+mod spawn_pick;
 mod ssh;
 
 #[cfg(test)]
@@ -72,6 +73,8 @@ mod resume_all_test;
 mod revive_test;
 #[cfg(test)]
 mod spawn_continue_test;
+#[cfg(test)]
+mod spawn_pick_test;
 #[cfg(test)]
 mod spawn_test;
 #[cfg(test)]

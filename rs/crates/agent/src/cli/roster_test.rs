@@ -382,6 +382,21 @@ fn roster_across_hosts() {
     assert_eq!(v["pick"]["host"], "leaf");
     assert_eq!(v["unread"].as_array().unwrap().len(), 2);
 
+    // spawn --pick: the same pick, spawned on the leaf as NAME@leaf; the
+    // leaf's bus doesn't serve spawn (the default ops leave it out), and
+    // spawn says so plainly after saying what it picked.
+    let (out, res) = h.hub.run(&["spawn", "w", "--pick", "edit"]);
+    let e = format!("{:#}", res.expect_err("the leaf doesn't serve spawn"));
+    assert!(
+        out.starts_with("Picked sh/leafy on leaf for edit: tasks include edit"),
+        "{out}"
+    );
+    assert!(
+        e.starts_with("the pick runs on leaf, so leaf was asked to spawn w and didn't: a host starts agents for others only if its bus's --remote-ops lists spawn")
+            && e.contains("agent spawn w@hub --pick edit picks from this host only"),
+        "{e}"
+    );
+
     // --host: one host, through the bus; a linked one that doesn't serve
     // roster is a row; one nobody knows is an error.
     let out = must(&mut h.hub, &["roster", "--host", "LEAF"]);

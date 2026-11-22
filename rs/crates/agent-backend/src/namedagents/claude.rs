@@ -102,6 +102,13 @@ impl ModelChooser for ClaudeBackend {
     }
 }
 
+impl EffortChooser for ClaudeBackend {
+    /// Runs claude at `effort` (--effort).
+    fn with_effort(&self, launch_cmd: &str, effort: &str) -> String {
+        format!("{launch_cmd} --effort {}", shell_quote(effort))
+    }
+}
+
 impl SessionNamer for ClaudeBackend {
     /// Names the session `name` (--name).
     fn with_session_name(&self, launch_cmd: &str, name: &str) -> String {
@@ -175,6 +182,9 @@ impl Provider for ClaudeBackend {
         Some(self)
     }
     fn as_model_chooser(&self) -> Option<&dyn ModelChooser> {
+        Some(self)
+    }
+    fn as_effort_chooser(&self) -> Option<&dyn EffortChooser> {
         Some(self)
     }
     fn as_session_namer(&self) -> Option<&dyn SessionNamer> {
