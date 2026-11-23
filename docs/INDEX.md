@@ -36,11 +36,39 @@ from file to directory, parent, sibling, project, and across projects, and
 it rots at every level at its own pace. The index holds that translation
 in one place, says per level how current it is, and lets agents query it.
 
-Memory stays what it is. A start-here note holds procedure and tripwires
-("build with your own target dir", "this command lies when..."); the index
-holds what is where and why. A start-here's pointers may name index ids,
-and the hand-kept "entrypoints" maps the dreaming survey proposes become
-`agent index tree` output instead.
+## Two layers, linked
+
+The index and dreaming's memory are separate layers with links between
+them, not one store:
+
+- **The index holds the what**: what a thing is, where it is, how it is
+  built, why it exists, and what it relates to. Structure and purpose.
+- **Memory holds the how**: how to work here, when things run, what broke
+  and what fixed it, what to avoid. Procedure, tripwires, lessons, the
+  friction box.
+
+A fact goes in one layer. The test: would it still be true after a
+rewrite that kept the code's behavior and layout? Then it describes what
+the thing is, and belongs in the index. If it's about doing work on the
+thing, it belongs in memory. "`agent-dream` gathers a dream's evidence"
+is index; "build each worktree with its own target dir, or you get
+false compile errors" is memory.
+
+The links run both ways, by reference, never by copying text:
+
+- Memory names entities: a start-here's pointers may cite index ids
+  (`index:gomuxai:rs/crates/agent-dream`), and `memory check` resolves
+  them as it resolves paths. The hand-kept "entrypoints" maps the
+  dreaming survey proposes become `agent index tree` output instead.
+- An entity knows what talks about it: `noted-in` edges, from the same
+  backtick reading as `documented-by` but over memory directories, point
+  at the memory notes and friction entries that name it, and `show` lists
+  them. It also lists the recent sessions that worked there (sessions
+  whose cwd or edited paths fall under it, from `agent sessions`' own
+  discovery), as pointers: an id, a date, a title.
+
+So an agent that asks the index "what is this" finds, beside the answer,
+where to read "how do I work on it".
 
 ## Entities
 
@@ -141,6 +169,7 @@ edge.
 | `implements` | code realizes a design | a design doc's "built" markers, which name their files; model-proposed otherwise |
 | `about` | an entity is an instance of a concept | dreams and people |
 | `same-as` | one entity in two projects (a vendored copy, a port) | equal blob ids across projects; model-proposed for ports |
+| `noted-in` | a memory note or friction entry names it | backticked paths in memory directories and friction text (the layers' link, above) |
 
 Co-change is the cheapest strong signal there is: two files edited
 together forty times are related, whatever their names say.
@@ -176,7 +205,11 @@ of entities, not their size.
 
 A summary answers two questions in at most five sentences: what is this,
 and why does it exist. It names concepts it is about, from the concept
-list or as new ones with a reason. Code checks it before it lands:
+list or as new ones with a reason, and it lists three to five **asks**:
+how a person or agent who doesn't know the name would ask for this
+thing, in plain words ("the part that types messages into a busy
+agent"). Asks become labels (see "Query expansion"). Code checks it
+before it lands:
 
 - lengths (summary 400 characters, why 300);
 - every path or symbol it names in backticks exists (the stale check
@@ -253,10 +286,15 @@ Tables:
 - `summaries`: every version: entity, content key, basis, text, why,
   writer, dream id, status (`staged`, `live`, `dropped`), written at.
 - `edges`: as above.
-- `concepts`: name, summary, aliases, origin, dream id.
+- `concepts`: name, summary, origin, dream id.
+- `labels`: every name an entity or concept answers to, with its kind
+  (`pref`, `alt`, `hidden`, `ask`, `old`), origin (`code`, `model`,
+  `person`, `learned`), weight and evidence (see "Query expansion").
+- `concept_links`: `broader`, `narrower` and `related` between concepts.
 - `search`: an FTS5 table (title, path, summary, why, symbol names,
-  aliases) with the porter tokenizer, and `search_tri`, FTS5 with the
-  trigram tokenizer over names and paths, for substrings and typos.
+  labels) with the porter tokenizer, and `search_tri`, FTS5 with the
+  trigram tokenizer over names, paths and labels, for substrings and
+  typos.
 - `vectors` (later): entity, embedding model, dimensions, a half-float
   blob, the key it was made from.
 - `queries`: each search, its caller, results, and what the caller
@@ -363,6 +401,73 @@ The lists merge by reciprocal rank fusion (k = 60), then the priors
 apply. Fusion needs no tuned score scales, and adding the semantic list
 later changes nothing else.
 
+### Query expansion
+
+People ask at a plain level of abstraction: "I want to work on the word
+wall", "the thing that wakes agents up with messages", "where's the
+glyph wires stuff". The names in the code are at another level:
+`word-wall/`, `deliver.rs`, `WireLayout`. Closing that gap is the
+index's central job, and information retrieval has a name for each
+piece of it.
+
+**A vocabulary, in the SKOS shape.** Every entity and concept answers to
+labels: a preferred label (its title), alternative labels (aliases,
+other spellings), hidden labels (typos, old names: found, never shown),
+and asks (plain questions it answers). Concepts also have `broader`,
+`narrower` and `related` links. This is the controlled-vocabulary shape
+(a thesaurus, as SKOS writes one) rather than free tags, so expansion
+has structure to follow. Labels come from four places:
+
+- **code**: name variants (`word-wall`, `word wall`, `wordwall`,
+  `WordWall`), crate and package names, CLI command names, README
+  titles, the repo's remote name, and old ids after a rename;
+- **model, at index time**: each summary's asks. This is document
+  expansion (doc2query): writing the questions a document answers into
+  the index once is cheaper than expanding every query, and it works
+  with lexical search alone;
+- **person**: `agent index alias add <id> "the word wall"`;
+- **learned from use**: when a person's prompt names something in plain
+  words and the session then works in one entity (edits files under it),
+  the phrase becomes a candidate alias of that entity. A candidate
+  becomes a label only once two or more sessions agree, as dreaming
+  needs three for a preference; a dream reviews candidates as items.
+  Only the short phrase is kept (at most six words, scrubbed at the
+  point of reading under the machine's transcript rule), with the
+  sessions as evidence. Agents' own `agent index search` queries count
+  the same way: a query, then the entity the agent opened or edited, is
+  click-through evidence.
+
+**At query time**, in stages that stop as soon as the answer is good
+(the top score clears a threshold):
+
+1. **Label match.** The query, normalized, against `labels`: an exact or
+   near match on an alias ("word wall") goes straight to the top.
+2. **Thesaurus expansion.** Terms that are labels of a concept add that
+   concept's other labels, and its narrower concepts', at a lower weight
+   (each expansion is a separate weighted query, fused by rank).
+3. **Pseudo-relevance feedback.** The top results' summaries and labels
+   give the terms that set them apart (RM3's idea, by term weight against
+   the whole index); a second query with them added catches the entities
+   that use the code's words for what the person said plainly.
+   Deterministic and cheap.
+4. **A model rewrite**, only when the stages above came back weak or with
+   `--expand`: the local model turns the request into the technical
+   terms and a short hypothetical summary of what's wanted (query2doc
+   and HyDE). The terms go to lexical search, the summary to semantic
+   search once embeddings exist. About a second on a local GPU.
+5. **Graph expansion.** From the top hits, follow edges with a decaying
+   weight (spreading activation, as in personalized PageRank seeded on
+   the hits): the project that contains them, their docs and tests, the
+   concepts they're `about` and those concepts' members in other
+   projects, the memory notes and recent sessions that name them.
+
+So "I want to work on the word wall" comes back grouped: the project
+itself and its entrypoints; its docs and research notes; the concepts it
+shares with other projects; the memory notes about working on it; the
+last sessions that did. Each group is a few lines, inside the budget.
+`--explain` prints which stage found each result and through what label
+or edge, so a wrong expansion can be seen and its label removed.
+
 ### Embeddings, later
 
 Embed what an entity means, not its raw code: its title, path, summary,
@@ -377,14 +482,18 @@ project boundary are candidates for the concept pass.
 
 ### Learning from use
 
-`queries` records each search and, from the caller's transcript later,
-what it opened next (scrubbed at the point of reading, as dreams' digests
-are). A search whose top results the agent skipped, followed by a `grep`
-that found the file it then edited, is a miss: the dream that refreshes
-that file's summary gets the query as evidence, and may add the words the
-agent used as aliases. The same transcripts give each file a heat (how
-often agents read it), one input to importance. The first ten
-read-and-search calls of past sessions make the evaluation set (below).
+`queries` records each `agent index search` (its text is an agent's own
+query, not transcript content) and, from the caller's transcript later,
+which paths it opened next: paths and counts only. A search whose top
+results the agent skipped, followed by a `grep` that found the file it
+then edited, is a miss: the dream that refreshes that file's summary gets
+the query as evidence, and may add the agent's words as a learned label
+(above). The same transcripts give each file a heat, how often agents
+read it, as a count of paths read and nothing else; if any transcript
+text is ever kept (a learned label's phrase), it is scrubbed at the
+point of reading, under the machine's rule for mining transcripts. The
+first ten read-and-search calls of past sessions make the evaluation
+set (below).
 
 ### In every agent's briefing
 
@@ -393,8 +502,13 @@ sections: run `agent index search` before `grep`/`find`; `agent index
 show .` says where you are; then the project's own `tree --depth 1`, cut
 to 15 lines, so an agent starts with the map already in hand. The read
 commands (`index search|show|tree|related|stale`) join the pre-allowed
-list, and dreams' `DREAM_READ_COMMANDS`. The `agent` skill gets the same
-lines.
+list. The `agent` skill gets the same lines.
+
+Both change every agent on the host (the briefing and the pre-allowed
+list live in the shared `instructions.rs`), so each needs a person's yes
+and goes in with the manager's lead, who shares that file. Until then,
+agents reach the index by name, and the commands prompt. Adding them to
+dreams' `DREAM_READ_COMMANDS` is dreaming's own call.
 
 ## Building and refreshing
 
@@ -458,12 +572,33 @@ mechanical; the model writes text only.
    fails the checks above. It writes a `staged` row tagged with the
    dream. `agent dream index get <id>` and `agent index` read commands
    are its reading verbs.
-4. **Commit** makes the dream's staged rows `live`, the prior version
+   The summarizer works down its items by importance and stops at the
+   budget or when time runs short: a dream worker is given up after 30
+   minutes idle or 90 running (`WORKER_IDLE_LIMIT`, `WORKER_RUN_LIMIT`),
+   so it says `done` with what it has, and what it didn't reach stays
+   an item for the next dream. Forty entities at a minute or two each
+   fit.
+4. **Ordering.** Today a project dream has one dreamer that commits the
+   dream itself, and `dream_steps`' step machine sequences only the
+   global dream's workers. With index items, the project dream gets the
+   step machine too: the dreamer, then the summarizer, then code commits.
+   The dreamer's `commit` becomes `done` when a summarizer follows (the
+   verb says so), so the dream can't commit before the summaries land.
+   A dream with no index items runs as today.
+5. **Commit** makes the dream's staged rows `live`, the prior version
    kept; **abandon** marks them `dropped`. No snapshot and restore as
    memory needs: a staged row isn't seen by queries until it commits.
-   Citations work as for memory: a summary cites its content key (and a
-   `commit:<hash>` when it draws on history), which commit checks against
-   the dream's items, as `review::unknown_citations` does.
+   The dream's status lives in `gomuxai.db` and the rows in `index.db`,
+   so the two can't change in one transaction. The dream's status is the
+   truth: commit marks the dream committed first, then promotes its
+   rows, and every open of `index.db` (a crawl, a query) promotes the
+   staged rows of committed dreams and drops those of abandoned ones, so
+   a crash between the two heals on the next use.
+6. **Citations.** A summary cites the content it describes as
+   `key:<entity-id>@<content-key>` (and a `commit:<hash>` when it draws
+   on history). `key:` is a new citation kind in `review.rs`, and
+   `unknown_citations` accepts one when the entity is an index item of
+   the dream at that key, or its key now is that one.
 
 The global dream adds the concept pass (below) and nothing else. Project
 dreams already run on new work in their project, so the index refreshes
@@ -512,10 +647,12 @@ Concepts come from three places:
   neighbors across a project boundary.
 - **The global dream decides**, through the idea engine it already runs:
   the synthesizer proposes a concept, or an `about` edge, as an idea
-  (`kind: concept`, with the entity ids and their content keys as
-  citations); the critic, on another model family, checks it against the
-  entities' code and summaries and approves or rejects; code applies the
-  approved ones on commit. Convergence matters here as for pitches: a
+  (`kind: concept` or `about`, citing the entities as `key:` citations);
+  the critic, on another model family, checks it against the entities'
+  code and summaries and approves or rejects; code applies the approved
+  ones on commit. `concept` and `about` join the idea kinds the `idea`
+  verb validates (each entity id exists, each cited key is current) and
+  the apply step's. Convergence matters here as for pitches: a
   concept proposed again by a later dream adds a vote instead of a
   duplicate.
 - **People**: `agent index concept add NAME "summary"` and `agent index
@@ -539,23 +676,35 @@ variants that build a call and import graph, summarize communities and
 retrieve over both) are closest in spirit, but rebuild in bulk and don't
 tie a summary to the hash it describes. aider's repo map ranks a repo's
 symbols by a PageRank over references and fits the top of it to a token
-budget, which `tree` and `--budget` borrow directly. What this index adds
-is the combination: one tree across projects, content-keyed summaries
-whose staleness is mechanical, refreshed by confined dreams within a
-budget, and cross-project concepts decided by a generator and a critic.
+budget, which `tree` and `--budget` borrow directly. RAPTOR builds a tree
+of summaries of summaries for retrieval at every level of abstraction,
+which is the bubbling here, but over clusters rather than a directory
+tree a person already understands. From information retrieval come the
+query side's pieces, all standard: SKOS-style vocabularies (preferred,
+alternative and hidden labels; broader and narrower), document expansion
+(doc2query), pseudo-relevance feedback (RM3), model rewrites (query2doc,
+HyDE), click-through as relevance feedback, reciprocal rank fusion, and
+spreading activation over a graph. What this index adds is the
+combination: one tree across projects, content-keyed summaries whose
+staleness is mechanical, refreshed by confined dreams within a budget,
+a vocabulary learned from how people and agents name things, and
+cross-project concepts decided by a generator and a critic.
 
 ## Version 1: useful in a day
 
 1. Crate `agent-index` and `index.db`: `projects`, `entities`,
-   `summaries`, `edges`, `search` and `search_tri`.
+   `summaries`, `edges`, `labels`, `search` and `search_tri`.
 2. `agent index root add|remove|list`, `project add`, and `crawl` (git
-   keys, file kinds, seeds, regex symbols, sections, `depends-on` from
-   manifests, `documented-by` from backticks, `tests` by naming;
-   co-change and importance once per crawl).
+   keys, file kinds, seeds, code labels, regex symbols, sections,
+   `depends-on` from manifests, `documented-by` and `noted-in` from
+   backticks, `tests` by naming; co-change and importance once per
+   crawl).
 3. `agent index search`, `show`, `tree`, `related`, `stale`, with
-   `--budget` and `--json`; lexical ranking with the project and kind
-   priors, importance from fan-in only.
-4. The read commands pre-allowed, and the briefing section.
+   `--budget`, `--explain` and `--json`; label match, then lexical
+   ranking with the project and kind priors, importance from fan-in
+   only; `agent index alias add` for a person's labels.
+4. The briefing section and the pre-allowed read commands, drafted for a
+   person's yes (they change every agent on the host).
 5. An evaluation set: from past sessions in a few projects (scrubbed at
    reading), the terms of each session's first searches and the file it
    then edited. v1 is useful when that file is in search's top five for
@@ -566,8 +715,10 @@ place, most have a seed, and search reaches symbol names, doc headings
 and doc comments across every project at once.
 
 Then, in order: `agent index summarize` against the local endpoint (by
-hand); the `summarizer` role, `index` items and `dream index put` in
-project dreams; query logging and misses; the concept pass in the global
+hand), with asks; pseudo-relevance feedback and graph expansion; the
+`summarizer` role, `index` items, `key:` citations and `dream index put`
+in project dreams, with their step machine; query logging, misses and
+learned labels; the model rewrite stage; the concept pass in the global
 dream; embeddings; tree-sitter symbols; the bus op and `pull`.
 
 ## Open questions
@@ -581,3 +732,8 @@ dream; embeddings; tree-sitter symbols; the bus op and `pull`.
   frameworks have tens of thousands; the kind prior may be enough.
 - Does a doc section deserve a model summary, or is its heading and first
   paragraph always enough?
+- Summaries have only mechanical checks in v1, no critic. Should a
+  critic on another model family check a sample of each dream's
+  summaries against the code, as the global dream's critic checks ideas?
+- How far should graph expansion reach by default before it costs more
+  budget than it saves?
