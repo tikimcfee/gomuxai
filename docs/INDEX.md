@@ -523,7 +523,9 @@ that name, symbols before files before dirs, above any label match (then
 the same ignoring case); the lexical lists (with a labels
 column, weight 3, beside the five above; every word ANDed as a list of
 its own beside the words ORed; a term no entity mentions is looked for by
-its trigrams, for typos, in a list of its own), the priors (own project, a
+its trigrams, for typos, in a list of its own), the priors (own project
+×3 and the projects it depends on ×2, multiplied, and a pin elsewhere
+counting only when none of those has one, a
 section ranked below a file or symbol, importance from fan-in (the
 dependents that use it, the docs that document it, the files that change
 with it), kept-out-

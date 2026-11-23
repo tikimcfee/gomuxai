@@ -307,3 +307,84 @@ fn a_schema_2_file_reads_every_file_again_to_fill_the_full_text() {
     let again = crawl(&mut ix, &CrawlOptions::default()).unwrap();
     assert_eq!(again.projects[0].changed, 0);
 }
+
+#[test]
+fn the_callers_project_and_its_dependencies_come_first() {
+    let dir = temp();
+    let root = std::fs::canonicalize(dir.path()).unwrap().join("dev");
+    let mk = |name: &str, files: &[(&str, &str)]| {
+        let p = root.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        git(&p, &["init", "-q", "-b", "main"]);
+        for (rel, text) in files {
+            write(&p, rel, text);
+        }
+        commit(&p, "first");
+    };
+    mk(
+        "alpha",
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"alpha\"\n\n[dependencies]\ncore = { path = \"../core\" }\n",
+            ),
+            (
+                "src/lib.rs",
+                "/// Sets the effort.\npub fn effort() {}\n/// Turns the wheel to spin it.\npub fn turn() {}\n",
+            ),
+        ],
+    );
+    mk(
+        "core",
+        &[
+            ("Cargo.toml", "[package]\nname = \"core\"\n"),
+            ("src/lib.rs", "pub fn helper() {}\n"),
+        ],
+    );
+    // Another project with many exact matches, whose ids sort first.
+    mk(
+        "aaa",
+        &[
+            (
+                "src/a.rs",
+                "pub fn effort() {}\npub fn helper() {}\npub fn spin() {}\n",
+            ),
+            ("src/b.rs", "pub fn effort() {}\n"),
+            ("src/c.rs", "pub fn effort() {}\n"),
+        ],
+    );
+    let mut ix = Index::open(&root.parent().unwrap().join("index.db")).unwrap();
+    crate::roots::add_root(&ix, &root, "full").unwrap();
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    let top = |q: &str, caller: &str| -> Vec<String> {
+        search(
+            &ix.conn,
+            &SearchOptions {
+                query: q.into(),
+                caller_project: caller.into(),
+                limit: 10,
+                ..Default::default()
+            },
+            &NoSemantic,
+        )
+        .unwrap()
+        .hits
+        .into_iter()
+        .map(|h| h.id)
+        .collect()
+    };
+    // An exact match at home beats exact matches elsewhere.
+    let r = top("effort", "alpha");
+    assert_eq!(r[0], "alpha:src/lib.rs#effort", "{r:?}");
+    // One in a project yours depends on beats one in an unrelated project.
+    let r = top("helper", "alpha");
+    assert_eq!(r[0], "core:src/lib.rs#helper", "{r:?}");
+    // With no good match at home, the exact match elsewhere still leads.
+    let r = top("spin", "alpha");
+    assert_eq!(r[0], "aaa:src/a.rs#spin", "{r:?}");
+    // From inside aaa, its own come first; with no caller, by name.
+    let r = top("effort", "aaa");
+    assert!(r[..3].iter().all(|id| id.starts_with("aaa:")), "{r:?}");
+    let r = top("effort", "");
+    assert_eq!(r[0], "aaa:src/a.rs#effort", "{r:?}");
+}

@@ -199,6 +199,29 @@ fn full_text_list(
     }
 }
 
+/// How much the caller's project (3) and the projects it depends on (2)
+/// weigh, by project name; empty when the caller is in no project.
+fn near_projects(conn: &Connection, caller: &str) -> Result<HashMap<String, f64>> {
+    let mut out = HashMap::new();
+    if caller.is_empty() {
+        return Ok(out);
+    }
+    let (lo, hi) = crate::crawl::prefix_range(&format!("{caller}:"));
+    let mut st = conn.prepare_cached(
+        "SELECT DISTINCT target FROM edges WHERE kind = 'depends-on'
+         AND (source = ?3 OR (source >= ?1 AND source < ?2))",
+    )?;
+    for t in st.query_map(params![lo, hi, caller], |r| r.get::<_, String>(0))? {
+        let t = t?;
+        let p = model::project_of_id(&t);
+        if !p.is_empty() && p != caller {
+            out.insert(p.to_string(), 2.0);
+        }
+    }
+    out.insert(caller.to_string(), 3.0);
+    Ok(out)
+}
+
 /// The semantic list, kept to entities the filters let through.
 fn semantic_list(
     conn: &Connection,
@@ -495,7 +518,21 @@ pub fn search(
             }
         }
     }
+    // The caller's project, and the projects it depends on, come first: a
+    // pin (an exact name, a whole-query label) elsewhere counts only when
+    // none of them has one, and every score there is multiplied.
+    let near = near_projects(conn, &o.caller_project)?;
+    let is_near = |id: &str| near.contains_key(model::project_of_id(id));
+    let near_pin = exact.iter().chain(pinned.iter()).any(|id| is_near(id));
+    let pin_counts = |id: &str| !near_pin || is_near(id);
     for (i, id) in exact.iter().enumerate() {
+        if !pin_counts(id) {
+            explain
+                .entry(id.clone())
+                .or_default()
+                .push(format!("named \"{}\", in another project", o.query.trim()));
+            continue;
+        }
         *score.entry(id.clone()).or_insert(0.0) += 2.0 - i as f64 * 0.001;
         explain
             .entry(id.clone())
@@ -503,6 +540,9 @@ pub fn search(
             .insert(0, format!("named \"{}\"", o.query.trim()));
     }
     for (i, id) in pinned.iter().enumerate() {
+        if !pin_counts(id) {
+            continue;
+        }
         *score.entry(id.clone()).or_insert(0.0) += 1.0 - i as f64 * 0.001;
         if let Some(m) = mapping.iter().find(|m| &m.entity == id) {
             explain.entry(id.clone()).or_default().insert(
@@ -561,10 +601,6 @@ pub fn search(
         };
         let mut s = score[&id];
         let ex = explain.entry(id.clone()).or_default();
-        if !o.caller_project.is_empty() && e.project == o.caller_project {
-            s += 0.004;
-            ex.push("own project +".into());
-        }
         let asked_kind = !o.kind.is_empty();
         if !asked_kind {
             match e.kind.as_str() {
@@ -600,6 +636,17 @@ pub fn search(
                 s -= 0.004;
                 ex.push("test −".into());
             }
+        }
+        if let Some(f) = near.get(e.project.as_str()) {
+            // Only a positive score grows: a penalty isn't made larger.
+            if s > 0.0 {
+                s *= f;
+            }
+            ex.push(if e.project == o.caller_project {
+                format!("own project ×{f}")
+            } else {
+                format!("a project yours depends on ×{f}")
+            });
         }
         score.insert(id.clone(), s);
         ents.insert(id, e);
