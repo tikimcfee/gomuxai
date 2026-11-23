@@ -9,7 +9,10 @@ use agent_store::{
     WORKER_RUNNING,
 };
 
-use super::{MODELS, Presence, Step, WORKER_IDLE_LIMIT, WORKER_RUN_LIMIT, given_up, next_step};
+use super::{
+    CRITIC_MODELS, Presence, SYNTH_MODELS, Step, WORKER_IDLE_LIMIT, WORKER_RUN_LIMIT, given_up,
+    next_step,
+};
 use crate::cli::testenv::TestEnv;
 
 fn run(env: &mut TestEnv, words: &[&str]) -> String {
@@ -224,25 +227,34 @@ fn presence_of(env: &TestEnv, agent: &str) -> Presence {
 }
 
 #[test]
-fn the_critic_runs_on_the_other_model() {
+fn the_critic_runs_on_another_family() {
     for seed in [0, 1, 2, 3] {
         let g = super::generator_worker(7, seed);
-        let c = super::critic_worker(7, &g);
+        let c = super::critic_worker(7, &g, seed / 2);
         assert_eq!(
             (g.agent.as_str(), c.agent.as_str()),
             ("dream-7-synth", "dream-7-critic")
         );
-        assert_ne!(g.model, c.model);
-        for w in [&g, &c] {
-            assert!(
-                MODELS.contains(&(w.model.as_str(), w.effort.as_str())),
-                "{w:?}"
-            );
-        }
+        assert!(
+            SYNTH_MODELS.contains(&(g.model.as_str(), g.effort.as_str())),
+            "{g:?}"
+        );
+        assert!(
+            CRITIC_MODELS.contains(&(c.model.as_str(), c.effort.as_str())),
+            "{c:?}"
+        );
+        assert_eq!(super::backend_for(&g.model), "claude");
+        assert_eq!(super::backend_for(&c.model), "agy");
     }
     assert_ne!(
         super::generator_worker(1, 0).model,
         super::generator_worker(1, 1).model
+    );
+    let g = super::generator_worker(1, 0);
+    assert_ne!(
+        super::critic_worker(1, &g, 0).model,
+        super::critic_worker(1, &g, 1).model,
+        "both critics get picked"
     );
 }
 
@@ -330,7 +342,7 @@ fn a_global_dream_proposes_judges_applies_and_commits() {
     let gen_opts = &spawned[0];
     assert_eq!(gen_opts.name, synth);
     assert!(
-        MODELS.contains(&(gen_opts.model.as_str(), gen_opts.effort.as_str())),
+        SYNTH_MODELS.contains(&(gen_opts.model.as_str(), gen_opts.effort.as_str())),
         "{gen_opts:?}"
     );
     assert_eq!(gen_opts.permission_mode, "dontAsk");
@@ -401,6 +413,13 @@ fn a_global_dream_proposes_judges_applies_and_commits() {
     let crit_opts = &spawned[1];
     assert_eq!(crit_opts.name, critic);
     assert_ne!(crit_opts.model, gen_opts.model);
+    // Another family: agy, confined by its fail-closed hook.
+    assert_eq!(
+        (gen_opts.backend.as_str(), crit_opts.backend.as_str()),
+        ("claude", "agy")
+    );
+    assert!(crit_opts.confined, "{crit_opts:?}");
+    assert!(CRITIC_MODELS.contains(&(crit_opts.model.as_str(), crit_opts.effort.as_str())));
     assert!(crit_opts.task_file.ends_with("brief-critic.md"));
     assert!(
         !crit_opts.allow_tools.iter().any(|r| r.starts_with("Edit(")),

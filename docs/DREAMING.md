@@ -309,6 +309,13 @@ engine's first caller (`docs/DREAMING-VISION.md`, "The idea engine"),
    default effort: the roster doesn't say Fable's highest), spawned with
    SpawnOptions' `model` and `effort` and the synthesizer's brief
    (`brief_global.md`'s rules, but it proposes ideas instead of writing).
+   The synthesizer stays Claude: it writes drafts in its dream's folder,
+   and confined agy agents are proven only on reading and running
+   commands. The critic is always another family, agy, on
+   `gemini-4-carbon` at `high` or `gemini-4-neon` at `xhigh`, picked at
+   random (`CRITIC_MODELS`), confined by its fail-closed hook: it only
+   reads (`read_file` under its read roots, its dream's folder included)
+   and runs its verbs and reading commands.
    The diary records each worker's model and effort as it starts.
 2. The synthesizer proposes a change set with `agent dream idea --from
    <json>`, one idea per change: a memory `put` (dir, file,

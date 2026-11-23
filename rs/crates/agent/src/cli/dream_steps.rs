@@ -33,12 +33,29 @@ use super::friction::FrictionAcceptArgs;
 use super::friction_links::FrictionLinkArgs;
 use super::root::Ctx;
 
-/// The models the global dream's two agents run on, each at its effort: the
-/// generator gets one at random and the critic the other, so a critic never
-/// judges its own family's sample twice over. ("" is the CLI's default
-/// effort: Fable's highest isn't known to the roster yet.)
-pub(crate) const MODELS: [(&str, &str); 2] =
+/// The models the global dream's synthesizer runs on, each at its effort,
+/// one picked at random. Claude only for now: a synthesizer writes drafts
+/// in its dream's folder (Claude's Edit rule), and confined agy agents are
+/// proven only on reading and running commands, not on writing files.
+/// ("" is the CLI's default effort: Fable's highest isn't known yet.)
+pub(crate) const SYNTH_MODELS: [(&str, &str); 2] =
     [("claude-opus-5-5", "xhigh"), ("claude-fable-5-2", "")];
+
+/// The models the critic runs on, one picked at random: always agy, a
+/// different family from the synthesizer, as the review asked. A critic
+/// only reads and runs its verbs, which confined agy allows and the
+/// fail-closed hook enforces (confine.rs).
+pub(crate) const CRITIC_MODELS: [(&str, &str); 2] =
+    [("gemini-4-carbon", "high"), ("gemini-4-neon", "xhigh")];
+
+/// The backend a dream worker's model runs on.
+pub(crate) fn backend_for(model: &str) -> &'static str {
+    if model.starts_with("gemini-") {
+        "agy"
+    } else {
+        "claude"
+    }
+}
 
 /// The global dream's synthesizer.
 pub(crate) fn generator_name(id: i64) -> String {
@@ -61,17 +78,23 @@ pub(crate) fn seed() -> u64 {
 
 /// Dream `id`'s generator, on the model `seed` picks.
 pub(crate) fn generator_worker(id: i64, seed: u64) -> DreamWorker {
-    let (model, effort) = MODELS[(seed % 2) as usize];
+    let (model, effort) = SYNTH_MODELS[(seed % 2) as usize];
     DreamWorker::new(&generator_name(id), ROLE_GENERATOR, model, effort)
 }
 
-/// Dream `id`'s critic, on the model the generator didn't run on.
-pub(crate) fn critic_worker(id: i64, generator: &DreamWorker) -> DreamWorker {
-    let (model, effort) = MODELS
+/// Dream `id`'s critic, on another family than the generator's, the model
+/// picked at random (`seed`).
+pub(crate) fn critic_worker(id: i64, generator: &DreamWorker, seed: u64) -> DreamWorker {
+    let pool: Vec<(&str, &str)> = CRITIC_MODELS
         .iter()
         .copied()
-        .find(|(m, _)| *m != generator.model)
-        .unwrap_or(MODELS[0]);
+        .filter(|(m, _)| backend_for(m) != backend_for(&generator.model))
+        .collect();
+    let (model, effort) = if pool.is_empty() {
+        CRITIC_MODELS[0]
+    } else {
+        pool[(seed % pool.len() as u64) as usize]
+    };
     DreamWorker::new(&critic_name(id), ROLE_CRITIC, model, effort)
 }
 
@@ -247,7 +270,7 @@ pub(crate) fn advance(ctx: &Ctx, d: &Dream, dry_run: bool) -> anyhow::Result<Adv
                 .rev()
                 .find(|w| w.role == ROLE_GENERATOR)
                 .context("the dream's generator")?;
-            let w = critic_worker(d.id, generator);
+            let w = critic_worker(d.id, generator, seed());
             if dry_run {
                 return Ok(Advanced {
                     open: true,

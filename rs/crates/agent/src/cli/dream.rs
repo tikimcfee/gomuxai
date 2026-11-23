@@ -1091,7 +1091,8 @@ scope. Only one dream is open at a time.
    show in those repos, without a prompt. The global dream spawns its
    synthesizer, dream-<id>-synth, instead, on claude-opus-5-5 at effort
    xhigh or claude-fable-5-2, picked at random; its agent dream done
-   starts the critic on the other one (which edits nothing), and the
+   starts the critic on another family, agy's gemini-4-carbon at high or
+   gemini-4-neon at xhigh, picked at random (it edits nothing), and the
    critic's done applies what it approved (agent dream done).
 
 --dry-run says what it would do and changes nothing."#,
@@ -1364,7 +1365,7 @@ pub(crate) fn spawn_worker(
     let read_roots = rule_paths(&allow_tools);
     let opts = SpawnOptions {
         name: w.agent.clone(),
-        backend: "claude".to_string(),
+        backend: super::dream_steps::backend_for(&w.model).to_string(),
         task_file: brief_s,
         trust_workspace: true,
         spawned_by: spawned_by.to_string(),
