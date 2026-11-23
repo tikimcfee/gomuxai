@@ -677,6 +677,12 @@ pub fn tree(conn: &Connection, id: &str, depth: usize, budget: usize) -> Result<
     })
 }
 
+/// A tree line's text, as `render_tree` prints it (the Postgres tree fits
+/// its budget by the same text).
+pub fn tree_line_text(l: &TreeLine, base: usize) -> String {
+    tree_line(l, base)
+}
+
 fn tree_line(l: &TreeLine, base: usize) -> String {
     let indent = "  ".repeat(l.depth.saturating_sub(base));
     let slash = if matches!(l.kind.as_str(), "dir" | "project" | "root") {

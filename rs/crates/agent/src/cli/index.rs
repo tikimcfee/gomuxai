@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use agent_index::pg::Pg;
 use agent_index::view::{self, Resolved};
 use agent_index::{CrawlOptions, Index, NoSemantic, SearchOptions};
 use anyhow::Context as _;
@@ -59,6 +60,7 @@ pub fn def() -> Def {
             root_def(),
             project_def(),
             crawl_def(),
+            sync_def(),
             embed_def(),
             search_def(),
             show_def(),
@@ -75,6 +77,55 @@ pub fn def() -> Def {
 fn open(ctx: &Ctx) -> anyhow::Result<Index> {
     let path = agent_index::path_beside(&ctx.cfg().database_path);
     Index::open(&path)
+}
+
+/// The Postgres store, when the command uses it: `--store pg`, or no
+/// `--store` and `AGENT_INDEX_STORE=pg`. Its URL is `AGENT_INDEX_PG`, its
+/// schema `AGENT_INDEX_PG_SCHEMA` (default idx). None for the SQLite store
+/// (the default). With Postgres, index.db is the crawl's ledger only: every
+/// query reads Postgres.
+fn pg_store(store: &str) -> anyhow::Result<Option<Pg>> {
+    let env = std::env::var("AGENT_INDEX_STORE").unwrap_or_default();
+    let which = if store.is_empty() { env.as_str() } else { store };
+    match which {
+        "" | "sqlite" => Ok(None),
+        "pg" | "postgres" => {
+            let Some((url, schema)) = Pg::from_env() else {
+                anyhow::bail!(
+                    "the pg store needs AGENT_INDEX_PG set to its database URL (postgresql:///DB?host=SOCKET_DIR)"
+                );
+            };
+            Ok(Some(Pg::connect(&url, &schema)?))
+        }
+        other => anyhow::bail!("--store takes sqlite or pg, not {other:?}"),
+    }
+}
+
+/// After a command changed the ledger outside a crawl (a label, a root
+/// removed): with the pg store chosen by AGENT_INDEX_STORE, syncs it.
+fn resync(ctx: &Ctx, ix: &Index) -> anyhow::Result<()> {
+    if let Some(pg) = pg_store("")? {
+        sync_pg(ctx, ix, &pg, false)?;
+    }
+    Ok(())
+}
+
+/// Mirrors the ledger into Postgres, saying so on stderr.
+fn sync_pg(ctx: &Ctx, ix: &Index, pg: &Pg, rebuild: bool) -> anyhow::Result<agent_index::pg::sync::SyncReport> {
+    let r = agent_index::pg::sync::sync(&ix.conn, pg, rebuild)?;
+    ctx.notice(format!(
+        "Synced to Postgres ({}, schema {}): {} entities, {} written, {} removed, {} files cut into {} chunks, {} queued for embedding, in {}.",
+        pg.url_shown,
+        pg.schema,
+        r.entities,
+        r.written,
+        r.deleted,
+        r.chunked_files,
+        r.chunks,
+        r.queued,
+        secs(r.ms)
+    ));
+    Ok(r)
 }
 
 fn cwd() -> anyhow::Result<PathBuf> {
@@ -215,6 +266,7 @@ fn root_remove_def() -> Def {
 fn run_root_remove(ctx: &Ctx, a: &RootRemoveArgs) -> anyhow::Result<()> {
     let ix = open(ctx)?;
     let (r, removed) = agent_index::roots::remove_root(&ix, &a.args[0])?;
+    resync(ctx, &ix)?;
     let list = if removed.is_empty() { "none".to_string() } else { removed.join(", ") };
     ctx.write_out(&format!(
         "Removed root {} ({}) and {} projects found under it: {list}.\n",
@@ -381,6 +433,8 @@ pub struct EmbedArgs {
     pub limit: i64,
     #[arg(long = "model-dir", value_name = "string", default_value = "", help = "The model's directory (default: the Hugging Face cache's bge-small-en-v1.5)")]
     pub model_dir: String,
+    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    pub store: String,
     #[arg(long = "json", help = "Print the report as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -398,18 +452,30 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
     // (main goes straight to the command); the workers each run their matrix
     // products on one thread (see embed::single_threaded_products).
     unsafe { embed::single_threaded_products() };
+    let pg = pg_store(&a.store)?;
     let mut ix = open(ctx)?;
-    require_projects(&ix)?;
+    match &pg {
+        Some(pg) => {
+            if agent_index::pg::view::project_count(pg)? == 0 {
+                anyhow::bail!("nothing is in the pg store yet: agent index crawl --store pg fills it");
+            }
+        }
+        None => require_projects(&ix)?,
+    }
     let given = (!a.model_dir.is_empty()).then(|| PathBuf::from(&a.model_dir));
     let dir = embed::model_dir(given.as_deref())?;
     let emb = embed::Embedder::load(&dir)?;
     let mut last = 0;
-    let r = embed::drain(&mut ix.conn, &emb, int_flag(a.limit, "limit")?, |done, total| {
+    let progress = |done: usize, total: usize| {
         if done >= last + 1000 && done < total {
             last = done;
             eprintln!("embedded {done} of {total}");
         }
-    })?;
+    };
+    let r = match &pg {
+        Some(pg) => agent_index::pg::embed_pg::drain(pg, &emb, int_flag(a.limit, "limit")?, progress)?,
+        None => embed::drain(&mut ix.conn, &emb, int_flag(a.limit, "limit")?, progress)?,
+    };
     if a.json {
         return ctx.print_json(&serde_json::json!({
             "model": embed::MODEL_ID,
@@ -512,6 +578,8 @@ pub struct CrawlArgs {
     pub rebuild: bool,
     #[arg(long = "dry-run", help = "Work out what would change, and write nothing")]
     pub dry_run: bool,
+    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite); pg syncs the crawl into Postgres")]
+    pub store: String,
     #[arg(long = "json", help = "Print the crawl's report as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -520,6 +588,67 @@ pub struct CrawlArgs {
 
 fn crawl_def() -> Def {
     leaf!(CRAWL, CrawlArgs, run_crawl)
+}
+
+// `agent index sync`
+
+pub const SYNC: Doc = Doc {
+    use_line: "sync",
+    short: "Mirror the crawl's index.db into Postgres (the pg store)",
+    long: r#"Sync writes what the last crawl found into the Postgres store
+(AGENT_INDEX_PG; schema AGENT_INDEX_PG_SCHEMA, default idx): every entity
+whose row changed, its labels, the chunks of files whose content changed
+(read from disk again), edges and projects, in one transaction. Entities
+whose card text changed are queued for agent index embed. crawl --store pg
+runs it after crawling; run it alone after a crawl with the sqlite store.
+
+--rebuild empties the schema's tables and writes everything again (card
+vectors whose text is unchanged are kept); the rows are the same an
+incremental sync reaches."#,
+    example: r#"  AGENT_INDEX_PG='postgresql:///devindex?host=/run/pg' agent index sync
+  agent index sync --rebuild --json"#,
+    args: ArgRule::None,
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct SyncArgs {
+    #[arg(long = "rebuild", help = "Empty the Postgres tables and write everything again")]
+    pub rebuild: bool,
+    #[arg(long = "json", help = "Print the sync's report as JSON")]
+    pub json: bool,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+fn sync_def() -> Def {
+    leaf!(SYNC, SyncArgs, run_sync)
+}
+
+fn run_sync(ctx: &Ctx, a: &SyncArgs) -> anyhow::Result<()> {
+    let ix = open(ctx)?;
+    let Some(pg) = pg_store("pg")? else { unreachable!("pg asked") };
+    let r = sync_pg(ctx, &ix, &pg, a.rebuild)?;
+    if a.json {
+        return ctx.print_json(&r);
+    }
+    let phases: Vec<String> = r.phases.iter().map(|(k, v)| format!("{k} {}", secs(*v))).collect();
+    ctx.write_out(&format!(
+        "Synced {} entities into {} (schema {}) in {}: {} written, {} removed, {} labels, {} files cut into {} chunks, {} queued for embedding{}{}.\nPhases: {}.\n",
+        r.entities,
+        pg.url_shown,
+        pg.schema,
+        secs(r.ms),
+        r.written,
+        r.deleted,
+        r.labels,
+        r.chunked_files,
+        r.chunks,
+        r.queued,
+        if r.edges_replaced { format!("; edges rewritten ({})", r.edges) } else { String::new() },
+        if r.tables_replaced.is_empty() { String::new() } else { format!("; {} rewritten", r.tables_replaced.join(", ")) },
+        phases.join(", ")
+    ))
 }
 
 fn secs(ms: u128) -> String {
@@ -534,9 +663,18 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
         dry_run: a.dry_run,
         large_project: 0,
     };
+    let pg = pg_store(&a.store)?;
     let r = agent_index::crawl(&mut ix, &opts)?;
+    let synced = match &pg {
+        Some(pg) if !a.dry_run => Some(sync_pg(ctx, &ix, pg, a.rebuild)?),
+        _ => None,
+    };
     if a.json {
-        return ctx.print_json(&r);
+        let mut v = serde_json::to_value(&r)?;
+        if let (Some(s), Some(m)) = (&synced, v.as_object_mut()) {
+            m.insert("sync".into(), serde_json::to_value(s)?);
+        }
+        return ctx.print_json(&v);
     }
     let mut o = String::new();
     if r.projects.is_empty() {
@@ -672,6 +810,10 @@ pub struct SearchArgs {
     pub budget: i64,
     #[arg(long = "explain", help = "Say which list found each result, and the priors applied")]
     pub explain: bool,
+    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    pub store: String,
+    #[arg(long = "lexical", value_name = "string", default_value = "", help = "pg store: fts (native full text, the default), bm25, or both (default: AGENT_INDEX_LEXICAL)")]
+    pub lexical: String,
     #[arg(long = "json", help = "Print the results as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -682,7 +824,47 @@ fn search_def() -> Def {
     leaf!(SEARCH, SearchArgs, run_search)
 }
 
+/// A query embedder: text to a unit vector.
+type QueryEmbedder = Box<dyn Fn(&str) -> anyhow::Result<Vec<f32>>>;
+
+/// The query embedder for the pg store: the model loads on the first query
+/// that needs it (only when the store has vectors). None without the
+/// embedder or its model.
+#[cfg(feature = "embed")]
+fn query_embedder(ctx: &Ctx) -> Option<QueryEmbedder> {
+    use agent_index::embed;
+    let dir = match embed::model_dir(None) {
+        Ok(d) => d,
+        Err(e) => {
+            ctx.hint(format!("searching without the semantic list: the embedding model isn't here ({e:#})"));
+            return None;
+        }
+    };
+    let cell: std::sync::OnceLock<Result<embed::Embedder, String>> = std::sync::OnceLock::new();
+    Some(Box::new(move |q: &str| {
+        let emb = cell
+            .get_or_init(|| embed::Embedder::load(&dir).map_err(|e| format!("{e:#}")))
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("loading the embedding model: {e}"))?;
+        Ok(emb.embed(&[q.to_string()], true)?.remove(0))
+    }))
+}
+
+#[cfg(not(feature = "embed"))]
+fn query_embedder(_: &Ctx) -> Option<QueryEmbedder> {
+    None
+}
+
+/// The current directory, canonical, as a string.
+fn cwd_string() -> String {
+    let Ok(cwd) = cwd() else { return String::new() };
+    std::fs::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned()
+}
+
 fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
+    if let Some(pg) = pg_store(&a.store)? {
+        return run_search_pg(ctx, a, &pg);
+    }
     let ix = open(ctx)?;
     require_projects(&ix)?;
     let under = if a.under.is_empty() {
@@ -733,6 +915,74 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Search on the pg store: the same options, output and `--json` shape as
+/// the sqlite store's, every list read from Postgres.
+fn run_search_pg(ctx: &Ctx, a: &SearchArgs, pg: &Pg) -> anyhow::Result<()> {
+    use agent_index::pg::{search, view as pgview};
+    if pgview::project_count(pg)? == 0 {
+        anyhow::bail!("nothing is in the pg store yet: agent index root add DIR, then agent index crawl --store pg");
+    }
+    let lexical = if a.lexical.is_empty() {
+        std::env::var("AGENT_INDEX_LEXICAL").unwrap_or_default()
+    } else {
+        a.lexical.clone()
+    };
+    let lexical = search::Lexical::parse(&lexical)?;
+    let under = if a.under.is_empty() {
+        String::new()
+    } else {
+        abs_dir(&a.under)?.to_string_lossy().into_owned()
+    };
+    let caller = pgview::project_at(pg, &cwd_string())?;
+    let o = SearchOptions {
+        query: a.args.join(" "),
+        kind: a.kind.clone(),
+        project: a.project.clone(),
+        under,
+        limit: match int_flag(a.limit, "limit")? {
+            0 => 10,
+            n => n,
+        },
+        caller_project: caller.clone(),
+        scope: String::new(),
+    };
+    let emb = query_embedder(ctx);
+    let r = search::search(pg, &o, emb.as_deref(), lexical)?;
+    let who = std::env::var("AGENT_NAME").unwrap_or_default();
+    if let Err(e) = search::log_query(pg, &who, &r) {
+        ctx.hint(format!("the search wasn't logged: {e:#}"));
+    }
+    if a.json {
+        return ctx.print_json(&r);
+    }
+    let (text, left) = view::render_search(&r, int_flag(a.budget, "budget")?, a.explain);
+    let mut out = text;
+    if left > 0 {
+        let _ = writeln!(
+            out,
+            "{left} more left out to fit --budget {}: a larger --budget, or --json, shows them.",
+            a.budget
+        );
+    } else if r.hits.len() == o.limit && r.candidates > o.limit {
+        let _ = writeln!(out, "{} more matched: --limit N shows more.", r.candidates - o.limit);
+    }
+    ctx.write_out(&out)?;
+    let project = if a.project.is_empty() { &caller } else { &a.project };
+    if !project.is_empty()
+        && let Ok(Some((true, path, last))) = pgview::project_crawl(pg, project)
+        && !last.is_empty()
+    {
+        let head = agent_index::git::head(Path::new(&path));
+        if !head.is_empty() && head != last {
+            let n = agent_index::git::commits_between(Path::new(&path), &last, &head);
+            ctx.hint(format!(
+                "{project} is {n} commits ahead of its last crawl: agent index crawl --project {project}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Says when the caller's project moved since its last crawl.
 fn behind_hint(ctx: &Ctx, ix: &Index, project: &str) {
     if project.is_empty() {
@@ -772,6 +1022,8 @@ indexed project (a symlink, say) is refused."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct ShowArgs {
+    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    pub store: String,
     #[arg(long = "json", help = "Print the entity and its neighborhood as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -782,10 +1034,26 @@ fn show_def() -> Def {
     leaf!(SHOW, ShowArgs, run_show)
 }
 
+/// The pg store with something in it, or None for the sqlite store.
+fn pg_read(store: &str) -> anyhow::Result<Option<Pg>> {
+    let Some(pg) = pg_store(store)? else { return Ok(None) };
+    if agent_index::pg::view::project_count(&pg)? == 0 {
+        anyhow::bail!("nothing is in the pg store yet: agent index root add DIR, then agent index crawl --store pg");
+    }
+    Ok(Some(pg))
+}
+
 fn run_show(ctx: &Ctx, a: &ShowArgs) -> anyhow::Result<()> {
+    let arg = a.args.first().map(String::as_str).unwrap_or(".");
+    if let Some(pg) = pg_read(&a.store)? {
+        let s = agent_index::pg::view::show(&pg, agent_index::pg::view::resolve(&pg, arg, &cwd()?)?)?;
+        if a.json {
+            return ctx.print_json(&s);
+        }
+        return ctx.write_out(&view::render_show(&s));
+    }
     let ix = open(ctx)?;
     require_projects(&ix)?;
-    let arg = a.args.first().map(String::as_str).unwrap_or(".");
     let s = view::show(&ix.conn, resolve(&ix, arg)?)?;
     if a.json {
         return ctx.print_json(&s);
@@ -816,6 +1084,8 @@ pub struct TreeArgs {
     pub depth: i64,
     #[arg(long = "budget", value_name = "int", default_value = "1500", value_parser = flags::parse_int, help = "Fit to this many tokens (0: no limit)")]
     pub budget: i64,
+    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    pub store: String,
     #[arg(long = "json", help = "Print the tree as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -827,21 +1097,35 @@ fn tree_def() -> Def {
 }
 
 fn run_tree(ctx: &Ctx, a: &TreeArgs) -> anyhow::Result<()> {
-    let ix = open(ctx)?;
-    require_projects(&ix)?;
-    let id = match a.args.first() {
-        Some(arg) => resolve(&ix, arg)?.id,
-        None => caller_project(&ix),
+    let (depth, budget) = (int_flag(a.depth, "depth")?, int_flag(a.budget, "budget")?);
+    let (t, head) = if let Some(pg) = pg_read(&a.store)? {
+        use agent_index::pg::view as pgview;
+        let id = match a.args.first() {
+            Some(arg) => pgview::resolve(&pg, arg, &cwd()?)?.id,
+            None => pgview::project_at(&pg, &cwd_string())?,
+        };
+        let t = pgview::tree(&pg, &id, depth, budget)?;
+        let head = if id.is_empty() { None } else { pgview::get(&pg, &id)? };
+        (t, head)
+    } else {
+        let ix = open(ctx)?;
+        require_projects(&ix)?;
+        let id = match a.args.first() {
+            Some(arg) => resolve(&ix, arg)?.id,
+            None => caller_project(&ix),
+        };
+        let t = view::tree(&ix.conn, &id, depth, budget)?;
+        let head = match agent_index::model::get(&ix.conn, &id)? {
+            Some(e) if !id.is_empty() => Some((e, agent_index::model::summary(&ix.conn, &id)?)),
+            _ => None,
+        };
+        (t, head)
     };
-    let t = view::tree(&ix.conn, &id, int_flag(a.depth, "depth")?, int_flag(a.budget, "budget")?)?;
     if a.json {
         return ctx.print_json(&t);
     }
     let mut o = String::new();
-    if !id.is_empty()
-        && let Some(e) = agent_index::model::get(&ix.conn, &id)?
-    {
-        let s = agent_index::model::summary(&ix.conn, &id)?;
+    if let Some((e, s)) = head {
         let mut head = format!("{}  {}", e.id, e.display_title());
         if let Some(s) = s {
             head = format!("{head}: {}", agent_index::extract::first_sentence(&s.text));
@@ -877,6 +1161,8 @@ changes with), each group by weight, with each neighbor's summary."#,
 pub struct RelatedArgs {
     #[arg(long = "budget", value_name = "int", default_value = "1500", value_parser = flags::parse_int, help = "Fit to this many tokens (0: no limit)")]
     pub budget: i64,
+    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    pub store: String,
     #[arg(long = "json", help = "Print the neighbors as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -888,10 +1174,15 @@ fn related_def() -> Def {
 }
 
 fn run_related(ctx: &Ctx, a: &RelatedArgs) -> anyhow::Result<()> {
-    let ix = open(ctx)?;
-    require_projects(&ix)?;
-    let res = resolve(&ix, &a.args[0])?;
-    let r = view::related(&ix.conn, &res.id)?;
+    let r = if let Some(pg) = pg_read(&a.store)? {
+        let res = agent_index::pg::view::resolve(&pg, &a.args[0], &cwd()?)?;
+        agent_index::pg::view::related(&pg, &res.id)?
+    } else {
+        let ix = open(ctx)?;
+        require_projects(&ix)?;
+        let res = resolve(&ix, &a.args[0])?;
+        view::related(&ix.conn, &res.id)?
+    };
     if a.json {
         return ctx.print_json(&r);
     }
@@ -1010,6 +1301,7 @@ fn run_alias_add(ctx: &Ctx, a: &AliasAddArgs) -> anyhow::Result<()> {
     require_projects(&ix)?;
     let res = resolve(&ix, &a.args[0])?;
     let id = agent_index::labels::alias_add(&ix.conn, &res.id, &a.args[1])?;
+    resync(ctx, &ix)?;
     ctx.write_out(&format!(
         "Labeled {id} \"{}\".\nNext: agent index search {:?} finds it first.\n",
         a.args[1].trim(),
@@ -1071,6 +1363,7 @@ fn run_lexicon_import(ctx: &Ctx, a: &LexiconImportArgs) -> anyhow::Result<()> {
         if p.is_absolute() { p.to_path_buf() } else { cwd()?.join(p) }
     };
     let r = agent_index::labels::lexicon_import(&ix.conn, &file)?;
+    resync(ctx, &ix)?;
     if a.json {
         return ctx.print_json(&r);
     }

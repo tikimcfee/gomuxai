@@ -57,6 +57,7 @@ nkeys = "0.4"
 x509-parser = "0.18"
 unicode-width = "0.2"
 tempfile = "3"
+postgres = { version = "0.19", features = ["with-serde_json-1"] }
 
 [profile.release]
 opt-level = 2
