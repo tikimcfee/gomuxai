@@ -3,6 +3,7 @@
 
 pub mod evidence;
 pub mod gather;
+pub mod ideas;
 pub mod memory;
 pub mod review;
 pub mod schedule;
@@ -28,6 +29,25 @@ pub fn brief_global(digest_path: &str) -> String {
     BRIEF_GLOBAL.replace("{digest}", digest_path)
 }
 
+/// The brief the global dream's synthesizer (the idea engine's generator)
+/// gets: brief_global's rules, but it proposes ideas instead of writing.
+pub const BRIEF_SYNTH: &str = include_str!("brief_synth.md");
+
+/// The synthesizer's brief for a global dream whose digest is at
+/// `digest_path`.
+pub fn brief_synth(digest_path: &str) -> String {
+    BRIEF_SYNTH.replace("{digest}", digest_path)
+}
+
+/// The brief the global dream's critic gets: check each idea against its
+/// cited primary sources.
+pub const BRIEF_CRITIC: &str = include_str!("brief_critic.md");
+
+/// The critic's brief for a global dream whose digest is at `digest_path`.
+pub fn brief_critic(digest_path: &str) -> String {
+    BRIEF_CRITIC.replace("{digest}", digest_path)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -49,6 +69,30 @@ mod tests {
             "agent dream friction dup",
         ] {
             assert!(g.contains(want), "global brief lacks {want}");
+        }
+        let s = super::brief_synth("/d/digest.md");
+        let c = super::brief_critic("/d/digest.md");
+        assert!(s.contains("/d/digest.md") && c.contains("/d/digest.md"));
+        for want in [
+            "agent dream idea --from",
+            "agent dream done",
+            "## Friction triage",
+            "under 50 lines",
+            "three separate sessions",
+        ] {
+            assert!(s.contains(want), "synthesizer brief lacks {want}");
+        }
+        assert!(
+            !s.contains("agent dream memory put") && !s.contains("agent dream commit"),
+            "the synthesizer proposes; code writes"
+        );
+        for want in [
+            "agent dream judge <id> approve",
+            "--checked",
+            "agent dream ideas",
+            "agent dream done",
+        ] {
+            assert!(c.contains(want), "critic brief lacks {want}");
         }
     }
 }
