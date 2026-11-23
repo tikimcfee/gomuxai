@@ -86,7 +86,8 @@ impl Pg {
         // (a SET before then makes a placeholder that does nothing).
         pg.batch(&format!(
             "SET search_path TO {schema}, public; LOAD 'vector'; \
-             SET hnsw.iterative_scan = relaxed_order; SET hnsw.ef_search = 100; SET jit = off;"
+             SET hnsw.iterative_scan = relaxed_order; SET hnsw.ef_search = 100; SET jit = off; \
+             SET paradedb.planner_warnings = off;"
         ))?;
         schema::migrate(&pg)?;
         Ok(pg)

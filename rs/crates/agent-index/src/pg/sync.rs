@@ -57,6 +57,9 @@ pub const CHUNK_FILE_KINDS: &[&str] = &["source", "test", "doc", "config", "buil
 pub const CHUNK_LINES: usize = 400;
 /// ...and this many bytes (a long line is cut).
 pub const CHUNK_BYTES: usize = 32 * 1024;
+/// Lexemes in fewer chunks than this aren't counted in `lexemes`: search
+/// takes them for rare.
+pub const LEXEME_FLOOR: i32 = 50;
 /// A file's or dir's children named in its card, as v1.
 const KIDS_IN_CARD: usize = 200;
 /// Rows a COPY sends at a time.
@@ -550,6 +553,12 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
 
     let mut c = pg.client();
     let mut tx = c.transaction()?;
+    // One sync of a schema at a time: a second waits for the first's commit,
+    // then finds what it left.
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('agent-index sync ' || $1))",
+        &[&pg.schema],
+    )?;
     let run_id: i64 = tx
         .query_one(
             "INSERT INTO runs (kind, config, started) VALUES ('sync', $1, now()) RETURNING id",
@@ -728,6 +737,19 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
             "entity_id, ord, line_start, line_end, heading, text, terms",
             &buf,
         )?;
+    }
+    // Document frequencies, when the chunks changed (or were never counted).
+    let counted: bool = tx
+        .query_one("SELECT EXISTS (SELECT 1 FROM lexemes)", &[])?
+        .get(0);
+    if !rechunk.is_empty() || rebuild || !counted {
+        tx.batch_execute(&format!(
+            "DELETE FROM lexemes;
+             INSERT INTO lexemes (config, word, ndoc)
+             SELECT 'simple', word, ndoc FROM ts_stat('SELECT tsv_simple FROM chunks') WHERE ndoc >= {LEXEME_FLOOR}
+             UNION ALL
+             SELECT 'english', word, ndoc FROM ts_stat('SELECT tsv_en FROM chunks') WHERE ndoc >= {LEXEME_FLOOR};"
+        ))?;
     }
     phase(&mut rep, "chunks");
 

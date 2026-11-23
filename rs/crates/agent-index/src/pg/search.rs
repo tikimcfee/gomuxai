@@ -42,6 +42,34 @@ use crate::query::{FILE_KINDS, Hit, Mapping, RRF_K, SearchOptions, SearchResult}
 /// How many each list fetches.
 pub const LIST_LIMIT: i64 = 300;
 
+/// How many chunks (by the terms' document frequencies) the full-text list
+/// ranks at most, roughly: ranking a chunk detoasts its tsvectors, and a
+/// common word's 20,000 chunks took most of a second.
+pub const CHUNK_BUDGET: i64 = 4000;
+
+/// The same for the cards' any-word list, by the same (chunk) frequencies:
+/// a word common in files' text is common in names and seeds too. The
+/// every-word list takes every term.
+pub const CARD_BUDGET: i64 = 8000;
+
+/// How many of a query's terms (its rarest) the trigram list matches.
+pub const TRIGRAM_TERMS: i64 = 4;
+
+/// A tuning knob: `AGENT_INDEX_TUNE=chunk_budget=4000,card_budget=8000,trigram_terms=4`
+/// overrides the constants above for an eval sweep; anything else there is
+/// ignored. The default otherwise.
+pub fn tune(name: &str, default: i64) -> i64 {
+    std::env::var("AGENT_INDEX_TUNE")
+        .ok()
+        .and_then(|s| {
+            s.split(',').find_map(|kv| {
+                let (k, v) = kv.split_once('=')?;
+                (k.trim() == name).then(|| v.trim().parse().ok())?
+            })
+        })
+        .unwrap_or(default)
+}
+
 /// The filter of kind, project and under on entity alias `e`: parameters
 /// $2, $3 and $4.
 const FILTER: &str = "($2 = '' OR e.kind = $2 OR e.file_kind = $2) AND ($3 = '' OR e.project = $3) \
@@ -142,24 +170,72 @@ const BM25_QUERY: &str = "array_to_string($1::text[], ' ')";
 /// The statement's text: which lists it holds depends on the query (every
 /// word only for several terms, the local lists only with a caller project,
 /// the semantic list only with a query vector) and on `lexical`.
+///
+/// `filtered` (a kind, project or under asked for) joins the lists made
+/// from chunks to their entities to filter them; without it they don't
+/// touch `entities` at all, and their local scope is the project an id
+/// names (`alpha:src/x.rs` → `alpha`; a project name holds no `:`).
 pub fn fused_sql(
     several_terms: bool,
     local: bool,
     dense: bool,
     lexical: Lexical,
+    filtered: bool,
 ) -> Result<String> {
     let f = FILTER;
+    let chunk_budget = tune("chunk_budget", CHUNK_BUDGET);
+    let card_budget = tune("card_budget", CARD_BUDGET);
+    let trigram_terms = tune("trigram_terms", TRIGRAM_TERMS);
     let h = HERE;
+    // A list keyed by entity id (alias `x`): joined to its entity only to
+    // filter; scoped locally by the id's project otherwise.
+    let by_id = |x: &str, local: bool| -> (String, String) {
+        let join = if filtered {
+            format!(" JOIN entities e ON e.id = {x}.id")
+        } else {
+            String::new()
+        };
+        let mut cond: Vec<String> = Vec::new();
+        if filtered {
+            cond.push(f.to_string());
+        }
+        if local {
+            cond.push(format!("split_part({x}.id, ':', 1) = ANY($5::text[])"));
+        }
+        let wher = if cond.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", cond.join(" AND "))
+        };
+        (join, wher)
+    };
     let mut ctes: Vec<String> = Vec::new();
     let mut lists: Vec<String> = Vec::new();
     let native = lexical != Lexical::Bm25;
-    ctes.push(
-        "q AS (SELECT tsq_or(qs || qe) AS any_q, tsq_and(qs || qe) AS all_q, \
-         tsq_or(qs) AS any_s, tsq_or(qe) AS any_e \
-         FROM (SELECT plainto_tsquery('simple', t) AS qs, plainto_tsquery('english', t) AS qe \
-               FROM unnest($1::text[]) AS t) x)"
-            .to_string(),
-    );
+    // Each term's document frequency in the chunks (0 when rarer than the
+    // lexemes table counts; a term of several lexemes, its rarest): the
+    // chunk list takes the rarest terms until their chunks add up to
+    // CHUNK_BUDGET, and always the rarest one. The card lists take every term.
+    let df = |cfg: &str| {
+        format!(
+            "coalesce((SELECT CASE WHEN count(l.word) < cardinality(a.w) THEN 0 ELSE min(l.ndoc) END \
+             FROM (SELECT tsvector_to_array(to_tsvector('{cfg}', t)) AS w) a \
+             LEFT JOIN lexemes l ON l.config = '{cfg}' AND l.word = ANY(a.w) GROUP BY a.w), 0)"
+        )
+    };
+    ctes.push(format!(
+        "qt AS (SELECT t, plainto_tsquery('simple', t) AS qs, plainto_tsquery('english', t) AS qe, \
+         greatest({}, {}) AS df FROM unnest($1::text[]) AS t)",
+        df("simple"),
+        df("english")
+    ));
+    ctes.push(format!(
+        "q AS (SELECT tsq_or(qs || qe) FILTER (WHERE n = 1 OR cum <= {card_budget}) AS any_c, \
+         tsq_and(qs || qe) AS all_q, \
+         tsq_or(qs) FILTER (WHERE n = 1 OR cum <= {chunk_budget}) AS any_s, \
+         tsq_or(qe) FILTER (WHERE n = 1 OR cum <= {chunk_budget}) AS any_e \
+         FROM (SELECT *, sum(df) OVER (ORDER BY df, t) AS cum, row_number() OVER (ORDER BY df, t) AS n FROM qt) x)"
+    ));
     let card = |name: &str, cond: &str, scope: &str| {
         format!(
             "{name} AS (SELECT e.id, ts_rank_cd('{{0.1,0.2,0.4,1.0}}'::float4[], e.tsv, q.{cond}, 1)::float8 AS s \
@@ -168,11 +244,11 @@ pub fn fused_sql(
     };
     let here = format!(" AND {h}");
     if native {
-        ctes.push(card("cards", "any_q", ""));
+        ctes.push(card("cards", "any_c", ""));
         lists.push("lexical:cards".into());
     }
     if native && local {
-        ctes.push(card("cards_here", "any_q", &here));
+        ctes.push(card("cards_here", "any_c", &here));
         lists.push("lexical here:cards_here".into());
     }
     if native && several_terms {
@@ -183,11 +259,14 @@ pub fn fused_sql(
             lists.push("all words here:cards_all_here".into());
         }
     }
-    ctes.push(
+    // Trigrams for the query's rarest few terms (a typo counts as rare):
+    // each term is a probe, and a long question's common words took most of
+    // its time while matching most names.
+    ctes.push(format!(
         "tri_hits AS (SELECT e.id, sum(word_similarity(t, e.tri))::float8 AS s, e.project, e.kind, e.file_kind, e.path \
-         FROM unnest($6::text[]) AS t JOIN entities e ON e.tri %> t GROUP BY e.id)"
-            .to_string(),
-    );
+         FROM (SELECT t FROM unnest($6::text[]) AS t JOIN qt USING (t) ORDER BY qt.df, t LIMIT {trigram_terms}) tt \
+         JOIN entities e ON e.tri %> tt.t GROUP BY e.id)"
+    ));
     ctes.push(format!(
         "tri AS (SELECT e.id, e.s FROM tri_hits e WHERE {f} ORDER BY e.s DESC, e.id LIMIT $12)"
     ));
@@ -205,13 +284,15 @@ pub fn fused_sql(
              FROM chunks c, q WHERE c.tsv_simple @@ q.any_s OR c.tsv_en @@ q.any_e GROUP BY c.entity_id)"
                 .to_string(),
         );
+        let (j, w) = by_id("ch", false);
         ctes.push(format!(
-            "full_text AS (SELECT ch.id, ch.s FROM ch JOIN entities e ON e.id = ch.id WHERE {f} ORDER BY ch.s DESC, ch.id LIMIT $12)"
+            "full_text AS (SELECT ch.id, ch.s FROM ch{j}{w} ORDER BY ch.s DESC, ch.id LIMIT $12)"
         ));
         lists.push("full text:full_text".into());
         if local {
+            let (j, w) = by_id("ch", true);
             ctes.push(format!(
-                "full_here AS (SELECT ch.id, ch.s FROM ch JOIN entities e ON e.id = ch.id WHERE {f}{here} ORDER BY ch.s DESC, ch.id LIMIT $12)"
+                "full_here AS (SELECT ch.id, ch.s FROM ch{j}{w} ORDER BY ch.s DESC, ch.id LIMIT $12)"
             ));
             lists.push("full text here:full_here".into());
         }
@@ -233,8 +314,8 @@ pub fn fused_sql(
     if dense {
         let dense = |name: &str, scope: &str| {
             format!(
-                "{name}_0 AS MATERIALIZED (SELECT e.id, (e.card_vec <=> $13::halfvec(384))::float8 AS d FROM entities e \
-                 WHERE e.card_vec IS NOT NULL AND {f}{scope} ORDER BY e.card_vec <=> $13::halfvec(384) LIMIT $12), \
+                "{name}_0 AS MATERIALIZED (SELECT e.id, (e.card_vec <=> $13::text::halfvec(384))::float8 AS d FROM entities e \
+                 WHERE e.card_vec IS NOT NULL AND {f}{scope} ORDER BY e.card_vec <=> $13::text::halfvec(384) LIMIT $12), \
                  {name} AS (SELECT id, 1 - d AS s FROM {name}_0 ORDER BY d + 0, id)"
             )
         };
@@ -270,22 +351,33 @@ pub fn fused_sql(
          WHERE $8 AND NOT EXISTS (SELECT 1 FROM exact) AND c.tsv_simple @@ rq.q GROUP BY c.entity_id)"
             .to_string(),
     );
+    let (j, w) = by_id("r", true);
     ctes.push(format!(
-        "rare_here AS (SELECT r.id, row_number() OVER (ORDER BY r.s DESC, r.id) AS n FROM rare_ch r JOIN entities e ON e.id = r.id \
-         WHERE {f}{here} ORDER BY r.s DESC, r.id LIMIT 4)"
+        "rare_here AS (SELECT r.id, row_number() OVER (ORDER BY r.s DESC, r.id) AS n FROM rare_ch r{j}{w} \
+         ORDER BY r.s DESC, r.id LIMIT 4)"
     ));
+    let (j, w) = by_id("r", false);
     ctes.push(format!(
-        "rare_all AS (SELECT r.id, row_number() OVER (ORDER BY r.s DESC, r.id) AS n FROM rare_ch r JOIN entities e ON e.id = r.id \
-         WHERE {f} ORDER BY r.s DESC, r.id LIMIT 4)"
+        "rare_all AS (SELECT r.id, row_number() OVER (ORDER BY r.s DESC, r.id) AS n FROM rare_ch r{j}{w} \
+         ORDER BY r.s DESC, r.id LIMIT 4)"
     ));
-    // Terms nothing the search may return mentions.
+    // Terms nothing the search may return mentions: each test in turn (a
+    // CASE runs them in order, so a word the cards hold costs one probe).
+    let (cj, cw) = if filtered {
+        (
+            " JOIN entities e ON e.id = c.entity_id".to_string(),
+            format!(" AND {f}"),
+        )
+    } else {
+        (String::new(), String::new())
+    };
     ctes.push(format!(
-        "absent AS (SELECT t FROM unnest($11::text[]) WITH ORDINALITY AS u(t, n) WHERE \
-         NOT EXISTS (SELECT 1 FROM entities e WHERE e.tsv @@ (plainto_tsquery('simple', t) || plainto_tsquery('english', t)) AND {f}) \
-         AND NOT (length(t) >= 3 AND EXISTS (SELECT 1 FROM entities e WHERE e.tri LIKE '%' || replace(t, '_', '\\_') || '%' AND {f})) \
-         AND NOT EXISTS (SELECT 1 FROM chunks c JOIN entities e ON e.id = c.entity_id \
-             WHERE (c.tsv_simple @@ plainto_tsquery('simple', t) OR c.tsv_en @@ plainto_tsquery('english', t)) AND {f}) \
-         ORDER BY n)"
+        "absent AS (SELECT u.t FROM unnest($11::text[]) WITH ORDINALITY AS u(t, n) WHERE CASE \
+         WHEN EXISTS (SELECT 1 FROM entities e WHERE e.tsv @@ (plainto_tsquery('simple', u.t) || plainto_tsquery('english', u.t)) AND {f}) THEN false \
+         WHEN EXISTS (SELECT 1 FROM chunks c{cj} WHERE (c.tsv_simple @@ plainto_tsquery('simple', u.t) \
+             OR c.tsv_en @@ plainto_tsquery('english', u.t)){cw}) THEN false \
+         WHEN length(u.t) >= 3 AND EXISTS (SELECT 1 FROM entities e WHERE e.tri LIKE '%' || replace(u.t, '_', '\\_') || '%' AND {f}) THEN false \
+         ELSE true END ORDER BY u.n)"
     ));
     let mut union: Vec<String> = lists
         .iter()
@@ -724,7 +816,8 @@ fn search_entities(
         // BM25 indexes now, or the search says what's missing.
         super::schema::ensure_bm25(pg)?;
     }
-    let sql = fused_sql(content.len() > 1, local, qvec.is_some(), lexical)?;
+    let filtered = !(o.kind.is_empty() && o.project.is_empty() && o.under.is_empty());
+    let sql = fused_sql(content.len() > 1, local, qvec.is_some(), lexical, filtered)?;
     let lim = LIST_LIMIT;
     let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
         &content,
@@ -742,6 +835,13 @@ fn search_entities(
     ];
     if let Some(v) = &qvec {
         params.push(v);
+    }
+    // AGENT_INDEX_EXPLAIN=1 prints the fused statement's plan, run, on
+    // stderr (for tuning; the search then runs as usual).
+    if std::env::var_os("AGENT_INDEX_EXPLAIN").is_some_and(|v| !v.is_empty() && v != "0") {
+        for r in pg.query(&format!("EXPLAIN (ANALYZE, BUFFERS) {sql}"), &params)? {
+            eprintln!("{}", r.get::<_, String>(0));
+        }
     }
     let row = pg
         .query(&sql, &params)?

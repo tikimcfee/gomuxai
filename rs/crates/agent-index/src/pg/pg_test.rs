@@ -346,6 +346,44 @@ fn search_show_tree_related() {
     assert!(rel.groups.contains_key("depends on"), "{rel:#?}");
 }
 
+/// The semantic list: card vectors on HNSW, the query vector sent as text.
+#[test]
+fn search_semantic_list() {
+    let Some(t) = throwaway("dense") else { return };
+    let pg = &t.0;
+    let (_dir, ix) = fixture();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    // A stand-in vector for every entity that wants one, one direction for
+    // beta's guide so the query finds it nearest.
+    let one = |x: f32| super::vec_text(&[x; super::DIM]);
+    let mut other = vec![0.0f32; super::DIM];
+    other[0] = 1.0;
+    pg.execute(
+        "UPDATE entities SET card_vec = $1::text::halfvec(384), vec_key = text_key WHERE embed",
+        &[&one(0.05)],
+    )
+    .unwrap();
+    pg.execute(
+        "UPDATE entities SET card_vec = $1::text::halfvec(384) WHERE id = 'beta:docs/GUIDE.md'",
+        &[&super::vec_text(&other)],
+    )
+    .unwrap();
+    pg.batch("INSERT INTO meta (key, value) VALUES ('vectors', '1')")
+        .unwrap();
+    let embed = |_: &str| -> anyhow::Result<Vec<f32>> { Ok(other.clone()) };
+    let r = super::search::search(pg, &opts("guide"), Some(&embed), Default::default()).unwrap();
+    let hit = r
+        .hits
+        .iter()
+        .find(|h| h.id == "beta:docs/GUIDE.md")
+        .expect("the guide");
+    assert!(
+        hit.explain.iter().any(|e| e.starts_with("semantic #1")),
+        "{:#?}",
+        r.hits
+    );
+}
+
 /// The A/B's BM25 lists (pg_search), where the database has the extension.
 #[test]
 fn search_bm25_lists() {

@@ -8,7 +8,20 @@ use anyhow::{Context, Result, bail};
 use super::Pg;
 
 /// The migrations, oldest first; a migration's version is its place (from 1).
-pub const MIGRATIONS: &[&str] = &[MIGRATION_1, BM25_INDEXES];
+pub const MIGRATIONS: &[&str] = &[MIGRATION_1, BM25_INDEXES, LEXEMES];
+
+/// 3: how many chunks hold each lexeme (of those in at least
+/// [`super::sync::LEXEME_FLOOR`]; a lexeme not listed is rarer), refreshed
+/// by the sync when chunks change. Search takes a query's rarest terms for
+/// the chunk list, a document frequency that native full text lacks.
+const LEXEMES: &str = r#"
+CREATE TABLE lexemes (
+    config text NOT NULL,                     -- simple, english
+    word text NOT NULL,
+    ndoc integer NOT NULL,
+    PRIMARY KEY (config, word)
+);
+"#;
 
 /// 1: projects, roots, entities (weighted full text, trigram text, card
 /// vector), chunks (english and simple full text), edges, labels, aliases,
@@ -263,17 +276,25 @@ pub fn ensure_bm25(pg: &Pg) -> Result<()> {
 }
 
 /// Brings the schema to the latest version.
+///
+/// It runs in one transaction under an advisory lock, so two processes that
+/// connect at once to a new schema don't both migrate it: the second waits,
+/// then finds it current.
 pub fn migrate(pg: &Pg) -> Result<()> {
-    pg.batch(
+    let mut c = pg.client();
+    let mut tx = c.transaction()?;
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('agent-index migrate ' || $1))",
+        &[&pg.schema],
+    )?;
+    tx.batch_execute(
         "CREATE TABLE IF NOT EXISTS migrations (
              version integer PRIMARY KEY,
              applied_at timestamptz NOT NULL DEFAULT now())",
     )?;
-    let have: i32 = pg
-        .query("SELECT coalesce(max(version), 0) FROM migrations", &[])?
-        .first()
-        .map(|r| r.get(0))
-        .unwrap_or(0);
+    let have: i32 = tx
+        .query_one("SELECT coalesce(max(version), 0) FROM migrations", &[])?
+        .get(0);
     let latest = MIGRATIONS.len() as i32;
     if have > latest {
         bail!(
@@ -283,12 +304,10 @@ pub fn migrate(pg: &Pg) -> Result<()> {
     }
     for (i, sql) in MIGRATIONS.iter().enumerate().skip(have as usize) {
         let v = i as i32 + 1;
-        let mut c = pg.client();
-        let mut tx = c.transaction()?;
         tx.batch_execute(sql)
             .with_context(|| format!("migrating schema {} to version {v}", pg.schema))?;
         tx.execute("INSERT INTO migrations (version) VALUES ($1)", &[&v])?;
-        tx.commit()?;
     }
+    tx.commit()?;
     Ok(())
 }
