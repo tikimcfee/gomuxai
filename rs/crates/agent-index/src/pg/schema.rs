@@ -342,5 +342,35 @@ pub fn migrate(pg: &Pg) -> Result<()> {
         tx.execute("INSERT INTO migrations (version) VALUES ($1)", &[&v])?;
     }
     tx.commit()?;
+    drop(c);
+    ensure_support_indexes(pg)
+}
+
+/// Indexes that only make queries faster, created when missing: unlike a
+/// migration they don't raise the schema's version, so an older agent still
+/// reads the schema. (Checked first: CREATE INDEX IF NOT EXISTS would take
+/// the table's lock on every connect.)
+const SUPPORT_INDEXES: &[(&str, &str)] = &[
+    // The small corpora (memory, friction) searched alone start from their
+    // few rows, not from every match of a big index.
+    (
+        "entities_corpus",
+        "CREATE INDEX IF NOT EXISTS entities_corpus ON entities (corpus)",
+    ),
+];
+
+fn ensure_support_indexes(pg: &Pg) -> Result<()> {
+    for (name, sql) in SUPPORT_INDEXES {
+        let have = !pg
+            .query(
+                "SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = $2",
+                &[&pg.schema, name],
+            )?
+            .is_empty();
+        if !have {
+            pg.batch(sql)
+                .with_context(|| format!("creating index {name} in schema {}", pg.schema))?;
+        }
+    }
     Ok(())
 }

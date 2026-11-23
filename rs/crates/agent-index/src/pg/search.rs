@@ -34,7 +34,7 @@ use anyhow::{Result, bail};
 use serde_json::Value;
 
 use super::Pg;
-use crate::config::Config;
+use crate::config::{CORPORA, Config};
 use crate::files;
 use crate::model::{self, Summary};
 use crate::names;
@@ -52,10 +52,25 @@ fn num(x: f64) -> String {
     format!("{x}")
 }
 
-/// The filter of kind, project and under on entity alias `e`: parameters
-/// $2, $3 and $4.
+/// The filter of kind, project, under and corpus on entity alias `e`:
+/// parameters $2, $3, $4 and $13 (the corpora searched).
 const FILTER: &str = "($2 = '' OR e.kind = $2 OR e.file_kind = $2) AND ($3 = '' OR e.project = $3) \
-     AND ($4 = '' OR e.path = $4 OR starts_with(e.path, $4 || '/'))";
+     AND ($4 = '' OR e.path = $4 OR starts_with(e.path, $4 || '/')) AND e.corpus = ANY($13::text[])";
+/// The corpus filter on chunk alias `c`, which records its entity's corpus
+/// in its meta (no join; a chunk from before records nothing: code).
+const CHUNK_CORPUS: &str = "coalesce(c.meta->>'corpus', 'code') = ANY($13::text[])";
+
+/// The corpora a search covers when it names none: what the crawl found.
+pub const CRAWLED: &[&str] = &["code", "prose"];
+
+/// The corpora a search covers: its own, else [`CRAWLED`].
+fn corpora_of(o: &SearchOptions) -> Vec<String> {
+    if o.corpora.is_empty() {
+        CRAWLED.iter().map(|s| s.to_string()).collect()
+    } else {
+        o.corpora.clone()
+    }
+}
 /// The local scope: parameter $5, the caller's project and its dependencies.
 const HERE: &str = "e.project = ANY($5::text[])";
 
@@ -78,6 +93,33 @@ impl Lexical {
             "both" => Lexical::Both,
             _ => bail!("--lexical takes fts, bm25 or both, not {s:?}"),
         })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Lexical::Fts => "fts",
+            Lexical::Bm25 => "bm25",
+            Lexical::Both => "both",
+        }
+    }
+
+    /// What a search runs: `asked` (`--lexical`, `AGENT_INDEX_LEXICAL`) when
+    /// given, else `[search].lexical`; `auto` or nothing is bm25 where the
+    /// schema has its indexes, fts elsewhere.
+    pub fn resolve(pg: &Pg, asked: &str) -> Result<Lexical> {
+        let s = if asked.is_empty() {
+            pg.cfg.search.lexical.as_str()
+        } else {
+            asked
+        };
+        match s {
+            "" | "auto" => Ok(if super::schema::has_bm25(pg)? {
+                Lexical::Bm25
+            } else {
+                Lexical::Fts
+            }),
+            s => Lexical::parse(s),
+        }
     }
 }
 
@@ -120,7 +162,7 @@ pub fn bm25_ctes(local: bool, cfg: &Config) -> Option<(Vec<String>, Vec<String>)
     // WHERE, pg_search checks them against every row of the table (690 ms
     // with --under or --kind, against 17 ms this way; same ranking).
     let mut ctes = vec![format!(
-        "bm25_hits AS MATERIALIZED (SELECT e.id, pdb.score(e.id)::float8 AS s, e.project, e.kind, e.file_kind, e.path \
+        "bm25_hits AS MATERIALIZED (SELECT e.id, pdb.score(e.id)::float8 AS s, e.project, e.kind, e.file_kind, e.path, e.corpus \
          FROM entities e WHERE ({matches}))"
     )];
     let card = |name: &str, scope: &str| {
@@ -257,7 +299,7 @@ pub fn fused_sql(
     // each term is a probe, and a long question's common words took most of
     // its time while matching most names.
     ctes.push(format!(
-        "tri_hits AS (SELECT e.id, sum(word_similarity(t, e.tri))::float8 AS s, e.project, e.kind, e.file_kind, e.path \
+        "tri_hits AS (SELECT e.id, sum(word_similarity(t, e.tri))::float8 AS s, e.project, e.kind, e.file_kind, e.path, e.corpus \
          FROM (SELECT t FROM unnest($6::text[]) AS t JOIN qt USING (t) ORDER BY qt.df, t LIMIT {trigram_terms}) tt \
          JOIN entities e ON e.tri %> tt.t GROUP BY e.id)"
     ));
@@ -275,7 +317,8 @@ pub fn fused_sql(
         ctes.push(format!(
             "ch AS (SELECT c.entity_id AS id, max(greatest(ts_rank_cd(c.tsv_simple, q.any_s, {norm}), \
              ts_rank_cd(c.tsv_en, q.any_e, {norm})))::float8 AS s \
-             FROM chunks c, q WHERE c.tsv_simple @@ q.any_s OR c.tsv_en @@ q.any_e GROUP BY c.entity_id)"
+             FROM chunks c, q WHERE (c.tsv_simple @@ q.any_s OR c.tsv_en @@ q.any_e) AND {CHUNK_CORPUS} \
+             GROUP BY c.entity_id)"
         ));
         let (j, w) = by_id("ch", false);
         ctes.push(format!(
@@ -307,8 +350,8 @@ pub fn fused_sql(
     if dense {
         let dense = |name: &str, scope: &str| {
             format!(
-                "{name}_0 AS MATERIALIZED (SELECT e.id, (e.card_vec <=> $13::text::halfvec(384))::float8 AS d FROM entities e \
-                 WHERE e.card_vec IS NOT NULL AND {f}{scope} ORDER BY e.card_vec <=> $13::text::halfvec(384) LIMIT $12), \
+                "{name}_0 AS MATERIALIZED (SELECT e.id, (e.card_vec <=> $14::text::halfvec(384))::float8 AS d FROM entities e \
+                 WHERE e.card_vec IS NOT NULL AND {f}{scope} ORDER BY e.card_vec <=> $14::text::halfvec(384) LIMIT $12), \
                  {name} AS (SELECT id, 1 - d AS s FROM {name}_0 ORDER BY d + 0, id)"
             )
         };
@@ -340,7 +383,8 @@ pub fn fused_sql(
     ctes.push(format!(
         "rare_ch AS (SELECT c.entity_id AS id, max(ts_rank_cd(c.tsv_simple, rq.q, {norm}))::float8 AS s \
          FROM chunks c, (SELECT phraseto_tsquery('simple', $7) AS q) rq \
-         WHERE $8 AND NOT EXISTS (SELECT 1 FROM exact) AND c.tsv_simple @@ rq.q GROUP BY c.entity_id)"
+         WHERE $8 AND NOT EXISTS (SELECT 1 FROM exact) AND c.tsv_simple @@ rq.q AND {CHUNK_CORPUS} \
+         GROUP BY c.entity_id)"
     ));
     // One more than the rare identifier's files may number, to tell too many.
     let rare_limit = s.rare_files + 1;
@@ -362,7 +406,7 @@ pub fn fused_sql(
             format!(" AND {f}"),
         )
     } else {
-        (String::new(), String::new())
+        (String::new(), format!(" AND {CHUNK_CORPUS}"))
     };
     ctes.push(format!(
         "absent AS (SELECT u.t FROM unnest($11::text[]) WITH ORDINALITY AS u(t, n) WHERE CASE \
@@ -510,10 +554,18 @@ fn label_matches(pg: &Pg, query: &str, o: &SearchOptions) -> Result<Vec<Mapping>
              FROM unnest($1::text[], $5::text[]) WITH ORDINALITY AS g(phrase, compact, ord)
              JOIN labels l ON l.norm = g.phrase OR l.compact = g.compact
              JOIN entities e ON e.id = l.entity_id
-             WHERE {FILTER}
-             ORDER BY g.ord, l.entity_id, l.weight DESC, l.label"
+             WHERE {}
+             ORDER BY g.ord, l.entity_id, l.weight DESC, l.label",
+            FILTER.replace("$13", "$6")
         ),
-        &[&phrases, &o.kind, &o.project, &o.under, &compacts],
+        &[
+            &phrases,
+            &o.kind,
+            &o.project,
+            &o.under,
+            &compacts,
+            &corpora_of(o),
+        ],
     )?;
     // Per gram: one row per entity (its best label), by weight then importance.
     // (entity, label, kind, origin, weight, importance) by gram.
@@ -591,6 +643,131 @@ pub fn search(
     search_entities(pg, o, embed, lexical, rerank)
 }
 
+/// A grouped search (docs/INDEX-V2.md, "Corpora, composed"): one answer per
+/// corpus asked for (`o.corpora`; empty: every one), in [`CORPORA`] order,
+/// each with its own limit and share of the budget (`[corpora.NAME]`), and
+/// a one-line note for a corpus with nothing.
+///
+/// Two fused statements: the crawled corpora (code and prose) as one flat
+/// search, whose first `o.limit` are `hits` exactly as a flat search gives
+/// them and whose order the code and prose groups take; and the side
+/// corpora (memory, friction) as another, each reranked on its own.
+pub fn search_grouped(
+    pg: &Pg,
+    o: &SearchOptions,
+    embed: Option<QueryEmbed>,
+    lexical: Lexical,
+    rerank: Option<&super::rerank::Client>,
+) -> Result<SearchResult> {
+    let cfg = &pg.cfg;
+    let asked: Vec<String> = if o.corpora.is_empty() {
+        CORPORA.iter().map(|s| s.to_string()).collect()
+    } else {
+        o.corpora.clone()
+    };
+    for c in &asked {
+        if !CORPORA.contains(&c.as_str()) {
+            bail!("--corpus takes {}, not {c:?}", CORPORA.join(", "));
+        }
+    }
+    let limit = if o.limit == 0 {
+        cfg.search.limit
+    } else {
+        o.limit
+    };
+    let crawled: Vec<String> = asked
+        .iter()
+        .filter(|c| CRAWLED.contains(&c.as_str()))
+        .cloned()
+        .collect();
+    let side: Vec<String> = asked
+        .iter()
+        .filter(|c| !CRAWLED.contains(&c.as_str()))
+        .cloned()
+        .collect();
+    let group_limit = |cs: &[String]| cs.iter().map(|c| cfg.corpus_group(c).0).sum::<usize>();
+    let mut out: Option<SearchResult> = None;
+    let mut by_corpus: BTreeMap<String, (Vec<Hit>, usize)> = BTreeMap::new();
+    if !crawled.is_empty() {
+        // Deep enough for both groups and the flat list; the order is the
+        // flat search's, so its first `limit` are what a flat search gives.
+        let o2 = SearchOptions {
+            corpora: crawled.clone(),
+            limit: limit.max(2 * group_limit(&crawled)),
+            ..o.clone()
+        };
+        let mut r = search_entities(pg, &o2, embed, lexical, rerank)?;
+        for h in &r.hits {
+            by_corpus
+                .entry(h.corpus.clone())
+                .or_default()
+                .0
+                .push(h.clone());
+        }
+        r.hits.truncate(limit);
+        out = Some(r);
+    }
+    if !side.is_empty() {
+        let o2 = SearchOptions {
+            corpora: side.clone(),
+            limit: 2 * group_limit(&side),
+            ..o.clone()
+        };
+        let r = search_entities(pg, &o2, embed, lexical, rerank)?;
+        for h in &r.hits {
+            by_corpus
+                .entry(h.corpus.clone())
+                .or_default()
+                .0
+                .push(h.clone());
+        }
+        match &mut out {
+            Some(main) => {
+                for (k, v) in r.ms {
+                    *main
+                        .ms
+                        .entry(format!("{k} (memory, friction)"))
+                        .or_insert(0.0) += v;
+                }
+                main.absent.retain(|t| r.absent.contains(t));
+                for m in r.mapping {
+                    main.mapping.push(m);
+                }
+            }
+            None => {
+                let mut r = r;
+                r.hits.clear();
+                out = Some(r);
+            }
+        }
+    }
+    let mut r = out.expect("a corpus at least");
+    for (hits, n) in by_corpus.values_mut() {
+        *n = hits.len();
+    }
+    let mut groups = Vec::new();
+    for c in &asked {
+        let (lim, budget) = cfg.corpus_group(c);
+        let (mut hits, n) = by_corpus.remove(c).unwrap_or_default();
+        hits.truncate(lim);
+        for (i, h) in hits.iter_mut().enumerate() {
+            h.rank = i + 1;
+        }
+        let note = hits
+            .is_empty()
+            .then(|| format!("nothing good here: no {c} matched"));
+        groups.push(crate::query::Group {
+            corpus: c.clone(),
+            hits,
+            candidates: n,
+            budget,
+            note,
+        });
+    }
+    r.groups = Some(groups);
+    Ok(r)
+}
+
 /// Details of the hits, by id.
 struct Detail {
     e: model::Entity,
@@ -601,6 +778,7 @@ struct Detail {
     summary_key: String,
     labels_text: String,
     symbols: String,
+    corpus: String,
 }
 
 impl Detail {
@@ -624,7 +802,7 @@ impl Detail {
 
 const DETAIL_COLS: &str = "id, kind, parent, project, rel, name, path, file_kind, lang, size, lines, line, \
      content_key, title, signature, untracked, no_content, importance, seed, summary, why, summary_writer, \
-     summary_key, labels_text, symbols";
+     summary_key, labels_text, symbols, corpus";
 
 fn details(pg: &Pg, ids: &[String]) -> Result<HashMap<String, Detail>> {
     let rows = pg.query(
@@ -646,6 +824,7 @@ fn details(pg: &Pg, ids: &[String]) -> Result<HashMap<String, Detail>> {
                     summary_key: r.get(22),
                     labels_text: r.get(23),
                     symbols: r.get(24),
+                    corpus: r.get(25),
                 },
             )
         })
@@ -707,6 +886,7 @@ fn search_files(
             Hit {
                 rank: 0,
                 id: file_id.clone(),
+                corpus: d.corpus.clone(),
                 kind: e.kind.clone(),
                 file_kind: e.file_kind.clone(),
                 project: e.project.clone(),
@@ -839,6 +1019,7 @@ fn search_entities(
         cfg,
     )?;
     let lim = cfg.search.list_depth;
+    let corpora = corpora_of(o);
     let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
         &content,
         &o.kind,
@@ -852,6 +1033,7 @@ fn search_entities(
         &pinned,
         &check,
         &lim,
+        &corpora,
     ];
     if let Some(v) = &qvec {
         params.push(v);
@@ -1095,6 +1277,12 @@ fn search_entities(
             &cands,
             &pins,
             &mut explain,
+            // The crawled corpora rerank as one pool (a flat answer); the
+            // side corpora each their own top.
+            corpora
+                .iter()
+                .all(|c| CRAWLED.contains(&c.as_str()))
+                .then_some(cfg.reranker.flat_depth),
         );
         lap(&mut ms, "rerank");
         info
@@ -1129,6 +1317,7 @@ fn search_entities(
         hits.push(Hit {
             rank: hits.len() + 1,
             id: id.clone(),
+            corpus: d.corpus.clone(),
             kind: e.kind.clone(),
             file_kind: e.file_kind.clone(),
             project: e.project.clone(),
@@ -1155,6 +1344,8 @@ fn search_entities(
         ms,
         config: Some(cfg.fingerprint()),
         rerank: rerank_info,
+        groups: None,
+        lexical: None,
     })
 }
 
@@ -1172,18 +1363,23 @@ fn apply_rerank(
     cands: &HashMap<String, Cand>,
     pins: &HashSet<&String>,
     explain: &mut HashMap<String, Vec<String>>,
+    pool: Option<usize>,
 ) -> RerankInfo {
     let cfg = &pg.cfg.reranker;
     let mut info = RerankInfo {
         model: cfg.model.clone(),
         ..Default::default()
     };
-    // Each corpus's top places (indexes into order), pins left out.
+    // Each corpus's top places (indexes into order), pins left out; one
+    // pool of `pool` across corpora for a flat search.
     let mut by_corpus: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut seen: HashMap<String, usize> = HashMap::new();
     for (i, (id, _)) in order.iter().enumerate() {
-        let corpus = cands.get(id).map(|c| c.corpus.as_str()).unwrap_or("code");
-        let depth = cfg.depth.get(corpus).copied().unwrap_or(0);
+        let corpus = match pool {
+            Some(_) => "flat",
+            None => cands.get(id).map(|c| c.corpus.as_str()).unwrap_or("code"),
+        };
+        let depth = pool.unwrap_or_else(|| cfg.depth.get(corpus).copied().unwrap_or(0));
         let n = seen.entry(corpus.to_string()).or_insert(0);
         if *n >= depth {
             continue;
@@ -1193,7 +1389,10 @@ fn apply_rerank(
             by_corpus.entry(corpus.to_string()).or_default().push(i);
         }
     }
-    info.depth = cfg.depth.clone();
+    info.depth = match pool {
+        Some(d) => [("flat".to_string(), d)].into(),
+        None => cfg.depth.clone(),
+    };
     let t0 = Instant::now();
     let result = (|| -> Result<Vec<(Vec<usize>, Vec<f64>)>> {
         let mut out = Vec::new();

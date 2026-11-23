@@ -122,14 +122,18 @@ fn resync(ctx: &Ctx, ix: &Index) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Mirrors the ledger into Postgres, saying so on stderr.
+/// Mirrors the ledger into Postgres, with the memory and friction corpora,
+/// saying so on stderr.
 fn sync_pg(ctx: &Ctx, ix: &Index, pg: &Pg, rebuild: bool) -> anyhow::Result<agent_index::pg::sync::SyncReport> {
-    let r = agent_index::pg::sync::sync(&ix.conn, pg, rebuild)?;
+    let side = side_notes(ctx, ix, &pg.cfg)?;
+    let r = agent_index::pg::sync::sync_with(&ix.conn, pg, rebuild, Some(&side))?;
     ctx.notice(format!(
-        "Synced to Postgres ({}, schema {}): {} entities, {} written, {} removed, {} files cut into {} chunks, {} queued for embedding, in {}.",
+        "Synced to Postgres ({}, schema {}): {} entities ({} memory notes and friction entries, {} edges from them), {} written, {} removed, {} files cut into {} chunks, {} queued for embedding, in {}.",
         pg.url_shown,
         pg.schema,
         r.entities,
+        r.side,
+        r.side_edges,
         r.written,
         r.deleted,
         r.chunked_files,
@@ -138,6 +142,52 @@ fn sync_pg(ctx: &Ctx, ix: &Index, pg: &Pg, rebuild: bool) -> anyhow::Result<agen
         secs(r.ms)
     ));
     Ok(r)
+}
+
+/// The memory notes ([memory].dirs) and this host's friction entries (the
+/// agent store, or [friction].store opened read only), as the sync's side
+/// notes.
+fn side_notes(
+    ctx: &Ctx,
+    ix: &Index,
+    cfg: &agent_index::config::Config,
+) -> anyhow::Result<Vec<agent_index::pg::sync::SideNote>> {
+    use agent_index::pg::side;
+    let projects: Vec<(String, String)> = agent_index::roots::list_projects(&ix.conn)?
+        .into_iter()
+        .map(|p| (p.name, p.path))
+        .collect();
+    let data = agent_index::path_beside(&ctx.cfg().database_path)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let dirs = side::expand_dirs(&cfg.memory.dirs, &data);
+    let mut notes = side::memory_notes(&dirs, &data, &projects);
+    if !cfg.friction.off {
+        let filter = agent_store::models::FrictionFilter::default();
+        let entries = if cfg.friction.store.is_empty() {
+            ctx.store()?.list_friction(&filter)?
+        } else {
+            agent_store::Store::open_read_only(&cfg.friction.store)?.list_friction(&filter)?
+        };
+        for f in entries {
+            let e = side::FrictionEntry {
+                uid: f.uid,
+                kind: f.kind,
+                status: f.status,
+                summary: f.summary,
+                detail: f.detail,
+                resolution: f.resolution,
+                accept_note: f.accept_note,
+                cwd: f.cwd,
+                filed_by: f.filed_by,
+                created_at: f.created_at.to_string(),
+                error: f.command.map(|c| c.error).unwrap_or_default(),
+            };
+            notes.push(side::friction_note(&e, &projects));
+        }
+    }
+    Ok(notes)
 }
 
 fn cwd() -> anyhow::Result<PathBuf> {
@@ -1074,8 +1124,10 @@ pub struct SearchArgs {
     pub store: String,
     #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
     pub config: String,
-    #[arg(long = "lexical", value_name = "string", default_value = "", help = "pg store: fts (native full text, the default), bm25, or both (default: AGENT_INDEX_LEXICAL)")]
+    #[arg(long = "lexical", value_name = "string", default_value = "", help = "pg store: bm25 (pg_search), fts (native full text), both, or auto (default: AGENT_INDEX_LEXICAL, else [search].lexical, else auto: bm25 where the schema has its indexes)")]
     pub lexical: String,
+    #[arg(long = "corpus", value_name = "string", default_value = "", help = "pg store: only these corpora, comma-separated: code, prose, memory, friction (default: all of them, grouped; code and prose for a --kind)")]
+    pub corpus: String,
     #[arg(long = "rerank", help = "pg store: rerank the top candidates with the cross-encoder ([reranker] in the configuration), even when it is off there")]
     pub rerank: bool,
     #[arg(long = "cold", help = "pg store: search in this process even when agent index serve is up")]
@@ -1191,6 +1243,7 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         },
         caller_project: caller.clone(),
         scope: String::new(),
+        corpora: Vec::new(),
     };
     let r = match semantic(ctx, &ix) {
         Some(sem) => agent_index::search(&ix.conn, &o, sem.as_ref())?,
@@ -1233,7 +1286,6 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
     } else {
         a.lexical.clone()
     };
-    agent_index::pg::search::Lexical::parse(&lexical)?;
     let under = if a.under.is_empty() {
         String::new()
     } else {
@@ -1247,6 +1299,7 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         limit: int_flag(a.limit, "limit")?,
         cwd: cwd_string(),
         lexical,
+        corpus: a.corpus.clone(),
         rerank: a.rerank,
         who: std::env::var("AGENT_NAME").unwrap_or_default(),
         fingerprint: loaded.config.fingerprint(),
@@ -1280,7 +1333,15 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
     if a.json {
         return ctx.print_json(&r);
     }
-    let (text, left) = view::render_search(&r, int_flag(a.budget, "budget")?, a.explain);
+    let budget = int_flag(a.budget, "budget")?;
+    if let Some(groups) = &r.groups {
+        ctx.write_out(&render_groups(&r, groups, budget, a.explain))?;
+        if let Some(h) = resp.hint {
+            ctx.hint(h);
+        }
+        return Ok(());
+    }
+    let (text, left) = view::render_search(&r, budget, a.explain);
     let mut out = text;
     if let Some(ri) = &r.rerank {
         match &ri.error {
@@ -1307,6 +1368,55 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         ctx.hint(h);
     }
     Ok(())
+}
+
+/// A grouped answer as text: each corpus under its name, fitted to its
+/// share of `--budget` (the shares scale with it; 0 is no limit), the
+/// labels and absent terms once at the top, and one line for a corpus with
+/// nothing.
+fn render_groups(
+    r: &agent_index::SearchResult,
+    groups: &[agent_index::query::Group],
+    budget: usize,
+    explain: bool,
+) -> String {
+    let mut out = String::new();
+    let total: usize = groups.iter().map(|g| g.budget).sum::<usize>().max(1);
+    for (i, g) in groups.iter().enumerate() {
+        let name = {
+            let mut c = g.corpus.chars();
+            c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default()
+        };
+        if g.hits.is_empty() {
+            let _ = writeln!(
+                out,
+                "{name}: {}.",
+                g.note.as_deref().unwrap_or("nothing good here")
+            );
+            continue;
+        }
+        let _ = writeln!(out, "{name} ({} of {}):", g.hits.len(), g.candidates);
+        let sub = agent_index::SearchResult {
+            hits: g.hits.clone(),
+            // Labels and absent terms once, above the first group.
+            mapping: if i == 0 { r.mapping.clone() } else { Vec::new() },
+            absent: if i == 0 { r.absent.clone() } else { Vec::new() },
+            groups: None,
+            ..r.clone()
+        };
+        let share = if budget == 0 { 0 } else { (budget * g.budget / total).max(1) };
+        let (text, left) = view::render_search(&sub, share, explain);
+        out.push_str(&text);
+        if left > 0 {
+            let _ = writeln!(out, "   ({left} more {} left out to fit the budget.)", g.corpus);
+        }
+    }
+    if let Some(ri) = &r.rerank
+        && let Some(e) = &ri.error
+    {
+        let _ = writeln!(out, "The reranker didn't answer ({e}): this is the fused order.");
+    }
+    out
 }
 
 // `agent index serve`

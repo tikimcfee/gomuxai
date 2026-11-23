@@ -39,6 +39,10 @@ pub struct Request {
     /// The caller's directory, canonical: its project is ranked first.
     pub cwd: String,
     pub lexical: String,
+    /// The corpora to answer from, comma-separated ("": all of them when
+    /// grouped, code and prose when flat).
+    #[serde(default)]
+    pub corpus: String,
     /// Rerank even when the configuration has it off.
     pub rerank: bool,
     /// Who asks (`AGENT_NAME`), for the query log.
@@ -103,8 +107,23 @@ pub fn answer(
         limit,
         caller_project: caller.clone(),
         scope: String::new(),
+        corpora: req
+            .corpus
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .collect(),
     };
-    let lexical = Lexical::parse(&req.lexical)?;
+    for c in &o.corpora {
+        if !crate::config::CORPORA.contains(&c.as_str()) {
+            bail!(
+                "--corpus takes {}, not {c:?}",
+                crate::config::CORPORA.join(", ")
+            );
+        }
+    }
+    let lexical = Lexical::resolve(pg, &req.lexical)?;
     let own;
     let rerank = if req.rerank || pg.cfg.reranker.enabled {
         match rerank {
@@ -118,7 +137,14 @@ pub fn answer(
         None
     };
     let f = embed.map(|e| e.as_ref() as &dyn Fn(&str) -> Result<Vec<f32>>);
-    let r = search::search(pg, &o, f, lexical, rerank)?;
+    // No --kind: grouped by corpus (its `hits` are the flat answer); a
+    // --kind (as --kind file): one flat list, as before groups existed.
+    let mut r = if o.kind.is_empty() {
+        search::search_grouped(pg, &o, f, lexical, rerank)?
+    } else {
+        search::search(pg, &o, f, lexical, rerank)?
+    };
+    r.lexical = Some(lexical.name().to_string());
     // A failed log doesn't fail the search.
     let _ = search::log_query(pg, &req.who, &r);
     let project = if req.project.is_empty() {

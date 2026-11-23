@@ -53,6 +53,10 @@ pub struct SearchOptions {
     /// Only these projects (a JSON array of names; "" for all). Search sets
     /// it to fetch each list again near the caller.
     pub scope: String,
+    /// The pg store's corpora to search (code, prose, memory, friction);
+    /// empty: code and prose, what the crawl found. The sqlite store has
+    /// code only and ignores it.
+    pub corpora: Vec<String>,
 }
 
 /// One label the query matched, and the entity it named.
@@ -73,6 +77,10 @@ pub struct Mapping {
 pub struct Hit {
     pub rank: usize,
     pub id: String,
+    /// The pg store's corpus (code, prose, memory, friction); absent from
+    /// the sqlite store's hits.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub corpus: String,
     pub kind: String,
     pub file_kind: String,
     pub project: String,
@@ -114,6 +122,27 @@ pub struct SearchResult {
     /// `--rerank`); absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank: Option<RerankInfo>,
+    /// A grouped search's answer by corpus (the pg store with no `--kind`);
+    /// `hits` stays the flat list across code and prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<Group>>,
+    /// The pg store's lexical lists this search ran (fts, bm25, both).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lexical: Option<String>,
+}
+
+/// One corpus's part of a grouped answer.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Group {
+    pub corpus: String,
+    pub hits: Vec<Hit>,
+    /// How many of its entities matched before the group's limit.
+    pub candidates: usize,
+    /// Its share of `--budget`, in tokens.
+    pub budget: usize,
+    /// "nothing good here", with why, for a group with no hits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// The reranker's part in a search.
@@ -500,6 +529,7 @@ fn search_files(
             Hit {
                 rank: 0,
                 id: file_id.clone(),
+                corpus: String::new(),
                 kind: e.kind.clone(),
                 file_kind: e.file_kind.clone(),
                 project: e.project.clone(),
@@ -922,6 +952,7 @@ fn search_entities(
         hits.push(Hit {
             rank: hits.len() + 1,
             id: id.clone(),
+            corpus: String::new(),
             kind: e.kind.clone(),
             file_kind: e.file_kind.clone(),
             project: e.project.clone(),
@@ -951,6 +982,8 @@ fn search_entities(
         ms,
         config: None,
         rerank: None,
+        groups: None,
+        lexical: None,
     })
 }
 

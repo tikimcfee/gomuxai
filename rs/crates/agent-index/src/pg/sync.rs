@@ -36,6 +36,9 @@ use crate::names;
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SyncReport {
     pub entities: usize,
+    /// Of them, memory notes and friction entries.
+    pub side: usize,
+    pub side_edges: usize,
     pub written: usize,
     pub deleted: usize,
     pub queued: usize,
@@ -68,8 +71,11 @@ pub fn card(
     symbols: &str,
     cards: &Cards,
 ) -> String {
+    // (A note outside any project starts with its name alone.)
     let mut s = if rel.is_empty() {
         project.to_string()
+    } else if project.is_empty() {
+        rel.to_string()
     } else {
         format!("{project}/{rel}")
     };
@@ -167,6 +173,8 @@ pub struct Chunk {
     pub line_start: usize,
     pub line_end: usize,
     pub heading: String,
+    /// The headings above it, outermost first, its own last (Markdown).
+    pub path: Vec<String>,
     pub text: String,
 }
 
@@ -189,8 +197,10 @@ pub fn chunk_text(text: &str, markdown: bool, c: &ChunkCfg) -> Vec<Chunk> {
         }
         lines.push((i + 1, rest));
     }
-    // Sections: (heading, lines).
-    let mut sections: Vec<(String, Vec<(usize, &str)>)> = vec![(String::new(), Vec::new())];
+    // Sections: (heading, heading path, lines).
+    type Section<'a> = (String, Vec<String>, Vec<(usize, &'a str)>);
+    let mut sections: Vec<Section> = vec![(String::new(), Vec::new(), Vec::new())];
+    let mut stack: Vec<(usize, String)> = Vec::new();
     let mut fence = false;
     for &(n, l) in &lines {
         let t = l.trim_start();
@@ -200,17 +210,23 @@ pub fn chunk_text(text: &str, markdown: bool, c: &ChunkCfg) -> Vec<Chunk> {
         if markdown && !fence && t.starts_with('#') {
             let h = t.trim_start_matches('#');
             if h.starts_with(' ') || h.is_empty() {
-                sections.push((h.trim().to_string(), Vec::new()));
+                let level = t.len() - h.len();
+                while stack.last().is_some_and(|(lv, _)| *lv >= level) {
+                    stack.pop();
+                }
+                stack.push((level, h.trim().to_string()));
+                let path = stack.iter().map(|(_, s)| s.clone()).collect();
+                sections.push((h.trim().to_string(), path, Vec::new()));
             }
         }
         sections
             .last_mut()
             .expect("one section at least")
-            .1
+            .2
             .push((n, l));
     }
     let mut out = Vec::new();
-    for (heading, ls) in sections {
+    for (heading, path, ls) in sections {
         let mut cur: Vec<(usize, &str)> = Vec::new();
         let mut bytes = 0;
         let flush = |cur: &mut Vec<(usize, &str)>, out: &mut Vec<Chunk>| {
@@ -219,6 +235,7 @@ pub fn chunk_text(text: &str, markdown: bool, c: &ChunkCfg) -> Vec<Chunk> {
                     line_start: cur[0].0,
                     line_end: cur[cur.len() - 1].0,
                     heading: heading.clone(),
+                    path: path.clone(),
                     text: cur.iter().map(|(_, l)| *l).collect::<Vec<_>>().join("\n"),
                 });
             }
@@ -240,6 +257,11 @@ pub fn chunk_text(text: &str, markdown: bool, c: &ChunkCfg) -> Vec<Chunk> {
 /// One entity as the sync writes it.
 struct Out {
     e: Entity,
+    /// code, prose, memory, friction (see [`corpus_of`]).
+    corpus: String,
+    /// A note's text to cut into chunks (memory); None for a file, whose
+    /// chunks are cut from the file on disk.
+    body: Option<String>,
     seed: String,
     summary: String,
     why: String,
@@ -258,7 +280,22 @@ struct Out {
 
 const STAGE_COLS: &str = "id, kind, project, parent, rel, name, path, file_kind, lang, size, lines, line, \
      content_key, title, signature, untracked, no_content, importance, seed, summary, why, summary_key, \
-     summary_writer, summary_at, asks, terms, labels_text, symbols, embed, text_key, chunk_key, sync_key";
+     summary_writer, summary_at, asks, terms, labels_text, symbols, embed, text_key, chunk_key, sync_key, corpus";
+
+/// The corpus a crawled entity belongs to (docs/INDEX-V2.md, "Corpora,
+/// composed"): a document (Markdown, text, reStructuredText: file kind
+/// `doc`) and its sections are prose wherever they live, a README in a repo
+/// as much as a note in a research tree; everything else the crawl finds is
+/// code. One entity, one corpus.
+pub fn corpus_of(kind: &str, file_kind: &str) -> &'static str {
+    match (kind, file_kind) {
+        ("file", "doc") | ("section", _) => "prose",
+        _ => "code",
+    }
+}
+
+/// What the chunks' meta records; changing it rewrites every chunk once.
+const CHUNK_META_VERSION: &str = "m1";
 
 impl Out {
     fn copy(&self, buf: &mut String) {
@@ -305,6 +342,7 @@ impl Out {
                 &self.text_key,
                 &self.chunk_key,
                 &self.sync_key,
+                &self.corpus,
             ],
         );
     }
@@ -495,12 +533,15 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
             && e.no_content.is_empty()
             && cfg.chunks.file_kinds.iter().any(|k| k == &e.file_kind)
         {
-            format!("{}{cut}", e.content_key)
+            format!("{}{cut}|{CHUNK_META_VERSION}", e.content_key)
         } else {
             String::new()
         };
+        let corpus = corpus_of(&e.kind, &e.file_kind).to_string();
         let mut o = Out {
             e,
+            corpus,
+            body: None,
             seed,
             summary,
             why,
@@ -529,6 +570,172 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
         out.push(o);
     }
     Ok((out, labels))
+}
+
+/// The corpora that come from outside the crawl: their entities are written
+/// by the sync from what the caller read (memory notes from their
+/// directories, friction entries from the agent store).
+pub const SIDE_CORPORA: &[&str] = &["memory", "friction"];
+
+/// One note of a side corpus, as the caller read it.
+#[derive(Debug, Clone, Default)]
+pub struct SideNote {
+    /// `memory:<project>/<file>`, `friction:<uid>`.
+    pub id: String,
+    /// memory, friction.
+    pub corpus: String,
+    /// note, friction.
+    pub kind: String,
+    /// The indexed project it is about, when known ("" otherwise).
+    pub project: String,
+    pub name: String,
+    /// Where to open it ("" for a store row).
+    pub path: String,
+    pub title: String,
+    /// One paragraph: what it is about.
+    pub seed: String,
+    /// Its whole text, cut into chunks.
+    pub body: String,
+    /// Paths it names (backticked), to tie it to the files they are.
+    pub refs: Vec<String>,
+    /// Its status or kind, a short line (friction: `open, bug`).
+    pub status: String,
+}
+
+/// Side notes as the sync writes them, and the edges from the files they
+/// name: (file, note) rows, `noted-in` for memory and `reported-in` for
+/// friction, resolved against the crawled files by path (a path relative
+/// to the note's project first, else one file's path ending with it).
+fn side_rows(
+    side: &[SideNote],
+    files: &[(String, String, String)],
+    cfg: &Config,
+) -> (Vec<Out>, Vec<Vec<String>>) {
+    // Files by their path in their project, and by base name.
+    let mut by_rel: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
+    let mut by_base: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
+    for (id, project, rel) in files {
+        by_rel.entry(rel.as_str()).or_default().push((id, project));
+        let base = rel.rsplit('/').next().unwrap_or(rel);
+        by_base.entry(base).or_default().push((id, rel));
+    }
+    let mut outs = Vec::new();
+    let mut edges = Vec::new();
+    for n in side {
+        let e = Entity {
+            id: n.id.clone(),
+            kind: n.kind.clone(),
+            project: n.project.clone(),
+            rel: n.name.clone(),
+            name: n.name.clone(),
+            path: n.path.clone(),
+            file_kind: n.corpus.clone(),
+            content_key: hash(&[
+                n.body.as_bytes(),
+                n.title.as_bytes(),
+                n.seed.as_bytes(),
+                n.status.as_bytes(),
+            ]),
+            title: n.title.clone(),
+            signature: n.status.clone(),
+            ..Default::default()
+        };
+        // As the embedder makes it again from the row (project, rel, title,
+        // the seed it shows), so the keys agree.
+        let card_text = card(&e.project, &e.rel, &e.title, &n.seed, "", "", &cfg.cards);
+        let chunk_key = if n.body.trim().is_empty() {
+            String::new()
+        } else {
+            format!("{}|{CHUNK_META_VERSION}", e.content_key)
+        };
+        let mut o = Out {
+            terms: format!(
+                "{} {}",
+                names::whole_and_split(&n.name),
+                path_terms(&n.name)
+            ),
+            text_key: hash(&[card_text.as_bytes()]),
+            e,
+            corpus: n.corpus.clone(),
+            body: Some(n.body.clone()),
+            asks: Vec::new(),
+            seed: n.seed.clone(),
+            summary: String::new(),
+            why: String::new(),
+            summary_key: String::new(),
+            summary_writer: if n.seed.is_empty() {
+                String::new()
+            } else {
+                "seed".into()
+            },
+            summary_at: String::new(),
+            labels_text: String::new(),
+            symbols: String::new(),
+            embed: true,
+            chunk_key,
+            sync_key: String::new(),
+        };
+        o.summary_key = o.e.content_key.clone();
+        let mut row = String::new();
+        o.copy(&mut row);
+        o.sync_key = hash(&[row.as_bytes()]);
+        outs.push(o);
+        let kind = if n.corpus == "memory" {
+            "noted-in"
+        } else {
+            "reported-in"
+        };
+        let mut seen = HashSet::new();
+        for r in &n.refs {
+            let r = r.trim_start_matches("./").trim_end_matches('/');
+            if r.is_empty() {
+                continue;
+            }
+            // In the note's project, else the one file anywhere at that path,
+            // else the one file whose path ends with it.
+            let exact = by_rel.get(r).map(Vec::as_slice).unwrap_or(&[]);
+            let own: Vec<&str> = exact
+                .iter()
+                .filter(|(_, p)| *p == n.project)
+                .map(|(i, _)| *i)
+                .collect();
+            let target = if own.len() == 1 {
+                Some(own[0])
+            } else if exact.len() == 1 {
+                Some(exact[0].0)
+            } else if exact.is_empty() {
+                let base = r.rsplit('/').next().unwrap_or(r);
+                let ends: Vec<&str> = by_base
+                    .get(base)
+                    .into_iter()
+                    .flatten()
+                    .filter(|(_, rel)| {
+                        rel.ends_with(r)
+                            && (rel.len() == r.len() || rel[..rel.len() - r.len()].ends_with('/'))
+                    })
+                    .map(|(i, _)| *i)
+                    .collect();
+                (ends.len() == 1).then(|| ends[0])
+            } else {
+                None
+            };
+            if let Some(t) = target
+                && seen.insert(t)
+            {
+                edges.push(vec![
+                    t.to_string(),
+                    n.id.clone(),
+                    kind.to_string(),
+                    "1".into(),
+                    n.corpus.clone(),
+                    r.to_string(),
+                    String::new(),
+                    String::new(),
+                ]);
+            }
+        }
+    }
+    (outs, edges)
 }
 
 /// A digest of a query's rows, every column as text.
@@ -583,6 +790,7 @@ const SMALL: &[(&str, &str, &str)] = &[
 
 const EDGES_SQL: &str = "SELECT source, target, kind, weight, origin, evidence, source_key, target_key FROM edges ORDER BY source, target, kind";
 const EDGE_COLS: &str = "src, dst, kind, weight, origin, evidence, src_key, dst_key";
+const CHUNK_COLS: &str = "entity_id, ord, line_start, line_end, heading, text, terms, meta";
 
 fn copy_in(tx: &mut postgres::Transaction, table: &str, cols: &str, rows: &str) -> Result<()> {
     if rows.is_empty() {
@@ -595,8 +803,21 @@ fn copy_in(tx: &mut postgres::Transaction, table: &str, cols: &str, rows: &str) 
     Ok(())
 }
 
-/// Mirrors the ledger into Postgres (see the module's doc).
+/// Mirrors the ledger into Postgres (see the module's doc), leaving the side
+/// corpora (memory, friction) as they are.
 pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
+    sync_with(sq, pg, rebuild, None)
+}
+
+/// [`sync`], and with `side` the memory and friction corpora too: their
+/// notes become exactly these (a note not given is removed). A rebuild
+/// without `side` leaves them out until the next sync with it.
+pub fn sync_with(
+    sq: &Connection,
+    pg: &Pg,
+    rebuild: bool,
+    side: Option<&[SideNote]>,
+) -> Result<SyncReport> {
     let start = Instant::now();
     let mut rep = SyncReport {
         rebuild,
@@ -610,7 +831,19 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
     };
     let cfg = &pg.cfg;
     let overlay = read_overlay(pg)?;
-    let (rows, labels) = read_ledger(sq, cfg, &overlay)?;
+    let (mut rows, labels) = read_ledger(sq, cfg, &overlay)?;
+    let mut side_edges: Vec<Vec<String>> = Vec::new();
+    if let Some(side) = side {
+        let files: Vec<(String, String, String)> = rows
+            .iter()
+            .filter(|o| o.e.kind == "file")
+            .map(|o| (o.e.id.clone(), o.e.project.clone(), o.e.rel.clone()))
+            .collect();
+        let (outs, edges) = side_rows(side, &files, cfg);
+        rep.side = outs.len();
+        rows.extend(outs);
+        side_edges = edges;
+    }
     rep.entities = rows.len();
     let projects: HashMap<String, String> = crate::roots::list_projects(sq)?
         .into_iter()
@@ -643,8 +876,19 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
              DELETE FROM meta;",
         )?;
     }
-    let have: HashMap<String, String> = tx
-        .query("SELECT id, sync_key FROM entities", &[])?
+    // Without side notes, their rows aren't this sync's to change.
+    let have_sql = if side.is_some() {
+        "SELECT id, sync_key FROM entities"
+    } else {
+        "SELECT id, sync_key FROM entities WHERE corpus <> ALL($1::text[])"
+    };
+    let side_corpora: Vec<String> = SIDE_CORPORA.iter().map(|s| s.to_string()).collect();
+    let have_rows = if side.is_some() {
+        tx.query(have_sql, &[])?
+    } else {
+        tx.query(have_sql, &[&side_corpora])?
+    };
+    let have: HashMap<String, String> = have_rows
         .into_iter()
         .map(|r| (r.get(0), r.get(1)))
         .collect();
@@ -770,65 +1014,70 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
             let Some(o) = by_id.get(id.as_str()) else {
                 continue;
             };
-            let Some(dir) = projects.get(&o.e.project) else {
-                continue;
+            // A side note's text is in hand; a file's is read from disk.
+            let (text, markdown) = match &o.body {
+                Some(b) => (std::borrow::Cow::Borrowed(b.as_str()), true),
+                None => {
+                    let Some(dir) = projects.get(&o.e.project) else {
+                        continue;
+                    };
+                    let Some(bytes) = crate::crawl::read_inside(Path::new(dir), &o.e.rel) else {
+                        continue;
+                    };
+                    if crate::files::is_binary(&bytes) {
+                        continue;
+                    }
+                    (
+                        std::borrow::Cow::Owned(String::from_utf8_lossy(&bytes).into_owned()),
+                        o.e.lang == "markdown",
+                    )
+                }
             };
-            let Some(bytes) = crate::crawl::read_inside(Path::new(dir), &o.e.rel) else {
-                continue;
-            };
-            if crate::files::is_binary(&bytes) {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&bytes);
             rep.chunked_files += 1;
-            for (i, ch) in chunk_text(&text, o.e.lang == "markdown", &cfg.chunks)
-                .iter()
-                .enumerate()
-            {
+            for (i, ch) in chunk_text(&text, markdown, &cfg.chunks).iter().enumerate() {
                 let (ord, a, b) = (
                     i.to_string(),
                     ch.line_start.to_string(),
                     ch.line_end.to_string(),
                 );
                 let terms = camel_terms(&ch.text);
-                copy_row(&mut buf, &[id, &ord, &a, &b, &ch.heading, &ch.text, &terms]);
+                // The corpus (search filters chunks by it without a join) and
+                // the heading path (a long note searchable by its part).
+                let meta = serde_json::json!({"corpus": o.corpus, "headings": ch.path}).to_string();
+                copy_row(
+                    &mut buf,
+                    &[id, &ord, &a, &b, &ch.heading, &ch.text, &terms, &meta],
+                );
                 rep.chunks += 1;
             }
             if buf.len() > 16 << 20 {
-                copy_in(
-                    &mut tx,
-                    "chunks",
-                    "entity_id, ord, line_start, line_end, heading, text, terms",
-                    &buf,
-                )?;
+                copy_in(&mut tx, "chunks", CHUNK_COLS, &buf)?;
                 buf.clear();
             }
         }
-        copy_in(
-            &mut tx,
-            "chunks",
-            "entity_id, ord, line_start, line_end, heading, text, terms",
-            &buf,
-        )?;
+        copy_in(&mut tx, "chunks", CHUNK_COLS, &buf)?;
     }
-    // Document frequencies, when the chunks changed, or were never counted
-    // at this floor.
+    // Document frequencies of the crawled chunks (a memory note's words
+    // don't make a code word common), when the chunks changed, or were never
+    // counted this way at this floor.
     let floor = cfg.chunks.lexeme_floor;
+    let how = format!("{floor} crawled");
     let counted: bool = tx
         .query_one(
             "SELECT EXISTS (SELECT 1 FROM lexemes)
                 AND coalesce((SELECT value FROM meta WHERE key = 'lexeme_floor'), '') = $1",
-            &[&floor.to_string()],
+            &[&how],
         )?
         .get(0);
     if !rechunk.is_empty() || rebuild || !counted {
+        let crawled = "WHERE coalesce(meta->>''corpus'', ''code'') IN (''code'', ''prose'')";
         tx.batch_execute(&format!(
             "DELETE FROM lexemes;
              INSERT INTO lexemes (config, word, ndoc)
-             SELECT 'simple', word, ndoc FROM ts_stat('SELECT tsv_simple FROM chunks') WHERE ndoc >= {floor}
+             SELECT 'simple', word, ndoc FROM ts_stat('SELECT tsv_simple FROM chunks {crawled}') WHERE ndoc >= {floor}
              UNION ALL
-             SELECT 'english', word, ndoc FROM ts_stat('SELECT tsv_en FROM chunks') WHERE ndoc >= {floor};
-             INSERT INTO meta (key, value) VALUES ('lexeme_floor', '{floor}')
+             SELECT 'english', word, ndoc FROM ts_stat('SELECT tsv_en FROM chunks {crawled}') WHERE ndoc >= {floor};
+             INSERT INTO meta (key, value) VALUES ('lexeme_floor', '{how}')
                  ON CONFLICT (key) DO UPDATE SET value = excluded.value;"
         ))?;
     }
@@ -853,8 +1102,9 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
             copy_row(&mut buf, &r.iter().map(String::as_str).collect::<Vec<_>>());
         }
         copy_in(&mut tx, "stage_edges", EDGE_COLS, &buf)?;
+        // The side corpora's edges (origin memory, friction) are theirs.
         tx.batch_execute(&format!(
-            "DELETE FROM edges e WHERE NOT EXISTS (
+            "DELETE FROM edges e WHERE e.origin NOT IN ('memory', 'friction') AND NOT EXISTS (
                  SELECT 1 FROM stage_edges s WHERE s.src = e.src AND s.dst = e.dst AND s.kind = e.kind);
              INSERT INTO edges ({EDGE_COLS}) SELECT {EDGE_COLS} FROM stage_edges
              ON CONFLICT (src, dst, kind) DO UPDATE SET weight = excluded.weight, origin = excluded.origin,
@@ -866,6 +1116,19 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
             "INSERT INTO meta (key, value) VALUES ('edges', $1) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             &[&d],
         )?;
+    }
+    // The side corpora's edges, made again from their notes.
+    if side.is_some() {
+        tx.execute(
+            "DELETE FROM edges WHERE origin IN ('memory', 'friction')",
+            &[],
+        )?;
+        let mut buf = String::new();
+        for r in &side_edges {
+            copy_row(&mut buf, &r.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+        copy_in(&mut tx, "edges", EDGE_COLS, &buf)?;
+        rep.side_edges = side_edges.len();
     }
     for (table, sql, cols) in SMALL {
         let (d, trows) = digest(sq, sql)?;

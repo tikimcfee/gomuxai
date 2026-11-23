@@ -117,6 +117,104 @@ Each corpus is retrieved and reranked on its own, then grouped; a
 corpus with nothing good says so in one line rather than padding the
 answer.
 
+**Built** for code, prose, memory and friction (sessions are iteration
+4); `pg/side.rs`, `sync_with` and `search_grouped`.
+
+- **Where prose ends**: by entity, not by project. A document (file kind
+  `doc`: Markdown, text, reStructuredText) and its sections are prose
+  wherever they live, a README in a repo as much as a note in a research
+  tree; everything else the crawl finds (source, tests, config, dirs,
+  projects) is code. One entity, one corpus (`entities.corpus`), no
+  second membership. The evidence: Markdown is 5,800 of the tree's 6,060
+  document files; no project here is a notes tree (the most doc-heavy
+  ones, 54 to 71% documents, are code repos with design notes); and the
+  documents people ask about (`ARCHITECTURE.md`, design docs, research
+  surveys) sit inside code repos, so a project-level rule would have put
+  them in code. A Markdown file is cut into chunks by its headings, each
+  chunk's `meta` holding its heading path and corpus
+  (`{"corpus":"prose","headings":["Messages","Held messages"]}`), so a
+  long note is found by its part.
+- **memory**: the notes in `[memory].dirs` (default:
+  `~/.claude/projects/*/memory` and `memory` in the agent's data
+  directory; `MEMORY.md`, an index of the others, left out), each an
+  entity `memory:<project>/<file>`, `<project>` the indexed project a
+  Claude Code project directory stands for (else the directory's name;
+  `machine` for the agent's own). Its title and seed come from the front
+  matter's `name` and `description` (else its first heading and
+  paragraph), its text goes into chunks, and each backticked path in it
+  that resolves to a crawled file gives a `noted-in` edge (file → note:
+  the file is noted in it).
+- **friction**: this host's friction entries, read through
+  `agent_store` (the agent's own store, or `[friction].store` opened read
+  only), each `friction:<uid>`: the summary its title, the detail, the
+  failed command's error and the resolution its text, its status, kind
+  and filer its signature, the project of the directory it was filed
+  from; backticked paths give `reported-in` edges.
+- Both are written by the sync from what the CLI read (`crawl` and
+  `sync` read them each time): a note no longer there is removed, and a
+  sync from code that doesn't read them leaves them alone. Their edges
+  carry their corpus as origin, apart from the ledger's. Both are
+  personal: in the local database only, never in fixtures, docs or
+  commits.
+- **Grouped answers**: `search` with no `--kind` answers by corpus
+  (code, prose, memory, friction), each group with its own limit and
+  share of `--budget` (`[corpora.NAME]` `limit` and `budget`: code 8 and
+  700 tokens, prose 5 and 450, memory 3 and 200, friction 3 and 150),
+  and a corpus with no match says `nothing good here` in one line.
+  `--corpus a,b` restricts it. Two fused statements: code and prose as
+  one flat search (its order serves both groups, and its first `--limit`
+  are `hits`, as before groups existed), memory and friction as another
+  (each reranked on its own). `--json` keeps `hits` and adds `groups`
+  (`corpus`, `hits`, `candidates`, `budget`, `note`) and a `corpus` on
+  each hit.
+- **The flat mode is unchanged**: `--kind file` (and any `--kind`) is one
+  list over code and prose; memory and friction never enter it (every
+  list filters by corpus: `entities.corpus`, and a chunk's `meta`, so no
+  join). Its reranker reranks the flat list's top `[reranker].flat_depth`
+  (50) as one pool. The term frequencies count crawled chunks only. On
+  the same data, with the same lexical list (fts), the new code gave 256
+  of 256 searches identical to 02df4d8's (64 dev questions, two
+  directories, both modes; `groups` and `corpus` aside); with the
+  default now bm25 (below), a search without `--lexical` differs from
+  02df4d8's as bm25 differs from fts. No migration: the corpus and chunk meta use existing
+  columns, and `entities_corpus`, the one new index, is created when
+  missing without raising the schema version, so older binaries still
+  read the schema.
+
+**Measured** (2026-11-23, a copy schema `idx3`, cold-synced from the same
+ledger with this host's memory and friction; the shared `idx` waits for
+the evals running on it):
+
+| corpus | entities | entity rows | chunks | chunk rows |
+|---|---|---|---|---|
+| code | 431,816 | 377 MB | 42,616 | 428 MB |
+| prose | 29,093 | 59 MB | 23,907 | 74 MB |
+| memory | 323 | 0.6 MB | 351 | 2.7 MB |
+| friction | 64 | 0.1 MB | 64 | 0.1 MB |
+
+The schema is 1,746 MB with indexes. Cold sync 91 s (every row
+rewritten for its corpus, every file cut again for its chunk meta),
+no-op sync 3 s; 387 side notes, 132 edges from them to files; their
+cards embedded in 3 s. Latency over the 64 dev questions from the dev
+root, CLI median and p95, with each lexical list:
+
+| search | fts | bm25 (the default) |
+|---|---|---|
+| cold, flat `--kind file` | 251 / 567 ms | 302 / 673 ms |
+| cold, grouped | 303 / 654 ms | 405 / 775 ms |
+| warm, flat `--kind file` | 197 / 589 ms | 206 / 553 ms |
+| warm, grouped | 266 / 557 ms | 323 / 676 ms |
+| warm, `--corpus memory,friction` | 61 / 82 ms | 130 / 194 ms |
+
+Grouping costs 60 to 120 ms over a flat search: the memory and friction
+statement, which took 200 ms until `entities_corpus` let it start from
+their 387 rows; with bm25 its card list still scans pg_search's whole
+index and filters after (the shape that made `--under` fast), the next
+thing to make cheaper for the small corpora. The friction group was
+empty for 11 (fts) and 13 (bm25) of 64 questions, the others never. Against `idx` (same ledger, older HNSW graph and
+chunk counts) `idx3`'s flat answers overlap 0.964 (top-10 Jaccard) with
+the same top hit for 63 of 64.
+
 ## Sessions as full text
 
 A summary throws information away before anyone has looked at it, so
@@ -307,7 +405,8 @@ Each lands on its own, measured, and said plainly when it does:
    **Built** (the eval run is next): see "Iteration 1, as built".
 2. The warm process and the reranker. **Built** (the eval with and
    without the reranker is next).
-3. The prose, memory and friction corpora; grouped answers.
+3. The prose, memory and friction corpora; grouped answers. **Built**
+   (see "Corpora, composed"); bm25 the default lexical list.
 4. Sessions as full scrubbed text.
 5. Summaries and asks for all of the dev tree, after preflight and the
    config review.
@@ -444,14 +543,16 @@ The sections:
 
 | section | what it tunes |
 |---|---|
-| `[search]` | RRF's `rrf_k` (60); the default `limit` (10, what `--limit` 0 or none gives); `list_depth` (300 a list); `per_file` (2); `files_depth_factor` (8, for `--kind file`); `local_lists` (the copies scoped to the caller's project); the rarest-term budgets `chunk_budget` (4,000), `card_budget` (8,000), `trigram_terms` (4); `trigram_threshold` (0.6); `ts_rank_cd`'s `rank_weights` (D, C, B, A: 0.1, 0.2, 0.4, 1.0) and `rank_normalization` (1); `hnsw_ef_search` (100); the label n-grams' `label_max_words` (6) and `labels_per_run` (25); `exact_limit` (20); `rare_files` (3) |
+| `[search]` | RRF's `rrf_k` (60); the default `limit` (10, what `--limit` 0 or none gives); `list_depth` (300 a list); `per_file` (2); `files_depth_factor` (8, for `--kind file`); `local_lists` (the copies scoped to the caller's project); the rarest-term budgets `chunk_budget` (4,000), `card_budget` (8,000), `trigram_terms` (4); `trigram_threshold` (0.6); `ts_rank_cd`'s `rank_weights` (D, C, B, A: 0.1, 0.2, 0.4, 1.0) and `rank_normalization` (1); `hnsw_ef_search` (100); the label n-grams' `label_max_words` (6) and `labels_per_run` (25); `exact_limit` (20); `rare_files` (3); `lexical` (`auto`: bm25 where the schema has pg_search's indexes, else fts; or `fts`, `bm25`, `both`) |
 | `[lists]` | each list's weight in fusion, by name (`lexical`, `all words`, `full text`, `trigram`, `semantic`, `label`, `bm25`, `bm25 full text`); a `here` copy takes its list's; 1 when unnamed |
 | `[priors]` | the pins (`pin_exact` 2, `pin_label` 1, `pin_rare` 1.5), `section` (−0.002), `importance` (0.004), `out_of_the_way` (−0.008), `fixture` (−0.03), `test` (−0.004), and the multipliers `own_project` (3) and `dependency` (2) |
-| `[corpora.NAME]` | `boost`, multiplying a positive score in that corpus (1; only `code` exists yet) |
+| `[corpora.NAME]` | `boost`, multiplying a positive score in that corpus (1), and its group's `limit` and `budget` (code 8 and 700 tokens, prose 5 and 450, memory 3 and 200, friction 3 and 150) |
+| `[memory]` | `dirs`: the note directories (`~/.claude/projects/*/memory`, `{data}/memory`; `~` home, `*` one directory, `{data}` the agent's data directory) |
+| `[friction]` | `store` (another agent's `gomuxai.db`, read only; "" this agent's) and `off` |
 | `[chunks]` | the cut (`max_lines` 400, `max_bytes` 32,768), `lexeme_floor` (50) and the `file_kinds` cut into chunks. A cut other than the default becomes part of each file's chunk key, so the next sync cuts every file again; a new floor recounts `lexemes` |
 | `[cards]` | `children` named in a card's search text (200), `symbols` after `defines:` in the embedded card (60), `max_chars` (2,000); a change rewrites the cards and re-queues their vectors at the next sync |
 | `[embedder]` | `model` (this build runs `bge-small-en-v1.5` only and refuses another), `model_dir` (the Hugging Face cache's when empty; `embed --model-dir` wins), `batch` (512) |
-| `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10), `doc_chars` (1,500), `max_tokens_per_doc` (512), `keep_pins` (true); see "Reranker" |
+| `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10), `doc_chars` (1,500), `max_tokens_per_doc` (512), `keep_pins` (true), `flat_depth` (50, a flat search's one pool); see "Reranker" |
 | `[serve]` | `workers` (4) and `socket` ("" for `index.sock` beside `index.db`) of `agent index serve` |
 | `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both` |
 | `[llm.summaries]` | `agent index summarize`: `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature` (0.2), `max_tokens` (500), `timeout_ms`, `seed`, `concurrency` (48), `retries` and `backoff_ms`, `max_connection_errors` (8), the clip (`clip_tokens` 6,000; a doc's `doc_head_tokens` 4,500 and `doc_tail_tokens` 1,500; `max_input_tokens` 9,000; `preclip_chars`; `symbols_chars` 2,500), the floors (`min_chars` 200, `min_lines` 5, `json_max_bytes`), `pause_file`, `scrub_words`, and the served `dtype` and `quantization`; every key is in each summary's fingerprint |
@@ -517,7 +618,38 @@ and release notes):
   id)` and either a full outer join or `UNION ALL` + `GROUP BY` for
   three or more lists. v2 uses the latter.
 
-### ParadeDB `pg_search`: an A/B, not the default yet
+### ParadeDB `pg_search`: the default lexical list, measured
+
+**Measured** (the pg_search lane's A/B, 2026-11-23, snapshot 19fed9b,
+`--kind file`, found in the top 5; paired bootstrap, 10,000 resamples;
+v1 was run days earlier on an older tree, a reference only):
+
+| set, scope | fts | bm25 | both | v1 | fts vs bm25, recall@5 |
+|---|---|---|---|---|---|
+| held-out 40, in the caller's directory | 19 | 29 | 27 | 29 | −0.250 [−0.375, −0.125] |
+| held-out 40, limited to the project | 26 | 25 | 25 | 25 | +0.025 [−0.100, +0.150] |
+| qrels_a 32, in the caller's directory | 19 | 25 | | | −0.188 [−0.344, −0.062] |
+| qrels_a 32, limited to the project | 20 | 26 | | | −0.188 [−0.344, −0.062] |
+
+On the session episodes (the agent's own patterns) every config, v1 and
+`rg` sit at about 0.22 to 0.25 in the top 5; fts is ahead on single
+identifier patterns limited to the project by 8 of 389.
+
+Why: `ts_rank_cd` scores a term's frequency and proximity within a row,
+with no inverse document frequency, so across 460,000 entities a common
+word counts as much as a rare one, and other projects' files holding a
+question's common words fill the any-word list ahead of the caller's
+own. BM25 weighs each term by its rarity in the corpus. Limited to one
+project the two are level. The rarest-term budgets (iteration 1) don't
+explain the gap: with them off fts got 20 of 40. `both` adds nothing on
+questions.
+
+So `[search] lexical` is `auto` by default: bm25 where the schema has
+pg_search's indexes (migration 2 builds them where the extension is
+installed), fts otherwise; `fts`, `bm25` and `both` pick one, and
+`--lexical` or `AGENT_INDEX_LEXICAL` override it for one search, whose
+`--json` says which ran (`lexical`). Older snapshots keep fts unless
+asked. What follows is the reasoning before the A/B.
 
 `pg_search` 0.27 (AGPL-3.0; used locally, not distributed) embeds
 Tantivy: true BM25 with corpus IDF, and a `source_code` tokenizer that

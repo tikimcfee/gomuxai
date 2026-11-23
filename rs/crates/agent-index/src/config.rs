@@ -43,6 +43,8 @@ pub struct Config {
     /// The BM25 lists' field boosts (`--lexical bm25|both`, pg_search).
     pub bm25: Bm25,
     pub serve: Serve,
+    pub memory: Memory,
+    pub friction: Friction,
 }
 
 /// `agent index serve`, the warm query process.
@@ -135,11 +137,17 @@ pub struct Search {
     pub exact_limit: i64,
     /// A rare identifier pins its files when at most this many hold it.
     pub rare_files: usize,
+    /// The lexical lists: `bm25` (pg_search), `fts` (native full text),
+    /// `both`, or `auto` (""): bm25 where the schema has its indexes, fts
+    /// otherwise (docs/INDEX-V2.md, "ParadeDB pg_search"). `--lexical` and
+    /// `AGENT_INDEX_LEXICAL` override it for one search.
+    pub lexical: String,
 }
 
 impl Default for Search {
     fn default() -> Self {
         Search {
+            lexical: String::new(),
             rrf_k: 60.0,
             limit: 10,
             list_depth: 300,
@@ -207,12 +215,53 @@ impl Default for Priors {
 pub struct Corpus {
     /// A positive score in this corpus is multiplied by this.
     pub boost: f64,
+    /// Results its group shows (default: code 8, prose 5, memory 3,
+    /// friction 3).
+    pub limit: Option<usize>,
+    /// Its group's share of `--budget`, in tokens (default: code 700,
+    /// prose 450, memory 200, friction 150).
+    pub budget: Option<usize>,
 }
 
 impl Default for Corpus {
     fn default() -> Self {
-        Corpus { boost: 1.0 }
+        Corpus {
+            boost: 1.0,
+            limit: None,
+            budget: None,
+        }
     }
+}
+
+/// The corpora a grouped search answers from, in the order shown.
+pub const CORPORA: &[&str] = &["code", "prose", "memory", "friction"];
+
+/// What memory notes the sync reads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Memory {
+    /// Directories of notes (`*.md`); `~` is the home directory, a `*`
+    /// stands for one path component, and `{data}` is this agent's data
+    /// directory (beside index.db).
+    pub dirs: Vec<String>,
+}
+
+impl Default for Memory {
+    fn default() -> Self {
+        Memory {
+            dirs: vec!["~/.claude/projects/*/memory".into(), "{data}/memory".into()],
+        }
+    }
+}
+
+/// Where the friction box is read from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct Friction {
+    /// Another agent's gomuxai.db, opened read only; "" is this agent's.
+    pub store: String,
+    /// Leave the friction corpus out.
+    pub off: bool,
 }
 
 /// How files are cut into chunks, and what is counted. Changing the cut
@@ -311,6 +360,9 @@ pub struct Reranker {
     /// An identifier's definitions, a whole-query label's entities and a
     /// rare identifier's files stay above what the reranker orders.
     pub keep_pins: bool,
+    /// A flat search (one list across corpora: `--kind file`, and the
+    /// `hits` of a grouped one) reranks its top this many as one pool.
+    pub flat_depth: usize,
 }
 
 impl Default for Reranker {
@@ -324,6 +376,7 @@ impl Default for Reranker {
             doc_chars: 1500,
             max_tokens_per_doc: 512,
             keep_pins: true,
+            flat_depth: 50,
             depth: [
                 ("code", 50),
                 ("prose", 20),
@@ -482,6 +535,12 @@ impl Config {
         if !(0.0..=1.0).contains(&s.trigram_threshold) {
             bail!("search.trigram_threshold must be between 0 and 1");
         }
+        if !["", "auto", "fts", "bm25", "both"].contains(&s.lexical.as_str()) {
+            bail!(
+                "search.lexical takes auto, bm25, fts or both, not {:?}",
+                s.lexical
+            );
+        }
         if self.chunks.max_lines < 1 || self.chunks.max_bytes < 256 {
             bail!("chunks: max_lines must be at least 1 and max_bytes at least 256");
         }
@@ -549,6 +608,21 @@ impl Config {
     /// A corpus's boost.
     pub fn corpus_boost(&self, corpus: &str) -> f64 {
         self.corpora.get(corpus).map(|c| c.boost).unwrap_or(1.0)
+    }
+
+    /// A corpus's group: (results, tokens).
+    pub fn corpus_group(&self, corpus: &str) -> (usize, usize) {
+        let (l, b) = match corpus {
+            "code" => (8, 700),
+            "prose" => (5, 450),
+            "memory" => (3, 200),
+            _ => (3, 150),
+        };
+        let c = self.corpora.get(corpus);
+        (
+            c.and_then(|c| c.limit).unwrap_or(l),
+            c.and_then(|c| c.budget).unwrap_or(b),
+        )
     }
 
     /// Whether the chunk cut is the default one (chunk keys then are the

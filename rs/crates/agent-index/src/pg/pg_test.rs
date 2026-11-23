@@ -672,3 +672,166 @@ fn serve_answers_as_cold() {
     };
     assert!(super::serve::ask(&sock, &req, std::time::Duration::from_secs(30)).is_err());
 }
+
+/// Memory notes and friction entries: written by the sync from what the
+/// caller read, tied to the files they name, searched in their own groups,
+/// and never in a flat search's list.
+#[test]
+fn side_corpora_and_groups() {
+    let Some(t) = throwaway("side") else { return };
+    let pg = &t.0;
+    let (dir, ix) = fixture();
+    // A Claude Code-style memory dir for the alpha project, and a friction entry.
+    let alpha = dir.path().join("dev/alpha").to_string_lossy().into_owned();
+    let enc: String = alpha
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let mem = dir.path().join("claude/projects").join(&enc).join("memory");
+    std::fs::create_dir_all(&mem).unwrap();
+    std::fs::write(
+        mem.join("feedback_quokka.md"),
+        "---\nname: quokka rule\ndescription: always quokka before release\ntype: feedback\n---\n\n# Quokka\n\nSee `src/lib.rs` before any release.\n\n## Why\n\nThe quokka broke once.\n",
+    )
+    .unwrap();
+    std::fs::write(mem.join("MEMORY.md"), "- [quokka](feedback_quokka.md)\n").unwrap();
+    let projects: Vec<(String, String)> = crate::roots::list_projects(&ix.conn)
+        .unwrap()
+        .into_iter()
+        .map(|p| (p.name, p.path))
+        .collect();
+    let data = dir.path().join("data");
+    let pat = vec![format!("{}/claude/projects/*/memory", dir.path().display())];
+    let dirs = super::side::expand_dirs(&pat, &data);
+    assert_eq!(dirs, vec![mem.clone()]);
+    let mut side = super::side::memory_notes(&dirs, &data, &projects);
+    assert_eq!(side.len(), 1, "MEMORY.md is an index, left out");
+    assert_eq!(side[0].id, "memory:alpha/feedback_quokka.md");
+    assert_eq!(side[0].project, "alpha");
+    side.push(super::side::friction_note(
+        &super::side::FrictionEntry {
+            uid: "u1".into(),
+            kind: "bug".into(),
+            status: "open".into(),
+            summary: "wombat flag ignored".into(),
+            detail: "Passing the wombat flag in `src/deliver.rs` does nothing.".into(),
+            cwd: alpha.clone(),
+            ..Default::default()
+        },
+        &projects,
+    ));
+    let r = super::sync::sync_with(&ix.conn, pg, false, Some(&side)).unwrap();
+    assert_eq!((r.side, r.side_edges), (2, 2), "{r:?}");
+    // Tied to the files they name.
+    let edges: Vec<(String, String, String)> = pg
+        .query(
+            "SELECT src, dst, kind FROM edges WHERE origin IN ('memory', 'friction') ORDER BY 1",
+            &[],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2)))
+        .collect();
+    assert_eq!(
+        edges,
+        vec![
+            (
+                "alpha:src/deliver.rs".into(),
+                "friction:u1".into(),
+                "reported-in".into()
+            ),
+            (
+                "alpha:src/lib.rs".into(),
+                "memory:alpha/feedback_quokka.md".into(),
+                "noted-in".into()
+            ),
+        ]
+    );
+    // Chunks record their corpus and heading path.
+    let meta: Vec<serde_json::Value> = pg
+        .query("SELECT meta FROM chunks WHERE entity_id = 'memory:alpha/feedback_quokka.md' ORDER BY ord", &[])
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    assert_eq!(meta.last().unwrap()["corpus"], "memory");
+    assert_eq!(
+        meta.last().unwrap()["headings"],
+        serde_json::json!(["Quokka", "Why"])
+    );
+    // A doc is prose, its sections too; source is code.
+    let corpus = |id: &str| -> String {
+        pg.query("SELECT corpus FROM entities WHERE id = $1", &[&id])
+            .unwrap()[0]
+            .get(0)
+    };
+    assert_eq!(corpus("alpha:README.md"), "prose");
+    assert_eq!(corpus("alpha:README.md#word-wall"), "prose");
+    assert_eq!(corpus("alpha:src/lib.rs"), "code");
+    // Grouped: each corpus its own; a flat search never lists side notes.
+    let g =
+        super::search::search_grouped(pg, &opts("quokka release"), None, Default::default(), None)
+            .unwrap();
+    let groups = g.groups.as_ref().unwrap();
+    let names: Vec<&str> = groups.iter().map(|g| g.corpus.as_str()).collect();
+    assert_eq!(names, vec!["code", "prose", "memory", "friction"]);
+    assert_eq!(groups[2].hits[0].id, "memory:alpha/feedback_quokka.md");
+    assert!(groups[3].hits.is_empty() && groups[3].note.is_some());
+    let flat =
+        super::search::search(pg, &opts("quokka release"), None, Default::default(), None).unwrap();
+    assert!(
+        flat.hits
+            .iter()
+            .all(|h| h.corpus == "code" || h.corpus == "prose"),
+        "{:#?}",
+        flat.hits
+    );
+    let w =
+        super::search::search_grouped(pg, &opts("wombat"), None, Default::default(), None).unwrap();
+    assert_eq!(w.groups.unwrap()[3].hits[0].id, "friction:u1");
+    // --corpus restricts.
+    let o = SearchOptions {
+        corpora: vec!["memory".into()],
+        ..opts("quokka")
+    };
+    let m = super::search::search_grouped(pg, &o, None, Default::default(), None).unwrap();
+    assert_eq!(m.groups.as_ref().unwrap().len(), 1);
+    // The embedder takes the side notes' cards (their keys agree with what
+    // it makes from the row).
+    #[cfg(feature = "embed")]
+    {
+        struct Unit;
+        impl crate::embed::Encode for Unit {
+            fn dim(&self) -> usize {
+                super::DIM
+            }
+            fn embed(&self, texts: &[String], _: bool) -> anyhow::Result<Vec<Vec<f32>>> {
+                Ok(texts
+                    .iter()
+                    .map(|_| vec![1.0 / (super::DIM as f32).sqrt(); super::DIM])
+                    .collect())
+            }
+        }
+        super::embed_pg::drain(pg, &Unit, 0, |_, _| {}).unwrap();
+        let left: i64 = pg
+            .query(
+                "SELECT count(*) FROM entities WHERE embed AND vec_key <> text_key AND corpus IN ('memory', 'friction')",
+                &[],
+            )
+            .unwrap()[0]
+            .get(0);
+        assert_eq!(left, 0);
+    }
+    // A sync without side notes leaves them; with none, they go.
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    assert_eq!(corpus("friction:u1"), "friction");
+    super::sync::sync_with(&ix.conn, pg, false, Some(&[])).unwrap();
+    let n: i64 = pg
+        .query(
+            "SELECT count(*) FROM entities WHERE corpus IN ('memory', 'friction')",
+            &[],
+        )
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(n, 0);
+}
