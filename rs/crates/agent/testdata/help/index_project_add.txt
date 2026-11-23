@@ -1,0 +1,23 @@
+Add makes DIR a project (named after it, or --name), or sets the depth
+of the project DIR already is: full (dirs, files, symbols, sections),
+files (no symbols) or shallow (the project and its top directories). A
+project inside another is left out of the outer one's crawl.
+
+Usage:
+  agent index project add DIR [flags]
+
+Examples:
+  agent index project add ~/dev/alpha/vendor/lib --depth files
+  agent index project add ~/notes --name notes
+
+Flags:
+      --depth string   full, files or shallow (default "full")
+  -h, --help           help for add
+      --json           Print what was done as JSON
+      --name string    The project's name (default: the directory's)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

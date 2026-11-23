@@ -1,0 +1,23 @@
+Alias add gives an entity a name people use for it ("the word wall"), so
+search finds it by that name first. Labels survive crawls and renames.
+
+Usage:
+  agent index alias [flags]
+  agent index alias [command]
+
+Examples:
+  agent index alias add alpha:word-wall "the word wall"
+
+Available Commands:
+  add         Give an entity a label search answers to
+
+Flags:
+  -h, --help   help for alias
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent index alias [command] --help" for more information about a command.

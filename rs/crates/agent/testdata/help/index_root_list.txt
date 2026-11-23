@@ -1,0 +1,20 @@
+List prints each root, its default depth and how many projects it has,
+then every project: its depth, whether it is a git repo, and when it was
+last crawled.
+
+Usage:
+  agent index root list [flags]
+
+Examples:
+  agent index root list
+  agent index root list --json
+
+Flags:
+  -h, --help   help for list
+      --json   Print {"roots": [...], "projects": [...]}
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

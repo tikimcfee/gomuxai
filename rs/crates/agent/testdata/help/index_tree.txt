@@ -1,0 +1,25 @@
+Tree prints the entities under an id or path (default: the project you
+are in, or every root and project when you are in none) to --depth, one
+line each with its title and summary's first sentence, the most
+important first, and a directory's count of children in brackets. It is
+fitted to --budget tokens (default 1500), saying how many were left out.
+
+Usage:
+  agent index tree [ID|PATH] [flags]
+
+Examples:
+  agent index tree
+  agent index tree alpha --depth 1
+  agent index tree . --depth 3 --budget 3000
+
+Flags:
+      --budget int   Fit to this many tokens (0: no limit) (default 1500)
+      --depth int    How many levels down (default 2)
+  -h, --help         help for tree
+      --json         Print the tree as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

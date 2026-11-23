@@ -128,3 +128,20 @@ roster set
 roster enable
 roster disable
 roster remove
+index
+index root
+index root add
+index root remove
+index root list
+index project
+index project add
+index crawl
+index search
+index show
+index tree
+index related
+index stale
+index alias
+index alias add
+index lexicon
+index lexicon import

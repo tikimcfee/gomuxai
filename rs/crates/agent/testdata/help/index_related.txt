@@ -1,0 +1,21 @@
+Related lists what an entity is tied to, grouped by how the edge reads from
+it (depends on, used by, documented by, documents, tests, tested by,
+changes with), each group by weight, with each neighbor's summary.
+
+Usage:
+  agent index related ID|PATH [flags]
+
+Examples:
+  agent index related alpha:src/lib.rs
+  agent index related src/lib.rs --json
+
+Flags:
+      --budget int   Fit to this many tokens (0: no limit) (default 1500)
+  -h, --help         help for related
+      --json         Print the neighbors as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

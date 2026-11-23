@@ -1,0 +1,31 @@
+Root holds the trees the index covers. Every directory directly under a
+root is a project, a repo or not (hidden directories and build output
+aside); a git worktree is skipped, since it is its main repo's. A project
+name is its directory's name and must be unique: a clash is skipped and
+said, and agent index project add DIR --name OTHER adds it under another
+name.
+
+Usage:
+  agent index root [flags]
+  agent index root [command]
+
+Examples:
+  agent index root add ~/dev
+  agent index root list
+  agent index root remove ~/dev
+
+Available Commands:
+  add         Add a tree: every directory directly under it becomes a project
+  remove      Remove a root and the projects found under it
+  list        List the roots and their projects
+
+Flags:
+  -h, --help   help for root
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent index root [command] --help" for more information about a command.

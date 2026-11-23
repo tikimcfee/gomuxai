@@ -1,0 +1,38 @@
+Crawl reads every project (or --project's): in a git repo the tracked
+files and the untracked ones git doesn't ignore, keyed by blob id; outside
+git a walk that honors .gitignore files, keyed by a content hash. Only
+files whose key changed are read again: their kind and language, seed
+summary, symbols (Rust, Go, TS/JS, Python, Swift, shell, Make), Markdown
+sections and backticked references. A file renamed since the last crawl
+keeps its summaries and labels, and its old id answers as an alias.
+
+Then, across every project: depends-on edges from Cargo.toml, go.mod,
+package.json and pyproject.toml; documented-by edges from backticked paths
+in Markdown (a reference that resolves nowhere is listed by agent index
+stale); tests edges by file naming; co-changes from git history (every
+100 commits or a week); and importance (fan-in and co-change degree).
+Changed entities are queued for embedding.
+
+--rebuild reads every file again; --dry-run works it all out and writes
+nothing.
+
+Usage:
+  agent index crawl [flags]
+
+Examples:
+  agent index crawl
+  agent index crawl --project alpha
+  agent index crawl --rebuild --dry-run
+
+Flags:
+      --dry-run          Work out what would change, and write nothing
+  -h, --help             help for crawl
+      --json             Print the crawl's report as JSON
+      --project string   Only this project
+      --rebuild          Read every file again, not only what changed
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

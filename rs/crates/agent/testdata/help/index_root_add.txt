@@ -1,0 +1,23 @@
+Add makes DIR a root. Nothing is read until agent index crawl.
+--depth sets how deep its projects go: full (dirs, files, symbols,
+sections; the default), files (no symbols), or shallow (the project and
+its top directories, from READMEs). agent index project add changes one
+project's depth.
+
+Usage:
+  agent index root add DIR [flags]
+
+Examples:
+  agent index root add ~/dev
+  agent index root add ~/src/vendor --depth shallow
+
+Flags:
+      --depth string   How deep its projects go: full, files or shallow (default "full")
+  -h, --help           help for add
+      --json           Print the root as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

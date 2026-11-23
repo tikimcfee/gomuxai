@@ -1,0 +1,19 @@
+Add labels an entity (an id, an old id or a path) with LABEL, as a
+person's alternative label: a search whose words are the label, or
+contain it, puts the entity first and prints the mapping.
+
+Usage:
+  agent index alias add ID|PATH LABEL [flags]
+
+Examples:
+  agent index alias add alpha:word-wall "the word wall"
+  agent index alias add src/deliver.rs "the part that types into busy agents"
+
+Flags:
+  -h, --help   help for add
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

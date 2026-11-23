@@ -1,0 +1,25 @@
+Show prints an entity (an id, an old id, or a path; default ".", where you
+are): its id, kind and freshness, its absolute path, a breadcrumb up to
+the root with each ancestor's title and summary, its summary, its labels,
+a file's symbols and sections, its children by importance, and its edges
+by kind (depends on, used by, documented by, documents, tests, tested by,
+changes with). A path is canonicalized: one that leads out of every
+indexed project (a symlink, say) is refused.
+
+Usage:
+  agent index show [ID|PATH] [flags]
+
+Examples:
+  agent index show .
+  agent index show alpha:src/lib.rs
+  agent index show src/lib.rs --json
+
+Flags:
+  -h, --help   help for show
+      --json   Print the entity and its neighborhood as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

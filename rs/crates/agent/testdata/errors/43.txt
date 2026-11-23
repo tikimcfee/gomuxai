@@ -40,6 +40,7 @@ Fleet:
   manage      See every agent and session with its tokens and state, and manage the data: untrack, back up, prune
   dream       Review finished work: consolidate memory and triage friction
   roster      Which harness and model to spawn: this host's roster, its notes, and pick
+  index       Find things across the dev tree: search, show and map its projects
 
 Messages:
   send        Send a message to an agent: typed in now, or held while it's busy

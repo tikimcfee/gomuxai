@@ -1,0 +1,58 @@
+Index is one queryable map of the trees you add: every project, directory,
+file, symbol and doc section gets a stable id (alpha:src/lib.rs,
+alpha:src/lib.rs#parse, alpha:docs/X.md#a-heading), its place in the tree,
+edges to other entities (depends-on, documented-by, tests, co-changes),
+and a short summary. Ask it before grep and find: search ranks entities
+and gives their paths, show . says where you are and what is here, and
+tree PROJECT --depth 1 prints a project's map.
+
+Opt-in: agent index root add DIR adds a tree, and every directory directly
+under it becomes a project, a repo or not; agent index crawl reads them.
+A crawl is cheap and incremental: it re-reads only files whose git blob
+(or, outside git, content hash) changed, and carries renamed files'
+summaries and labels over, keeping the old id as an alias. It never
+indexes .env*, *.pem, *.key, id_* or *.p12 files, reads no file over 1 MB
+or binary file (an entity, no content), and never follows a symlink out
+of its project.
+
+Summaries in this version are seeds: what the code itself says (a crate's
+description and //! doc, a Go package comment, a docstring, a doc's first
+paragraph, a README's first paragraph for its directory, doc comments).
+Freshness reads seed (only a seed exists), fresh, stale or none.
+
+The index lives in index.db beside this binary's gomuxai.db; everything
+but labels a person or a glossary added is rebuilt by crawl --rebuild.
+
+Usage:
+  agent index [flags]
+  agent index [command]
+
+Examples:
+  agent index root add ~/dev
+  agent index crawl
+  agent index search "word wall"
+  agent index show .
+  agent index tree alpha --depth 1
+
+Available Commands:
+  root        Add, remove and list the trees the index covers
+  project     Make a deeper directory a project, or change a project's depth
+  crawl       Bring the index up to date with the files on disk
+  search      Search the index: ranked entities with their paths and summaries
+  show        Show one entity: where it sits, its summary, children, edges and symbols
+  tree        Print a map of a project or directory, with one-line summaries
+  related     List an entity's neighbors by edge: dependencies, docs, tests, co-changes
+  stale       List what needs a summary, by importance, and doc references that resolve nowhere
+  alias       Add a person's label to an entity
+  lexicon     Import an existing glossary as labels
+
+Flags:
+  -h, --help   help for index
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent index [command] --help" for more information about a command.

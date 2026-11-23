@@ -1,0 +1,47 @@
+Search finds entities by their names, paths, titles, summaries, symbols
+and labels. First the query, or a run of its words, is matched against
+labels (names in all their spellings, package names, README titles, old
+ids, and what people and glossaries added): an exact match goes to the
+top. Then bm25 over the words (identifiers whole and split: gather_global
+matches "gather global") and over trigrams of names and paths (substrings
+and typos), fused by reciprocal rank; then your own project first, files
+and symbols over doc sections, important entities up, and directories
+kept out of the way (_x, archive, old) down unless --under is in one.
+At most two results come from one file.
+
+Each result: its id, kind and freshness; the absolute path to open (with
+a line for a symbol or section); its summary; and what matched. The
+labels used are printed first, and any word no entity mentions is named.
+
+--budget fits the text to that many tokens (four characters a token,
+default 1500): summaries are cut to a sentence, then the tail dropped,
+and it says how many were left out. --json prints every result, unfitted:
+{"query", "terms", "hits": [{"rank", "id", "kind", "file_kind",
+"project", "freshness", "path", "line", "title", "summary", "why",
+"untracked", "matched", "score", "explain"}], "mapping", "absent",
+"candidates"}.
+
+Usage:
+  agent index search QUERY [flags]
+
+Examples:
+  agent index search "held message delivery"
+  agent index search deliver --kind symbol --project alpha
+  agent index search "wire layout" --under ~/dev/beta --budget 800
+  agent index search "word wall" --explain
+
+Flags:
+      --budget int       Fit the text to this many tokens (0: no limit) (default 1500)
+      --explain          Say which list found each result, and the priors applied
+  -h, --help             help for search
+      --json             Print the results as JSON
+      --kind string      Only this kind: project, dir, file, symbol, section, or a file kind (source, test, doc, config, build, data, asset)
+      --limit int        At most this many results (default 10)
+      --project string   Only this project
+      --under string     Only entities at or under this path
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -15,6 +15,7 @@ dependencies = [
  "agent-dream",
  "agent-export",
  "agent-fleet",
+ "agent-index",
  "agent-manage",
  "agent-roster",
  "agent-service",

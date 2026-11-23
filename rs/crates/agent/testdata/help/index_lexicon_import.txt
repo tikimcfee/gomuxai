@@ -1,0 +1,26 @@
+Import reads FILE, one JSON object a line: {"term", "canonical",
+"definition", "confusables", "provenance": ["path:line", ...],
+"lay_phrasings": [...]}. Each row's provenance names the entities it is
+about (a path relative to the file's directory or a project, an absolute
+path, or an id; the line is dropped); a row without one goes to the
+entities its canonical name already labels. Its lay phrasings become ask
+labels and its term and canonical name alternative labels, with the
+definition and confusables kept as the labels' evidence. Rows that
+resolve to no entity are skipped and counted.
+
+Usage:
+  agent index lexicon import FILE [flags]
+
+Examples:
+  agent index lexicon import docs/lexicon.jsonl
+  agent index lexicon import lexicon.jsonl --json
+
+Flags:
+  -h, --help   help for import
+      --json   Print the import's report as JSON
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
