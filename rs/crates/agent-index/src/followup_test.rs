@@ -496,3 +496,54 @@ fn what_made_a_dev_tree_index_eighteen_gigabytes_stays_out() {
         .unwrap();
     assert_eq!(syms, 40);
 }
+
+#[test]
+fn a_search_reaches_entities_by_index_and_times_its_stages() {
+    let ix = Index::open_in_memory().unwrap();
+    let c = &ix.conn;
+    // Every join a ranked list makes is an index lookup, never a scan of the
+    // map or the entities.
+    for (table, bm25) in [
+        ("search", "bm25(search)"),
+        ("search_tri", "bm25(search_tri)"),
+    ] {
+        let sql = crate::query::fts_sql(table, bm25, 300);
+        let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let plan: Vec<String> = st
+            .query_map(rusqlite::params!["x", "", "", ""], |r| {
+                r.get::<_, String>(3)
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            plan.iter().any(|l| l.contains("search_rowid_rid")),
+            "{table}: {plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|l| l.starts_with("SCAN m") || l.starts_with("SCAN e")),
+            "{table}: {plan:?}"
+        );
+    }
+    let r = search(
+        c,
+        &SearchOptions {
+            query: "anything".into(),
+            ..Default::default()
+        },
+        &NoSemantic,
+    )
+    .unwrap();
+    for stage in [
+        "labels",
+        "exact names",
+        "cards",
+        "trigrams",
+        "full text",
+        "results",
+    ] {
+        assert!(r.ms.contains_key(stage), "{:?}", r.ms);
+    }
+}

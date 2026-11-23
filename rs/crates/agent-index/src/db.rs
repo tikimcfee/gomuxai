@@ -159,6 +159,8 @@ CREATE TABLE IF NOT EXISTS search_rowid (
     id TEXT PRIMARY KEY,
     rid INTEGER NOT NULL
 );
+-- A search joins an FTS row to its entity by rid.
+CREATE UNIQUE INDEX IF NOT EXISTS search_rowid_rid ON search_rowid(rid);
 -- Trigrams of names, paths and labels of projects, dirs, files and
 -- sections (not symbols: the porter table and exact names find those),
 -- at the same rowid as the entity's search row. Contentless too.

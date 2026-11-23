@@ -643,7 +643,7 @@ and it says how many were left out. --json prints every result, unfitted:
 {"query", "terms", "hits": [{"rank", "id", "kind", "file_kind",
 "project", "freshness", "path", "line", "title", "summary", "why",
 "untracked", "matched", "score", "explain"}], "mapping", "absent",
-"candidates"}."#,
+"candidates", "ms" (milliseconds per stage)}."#,
     example: r#"  agent index search "held message delivery"
   agent index search deliver --kind symbol --project alpha
   agent index search "wire layout" --under ~/dev/beta --budget 800

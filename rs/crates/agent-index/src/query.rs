@@ -101,6 +101,8 @@ pub struct SearchResult {
     pub absent: Vec<String>,
     /// How many entities matched before the limit.
     pub candidates: usize,
+    /// Milliseconds per stage, to see where a slow search goes.
+    pub ms: BTreeMap<String, f64>,
 }
 
 /// Reciprocal rank fusion: each list adds 1 / (k + rank) to every id in it
@@ -152,6 +154,17 @@ fn term_query(t: &str) -> String {
 /// symbols 1, why 1, labels 3.
 const CARD_BM25: &str = "bm25(search, 4.0, 4.0, 2.0, 2.0, 1.0, 1.0, 3.0)";
 
+/// A ranked list's SQL: the FTS rows, to their entities through
+/// search_rowid's rid index (without it each list scanned the map: 70 ms a
+/// list on a dev tree).
+pub(crate) fn fts_sql(table: &str, bm25: &str, limit: usize) -> String {
+    format!(
+        "SELECT m.id FROM {table} s JOIN search_rowid m ON m.rid = s.rowid JOIN entities e ON e.id = m.id
+         WHERE {table} MATCH ?1 AND {} ORDER BY {bm25} LIMIT {limit}",
+        filter_sql(2)
+    )
+}
+
 fn fts_list(
     conn: &Connection,
     table: &str,
@@ -163,11 +176,7 @@ fn fts_list(
     if q.is_empty() {
         return Ok(Vec::new());
     }
-    let sql = format!(
-        "SELECT m.id FROM {table} s JOIN search_rowid m ON m.rid = s.rowid JOIN entities e ON e.id = m.id
-         WHERE {table} MATCH ?1 AND {} ORDER BY {bm25} LIMIT {limit}",
-        filter_sql(2)
-    );
+    let sql = fts_sql(table, bm25, limit);
     let mut st = conn.prepare_cached(&sql)?;
     let rows = st.query_map(params![q, o.kind, o.project, o.under], |r| {
         r.get::<_, String>(0)
@@ -403,11 +412,20 @@ pub fn search(
         }
     };
 
+    let mut ms: BTreeMap<String, f64> = BTreeMap::new();
+    let mut t0 = std::time::Instant::now();
+    let mut lap = |ms: &mut BTreeMap<String, f64>, name: &str| {
+        let d = t0.elapsed().as_secs_f64() * 1000.0;
+        *ms.entry(name.to_string()).or_insert(0.0) += (d * 10.0).round() / 10.0;
+        t0 = std::time::Instant::now();
+    };
     let mapping = label_matches(conn, &o.query, o)?;
+    lap(&mut ms, "labels");
     let mut lists: Vec<(&str, Vec<String>)> = Vec::new();
     // An identifier's definitions go first; then the whole query as a label
     // pins its entities; part of it is a list.
     let exact = exact_names(conn, &o.query, o)?;
+    lap(&mut ms, "exact names");
     let pinned: Vec<String> = mapping
         .iter()
         .filter(|m| m.exact)
@@ -447,6 +465,7 @@ pub fn search(
             fts_list(conn, "search", CARD_BM25, &all_q, o, 300)?,
         ));
     }
+    lap(&mut ms, "cards");
 
     let mut absent: Vec<String> = Vec::new();
     for t in &content {
@@ -458,6 +477,7 @@ pub fn search(
             absent.push((*t).clone());
         }
     }
+    lap(&mut ms, "absent terms");
     // Trigrams: substrings of names, paths and labels.
     let tri_q = content
         .iter()
@@ -493,15 +513,18 @@ pub fn search(
             )?,
         ));
     }
+    lap(&mut ms, "trigrams");
     // bm25 over what files say, not only their cards.
     let full = full_text_list(conn, &porter_q, o, 300)?;
     if !full.is_empty() {
         lists.push(("full text", full));
     }
+    lap(&mut ms, "full text");
     let (sem, sem_scores) = semantic_list(conn, semantic, o, 300)?;
     if !sem.is_empty() {
         lists.push(("semantic", sem));
     }
+    lap(&mut ms, "semantic");
 
     // Fuse.
     let mut score: HashMap<String, f64> =
@@ -658,6 +681,7 @@ pub fn search(
     }
     let mut order: Vec<(String, f64)> = score.into_iter().collect();
     order.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    lap(&mut ms, "fuse and priors");
 
     // At most two results per file.
     let mut per_file: HashMap<String, usize> = HashMap::new();
@@ -697,6 +721,7 @@ pub fn search(
             break;
         }
     }
+    lap(&mut ms, "results");
     Ok(SearchResult {
         query: o.query.clone(),
         terms: terms.clone(),
@@ -704,6 +729,7 @@ pub fn search(
         mapping,
         absent,
         candidates,
+        ms,
     })
 }
 
