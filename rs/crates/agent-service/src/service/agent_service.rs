@@ -204,6 +204,10 @@ pub struct SpawnOptions {
     /// A confined role (a dream's agent): an agy agent's hooks decide every
     /// tool call and fail closed (confine.rs).
     pub confined: bool,
+    /// State keys written once its record exists and before its CLI starts,
+    /// so its first hook already sees them (a dream's read roots: its first
+    /// call reads the brief).
+    pub state: Vec<(String, String)>,
 }
 
 /// The Go SpawnOptions' unexported fields, which only resume and adopt set:
@@ -433,6 +437,23 @@ impl AgentService {
             // Its old run is closed; what described it would mislead the new one.
             if let Err(e) = self.clear_run_state(&opts.name) {
                 return abort(e);
+            }
+        }
+
+        if !opts.state.is_empty() {
+            let now = Time::now();
+            let entries: Vec<agent_store::StateEntry> = opts
+                .state
+                .iter()
+                .map(|(k, v)| agent_store::StateEntry {
+                    agent_name: opts.name.clone(),
+                    key: k.clone(),
+                    value: v.clone(),
+                    updated_at: now,
+                })
+                .collect();
+            if let Err(e) = self.storage.set_states(&entries) {
+                return abort(e.context("storing its state"));
             }
         }
 

@@ -146,3 +146,52 @@ fn test_a_dreams_agy_agent_is_confined() {
         ""
     );
 }
+
+/// Spawn writes the agent's given state keys before its CLI starts, so the
+/// first hook already sees them: dream #10's critic was refused its own brief
+/// when its read roots were written after spawn returned.
+#[test]
+fn test_spawn_writes_state_before_the_cli_starts() {
+    require_termd!();
+    let env = setup_test_env();
+    let seen: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+    let (store, at_launch) = (env.store.clone(), seen.clone());
+    let o = Arc::new(AgyOverrides {
+        name: "fakeagystate".into(),
+        launch_command_with_hooks: Some(Box::new(|_, _| "true".to_string())),
+        // Called as the launch command is built (it has a model).
+        with_model: Some(Box::new(move |_, (cmd, _)| {
+            *at_launch.lock().unwrap() = store
+                .get_state("early", STATE_KEY_DREAM_READ)
+                .ok()
+                .flatten()
+                .map(|e| e.value);
+            cmd
+        })),
+        append_prompt_flag: Some(Box::new(|_, (cmd, _)| cmd)),
+        ..Default::default()
+    });
+    env.backends.register_factory("fakeagystate", move |_| {
+        Box::new(AgyFake::new(
+            namedagents::new_agy_backend_with_config(AgyConfig::default()),
+            &o,
+        ))
+    });
+    env.service
+        .spawn(
+            &bg(),
+            SpawnOptions {
+                name: "early".into(),
+                backend: "fakeagystate".into(),
+                model: "m".into(),
+                state: vec![(STATE_KEY_DREAM_READ.into(), r#"["/data/dreams/10"]"#.into())],
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("spawn: {e:#}"));
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some(r#"["/data/dreams/10"]"#),
+        "the read roots were there when the CLI's command was built"
+    );
+}

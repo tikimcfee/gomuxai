@@ -1381,6 +1381,17 @@ pub(crate) fn spawn_worker(
         // Reading only, of the general commands: no send, no friction add.
         agent_commands: Some(agent_service::DREAM_READ_COMMANDS.to_vec()),
         confined: true,
+        // What a dream agent on a hook-decided backend (agy) may read: the
+        // paths its Read and Edit rules name (confine.rs). Spawn writes them
+        // before the CLI starts: agy's first call reads the brief, and dream
+        // #10's critic was refused it when they were written after.
+        state: vec![
+            (
+                agent_service::STATE_KEY_DREAM_READ.to_string(),
+                serde_json::to_string(&read_roots)?,
+            ),
+            (STATE_KEY_DREAM.to_string(), d.id.to_string()),
+        ],
         ..Default::default()
     };
     match &ctx.dream_spawns {
@@ -1393,26 +1404,20 @@ pub(crate) fn spawn_worker(
                 created_at: Time::now(),
                 ..Default::default()
             })?;
+            for (k, v) in &opts.state {
+                ctx.store()?.set_state(&StateEntry {
+                    agent_name: w.agent.clone(),
+                    key: k.clone(),
+                    value: v.clone(),
+                    updated_at: Time::now(),
+                })?;
+            }
             rec.lock().unwrap_or_else(|e| e.into_inner()).push(opts);
         }
         None => {
             ctx.service()?.spawn(&Context::background(), opts)?;
         }
     }
-    // What a dream agent on a hook-decided backend (agy) may read: the paths
-    // its Read and Edit rules name (confine.rs).
-    ctx.store()?.set_state(&StateEntry {
-        agent_name: w.agent.clone(),
-        key: agent_service::STATE_KEY_DREAM_READ.to_string(),
-        value: serde_json::to_string(&read_roots)?,
-        updated_at: Time::now(),
-    })?;
-    ctx.store()?.set_state(&StateEntry {
-        agent_name: w.agent.clone(),
-        key: STATE_KEY_DREAM.to_string(),
-        value: d.id.to_string(),
-        updated_at: Time::now(),
-    })?;
     if w.role != ROLE_DREAMER {
         ctx.store()?
             .append_dream_diary(d.id, &format!("{} started {}", stamp_now(), describe_worker(w)))?;
@@ -2507,7 +2512,9 @@ pub fn limitation_def() -> Def {
 }
 
 pub fn run_limitation(ctx: &Ctx, args: &LimitationArgs) -> anyhow::Result<()> {
-    let d = own_open_dream(ctx, "limitation")?;
+    // Name the worker that filed it: a global dream's record names only its
+    // first agent, the synthesizer.
+    let (d, w) = own_worker(ctx, "limitation", ANY_ROLE)?;
     let summary = args.args[0].trim().to_string();
     let store = ctx.store()?;
     let open = store.list_friction(&FrictionFilter {
@@ -2526,7 +2533,7 @@ pub fn run_limitation(ctx: &Ctx, args: &LimitationArgs) -> anyhow::Result<()> {
     if !detail.is_empty() {
         detail += "\n\n";
     }
-    detail += &format!("Filed by dream #{} ({}).", d.id, d.agent);
+    detail += &format!("Filed by dream #{} ({}).", d.id, w.agent);
     run_friction_add(
         ctx,
         &FrictionAddArgs {

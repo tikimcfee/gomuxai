@@ -82,7 +82,20 @@ impl AgentService {
                 .map(|a| a.cwd)
                 .unwrap_or_default();
             let path = resolve(&path, &cwd);
-            let roots = self.dream_read_roots(name);
+            let mut roots = self.dream_read_roots(name);
+            // agy cuts a long tool output and leaves the rest in a file under
+            // its own conversation's directory: the agent may read its own.
+            let transcript = if hr.transcript.is_empty() {
+                self.storage
+                    .get_state(name, super::status::STATE_KEY_TRANSCRIPT)
+                    .ok()
+                    .flatten()
+                    .map(|e| e.value)
+                    .unwrap_or_default()
+            } else {
+                hr.transcript.clone()
+            };
+            roots.extend(own_steps_dir(&transcript));
             if under_roots(&path, &roots) {
                 return Ok("gomuxai: reading a file the dream may read");
             }
@@ -112,6 +125,26 @@ pub(crate) fn resolve(path: &str, cwd: &str) -> String {
     Path::new(cwd).join(path).to_string_lossy().into_owned()
 }
 
+/// The directory where agy keeps the tool outputs it cut short for the
+/// conversation whose transcript is `transcript`
+/// (`<conversation>/.system_generated/logs/<file>` →
+/// `<conversation>/.system_generated/steps`), or None for any other shape.
+pub(crate) fn own_steps_dir(transcript: &str) -> Option<String> {
+    let p = Path::new(transcript);
+    if !p.is_absolute()
+        || p.components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return None;
+    }
+    let logs = p.parent()?;
+    let generated = logs.parent()?;
+    if logs.file_name()? != "logs" || generated.file_name()? != ".system_generated" {
+        return None;
+    }
+    Some(generated.join("steps").to_string_lossy().into_owned())
+}
+
 /// Whether `path` is absolute, has no `..` or `.` parts, and is one of
 /// `roots` or below one (by path components).
 pub(crate) fn under_roots(path: &str, roots: &[String]) -> bool {
@@ -130,7 +163,37 @@ pub(crate) fn under_roots(path: &str, roots: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve, under_roots};
+    use super::{own_steps_dir, resolve, under_roots};
+
+    #[test]
+    fn an_agent_reads_its_own_cut_outputs_only() {
+        let t = "/h/brain/abc/.system_generated/logs/transcript_full.jsonl";
+        let steps = own_steps_dir(t).unwrap();
+        assert_eq!(steps, "/h/brain/abc/.system_generated/steps");
+        let roots = vec![steps];
+        assert!(under_roots(
+            "/h/brain/abc/.system_generated/steps/11/output.txt",
+            &roots
+        ));
+        assert!(!under_roots(
+            "/h/brain/xyz/.system_generated/steps/11/output.txt",
+            &roots
+        ));
+        assert!(!under_roots(
+            "/h/brain/abc/.system_generated/logs/transcript_full.jsonl",
+            &roots
+        ));
+        assert_eq!(own_steps_dir(""), None);
+        assert_eq!(
+            own_steps_dir("relative/.system_generated/logs/t.jsonl"),
+            None
+        );
+        assert_eq!(own_steps_dir("/h/brain/abc/transcript.jsonl"), None);
+        assert_eq!(
+            own_steps_dir("/h/brain/../.system_generated/logs/t.jsonl"),
+            None
+        );
+    }
 
     #[test]
     fn relative_paths_resolve_against_the_agent_dir() {
