@@ -1,8 +1,10 @@
-//! Search (docs/INDEX.md, "Ranking" and "Query expansion", stage 1): a label
-//! match first, then bm25 over the porter table and the trigram table (and a
-//! semantic list when vectors exist), fused by reciprocal rank (k = 60), then
-//! the priors: the caller's own project, kind, importance, and directories
-//! kept out of the way ranked down. At most two results per file.
+//! Search (docs/INDEX.md, "Ranking", "Embeddings" and "Query expansion",
+//! stage 1): an identifier's definitions and a label match first, then the
+//! ranked lists fused by reciprocal rank (k = 60): bm25 over the entity
+//! cards (any word, and every word), bm25 over files' full text, the
+//! trigram table, and a semantic list when vectors exist; then the priors:
+//! the caller's own project, kind, importance, tests and fixtures, and
+//! directories kept out of the way ranked down. At most two results per file.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -17,18 +19,22 @@ use crate::names;
 /// The rank fusion constant.
 pub const RRF_K: f64 = 60.0;
 
-/// Where a semantic ranked list plugs into fusion: entity ids, best first.
-/// The embedding lane implements it over `vectors`; with no vectors it
-/// contributes nothing, and the other lists rank alone.
+/// Where a semantic ranked list plugs into fusion: (entity id, score) pairs,
+/// best first, at most `limit`. The embedding lane implements it over
+/// `vectors`; with no vectors it returns nothing, and the other lists rank
+/// alone. Fusion uses the order only; the score shows in `--explain`. Ids
+/// that aren't entities (a vector left from a removed file) are dropped, and
+/// the search's kind, project and under filters apply to them as to every
+/// list.
 pub trait Semantic {
-    fn ranked(&self, conn: &Connection, query: &str, limit: usize) -> Result<Vec<String>>;
+    fn ranked(&self, conn: &Connection, query: &str, limit: usize) -> Result<Vec<(String, f64)>>;
 }
 
 /// No semantic list (no embedder yet).
 pub struct NoSemantic;
 
 impl Semantic for NoSemantic {
-    fn ranked(&self, _: &Connection, _: &str, _: usize) -> Result<Vec<String>> {
+    fn ranked(&self, _: &Connection, _: &str, _: usize) -> Result<Vec<(String, f64)>> {
         Ok(Vec::new())
     }
 }
@@ -162,8 +168,62 @@ fn mentioned(conn: &Connection, term: &str, o: &SearchOptions) -> Result<bool> {
     Ok(
         !fts_list(conn, "search", "s.rowid", &quote(term), o, 1)?.is_empty()
             || (term.chars().count() >= 3
-                && !fts_list(conn, "search_tri", "s.rowid", &quote(term), o, 1)?.is_empty()),
+                && !fts_list(conn, "search_tri", "s.rowid", &quote(term), o, 1)?.is_empty())
+            || !full_text_list(conn, &quote(term), o, 1)?.is_empty(),
     )
+}
+
+/// bm25 over files' full text (`search_full`, full-depth projects), as
+/// entity ids, best first.
+fn full_text_list(
+    conn: &Connection,
+    q: &str,
+    o: &SearchOptions,
+    limit: usize,
+) -> Result<Vec<String>> {
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT m.id FROM search_full f JOIN search_full_ids m ON m.rid = f.rowid JOIN entities e ON e.id = m.id
+         WHERE search_full MATCH ?1 AND {} ORDER BY bm25(search_full) LIMIT {limit}",
+        filter_sql(2)
+    );
+    let mut st = conn.prepare_cached(&sql)?;
+    let rows = st.query_map(params![q, o.kind, o.project, o.under], |r| {
+        r.get::<_, String>(0)
+    });
+    match rows {
+        Ok(rows) => Ok(rows.collect::<rusqlite::Result<_>>()?),
+        Err(e) => bail!("searching full text for {q}: {e}"),
+    }
+}
+
+/// The semantic list, kept to entities the filters let through.
+fn semantic_list(
+    conn: &Connection,
+    semantic: &dyn Semantic,
+    o: &SearchOptions,
+    limit: usize,
+) -> Result<(Vec<String>, HashMap<String, f64>)> {
+    let pairs = semantic.ranked(conn, &o.query, limit)?;
+    if pairs.is_empty() {
+        return Ok((Vec::new(), HashMap::new()));
+    }
+    let sql = format!(
+        "SELECT 1 FROM entities e WHERE e.id = ?1 AND {}",
+        filter_sql(2)
+    );
+    let mut st = conn.prepare_cached(&sql)?;
+    let mut ids = Vec::new();
+    let mut scores = HashMap::new();
+    for (id, score) in pairs {
+        if st.exists(params![id, o.kind, o.project, o.under])? && !scores.contains_key(&id) {
+            scores.insert(id.clone(), score);
+            ids.push(id);
+        }
+    }
+    Ok((ids, scores))
 }
 
 /// Stage 0: a query that is one identifier (`parse_config`, `WallLayout`,
@@ -392,7 +452,12 @@ pub fn search(
             )?,
         ));
     }
-    let sem = semantic.ranked(conn, &o.query, 300)?;
+    // bm25 over what files say, not only their cards.
+    let full = full_text_list(conn, &porter_q, o, 300)?;
+    if !full.is_empty() {
+        lists.push(("full text", full));
+    }
+    let (sem, sem_scores) = semantic_list(conn, semantic, o, 300)?;
     if !sem.is_empty() {
         lists.push(("semantic", sem));
     }
@@ -407,10 +472,13 @@ pub fn search(
         let mut seen = HashSet::new();
         for id in list {
             if seen.insert(id) {
-                explain
-                    .entry(id.clone())
-                    .or_default()
-                    .push(format!("{name} #{}", seen.len()));
+                let mut what = format!("{name} #{}", seen.len());
+                if *name == "semantic"
+                    && let Some(s) = sem_scores.get(id)
+                {
+                    what = format!("{what} ({s:.3})");
+                }
+                explain.entry(id.clone()).or_default().push(what);
             }
         }
     }

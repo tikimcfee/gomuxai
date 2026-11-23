@@ -11,8 +11,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// The schema this build writes. A file at a higher version is from a newer
 /// `agent`, and is refused rather than written under rules it doesn't know.
 /// 2: `search_rowid`, `projects.crawled_depth`, indexes on manifests' dir and
-/// entities' name and importance.
-pub const SCHEMA_VERSION: i64 = 2;
+/// entities' name and importance. 3: `search_full` and `search_full_ids`.
+pub const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS roots (
@@ -137,6 +137,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(
     id UNINDEXED, title, name, path, summary, symbols, why, labels,
     tokenize = "porter unicode61 tokenchars '_'"
 );
+-- The raw text of each file in a full-depth project (source, test, doc,
+-- config and build files), for bm25 over what a file says, not only its
+-- card. Contentless: the text isn't stored a second time, only indexed.
+CREATE VIRTUAL TABLE IF NOT EXISTS search_full USING fts5(
+    text, content = '', contentless_delete = 1,
+    tokenize = "porter unicode61 tokenchars '_'"
+);
+-- Which search_full rowid holds a file's text.
+CREATE TABLE IF NOT EXISTS search_full_ids (
+    rid INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE
+);
 -- Which FTS rowid holds an entity's search and search_tri rows (the same in
 -- both), so a row is deleted by rowid rather than by scanning for its id.
 CREATE TABLE IF NOT EXISTS search_rowid (
@@ -228,6 +240,15 @@ impl Index {
             };
             crate::crawl::refresh_search(&tx, &ids)?;
             tx.commit()?;
+        }
+        if (1..3).contains(&version) {
+            // search_full is new in 3: the next crawl reads every file of a
+            // crawled project again to fill it (a depth that differs from the
+            // last crawl's means a full re-read).
+            conn.execute(
+                "UPDATE projects SET crawled_depth = 'schema 2' WHERE crawled_depth != ''",
+                [],
+            )?;
         }
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;

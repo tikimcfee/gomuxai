@@ -553,12 +553,37 @@ pub fn delete_search(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Deletes a file's full-text row, if it has one.
+pub fn delete_full_text(conn: &Connection, id: &str) -> Result<()> {
+    let rid: Option<i64> = conn
+        .prepare_cached("SELECT rid FROM search_full_ids WHERE id = ?")?
+        .query_row(params![id], |r| r.get(0))
+        .optional()?;
+    if let Some(rid) = rid {
+        conn.execute("DELETE FROM search_full WHERE rowid = ?", params![rid])?;
+        conn.execute("DELETE FROM search_full_ids WHERE rid = ?", params![rid])?;
+    }
+    Ok(())
+}
+
+/// Indexes a file's text for the full-text list (replacing what it had).
+fn set_full_text(conn: &Connection, id: &str, text: &str) -> Result<()> {
+    delete_full_text(conn, id)?;
+    conn.prepare_cached("INSERT INTO search_full_ids (id) VALUES (?)")?
+        .execute(params![id])?;
+    let rid = conn.last_insert_rowid();
+    conn.prepare_cached("INSERT INTO search_full (rowid, text) VALUES (?, ?)")?
+        .execute(params![rid, text])?;
+    Ok(())
+}
+
 /// Removes one entity's crawl-made rows: the entity, its search rows, code
 /// labels and edges, queue and vectors. Summaries and non-code edges and
 /// labels stay, keyed by id, for a rename to carry or the file to come back.
 fn delete_entity_rows(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM entities WHERE id = ?", params![id])?;
     delete_search(conn, id)?;
+    delete_full_text(conn, id)?;
     conn.execute(
         "DELETE FROM labels WHERE entity = ? AND origin = 'code' AND kind != 'old'",
         params![id],
@@ -1177,6 +1202,16 @@ fn read_file(
     }
     if !no_content.is_empty() {
         rep.no_content += 1;
+    }
+    // Full text, for full-depth projects and the files people read (not
+    // fixtures, data or assets).
+    if symbols
+        && no_content.is_empty()
+        && matches!(file_kind, "source" | "test" | "doc" | "config" | "build")
+    {
+        set_full_text(conn, id, &text)?;
+    } else {
+        delete_full_text(conn, id)?;
     }
     let title = x.title.clone().unwrap_or_default();
     let abs_s = abs.to_string_lossy().into_owned();

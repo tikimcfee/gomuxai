@@ -374,7 +374,11 @@ Tables:
   labels) with the porter tokenizer, and `search_tri`, FTS5 with the
   trigram tokenizer over names, paths and labels, for substrings and
   typos; and `search_full`, FTS5 (porter) over the raw text of files in
-  `full`-depth projects, with no stored copy of the text.
+  `full`-depth projects, with no stored copy of the text. **built**
+  (schema 3): contentless with deletes, keyed through `search_full_ids`;
+  source, test, doc, config and build files only (not fixtures, data or
+  assets); filled when the crawl reads a file, dropped with it. Opening an
+  older file makes the next crawl read every file again to fill it.
 - `vectors`: entity, chunk, embedding model, a half-float blob, and the
   text key it was made from; `vector_stats` holds each model's corpus
   mean.
@@ -525,9 +529,13 @@ dependents that use it, the docs that document it, the files that change
 with it), kept-out-
 of-the-way dirs down, tests a little down and fixtures well down (below
 any code that matched) unless `--kind test`, `--kind fixture` or
-`--under` asks), RRF, and at most two results per file. The semantic
-list is a seam (`query::Semantic`) that contributes nothing until the
-embedding lane fills `vectors`. Not yet: PageRank, projects a project
+`--under` asks), RRF, and at most two results per file. The lists fused:
+bm25 on cards (any word, and every word), bm25 on full text, trigrams,
+partial label matches, and the semantic list. The semantic list is a seam
+(`query::Semantic::ranked`, returning `(entity id, score)` best first)
+that contributes nothing until the embedding lane's module fills it; its
+ids pass the same filters, unknown ones are dropped, and `--explain`
+shows each score. Not yet: PageRank, projects a project
 depends on, the stale penalty.
 
 1. **Lexical**: FTS5's bm25 over the porter table, columns weighted

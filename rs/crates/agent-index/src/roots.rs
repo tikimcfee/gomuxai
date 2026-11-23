@@ -194,7 +194,15 @@ pub fn delete_project(conn: &Connection, name: &str) -> Result<()> {
     // LIKE: `_` in a name would match any character.)
     let prefix = format!("{name}:");
     let of = |col: &str| format!("({col} = ?1 OR substr({col}, 1, length(?2)) = ?2)");
+    conn.execute(
+        &format!(
+            "DELETE FROM search_full WHERE rowid IN (SELECT rid FROM search_full_ids WHERE {})",
+            of("id")
+        ),
+        params![name, prefix],
+    )?;
     for (table, col, extra) in [
+        ("search_full_ids", "id", ""),
         ("search", "id", ""),
         ("search_tri", "id", ""),
         ("search_rowid", "id", ""),
