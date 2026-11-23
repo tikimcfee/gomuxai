@@ -24,9 +24,12 @@ was crawled over the same tree with the same settings.
 ## Data
 
 - **Questions** (`--qrels`, JSON lines, repeatable): `{qid, query, stratum,
-  rel: {"PROJECT:PATH": grade}}`: a plain question, and the files that
-  answer it, graded 1 or 2 by someone who didn't see the systems' answers.
-  This is the headline plain-words set.
+  rel: {"PROJECT:PATH": grade}}`, optionally `project`: a plain question,
+  and the files that answer it, graded 1 or 2 by someone who didn't see the
+  systems' answers. This is the headline plain-words set, and only when the
+  index wasn't tuned on it: questions used to choose the index's parts are
+  a development set, and a held-out file is the test. A file with several
+  strata is also reported per stratum (`NAME:STRATUM`).
 - **Sessions** (`--evalset`, repeatable): `{session, cwd, searches, edits}`,
   and optionally `episode`, `ask`, `reads`, `harness`. A row is one episode
   of a session: what the person asked, the patterns the agent then searched

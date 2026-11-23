@@ -543,9 +543,11 @@ def load_questions(path, paths, drops):
         if not grades or not words:
             drops["question: no relevant file left, or no words"] += 1
             continue
+        named = os.path.join(paths.dev_root, str(r.get("project") or ""))
         rows.append({"id": str(r["qid"]), "query": r["query"], "words": words, "grades": grades,
                      "stratum": r.get("stratum", ""),
-                     "project": max(projects, key=lambda p: (projects[p], p))})
+                     "project": named if r.get("project") and os.path.isdir(named)
+                     else max(projects, key=lambda p: (projects[p], p))})
     return rows
 
 
@@ -738,9 +740,12 @@ def run_questions(name, rows, run, table, dev, limit):
     The index is asked twice: with the content words rg gets, and with the
     question as a person would type it."""
     popular, cited = most_cited(rows, "grades", limit)
+    strata = {q["stratum"] for q in rows}
     for q in rows:
         words, sentence, root = q["words"], q["query"].split(), q["project"]
         table.cluster[q["id"]] = q["id"]
+        # The whole set, and (when the file has several) the question's stratum.
+        sets = [name, f"{name}:{q['stratum']}"] if len(strata) > 1 else [name]
         for system, res in (
                 ("most_cited_files", (popular, cited, 0.0, "constant", None)),
                 ("rg_words@project", run.rg_words(words, root)),
@@ -751,7 +756,8 @@ def run_questions(name, rows, run, table, dev, limit):
                 ("index_sentence@project", run.index(sentence, root, root)),
                 ("index_sentence@cwd", run.index(sentence, root)),
                 ("index_sentence@root", run.index(sentence, dev))):
-            table.add(name, q["id"], system, q["query"], res, set(q["grades"]), grades=q["grades"])
+            for qset in sets:
+                table.add(qset, q["id"], system, q["query"], res, set(q["grades"]), grades=q["grades"])
         sys.stderr.write(".")
         sys.stderr.flush()
 
