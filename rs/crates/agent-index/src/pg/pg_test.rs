@@ -13,21 +13,28 @@ use crate::query::SearchOptions;
 
 #[test]
 fn chunks_by_heading_and_window() {
+    let cfg = crate::config::Chunks::default();
     let md = "intro\n# One\na\n```\n# not a heading\n```\n## Two\nb\n";
-    let c = chunk_text(md, true);
+    let c = chunk_text(md, true, &cfg);
     let heads: Vec<&str> = c.iter().map(|c| c.heading.as_str()).collect();
     assert_eq!(heads, vec!["", "One", "Two"]);
     assert_eq!((c[1].line_start, c[1].line_end), (2, 6));
     let code: String = (0..1000).map(|i| format!("line {i}\n")).collect();
-    let c = chunk_text(&code, false);
+    let c = chunk_text(&code, false, &cfg);
     assert_eq!(c.len(), 3);
     assert_eq!((c[0].line_start, c[0].line_end), (1, 400));
     assert_eq!(c[2].line_end, 1000);
     // A long line is cut, never one chunk past the cap.
     let long = "x".repeat(100_000);
-    let c = chunk_text(&long, false);
-    assert!(c.iter().all(|c| c.text.len() <= super::sync::CHUNK_BYTES));
+    let c = chunk_text(&long, false, &cfg);
+    assert!(c.iter().all(|c| c.text.len() <= cfg.max_bytes));
     assert_eq!(c.iter().map(|c| c.text.len()).sum::<usize>(), 100_000);
+    // The cut is the configuration's.
+    let small = crate::config::Chunks {
+        max_lines: 100,
+        ..cfg.clone()
+    };
+    assert_eq!(chunk_text(&code, false, &small).len(), 10);
 }
 
 #[test]
@@ -344,6 +351,72 @@ fn search_show_tree_related() {
         serde_json::to_value(&v1r).unwrap()
     );
     assert!(rel.groups.contains_key("depends on"), "{rel:#?}");
+}
+
+/// A search's results without its timings, to compare two runs.
+fn results(pg: &Pg, o: &SearchOptions) -> serde_json::Value {
+    let mut v =
+        serde_json::to_value(super::search::search(pg, o, None, Default::default()).unwrap())
+            .unwrap();
+    v.as_object_mut().unwrap().remove("ms");
+    v
+}
+
+/// The configuration file moves values out of the code without moving
+/// results: a file holding every default searches as no file does, and a
+/// changed value changes both the fingerprint and the results.
+#[test]
+fn config_defaults_search_the_same() {
+    let Some(t) = throwaway("config") else { return };
+    let pg = &t.0;
+    let (_dir, ix) = fixture();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let (url, _) = Pg::from_env().unwrap();
+    let full = crate::config::Config::parse(&crate::config::Config::default().to_toml()).unwrap();
+    let pg_file = Pg::connect_with(&url, &pg.schema, full).unwrap();
+    let queries = [
+        "parse_config",
+        "wall layout",
+        "zebraword",
+        "delivr",
+        "Alpha",
+        "deliver held",
+    ];
+    for q in queries {
+        for caller in ["", "alpha"] {
+            for kind in ["", "file"] {
+                let o = SearchOptions {
+                    caller_project: caller.into(),
+                    kind: kind.into(),
+                    ..opts(q)
+                };
+                assert_eq!(
+                    results(pg, &o),
+                    results(&pg_file, &o),
+                    "{q} from {caller:?} --kind {kind:?}"
+                );
+            }
+        }
+    }
+    // One file per result: a different list, and a different fingerprint.
+    let one = crate::config::Config::parse("[search]\nper_file = 1\n").unwrap();
+    let pg_one = Pg::connect_with(&url, &pg.schema, one).unwrap();
+    let o = opts("deliver held");
+    let (a, b) = (results(pg, &o), results(&pg_one, &o));
+    assert_ne!(a["config"], b["config"]);
+    let files = |v: &serde_json::Value| -> Vec<String> {
+        v["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| crate::model::file_of(h["id"].as_str().unwrap()).to_string())
+            .collect()
+    };
+    let fb = files(&b);
+    let mut dedup = fb.clone();
+    dedup.dedup();
+    assert_eq!(fb, dedup, "one result a file: {b:#}");
+    assert!(files(&a).len() > fb.len(), "{a:#}");
 }
 
 /// The semantic list: card vectors on HNSW, the query vector sent as text.

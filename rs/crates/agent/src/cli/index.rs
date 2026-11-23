@@ -61,6 +61,7 @@ pub fn def() -> Def {
             project_def(),
             crawl_def(),
             sync_def(),
+            config_def(),
             embed_def(),
             search_def(),
             show_def(),
@@ -83,8 +84,10 @@ fn open(ctx: &Ctx) -> anyhow::Result<Index> {
 /// `--store` and `AGENT_INDEX_STORE=pg`. Its URL is `AGENT_INDEX_PG`, its
 /// schema `AGENT_INDEX_PG_SCHEMA` (default idx). None for the SQLite store
 /// (the default). With Postgres, index.db is the crawl's ledger only: every
-/// query reads Postgres.
-fn pg_store(store: &str) -> anyhow::Result<Option<Pg>> {
+/// query reads Postgres. Its tunables come from the configuration file
+/// (`--config`, else AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml;
+/// none there means the defaults).
+fn pg_store(store: &str, config: &str) -> anyhow::Result<Option<Pg>> {
     let env = std::env::var("AGENT_INDEX_STORE").unwrap_or_default();
     let which = if store.is_empty() { env.as_str() } else { store };
     match which {
@@ -95,16 +98,23 @@ fn pg_store(store: &str) -> anyhow::Result<Option<Pg>> {
                     "the pg store needs AGENT_INDEX_PG set to its database URL (postgresql:///DB?host=SOCKET_DIR)"
                 );
             };
-            Ok(Some(Pg::connect(&url, &schema)?))
+            let cfg = load_config(config)?.config;
+            Ok(Some(Pg::connect_with(&url, &schema, cfg)?))
         }
         other => anyhow::bail!("--store takes sqlite or pg, not {other:?}"),
     }
 }
 
+/// The configuration: `--config` when given, else as Config::load finds it.
+fn load_config(config: &str) -> anyhow::Result<agent_index::config::Loaded> {
+    let given = (!config.is_empty()).then(|| Path::new(config));
+    agent_index::config::Config::load(given)
+}
+
 /// After a command changed the ledger outside a crawl (a label, a root
 /// removed): with the pg store chosen by AGENT_INDEX_STORE, syncs it.
 fn resync(ctx: &Ctx, ix: &Index) -> anyhow::Result<()> {
-    if let Some(pg) = pg_store("")? {
+    if let Some(pg) = pg_store("", "")? {
         sync_pg(ctx, ix, &pg, false)?;
     }
     Ok(())
@@ -435,6 +445,8 @@ pub struct EmbedArgs {
     pub model_dir: String,
     #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
     pub store: String,
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
     #[arg(long = "json", help = "Print the report as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -452,7 +464,7 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
     // (main goes straight to the command); the workers each run their matrix
     // products on one thread (see embed::single_threaded_products).
     unsafe { embed::single_threaded_products() };
-    let pg = pg_store(&a.store)?;
+    let pg = pg_store(&a.store, &a.config)?;
     let mut ix = open(ctx)?;
     match &pg {
         Some(pg) => {
@@ -462,7 +474,14 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
         }
         None => require_projects(&ix)?,
     }
-    let given = (!a.model_dir.is_empty()).then(|| PathBuf::from(&a.model_dir));
+    // --model-dir, else the pg store's configured one, else the cache's.
+    let mut given = (!a.model_dir.is_empty()).then(|| PathBuf::from(&a.model_dir));
+    if let Some(pg) = &pg {
+        check_embedder(&pg.cfg)?;
+        if given.is_none() && !pg.cfg.embedder.model_dir.is_empty() {
+            given = Some(PathBuf::from(&pg.cfg.embedder.model_dir));
+        }
+    }
     let dir = embed::model_dir(given.as_deref())?;
     let emb = embed::Embedder::load(&dir)?;
     let mut last = 0;
@@ -580,6 +599,8 @@ pub struct CrawlArgs {
     pub dry_run: bool,
     #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite); pg syncs the crawl into Postgres")]
     pub store: String,
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
     #[arg(long = "json", help = "Print the crawl's report as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -588,6 +609,63 @@ pub struct CrawlArgs {
 
 fn crawl_def() -> Def {
     leaf!(CRAWL, CrawlArgs, run_crawl)
+}
+
+// `agent index config`
+
+pub const CONFIG: Doc = Doc {
+    use_line: "config",
+    short: "Print the index configuration in effect, and its fingerprint",
+    long: r#"Config prints the configuration the pg store's commands run with, every
+key resolved (a key the file leaves out has its default), as TOML, with
+where it came from and its fingerprint (a hash of the values: search
+--json reports it, and syncs, embeds and logged queries record it).
+
+The file is --config FILE, else AGENT_INDEX_CONFIG, else
+~/.config/gomuxai/index.toml ($XDG_CONFIG_HOME/gomuxai/index.toml); with
+no file there, the built-in defaults apply. A file named by --config or
+the environment must exist, and an unknown key is an error. Print the
+defaults into a file to start one: agent index config > index.toml. See
+docs/INDEX-V2.md, "Configuration", for what each section tunes."#,
+    example: r#"  agent index config
+  agent index config --config tune/rrf30.toml --json"#,
+    args: ArgRule::None,
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ConfigArgs {
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
+    #[arg(long = "json", help = "Print {\"path\", \"fingerprint\", \"config\"}")]
+    pub json: bool,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+fn config_def() -> Def {
+    leaf!(CONFIG, ConfigArgs, run_config)
+}
+
+fn run_config(ctx: &Ctx, a: &ConfigArgs) -> anyhow::Result<()> {
+    let l = load_config(&a.config)?;
+    let path = l.path.as_ref().map(|p| p.display().to_string());
+    let fp = l.config.fingerprint();
+    if a.json {
+        return ctx.print_json(&serde_json::json!({
+            "path": path,
+            "fingerprint": fp,
+            "config": l.config,
+        }));
+    }
+    let from = match &path {
+        Some(p) => format!("from {p}"),
+        None => "the built-in defaults (no configuration file)".to_string(),
+    };
+    ctx.write_out(&format!(
+        "# The index configuration in effect: {from}.\n# Fingerprint {fp}.\n\n{}",
+        l.config.to_toml()
+    ))
 }
 
 // `agent index sync`
@@ -615,6 +693,8 @@ incremental sync reaches."#,
 pub struct SyncArgs {
     #[arg(long = "rebuild", help = "Empty the Postgres tables and write everything again")]
     pub rebuild: bool,
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
     #[arg(long = "json", help = "Print the sync's report as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -627,7 +707,7 @@ fn sync_def() -> Def {
 
 fn run_sync(ctx: &Ctx, a: &SyncArgs) -> anyhow::Result<()> {
     let ix = open(ctx)?;
-    let Some(pg) = pg_store("pg")? else { unreachable!("pg asked") };
+    let Some(pg) = pg_store("pg", &a.config)? else { unreachable!("pg asked") };
     let r = sync_pg(ctx, &ix, &pg, a.rebuild)?;
     if a.json {
         return ctx.print_json(&r);
@@ -663,7 +743,7 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
         dry_run: a.dry_run,
         large_project: 0,
     };
-    let pg = pg_store(&a.store)?;
+    let pg = pg_store(&a.store, &a.config)?;
     let r = agent_index::crawl(&mut ix, &opts)?;
     let synced = match &pg {
         Some(pg) if !a.dry_run => Some(sync_pg(ctx, &ix, pg, a.rebuild)?),
@@ -804,7 +884,7 @@ pub struct SearchArgs {
     pub project: String,
     #[arg(long = "under", value_name = "string", default_value = "", help = "Only entities at or under this path")]
     pub under: String,
-    #[arg(long = "limit", value_name = "int", default_value = "10", value_parser = flags::parse_int, help = "At most this many results")]
+    #[arg(long = "limit", value_name = "int", default_value = "0", value_parser = flags::parse_int, help = "At most this many results (default 10; the pg store's search.limit)")]
     pub limit: i64,
     #[arg(long = "budget", value_name = "int", default_value = "1500", value_parser = flags::parse_int, help = "Fit the text to this many tokens (0: no limit)")]
     pub budget: i64,
@@ -812,6 +892,8 @@ pub struct SearchArgs {
     pub explain: bool,
     #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
     pub store: String,
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
     #[arg(long = "lexical", value_name = "string", default_value = "", help = "pg store: fts (native full text, the default), bm25, or both (default: AGENT_INDEX_LEXICAL)")]
     pub lexical: String,
     #[arg(long = "json", help = "Print the results as JSON")]
@@ -831,9 +913,14 @@ type QueryEmbedder = Box<dyn Fn(&str) -> anyhow::Result<Vec<f32>>>;
 /// that needs it (only when the store has vectors). None without the
 /// embedder or its model.
 #[cfg(feature = "embed")]
-fn query_embedder(ctx: &Ctx) -> Option<QueryEmbedder> {
+fn query_embedder(ctx: &Ctx, cfg: &agent_index::config::Config) -> Option<QueryEmbedder> {
     use agent_index::embed;
-    let dir = match embed::model_dir(None) {
+    if let Err(e) = check_embedder(cfg) {
+        ctx.hint(format!("searching without the semantic list: {e:#}"));
+        return None;
+    }
+    let given = (!cfg.embedder.model_dir.is_empty()).then(|| PathBuf::from(&cfg.embedder.model_dir));
+    let dir = match embed::model_dir(given.as_deref()) {
         Ok(d) => d,
         Err(e) => {
             ctx.hint(format!("searching without the semantic list: the embedding model isn't here ({e:#})"));
@@ -851,8 +938,22 @@ fn query_embedder(ctx: &Ctx) -> Option<QueryEmbedder> {
 }
 
 #[cfg(not(feature = "embed"))]
-fn query_embedder(_: &Ctx) -> Option<QueryEmbedder> {
+fn query_embedder(_: &Ctx, _: &agent_index::config::Config) -> Option<QueryEmbedder> {
     None
+}
+
+/// This build embeds with bge-small-en-v1.5 only: another configured model
+/// is refused rather than silently replaced.
+#[cfg_attr(not(feature = "embed"), allow(dead_code))]
+fn check_embedder(cfg: &agent_index::config::Config) -> anyhow::Result<()> {
+    let want = "bge-small-en-v1.5";
+    if cfg.embedder.model != want {
+        anyhow::bail!(
+            "embedder.model is {:?}, but this agent embeds with {want} only (the vectors in the store are its)",
+            cfg.embedder.model
+        );
+    }
+    Ok(())
 }
 
 /// The current directory, canonical, as a string.
@@ -862,7 +963,7 @@ fn cwd_string() -> String {
 }
 
 fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
-    if let Some(pg) = pg_store(&a.store)? {
+    if let Some(pg) = pg_store(&a.store, &a.config)? {
         return run_search_pg(ctx, a, &pg);
     }
     let ix = open(ctx)?;
@@ -939,14 +1040,15 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs, pg: &Pg) -> anyhow::Result<()> {
         kind: a.kind.clone(),
         project: a.project.clone(),
         under,
+        // 0 (no --limit) is the configured default, said so "more matched" is.
         limit: match int_flag(a.limit, "limit")? {
-            0 => 10,
+            0 => pg.cfg.search.limit,
             n => n,
         },
         caller_project: caller.clone(),
         scope: String::new(),
     };
-    let emb = query_embedder(ctx);
+    let emb = query_embedder(ctx, &pg.cfg);
     let r = search::search(pg, &o, emb.as_deref(), lexical)?;
     let who = std::env::var("AGENT_NAME").unwrap_or_default();
     if let Err(e) = search::log_query(pg, &who, &r) {
@@ -1024,6 +1126,8 @@ indexed project (a symlink, say) is refused."#,
 pub struct ShowArgs {
     #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
     pub store: String,
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
     #[arg(long = "json", help = "Print the entity and its neighborhood as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -1035,8 +1139,8 @@ fn show_def() -> Def {
 }
 
 /// The pg store with something in it, or None for the sqlite store.
-fn pg_read(store: &str) -> anyhow::Result<Option<Pg>> {
-    let Some(pg) = pg_store(store)? else { return Ok(None) };
+fn pg_read(store: &str, config: &str) -> anyhow::Result<Option<Pg>> {
+    let Some(pg) = pg_store(store, config)? else { return Ok(None) };
     if agent_index::pg::view::project_count(&pg)? == 0 {
         anyhow::bail!("nothing is in the pg store yet: agent index root add DIR, then agent index crawl --store pg");
     }
@@ -1045,7 +1149,7 @@ fn pg_read(store: &str) -> anyhow::Result<Option<Pg>> {
 
 fn run_show(ctx: &Ctx, a: &ShowArgs) -> anyhow::Result<()> {
     let arg = a.args.first().map(String::as_str).unwrap_or(".");
-    if let Some(pg) = pg_read(&a.store)? {
+    if let Some(pg) = pg_read(&a.store, &a.config)? {
         let s = agent_index::pg::view::show(&pg, agent_index::pg::view::resolve(&pg, arg, &cwd()?)?)?;
         if a.json {
             return ctx.print_json(&s);
@@ -1086,6 +1190,8 @@ pub struct TreeArgs {
     pub budget: i64,
     #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
     pub store: String,
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
     #[arg(long = "json", help = "Print the tree as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -1098,7 +1204,7 @@ fn tree_def() -> Def {
 
 fn run_tree(ctx: &Ctx, a: &TreeArgs) -> anyhow::Result<()> {
     let (depth, budget) = (int_flag(a.depth, "depth")?, int_flag(a.budget, "budget")?);
-    let (t, head) = if let Some(pg) = pg_read(&a.store)? {
+    let (t, head) = if let Some(pg) = pg_read(&a.store, &a.config)? {
         use agent_index::pg::view as pgview;
         let id = match a.args.first() {
             Some(arg) => pgview::resolve(&pg, arg, &cwd()?)?.id,
@@ -1163,6 +1269,8 @@ pub struct RelatedArgs {
     pub budget: i64,
     #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
     pub store: String,
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
     #[arg(long = "json", help = "Print the neighbors as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -1174,7 +1282,7 @@ fn related_def() -> Def {
 }
 
 fn run_related(ctx: &Ctx, a: &RelatedArgs) -> anyhow::Result<()> {
-    let r = if let Some(pg) = pg_read(&a.store)? {
+    let r = if let Some(pg) = pg_read(&a.store, &a.config)? {
         let res = agent_index::pg::view::resolve(&pg, &a.args[0], &cwd()?)?;
         agent_index::pg::view::related(&pg, &res.id)?
     } else {

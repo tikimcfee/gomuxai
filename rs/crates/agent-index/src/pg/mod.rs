@@ -16,6 +16,8 @@ use std::cell::RefCell;
 use anyhow::{Context, Result, bail};
 use postgres::{Client, NoTls};
 
+use crate::config::Config;
+
 #[cfg(feature = "embed")]
 pub mod embed_pg;
 pub mod schema;
@@ -43,6 +45,8 @@ pub struct Pg {
     client: RefCell<Client>,
     pub schema: String,
     pub url_shown: String,
+    /// The tunables every step reads (crate::config).
+    pub cfg: Config,
 }
 
 /// Whether a schema name is a plain lowercase identifier (it goes into SQL
@@ -73,21 +77,28 @@ impl Pg {
     /// Connects, creates the schema when missing and brings it to the
     /// current version.
     pub fn connect(url: &str, schema: &str) -> Result<Pg> {
+        Pg::connect_with(url, schema, Config::default())
+    }
+
+    /// Connects with a configuration (see [`Pg::connect`]).
+    pub fn connect_with(url: &str, schema: &str, cfg: Config) -> Result<Pg> {
         check_schema(schema)?;
         let client =
             Client::connect(url, NoTls).with_context(|| format!("connecting to {}", shown(url)))?;
+        let (ef, trgm) = (cfg.search.hnsw_ef_search, cfg.search.trigram_threshold);
         let pg = Pg {
             client: RefCell::new(client),
             schema: schema.to_string(),
             url_shown: shown(url),
+            cfg,
         };
         pg.batch(&format!("CREATE SCHEMA IF NOT EXISTS {schema}"))?;
         // The vector library must be loaded before its settings mean anything
         // (a SET before then makes a placeholder that does nothing).
         pg.batch(&format!(
-            "SET search_path TO {schema}, public; LOAD 'vector'; \
-             SET hnsw.iterative_scan = relaxed_order; SET hnsw.ef_search = 100; SET jit = off; \
-             SET paradedb.planner_warnings = off;"
+            "SET search_path TO {schema}, public; LOAD 'vector'; LOAD 'pg_trgm'; \
+             SET hnsw.iterative_scan = relaxed_order; SET hnsw.ef_search = {ef}; SET jit = off; \
+             SET pg_trgm.word_similarity_threshold = {trgm}; SET paradedb.planner_warnings = off;"
         ))?;
         schema::migrate(&pg)?;
         Ok(pg)

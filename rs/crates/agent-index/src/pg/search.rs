@@ -34,40 +34,22 @@ use anyhow::{Result, bail};
 use serde_json::Value;
 
 use super::Pg;
+use crate::config::Config;
 use crate::files;
 use crate::model::{self, Summary};
 use crate::names;
-use crate::query::{FILE_KINDS, Hit, Mapping, RRF_K, SearchOptions, SearchResult};
+use crate::query::{FILE_KINDS, Hit, Mapping, SearchOptions, SearchResult};
 
-/// How many each list fetches.
-pub const LIST_LIMIT: i64 = 300;
+// Every number a search tunes on is in crate::config (the runtime TOML):
+// the lists' depth, the rarest-term budgets (ranking a chunk detoasts its
+// tsvectors, and a common word's 20,000 chunks took most of a second; a
+// word common in files' text is common in names and seeds too, so the
+// cards' budget reads the same chunk frequencies), the trigram terms, the
+// rank weights, RRF's k and each list's weight, and the priors.
 
-/// How many chunks (by the terms' document frequencies) the full-text list
-/// ranks at most, roughly: ranking a chunk detoasts its tsvectors, and a
-/// common word's 20,000 chunks took most of a second.
-pub const CHUNK_BUDGET: i64 = 4000;
-
-/// The same for the cards' any-word list, by the same (chunk) frequencies:
-/// a word common in files' text is common in names and seeds too. The
-/// every-word list takes every term.
-pub const CARD_BUDGET: i64 = 8000;
-
-/// How many of a query's terms (its rarest) the trigram list matches.
-pub const TRIGRAM_TERMS: i64 = 4;
-
-/// A tuning knob: `AGENT_INDEX_TUNE=chunk_budget=4000,card_budget=8000,trigram_terms=4`
-/// overrides the constants above for an eval sweep; anything else there is
-/// ignored. The default otherwise.
-pub fn tune(name: &str, default: i64) -> i64 {
-    std::env::var("AGENT_INDEX_TUNE")
-        .ok()
-        .and_then(|s| {
-            s.split(',').find_map(|kv| {
-                let (k, v) = kv.split_once('=')?;
-                (k.trim() == name).then(|| v.trim().parse().ok())?
-            })
-        })
-        .unwrap_or(default)
+/// A number as SQL text that reads back exactly (`1` for 1.0).
+fn num(x: f64) -> String {
+    format!("{x}")
 }
 
 /// The filter of kind, project and under on entity alias `e`: parameters
@@ -181,11 +163,15 @@ pub fn fused_sql(
     dense: bool,
     lexical: Lexical,
     filtered: bool,
+    cfg: &Config,
 ) -> Result<String> {
     let f = FILTER;
-    let chunk_budget = tune("chunk_budget", CHUNK_BUDGET);
-    let card_budget = tune("card_budget", CARD_BUDGET);
-    let trigram_terms = tune("trigram_terms", TRIGRAM_TERMS);
+    let s = &cfg.search;
+    let (chunk_budget, card_budget, trigram_terms) =
+        (s.chunk_budget, s.card_budget, s.trigram_terms);
+    let weights = s.rank_weights.map(num).join(",");
+    let norm = s.rank_normalization;
+    let k = num(s.rrf_k);
     let h = HERE;
     // A list keyed by entity id (alias `x`): joined to its entity only to
     // filter; scoped locally by the id's project otherwise.
@@ -238,7 +224,7 @@ pub fn fused_sql(
     ));
     let card = |name: &str, cond: &str, scope: &str| {
         format!(
-            "{name} AS (SELECT e.id, ts_rank_cd('{{0.1,0.2,0.4,1.0}}'::float4[], e.tsv, q.{cond}, 1)::float8 AS s \
+            "{name} AS (SELECT e.id, ts_rank_cd('{{{weights}}}'::float4[], e.tsv, q.{cond}, {norm})::float8 AS s \
              FROM entities e, q WHERE e.tsv @@ q.{cond} AND {f}{scope} ORDER BY s DESC, e.id LIMIT $12)"
         )
     };
@@ -278,12 +264,11 @@ pub fn fused_sql(
         lists.push("trigram here:tri_here".into());
     }
     if native {
-        ctes.push(
-            "ch AS (SELECT c.entity_id AS id, max(greatest(ts_rank_cd(c.tsv_simple, q.any_s, 1), \
-             ts_rank_cd(c.tsv_en, q.any_e, 1)))::float8 AS s \
+        ctes.push(format!(
+            "ch AS (SELECT c.entity_id AS id, max(greatest(ts_rank_cd(c.tsv_simple, q.any_s, {norm}), \
+             ts_rank_cd(c.tsv_en, q.any_e, {norm})))::float8 AS s \
              FROM chunks c, q WHERE c.tsv_simple @@ q.any_s OR c.tsv_en @@ q.any_e GROUP BY c.entity_id)"
-                .to_string(),
-        );
+        ));
         let (j, w) = by_id("ch", false);
         ctes.push(format!(
             "full_text AS (SELECT ch.id, ch.s FROM ch{j}{w} ORDER BY ch.s DESC, ch.id LIMIT $12)"
@@ -341,25 +326,25 @@ pub fn fused_sql(
         " AND NOT EXISTS (SELECT 1 FROM exact_cs)",
     ));
     ctes.push(
-        "exact AS (SELECT id, r FROM exact_cs WHERE r <= 20 UNION ALL SELECT id, r FROM exact_ci WHERE r <= 20)"
-            .to_string(),
+        format!("exact AS (SELECT id, r FROM exact_cs WHERE r <= {el} UNION ALL SELECT id, r FROM exact_ci WHERE r <= {el})", el = s.exact_limit),
     );
     // A rare identifier no definition answers to: the few files holding it.
-    ctes.push(
-        "rare_ch AS (SELECT c.entity_id AS id, max(ts_rank_cd(c.tsv_simple, rq.q, 1))::float8 AS s \
+    ctes.push(format!(
+        "rare_ch AS (SELECT c.entity_id AS id, max(ts_rank_cd(c.tsv_simple, rq.q, {norm}))::float8 AS s \
          FROM chunks c, (SELECT phraseto_tsquery('simple', $7) AS q) rq \
          WHERE $8 AND NOT EXISTS (SELECT 1 FROM exact) AND c.tsv_simple @@ rq.q GROUP BY c.entity_id)"
-            .to_string(),
-    );
+    ));
+    // One more than the rare identifier's files may number, to tell too many.
+    let rare_limit = s.rare_files + 1;
     let (j, w) = by_id("r", true);
     ctes.push(format!(
         "rare_here AS (SELECT r.id, row_number() OVER (ORDER BY r.s DESC, r.id) AS n FROM rare_ch r{j}{w} \
-         ORDER BY r.s DESC, r.id LIMIT 4)"
+         ORDER BY r.s DESC, r.id LIMIT {rare_limit})"
     ));
     let (j, w) = by_id("r", false);
     ctes.push(format!(
         "rare_all AS (SELECT r.id, row_number() OVER (ORDER BY r.s DESC, r.id) AS n FROM rare_ch r{j}{w} \
-         ORDER BY r.s DESC, r.id LIMIT 4)"
+         ORDER BY r.s DESC, r.id LIMIT {rare_limit})"
     ));
     // Terms nothing the search may return mentions: each test in turn (a
     // CASE runs them in order, so a word the cards hold costs one probe).
@@ -383,18 +368,21 @@ pub fn fused_sql(
         .iter()
         .map(|l| {
             let (name, cte) = l.split_once(':').expect("name:cte");
+            let w = num(cfg.list_weight(name));
             format!(
-                "SELECT '{name}'::text AS list, id, s, row_number() OVER (ORDER BY s DESC, id) AS r FROM {cte}"
+                "SELECT '{name}'::text AS list, id, s, row_number() OVER (ORDER BY s DESC, id) AS r, {w}::numeric AS w FROM {cte}"
             )
         })
         .collect();
     union.push(
-        "SELECT 'label'::text, u.id, 0::float8, u.ord FROM unnest($9::text[]) WITH ORDINALITY AS u(id, ord)"
-            .to_string(),
+        format!(
+            "SELECT 'label'::text, u.id, 0::float8, u.ord, {}::numeric FROM unnest($9::text[]) WITH ORDINALITY AS u(id, ord)",
+            num(cfg.list_weight("label"))
+        ),
     );
     ctes.push(format!("lists AS ({})", union.join(" UNION ALL ")));
     ctes.push(format!(
-        "fused AS (SELECT id, sum(1.0 / ({RRF_K} + r))::float8 AS rrf, \
+        "fused AS (SELECT id, sum(w * (1.0 / ({k} + r)))::float8 AS rrf, \
          jsonb_agg(jsonb_build_array(list, r, round(s::numeric, 3)) ORDER BY r, list) AS lists FROM lists GROUP BY id)"
     ));
     ctes.push(
@@ -405,7 +393,7 @@ pub fn fused_sql(
     Ok(format!(
         "WITH {} SELECT \
          (SELECT coalesce(jsonb_agg(jsonb_build_array(e.id, e.kind, e.file_kind, e.project, e.rel, e.importance, \
-             coalesce(f.rrf, 0), coalesce(f.lists, '[]'::jsonb))), '[]'::jsonb) \
+             coalesce(f.rrf, 0), coalesce(f.lists, '[]'::jsonb), e.corpus)), '[]'::jsonb) \
           FROM cand c JOIN entities e ON e.id = c.id LEFT JOIN fused f ON f.id = c.id), \
          (SELECT coalesce(jsonb_agg(id ORDER BY r), '[]'::jsonb) FROM exact), \
          (SELECT coalesce(jsonb_agg(id ORDER BY n), '[]'::jsonb) FROM rare_here), \
@@ -417,6 +405,7 @@ pub fn fused_sql(
 
 /// A candidate as the fused statement returns it.
 struct Cand {
+    corpus: String,
     kind: String,
     project: String,
     rel: String,
@@ -456,10 +445,10 @@ fn context(pg: &Pg, caller: &str) -> Result<Context> {
         for t in deps {
             let p = model::project_of_id(&t);
             if !p.is_empty() && p != caller {
-                near.insert(p.to_string(), 2.0);
+                near.insert(p.to_string(), pg.cfg.priors.dependency);
             }
         }
-        near.insert(caller.to_string(), 3.0);
+        near.insert(caller.to_string(), pg.cfg.priors.own_project);
     }
     let names: Vec<String> = r.get(3);
     let paths: Vec<String> = r.get(4);
@@ -487,7 +476,7 @@ fn label_matches(pg: &Pg, query: &str, o: &SearchOptions) -> Result<Vec<Mapping>
     }
     let lengths: Vec<usize> = (1..=words.len())
         .rev()
-        .filter(|&n| n <= 6 || n == words.len())
+        .filter(|&n| n <= pg.cfg.search.label_max_words || n == words.len())
         .collect();
     let mut grams: Vec<(usize, usize, String, String)> = Vec::new();
     for &n in &lengths {
@@ -540,7 +529,7 @@ fn label_matches(pg: &Pg, query: &str, o: &SearchOptions) -> Result<Vec<Mapping>
             continue;
         };
         rows.sort_by(|a, b| b.4.total_cmp(&a.4).then_with(|| b.5.total_cmp(&a.5)));
-        rows.truncate(25);
+        rows.truncate(pg.cfg.search.labels_per_run);
         if rows.is_empty() {
             continue;
         }
@@ -660,10 +649,14 @@ fn search_files(
     embed: Option<QueryEmbed>,
     lexical: Lexical,
 ) -> Result<SearchResult> {
-    let limit = if o.limit == 0 { 10 } else { o.limit };
+    let limit = if o.limit == 0 {
+        pg.cfg.search.limit
+    } else {
+        o.limit
+    };
     let inner = SearchOptions {
         kind: String::new(),
-        limit: limit * 8,
+        limit: limit * pg.cfg.search.files_depth_factor,
         ..o.clone()
     };
     let mut r = search_entities(pg, &inner, embed, lexical)?;
@@ -747,7 +740,13 @@ fn search_entities(
             o.query
         );
     }
-    let limit = if o.limit == 0 { 10 } else { o.limit };
+    let cfg = &pg.cfg;
+    let pri = &cfg.priors;
+    let limit = if o.limit == 0 {
+        cfg.search.limit
+    } else {
+        o.limit
+    };
     let content: Vec<String> = {
         let c: Vec<String> = terms
             .iter()
@@ -764,7 +763,8 @@ fn search_entities(
     };
     let ctx = context(pg, &o.caller_project)?;
     let near = &ctx.near;
-    let local = !near.is_empty() && o.project.is_empty() && o.scope.is_empty();
+    let local =
+        cfg.search.local_lists && !near.is_empty() && o.project.is_empty() && o.scope.is_empty();
     let mut near_names: Vec<String> = near.keys().cloned().collect();
     near_names.sort();
     lap(&mut ms, "context");
@@ -817,8 +817,15 @@ fn search_entities(
         super::schema::ensure_bm25(pg)?;
     }
     let filtered = !(o.kind.is_empty() && o.project.is_empty() && o.under.is_empty());
-    let sql = fused_sql(content.len() > 1, local, qvec.is_some(), lexical, filtered)?;
-    let lim = LIST_LIMIT;
+    let sql = fused_sql(
+        content.len() > 1,
+        local,
+        qvec.is_some(),
+        lexical,
+        filtered,
+        cfg,
+    )?;
+    let lim = cfg.search.list_depth;
     let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
         &content,
         &o.kind,
@@ -875,6 +882,7 @@ fn search_entities(
         cands.insert(
             s(0),
             Cand {
+                corpus: s(8),
                 kind: s(1),
                 project: s(3),
                 rel: s(4),
@@ -888,10 +896,11 @@ fn search_entities(
     // The rare identifier's files: nearby ones first (v1).
     let rare: Vec<String> = if exact.is_empty() && ident {
         let mut f = if local { rare_here.clone() } else { Vec::new() };
-        if f.is_empty() || f.len() > 3 {
+        let most = cfg.search.rare_files;
+        if f.is_empty() || f.len() > most {
             f = rare_all.clone();
         }
-        if f.len() <= 3 { f } else { Vec::new() }
+        if f.len() <= most { f } else { Vec::new() }
     } else {
         Vec::new()
     };
@@ -937,7 +946,7 @@ fn search_entities(
         if !pin_counts(id) {
             continue;
         }
-        *score.entry(id.clone()).or_insert(0.0) += 1.5 - i as f64 * 0.001;
+        *score.entry(id.clone()).or_insert(0.0) += pri.pin_rare - i as f64 * 0.001;
         explain.entry(id.clone()).or_default().insert(
             0,
             format!("one of {} files holding \"{}\"", rare.len(), o.query.trim()),
@@ -951,7 +960,7 @@ fn search_entities(
                 .push(format!("named \"{}\", in another project", o.query.trim()));
             continue;
         }
-        *score.entry(id.clone()).or_insert(0.0) += 2.0 - i as f64 * 0.001;
+        *score.entry(id.clone()).or_insert(0.0) += pri.pin_exact - i as f64 * 0.001;
         explain
             .entry(id.clone())
             .or_default()
@@ -961,7 +970,7 @@ fn search_entities(
         if !pin_counts(id) {
             continue;
         }
-        *score.entry(id.clone()).or_insert(0.0) += 1.0 - i as f64 * 0.001;
+        *score.entry(id.clone()).or_insert(0.0) += pri.pin_label - i as f64 * 0.001;
         if let Some(m) = mapping.iter().find(|m| &m.entity == id) {
             explain.entry(id.clone()).or_default().insert(
                 0,
@@ -1011,26 +1020,31 @@ fn search_entities(
         let mut s = score[&id];
         let ex = explain.entry(id.clone()).or_default();
         if o.kind.is_empty() && e.kind == "section" {
-            s -= 0.002;
+            s += pri.section;
             ex.push("section −".into());
         }
         if e.importance > 0.0 && ctx.max_imp > 0.0 {
-            s += 0.004 * (1.0 + e.importance).ln() / (1.0 + ctx.max_imp).ln();
+            s += pri.importance * (1.0 + e.importance).ln() / (1.0 + ctx.max_imp).ln();
             ex.push(format!("importance {:.1} +", e.importance));
         }
         let out_of_way = e.rel.split('/').any(files::is_out_of_the_way);
         if out_of_way && !under_targets {
-            s -= 0.008;
+            s += pri.out_of_the_way;
             ex.push("kept-out-of-the-way dir −".into());
         }
         if !e.rel.is_empty() && !asks_tests {
             if e.kind != "dir" && files::is_fixture(&e.rel) {
-                s -= 0.03;
+                s += pri.fixture;
                 ex.push("fixture −".into());
             } else if files::is_test(&e.rel) || files::is_fixture(&format!("{}/x", e.rel)) {
-                s -= 0.004;
+                s += pri.test;
                 ex.push("test −".into());
             }
+        }
+        let boost = cfg.corpus_boost(&e.corpus);
+        if boost != 1.0 && s > 0.0 {
+            s *= boost;
+            ex.push(format!("{} corpus ×{boost}", e.corpus));
         }
         if let Some(f) = near.get(e.project.as_str()) {
             if s > 0.0 {
@@ -1051,7 +1065,7 @@ fn search_entities(
     let mut chosen: Vec<(String, f64)> = Vec::new();
     for (id, s) in order {
         let n = per_file.entry(model::file_of(&id).to_string()).or_insert(0);
-        if *n >= 2 {
+        if *n >= cfg.search.per_file {
             continue;
         }
         *n += 1;
@@ -1099,6 +1113,7 @@ fn search_entities(
         absent,
         candidates,
         ms,
+        config: Some(cfg.fingerprint()),
     })
 }
 
@@ -1172,12 +1187,15 @@ pub fn log_query(pg: &Pg, caller: &str, r: &SearchResult) -> Result<()> {
     let mut tx = c.transaction()?;
     tx.batch_execute("SET LOCAL synchronous_commit TO off")?;
     tx.execute(
-        "INSERT INTO queries (caller, text, results, ms) VALUES ($1, $2, $3, $4)",
+        // The configuration's fingerprint rides in `ms` (a column of its own
+        // would be a migration older binaries refuse).
+        "INSERT INTO queries (caller, text, results, ms) VALUES ($1, $2, $3, $4::jsonb || jsonb_build_object('config', $5::text))",
         &[
             &caller,
             &r.query,
             &serde_json::to_value(&ids)?,
             &serde_json::to_value(&r.ms)?,
+            &r.config.clone().unwrap_or_default(),
         ],
     )?;
     tx.commit()?;

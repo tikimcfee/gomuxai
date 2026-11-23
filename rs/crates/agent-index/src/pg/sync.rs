@@ -27,6 +27,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use super::{Pg, copy_row};
+use crate::config::{Cards, Chunks as ChunkCfg, Config};
 use crate::crawl::hash;
 use crate::model::{ENTITY_COLS, Entity};
 use crate::names;
@@ -50,18 +51,9 @@ pub struct SyncReport {
     pub phases: BTreeMap<String, u128>,
 }
 
-/// Files whose text goes into chunks: as v1's full-text table, the files
-/// people read in a full-depth project.
-pub const CHUNK_FILE_KINDS: &[&str] = &["source", "test", "doc", "config", "build"];
-/// A chunk holds at most this many lines...
-pub const CHUNK_LINES: usize = 400;
-/// ...and this many bytes (a long line is cut).
-pub const CHUNK_BYTES: usize = 32 * 1024;
-/// Lexemes in fewer chunks than this aren't counted in `lexemes`: search
-/// takes them for rare.
-pub const LEXEME_FLOOR: i32 = 50;
-/// A file's or dir's children named in its card, as v1.
-const KIDS_IN_CARD: usize = 200;
+// What files go into chunks and how they are cut, what is counted, and
+// what a card holds are in crate::config (`[chunks]`, `[cards]`).
+
 /// Rows a COPY sends at a time.
 const COPY_BATCH: usize = 20_000;
 
@@ -74,6 +66,7 @@ pub fn card(
     summary: &str,
     why: &str,
     symbols: &str,
+    cards: &Cards,
 ) -> String {
     let mut s = if rel.is_empty() {
         project.to_string()
@@ -94,13 +87,13 @@ pub fn card(
     let syms: Vec<&str> = symbols
         .split_whitespace()
         .filter(|w| seen.insert(*w))
-        .take(60)
+        .take(cards.symbols)
         .collect();
     if !syms.is_empty() {
         s.push_str("\ndefines: ");
         s.push_str(&syms.join(", "));
     }
-    s.chars().take(2000).collect()
+    s.chars().take(cards.max_chars).collect()
 }
 
 /// An entity's name as words: an identifier whole and split; a file's stem
@@ -178,15 +171,16 @@ pub struct Chunk {
 }
 
 /// Cuts a file into chunks: a Markdown file by its headings (outside code
-/// fences), anything else in windows of [`CHUNK_LINES`] lines; no chunk over
-/// [`CHUNK_BYTES`] (a longer line is cut into pieces).
-pub fn chunk_text(text: &str, markdown: bool) -> Vec<Chunk> {
+/// fences), anything else in windows of `max_lines` lines; no chunk over
+/// `max_bytes` (a longer line is cut into pieces).
+pub fn chunk_text(text: &str, markdown: bool, c: &ChunkCfg) -> Vec<Chunk> {
+    let (max_lines, max_bytes) = (c.max_lines, c.max_bytes);
     // Lines, a long one cut into pieces (all on its line number).
     let mut lines: Vec<(usize, &str)> = Vec::new();
     for (i, l) in text.lines().enumerate() {
         let mut rest = l;
-        while rest.len() > CHUNK_BYTES {
-            let mut cut = CHUNK_BYTES;
+        while rest.len() > max_bytes {
+            let mut cut = max_bytes;
             while !rest.is_char_boundary(cut) {
                 cut -= 1;
             }
@@ -231,7 +225,7 @@ pub fn chunk_text(text: &str, markdown: bool) -> Vec<Chunk> {
             cur.clear();
         };
         for (n, l) in ls {
-            if !cur.is_empty() && (cur.len() >= CHUNK_LINES || bytes + l.len() + 1 > CHUNK_BYTES) {
+            if !cur.is_empty() && (cur.len() >= max_lines || bytes + l.len() + 1 > max_bytes) {
                 flush(&mut cur, &mut out);
                 bytes = 0;
             }
@@ -320,7 +314,14 @@ type Label = (String, String, String, String, String, f64, String);
 type Labels = HashMap<String, Vec<Label>>;
 
 /// Reads the ledger: every entity as the sync writes it, with its labels.
-fn read_ledger(sq: &Connection) -> Result<(Vec<Out>, Labels)> {
+fn read_ledger(sq: &Connection, cfg: &Config) -> Result<(Vec<Out>, Labels)> {
+    // A cut other than the default one is part of each file's chunk key, so
+    // changing it cuts every file again.
+    let cut = if cfg.default_chunking() {
+        String::new()
+    } else {
+        format!("@{}x{}", cfg.chunks.max_lines, cfg.chunks.max_bytes)
+    };
     let ents: Vec<Entity> = {
         let mut st = sq.prepare(&format!("SELECT {ENTITY_COLS} FROM entities ORDER BY id"))?;
         st.query_map([], Entity::from_row)?
@@ -381,7 +382,7 @@ fn read_ledger(sq: &Connection) -> Result<(Vec<Out>, Labels)> {
         let mut rows = st.query([])?;
         while let Some(r) = rows.next()? {
             let v = kids.entry(r.get(0)?).or_default();
-            if v.len() < KIDS_IN_CARD {
+            if v.len() < cfg.cards.children {
                 v.push(r.get(1)?);
             }
         }
@@ -422,16 +423,18 @@ fn read_ledger(sq: &Connection) -> Result<(Vec<Out>, Labels)> {
             e.rel.as_str()
         };
         let terms = format!("{} {}", name_terms_of(&e), path_terms(rel_or_project));
-        let card_text = card(&e.project, &e.rel, &e.title, &stext, &why, &symbols);
+        let card_text = card(
+            &e.project, &e.rel, &e.title, &stext, &why, &symbols, &cfg.cards,
+        );
         let text_key = hash(&[card_text.as_bytes()]);
         let embed =
             e.kind != "root" && crate::crawl::wants_embedding(&e.kind, &e.rel, &e.file_kind);
         let chunk_key = if e.kind == "file"
             && full.contains(&e.project)
             && e.no_content.is_empty()
-            && CHUNK_FILE_KINDS.contains(&e.file_kind.as_str())
+            && cfg.chunks.file_kinds.iter().any(|k| k == &e.file_kind)
         {
-            e.content_key.clone()
+            format!("{}{cut}", e.content_key)
         } else {
             String::new()
         };
@@ -543,7 +546,8 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
             .insert(name.to_string(), lap.elapsed().as_millis());
         lap = Instant::now();
     };
-    let (rows, labels) = read_ledger(sq)?;
+    let cfg = &pg.cfg;
+    let (rows, labels) = read_ledger(sq, cfg)?;
     rep.entities = rows.len();
     let projects: HashMap<String, String> = crate::roots::list_projects(sq)?
         .into_iter()
@@ -561,8 +565,11 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
     )?;
     let run_id: i64 = tx
         .query_one(
-            "INSERT INTO runs (kind, config, started) VALUES ('sync', $1, now()) RETURNING id",
-            &[&serde_json::json!({"rebuild": rebuild})],
+            "INSERT INTO runs (kind, config, fingerprint, started) VALUES ('sync', $1, $2, now()) RETURNING id",
+            &[
+                &serde_json::json!({"rebuild": rebuild, "config": cfg}),
+                &cfg.fingerprint(),
+            ],
         )?
         .get(0);
     if rebuild {
@@ -711,7 +718,10 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
             }
             let text = String::from_utf8_lossy(&bytes);
             rep.chunked_files += 1;
-            for (i, ch) in chunk_text(&text, o.e.lang == "markdown").iter().enumerate() {
+            for (i, ch) in chunk_text(&text, o.e.lang == "markdown", &cfg.chunks)
+                .iter()
+                .enumerate()
+            {
                 let (ord, a, b) = (
                     i.to_string(),
                     ch.line_start.to_string(),
@@ -738,17 +748,25 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
             &buf,
         )?;
     }
-    // Document frequencies, when the chunks changed (or were never counted).
+    // Document frequencies, when the chunks changed, or were never counted
+    // at this floor.
+    let floor = cfg.chunks.lexeme_floor;
     let counted: bool = tx
-        .query_one("SELECT EXISTS (SELECT 1 FROM lexemes)", &[])?
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM lexemes)
+                AND coalesce((SELECT value FROM meta WHERE key = 'lexeme_floor'), '') = $1",
+            &[&floor.to_string()],
+        )?
         .get(0);
     if !rechunk.is_empty() || rebuild || !counted {
         tx.batch_execute(&format!(
             "DELETE FROM lexemes;
              INSERT INTO lexemes (config, word, ndoc)
-             SELECT 'simple', word, ndoc FROM ts_stat('SELECT tsv_simple FROM chunks') WHERE ndoc >= {LEXEME_FLOOR}
+             SELECT 'simple', word, ndoc FROM ts_stat('SELECT tsv_simple FROM chunks') WHERE ndoc >= {floor}
              UNION ALL
-             SELECT 'english', word, ndoc FROM ts_stat('SELECT tsv_en FROM chunks') WHERE ndoc >= {LEXEME_FLOOR};"
+             SELECT 'english', word, ndoc FROM ts_stat('SELECT tsv_en FROM chunks') WHERE ndoc >= {floor};
+             INSERT INTO meta (key, value) VALUES ('lexeme_floor', '{floor}')
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value;"
         ))?;
     }
     phase(&mut rep, "chunks");

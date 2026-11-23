@@ -106,6 +106,10 @@ pub struct SearchResult {
     pub candidates: usize,
     /// Milliseconds per stage, to see where a slow search goes.
     pub ms: BTreeMap<String, f64>,
+    /// The pg store's configuration fingerprint (crate::config); absent
+    /// from the sqlite store's results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
 }
 
 /// Reciprocal rank fusion: each list adds 1 / (k + rank) to every id in it
@@ -926,6 +930,7 @@ fn search_entities(
         absent,
         candidates,
         ms,
+        config: None,
     })
 }
 

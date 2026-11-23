@@ -10,8 +10,6 @@ use super::{Pg, vec_text};
 use crate::crawl::hash;
 use crate::embed::{DrainReport, Encode};
 
-/// Entities embedded per round trip.
-const PER_BATCH: usize = 512;
 /// Past this many to embed, the HNSW index is dropped and built again after:
 /// one build is far faster than as many inserts into the graph.
 const REBUILD_INDEX_PAST: usize = 5000;
@@ -41,9 +39,13 @@ pub fn drain<E: Encode>(
              SELECT 1 FROM entities e WHERE e.id = q.entity_id AND e.embed AND e.vec_key <> e.text_key)",
         &[],
     )? as usize;
+    let cfg = &pg.cfg;
     let run_id: i64 = pg.query(
-        "INSERT INTO runs (kind, config, started) VALUES ('embed', $1, now()) RETURNING id",
-        &[&serde_json::json!({"model": crate::embed::MODEL_ID, "dim": emb.dim(), "limit": limit})],
+        "INSERT INTO runs (kind, config, fingerprint, started) VALUES ('embed', $1, $2, now()) RETURNING id",
+        &[
+            &serde_json::json!({"model": crate::embed::MODEL_ID, "dim": emb.dim(), "limit": limit, "config": cfg}),
+            &cfg.fingerprint(),
+        ],
     )?[0]
         .get(0);
     let todo: Vec<(String, String, String)> = pg
@@ -63,6 +65,7 @@ pub fn drain<E: Encode>(
                 &shown,
                 &r.get::<_, String>(7),
                 &r.get::<_, String>(8),
+                &cfg.cards,
             );
             (r.get(0), r.get(1), card)
         })
@@ -77,7 +80,7 @@ pub fn drain<E: Encode>(
         pg.batch("DROP INDEX IF EXISTS entities_card_vec")?;
     }
     let result = (|| -> Result<()> {
-        for batch in todo[..total].chunks(PER_BATCH) {
+        for batch in todo[..total].chunks(cfg.embedder.batch.max(1)) {
             // A card whose text isn't what its key says (the sync wrote it
             // from other text) is skipped rather than stored under a key
             // that would never settle.

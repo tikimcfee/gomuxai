@@ -9,6 +9,7 @@
 //! model. Summaries are `seed`s from the code itself; the embedder is another
 //! lane's, which drains `embed_queue` into `vectors`.
 
+pub mod config;
 pub mod crawl;
 pub mod db;
 pub mod edges;

@@ -259,7 +259,8 @@ after the first eval run.
   list until 8,000, and the trigram list the 4 rarest terms; the rarest
   always counts. This was for speed (a common word's 20,000 chunks took
   most of a second to rank) and changes ranking: the eval should sweep it
-  (`AGENT_INDEX_TUNE=chunk_budget=N,card_budget=N,trigram_terms=N`).
+  (`[search]` `chunk_budget`, `card_budget`, `trigram_terms` in the
+  configuration file; the `AGENT_INDEX_TUNE` variable of 19fed9b is gone).
 - **show, tree, related** read Postgres: the breadcrumb, the subtree and
   the neighbors are recursive CTEs; their output matches v1's (tested).
 - `--lexical fts|bm25|both` picks native full text, `pg_search`'s BM25
@@ -311,6 +312,52 @@ A smoke check on the first 10 short dev questions (`--kind file`, dev
 root): hit@5 v1 2/10, v2 between 2/10 and 4/10 across the tuning steps
 (MRR@10 0.07 for v1, 0.09 to 0.18 for v2). Ten questions decide nothing;
 the eval does.
+
+## Configuration (**built**)
+
+Every search and pipeline tunable of the pg store is read at run time
+from a TOML file (`rs/crates/agent-index/src/config.rs` holds the keys,
+their defaults and what each does), so a tuning run changes a file, not
+the code:
+
+- **Where**: `--config FILE` on `crawl`, `sync`, `embed`, `search`,
+  `show`, `tree`, `related` and `config`; else `AGENT_INDEX_CONFIG`; else
+  `~/.config/gomuxai/index.toml` (`$XDG_CONFIG_HOME` honored). No file
+  there means the built-in defaults, which are exactly what the code did
+  before the file existed; a file named by `--config` or the variable
+  must exist. Every key is optional, and an unknown key is an error, so a
+  typo can't pass as a default.
+- **`agent index config`** prints the resolved configuration (every key)
+  as TOML with its source and fingerprint; `agent index config >
+  index.toml` starts a file.
+- **Fingerprint**: a hash of the resolved values (equal values, equal
+  fingerprint, however the file is written). `search --json` reports it
+  as `config` (the sqlite store's output has no such key, as before);
+  `runs.fingerprint` records it for every sync and embed, with the whole
+  configuration in `runs.config`; each logged query carries it in its
+  `ms` JSON under `config` (a column of its own would be a migration,
+  which older binaries refuse; it comes with the next one).
+
+The sections:
+
+| section | what it tunes |
+|---|---|
+| `[search]` | RRF's `rrf_k` (60); the default `limit` (10, what `--limit` 0 or none gives); `list_depth` (300 a list); `per_file` (2); `files_depth_factor` (8, for `--kind file`); `local_lists` (the copies scoped to the caller's project); the rarest-term budgets `chunk_budget` (4,000), `card_budget` (8,000), `trigram_terms` (4); `trigram_threshold` (0.6); `ts_rank_cd`'s `rank_weights` (D, C, B, A: 0.1, 0.2, 0.4, 1.0) and `rank_normalization` (1); `hnsw_ef_search` (100); the label n-grams' `label_max_words` (6) and `labels_per_run` (25); `exact_limit` (20); `rare_files` (3) |
+| `[lists]` | each list's weight in fusion, by name (`lexical`, `all words`, `full text`, `trigram`, `semantic`, `label`, `bm25`, `bm25 full text`); a `here` copy takes its list's; 1 when unnamed |
+| `[priors]` | the pins (`pin_exact` 2, `pin_label` 1, `pin_rare` 1.5), `section` (−0.002), `importance` (0.004), `out_of_the_way` (−0.008), `fixture` (−0.03), `test` (−0.004), and the multipliers `own_project` (3) and `dependency` (2) |
+| `[corpora.NAME]` | `boost`, multiplying a positive score in that corpus (1; only `code` exists yet) |
+| `[chunks]` | the cut (`max_lines` 400, `max_bytes` 32,768), `lexeme_floor` (50) and the `file_kinds` cut into chunks. A cut other than the default becomes part of each file's chunk key, so the next sync cuts every file again; a new floor recounts `lexemes` |
+| `[cards]` | `children` named in a card's search text (200), `symbols` after `defines:` in the embedded card (60), `max_chars` (2,000); a change rewrites the cards and re-queues their vectors at the next sync |
+| `[embedder]` | `model` (this build runs `bge-small-en-v1.5` only and refuses another), `model_dir` (the Hugging Face cache's when empty; `embed --model-dir` wins), `batch` (512) |
+| `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10). Recorded, not wired into search yet: the next step |
+| `[llm.summaries]`, `[llm.query_rewrite]` | `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature`, `max_tokens`, `timeout_ms`, for the later iterations |
+
+Moving the values changed no result: with no file, and with a file of
+every default written out, the 64 dev questions from the dev root and
+from a project, default and `--kind file` (256 searches), gave output
+identical to 19fed9b's, timings aside; a test checks the same on a
+fixture tree, and that a changed value changes the fingerprint and the
+results. The v1 SQLite path keeps its constants.
 
 ## Feature check
 
