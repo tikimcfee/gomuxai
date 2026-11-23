@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Context, Result, bail};
 use rusqlite::{OptionalExtension, Row, params};
 
+use crate::dream_workers::{DreamWorker, ROLE_DREAMER, close_workers, insert_worker};
 use crate::gotime::Time;
 use crate::jobs::has_table;
 use crate::sqlite::{Store, int, parse_time, query_all, query_one, text};
@@ -196,13 +197,29 @@ impl Store {
     }
 
     /// Records a new open dream over `of` on host with its items, its agent
-    /// named by agent_of from the dream's id, and returns it.
+    /// (its one worker, the dreamer) named by agent_of from the dream's id,
+    /// and returns it.
     pub fn open_dream_of_kind(
         &self,
         host: &str,
         of: &DreamOf,
         items: &[DreamItem],
         agent_of: impl FnOnce(i64) -> String,
+    ) -> Result<Dream> {
+        self.open_dream_with(host, of, items, |id| {
+            DreamWorker::new(&agent_of(id), ROLE_DREAMER, "", "")
+        })
+    }
+
+    /// Records a new open dream over `of` on host with its items and its
+    /// first worker, made by first from the dream's id (the dream's agent is
+    /// that worker), and returns it.
+    pub fn open_dream_with(
+        &self,
+        host: &str,
+        of: &DreamOf,
+        items: &[DreamItem],
+        first: impl FnOnce(i64) -> DreamWorker,
     ) -> Result<Dream> {
         let now = Time::now();
         let id = self.in_tx(|tx| {
@@ -212,11 +229,13 @@ impl Store {
             )
             .context("recording a dream")?;
             let id = tx.last_insert_rowid();
+            let w = first(id);
             tx.execute(
                 "UPDATE dreams SET agent = ? WHERE id = ?",
-                params![agent_of(id), id],
+                params![w.agent, id],
             )
             .context("naming the dream's agent")?;
+            insert_worker(tx, id, &w)?;
             for it in items {
                 tx.execute(
                     UPSERT_ITEM,
@@ -289,24 +308,9 @@ impl Store {
         .context("listing open dreams")
     }
 
-    /// The open dream agent dreams, or None.
+    /// The open dream agent is a worker of, or None.
     pub fn open_dream_of(&self, agent: &str) -> Result<Option<Dream>> {
-        if agent.is_empty() {
-            return Ok(None);
-        }
-        let conn = self.conn();
-        if !has_table(self, &conn, "dreams")? {
-            return Ok(None);
-        }
-        query_one(
-            &conn,
-            &format!(
-                "SELECT {DREAM_COLUMNS} FROM dreams WHERE status = ? AND agent = ? ORDER BY id DESC LIMIT 1"
-            ),
-            params![DREAM_OPEN, agent],
-            scan_dream,
-        )
-        .context("reading an agent's open dream")
+        Ok(self.open_dream_worker(agent)?.map(|(d, _)| d))
     }
 
     /// The newest committed dream, or None.
@@ -375,16 +379,21 @@ impl Store {
             .collect())
     }
 
-    /// The names of every agent that has dreamt, whatever became of its
-    /// dream.
+    /// The names of every agent that has dreamt (every worker of every
+    /// dream), whatever became of its dream.
     pub fn dream_agents(&self) -> Result<HashSet<String>> {
         let conn = self.conn();
         if !has_table(self, &conn, "dreams")? {
             return Ok(HashSet::new());
         }
+        let workers = if has_table(self, &conn, "dream_workers")? {
+            " UNION SELECT agent FROM dream_workers WHERE agent != ''"
+        } else {
+            ""
+        };
         let names = query_all(
             &conn,
-            "SELECT DISTINCT agent FROM dreams WHERE agent != ''",
+            &format!("SELECT DISTINCT agent FROM dreams WHERE agent != ''{workers}"),
             [],
             |r| text(r, 0),
         )
@@ -465,6 +474,7 @@ impl Store {
                 params![status, time_nanos(&Time::now()), why, id],
             )
             .context("closing the dream")?;
+            close_workers(tx, id, status == DREAM_COMMITTED)?;
             Ok(())
         })
     }
@@ -521,7 +531,7 @@ impl Store {
 }
 
 /// Fails unless dream id exists and is open.
-fn require_open(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<()> {
+pub(crate) fn require_open(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<()> {
     let status: Option<String> = tx
         .query_row("SELECT status FROM dreams WHERE id = ?", [id], |r| {
             text(r, 0)

@@ -105,7 +105,12 @@ the skeptic is the critic, and their outputs go through `idea` and
 `judge` verbs into `dream_ideas`, not through a format private to the
 global dream. A dream run records each worker (its role, model and lens)
 in a workers table, so sessions of generators and critics are never
-re-read as new evidence.
+re-read as new evidence. (**built** for synthesis, as
+`docs/DREAMING.md` describes: workers, `dream_ideas` and its votes, the
+`idea`, `judge` and `done` verbs, and code applying what the critic
+approves. The critic's verdict is approve or reject with optional
+scores; the pairwise tournament and Elo are later, `rank` waiting for
+them, and synthesis ideas never converge.)
 
 ## When a dream thinks this way
 

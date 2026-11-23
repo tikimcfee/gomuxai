@@ -13,7 +13,7 @@ use anyhow::Context as _;
 use agent_store::Dream;
 
 use super::command::{ArgRule, Def, Doc, Run};
-use super::dream::{own_open_dream, record_memory};
+use super::dream::{DREAMER, own_worker, record_memory};
 use super::root::Ctx;
 
 // `agent dream memory`
@@ -417,7 +417,9 @@ fn expand_home(path: &str, home: &str) -> String {
 /// (taken now if the dream had no snapshot of it yet). Refuses a caller with
 /// no open dream.
 fn snapshot_dir(ctx: &Ctx, dir: &Path, verb: &str) -> anyhow::Result<(Dream, PathBuf)> {
-    let d = own_open_dream(ctx, verb)?;
+    // A dreamer's: the global dream's generator proposes memory changes as
+    // ideas, and code applies the approved ones.
+    let d = own_worker(ctx, verb, DREAMER)?.0;
     record_memory(ctx, &d, dir)?;
     let snap = snapshot_dir_for(&ctx.data_dir(), &d.id.to_string(), dir);
     Ok((d, snap))

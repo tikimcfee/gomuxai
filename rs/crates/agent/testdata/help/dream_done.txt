@@ -1,0 +1,24 @@
+Done says a worker of the global dream has finished its part, and runs
+the dream's next step in code: after the generator, the critic starts, on
+the other model (or, with no ideas, the dream commits); after the critic,
+the approved memory changes are applied in order and checked by commit's
+guards; if they pass, the approved friction triage is applied and the
+dream commits, and if not, memory is put back and the dream is abandoned
+with nothing applied. The
+critic's done refuses while an idea is unjudged. A dreamer commits
+instead. Only a dream's generator or critic runs it.
+
+Usage:
+  agent dream done [flags]
+
+Examples:
+  agent dream done
+
+Flags:
+  -h, --help   help for done
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

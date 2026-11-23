@@ -137,13 +137,16 @@ The machine memory has the format of a project's (`start_here.md`, fact
 files, `MEMORY.md`). The first `run --global` creates it empty, with an
 empty index, before it gathers. It is a memory item of the dream like any
 other: snapshot at open, commit's guard and citation check, abandon's
-restore. The global brief keeps its `start_here.md` under 50 lines (hosts
+restore. The global dream's briefs (the synthesizer's `brief_synth.md`,
+which proposes these as ideas, and `brief_global.md`, kept for a
+single-agent global dream) keep its `start_here.md` under 50 lines (hosts
 and the bus, how agents are run and who answers approvals, build rules,
 toolchains, the tripwires that recur across projects, each cited), carries
 a lesson from one project's sessions or diary into another's memory with a
 `[source: dream:<id>, ...]` citation, replaces a machine-wide fact a
-project's start-here repeats with a pointer, and triages friction with the
-same verbs and rules project dreams had. A `dream:<id>` citation must name
+project's start-here repeats with a pointer, and triages friction by the
+rules project dreams had (now only through approved ideas: see "The global
+dream: a synthesizer, a critic, and code"). A `dream:<id>` citation must name
 a committed dream. The project brief (`brief.md`) leaves friction and
 machine-wide facts to it.
 
@@ -209,8 +212,9 @@ memory directory in the batch (`dream-snapshots/<id>/<folder>/` beside
 the store, outside the dream's own directory so its agent can't edit its
 baseline; `memory::take_snapshot`), runs the memory check against the
 dream's projects into the digest (`## memory check`), and spawns a Claude agent `dream-<id>`
-with the fixed brief (`agent_dream::brief`, or `brief_global` for the
-global dream, behind a line naming the dream and what it is over), in
+with the fixed brief (`agent_dream::brief`, behind a line naming the dream
+and what it is over; the global dream spawns its synthesizer instead, as
+the section on workers says), in
 `.gomuxai/dreams` with its workspace trust answered, and its
 state key `dream` set to the id. `--dry-run` says what it would do.
 `agent dream list` and `show` read the record.
@@ -265,6 +269,106 @@ and refuses otherwise:
   de-duplicated against open entries.
 - `agent dream note "..."`: appends to the dream's diary.
 - `agent dream commit` / `agent dream abandon`.
+
+### Workers: every agent a dream runs
+
+**built** (`agent-store` `dream_workers.rs`). A `dream_workers` table holds
+every agent of every dream: its dream, name, role, model, effort, lens
+(empty until a caller uses lenses), status (`running`, `done`, `failed`)
+and when it started and finished. A project dream has one `dreamer` (the
+store's `open_dream_of_kind` records it); the global dream has a
+`generator` and a `critic` (below). Dreams from before workers get their
+`agent` as their dreamer when the store migrates (done if the dream
+committed, failed if it was abandoned, running while open). `dream_agents`
+covers every worker, so none of their sessions is ever evidence, and
+`open_dream_of` (which the PreToolUse hook and agy's confinement ask)
+resolves an agent through its worker row. Closing a dream closes its
+running workers (done on commit, failed on abandon).
+
+Each verb resolves its caller through the workers table and checks its
+role: `memory put|remove`, `friction dup|link|accept`, `roster note` and
+`commit` are a dreamer's; `idea` a generator's; `judge` a critic's; `done`
+a generator's or a critic's; `note`, `abandon`, `limitation` and the
+reading verbs (`ideas`, `memory get|check`, `show`, `list`) anyone's. A
+refusal says what the caller's role does instead. `agent dream run`
+cleans up every worker of a closed dream, and treats an open dream with a
+gone worker as abandoned. `roster note --by` refuses any dream worker's
+name (`dream-<id>`, `dream-<id>-synth`, ...), not only `dream-<id>`.
+
+### The global dream: a synthesizer, a critic, and code
+
+**built** (the CLI's `dream_steps.rs`, `agent-dream` `ideas.rs`,
+`brief_synth.md`, `brief_critic.md`). The global dream is the idea
+engine's first caller (`docs/DREAMING-VISION.md`, "The idea engine"),
+`synthesis`: no agent writes memory or triages friction itself.
+
+1. `agent dream run --global` opens the dream as before (gather, items,
+   digest, snapshots) with its generator, `dream-<id>-synth`, as its first
+   worker and its agent, on a model picked at random between
+   `claude-opus-5-5` at effort `xhigh` and `claude-fable-5-2` (at its
+   default effort: the roster doesn't say Fable's highest), spawned with
+   SpawnOptions' `model` and `effort` and the synthesizer's brief
+   (`brief_global.md`'s rules, but it proposes ideas instead of writing).
+   The diary records each worker's model and effort as it starts.
+2. The synthesizer proposes a change set with `agent dream idea --from
+   <json>`, one idea per change: a memory `put` (dir, file,
+   expect_version, a draft in the dream's own directory, why, citations)
+   or `remove`, or a friction `dup`, `link` or `accept` (id, other, note,
+   citations). The verb checks the shape (unknown or missing fields
+   refused), that the dir is one of the dream's memory items, that a
+   draft lies in the dream's directory, that no other live idea changes
+   the same file, that friction entries exist here, and every citation by
+   commit's rules (`Known`, shared with commit's check), refusing a kind
+   no dream item has (`report:`, a path); a put's draft's own citations
+   are checked as commit would. A put's content is read and recorded with
+   the idea, so later edits to the draft change nothing: what the critic
+   judges is what is applied. Ideas go in `dream_ideas` (caller,
+   worker, the idea as JSON, citations, status, the critic's why and
+   checked sources, four optional scores, a nullable `rank` for a later
+   tournament, the outcome) with a first vote in `dream_idea_votes` (the
+   worker, its model and lens, its evidence). `ideas::converges_with` is
+   where a later caller matches an earlier idea for a vote instead of a
+   duplicate; for synthesis it finds none.
+3. Its `agent dream done` marks it done and runs the next step in code:
+   the critic, `dream-<id>-critic`, on the other model, with the critic's
+   brief (check each idea against its cited primary sources, reject what
+   they don't support, verify friction triage), no Edit rule (it reads
+   its dream's directory), and the dream's starter as its parent, not the
+   synthesizer. With no ideas, the dream goes straight to applying.
+4. The critic runs `agent dream judge <id> approve|reject --why "..."
+   --checked <source>...`: approving needs at least one `--checked` among
+   the idea's citations. `--leverage --evidence --feasibility --novelty`
+   (1 to 5) are recorded when given. Its `done` refuses while an idea is
+   unjudged.
+5. Applying, in code: first the approved memory changes in id order,
+   through `memory::put`/`remove` at the idea's expect_version (a version
+   conflict, or any refusal of put's own rules, skips the idea, and the
+   diary says why); then commit's guards (`memory_problems`). If they
+   fail, memory is put back with `restore_own` and the dream is
+   abandoned with no friction triage applied, so it leaves nothing
+   changed. If they pass, the approved friction triage applies in id
+   order, through the same calls the dream's friction verbs make, and the
+   dream commits. The diary has a line per idea, in id order: what it
+   changes, who proposed it on which model, the verdict, by whom on which
+   model and why, and what was applied or skipped.
+
+It is a step function over the dream's state in the store, never a
+long-running process: each step runs on a worker's `done`, and `agent
+dream run` advances an open global dream whose step is due (a worker done
+but the next not started, or a worker gone: abandoned, the worker marked
+failed), so a crash between steps is picked up by the next run. A worker
+that has sat idle, its turn over, without saying `done` for more than 30
+minutes (`WORKER_IDLE_LIMIT`; idle since its last status report), or has
+run alive for more than 90 (`WORKER_RUN_LIMIT`, from when it started), is
+given up the same way: `agent dream run` marks it failed, puts memory
+back, abandons the dream saying why in the diary, and cleans up its
+workers. `agent
+dream show` lists the workers and counts the ideas; `agent dream ideas
+[<id>] [--json]` lists them with their verdicts, outcomes and a put's
+whole content.
+
+Project dreams are unchanged: one dreamer that reads, decides and writes
+through the verbs.
 
 ### Evidence rules (in the brief)
 
@@ -345,6 +449,13 @@ call.
 - The timer runs `agent dream run`, which picks a project dream; the
   global dream still needs a schedule of its own (a second timer, or the
   timer running `--global` once a day).
+- The global dream's next workers: agy (Carbon, Neon) in the model pool
+  once its confinement is proven under the current agy, several generator
+  samples with lenses, and the critic's convergence check and tournament
+  (`dream_ideas.rank`, a matches table).
+- The global dream's items hold no sessions, so a synthesizer can cite a
+  session only when a committed project dream reviewed it (commit's rule,
+  which `idea` shares).
 
 ## Prior art
 

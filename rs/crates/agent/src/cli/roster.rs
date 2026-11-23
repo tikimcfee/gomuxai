@@ -992,9 +992,11 @@ pub fn run_roster_note(ctx: &Ctx, args: &RosterNoteArgs) -> anyhow::Result<()> {
     };
     // A dream's notes go through agent dream roster note, which checks the
     // dream: nobody else may write as one.
-    let dream_agent = by
-        .strip_prefix("dream-")
-        .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()));
+    // dream-<id>, and a dream's other workers (dream-<id>-synth, ...).
+    let dream_agent = by.strip_prefix("dream-").is_some_and(|rest| {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        digits > 0 && (digits == rest.len() || rest.as_bytes()[digits] == b'-')
+    });
     if dream_agent {
         anyhow::bail!(
             "--by {by}: notes by a dream are written by its own agent with agent dream roster note"

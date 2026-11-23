@@ -177,8 +177,13 @@ pub const DREAM_READ_COMMANDS: &[&str] = &[
 /// run without a prompt while its dream is open (docs/DREAMING.md): they
 /// write only through the dream's narrow toolset. No other agent gets them,
 /// and they are never in the launch rules: the PreToolUse hook decides each
-/// one against the store.
+/// one against the store. Each verb also checks the caller's role (a
+/// dreamer writes; a generator proposes; a critic judges).
 pub const DREAM_AGENT_COMMANDS: &[&str] = &[
+    "dream idea",
+    "dream ideas",
+    "dream judge",
+    "dream done",
     "dream note",
     "dream commit",
     "dream abandon",
