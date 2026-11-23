@@ -7,7 +7,7 @@
 //! bm25 over file text, and this list, fused by rank), it lifted MRR@10 over the
 //! best lexical pair by +0.15 at 1,114 files and +0.13 at 5,074 on plain-word
 //! questions, and neither a static model (model2vec) nor larger models beat it
-//! significantly there (llm-experiments, experiments/2026-11-23-hybrid-retrieval).
+//! significantly there (the embedding lane's hybrid-retrieval experiments, 2026-11-23).
 //!
 //! Vectors are L2-normalized and stored as little-endian f16. No mean-centering
 //! for this model: centering helped the 8B model and hurt this one.
