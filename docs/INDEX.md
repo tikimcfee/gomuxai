@@ -543,7 +543,12 @@ of-the-way dirs down, tests a little down and fixtures well down (below
 any code that matched) unless `--kind test`, `--kind fixture` or
 `--under` asks), RRF, and at most two results per file. The lists fused:
 bm25 on cards (any word, and every word), bm25 on full text, trigrams,
-partial label matches, and the semantic list. The semantic list is a seam
+partial label matches, and the semantic list; each but the semantic one
+fetched twice, across the tree and in the caller's project and those it
+depends on, so a local candidate past the global top 300 still counts.
+An identifier no definition answers to pins the one to three files whose
+text holds it. `--kind file` (or a file kind) searches every kind and
+counts a symbol or section for its file: one row per file. The semantic list is a seam
 (`query::Semantic::ranked`, returning `(entity id, score)` best first)
 that contributes nothing until the embedding lane's module fills it; its
 ids pass the same filters, unknown ones are dropped, and `--explain`
