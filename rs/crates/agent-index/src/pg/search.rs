@@ -92,32 +92,40 @@ impl Lexical {
 /// `bm25` / `bm25 here` (cards) and `bm25 full text` / `bm25 full text here`
 /// (chunks, an entity ranked by its best chunk), so `--explain` tells them
 /// from the native ones.
-pub fn bm25_ctes(local: bool) -> Option<(Vec<String>, Vec<String>)> {
+pub fn bm25_ctes(local: bool, cfg: &Config) -> Option<(Vec<String>, Vec<String>)> {
     let f = FILTER;
     let here = format!(" AND {HERE}");
-    // Any term in any card field, the fields boosted in the ratio of the
-    // native list's weights (A 1.0, B 0.4, C 0.2, D 0.1). `|||` cuts the
-    // query with each field's own tokenizer, so `held_messages` and `running`
-    // meet the indexed `held`, `messag` and `run`.
+    // Any term in any card field, each field boosted (`[bm25]` in the
+    // configuration; by default in the ratio of the native list's weights,
+    // A 1.0, B 0.4, C 0.2, D 0.1). `|||` cuts the query with each field's
+    // own tokenizer, so `held_messages` and `running` meet the indexed
+    // `held`, `messag` and `run`.
+    let b = &cfg.bm25;
     let fields = [
-        ("e.terms", 10),
-        ("e.labels_text", 10),
-        ("e.title", 4),
-        ("e.summary", 4),
-        ("words_of(e.asks)", 4),
-        ("e.seed", 2),
-        ("e.why", 2),
-        ("e.symbols", 1),
+        ("e.terms", b.terms),
+        ("e.labels_text", b.labels),
+        ("e.title", b.title),
+        ("e.summary", b.summary),
+        ("words_of(e.asks)", b.asks),
+        ("e.seed", b.seed),
+        ("e.why", b.why),
+        ("e.symbols", b.symbols),
     ];
     let matches = fields
         .iter()
-        .map(|(col, boost)| format!("{col} ||| {BM25_QUERY}::pdb.boost({boost})"))
+        .map(|(col, boost)| format!("{col} ||| {BM25_QUERY}::pdb.boost({})", num(*boost)))
         .collect::<Vec<_>>()
         .join(" OR ");
+    // One unfiltered scan, then the filters on its rows: given in the same
+    // WHERE, pg_search checks them against every row of the table (690 ms
+    // with --under or --kind, against 17 ms this way; same ranking).
+    let mut ctes = vec![format!(
+        "bm25_hits AS MATERIALIZED (SELECT e.id, pdb.score(e.id)::float8 AS s, e.project, e.kind, e.file_kind, e.path \
+         FROM entities e WHERE ({matches}))"
+    )];
     let card = |name: &str, scope: &str| {
         format!(
-            "{name} AS (SELECT e.id, pdb.score(e.id)::float8 AS s FROM entities e \
-             WHERE ({matches}) AND {f}{scope} ORDER BY s DESC, e.id LIMIT $12)"
+            "{name} AS (SELECT e.id, e.s FROM bm25_hits e WHERE {f}{scope} ORDER BY e.s DESC, e.id LIMIT $12)"
         )
     };
     let full = |name: &str, scope: &str| {
@@ -126,7 +134,7 @@ pub fn bm25_ctes(local: bool) -> Option<(Vec<String>, Vec<String>)> {
              WHERE {f}{scope} ORDER BY bch.s DESC, bch.id LIMIT $12)"
         )
     };
-    let mut ctes = vec![card("bm25_cards", "")];
+    ctes.push(card("bm25_cards", ""));
     let mut lists = vec!["bm25:bm25_cards".to_string()];
     if local {
         ctes.push(card("bm25_cards_here", &here));
@@ -283,7 +291,7 @@ pub fn fused_sql(
         }
     }
     if lexical != Lexical::Fts {
-        let Some((c, l)) = bm25_ctes(local) else {
+        let Some((c, l)) = bm25_ctes(local, cfg) else {
             bail!(
                 "--lexical {}: this schema has no BM25 index yet (pg_search); --lexical fts uses native full text",
                 if lexical == Lexical::Bm25 {

@@ -842,7 +842,17 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
         &[&run_id, &serde_json::to_value(&rep)?],
     )?;
     tx.commit()?;
+    drop(c);
     phase(&mut rep, "commit");
+    // After much was written, the visibility map (which pg_search's heap
+    // checks and index-only scans read) and the statistics; VACUUM can't run
+    // inside the transaction.
+    if rebuild || rep.written > 1000 || rep.chunks > 1000 {
+        // One statement each: several in one batch are one transaction.
+        pg.batch("VACUUM (ANALYZE) entities")?;
+        pg.batch("VACUUM (ANALYZE) chunks")?;
+        phase(&mut rep, "vacuum");
+    }
     rep.ms = start.elapsed().as_millis();
     Ok(rep)
 }

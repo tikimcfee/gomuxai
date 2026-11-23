@@ -350,6 +350,7 @@ The sections:
 | `[cards]` | `children` named in a card's search text (200), `symbols` after `defines:` in the embedded card (60), `max_chars` (2,000); a change rewrites the cards and re-queues their vectors at the next sync |
 | `[embedder]` | `model` (this build runs `bge-small-en-v1.5` only and refuses another), `model_dir` (the Hugging Face cache's when empty; `embed --model-dir` wins), `batch` (512) |
 | `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10). Recorded, not wired into search yet: the next step |
+| `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both` |
 | `[llm.summaries]`, `[llm.query_rewrite]` | `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature`, `max_tokens`, `timeout_ms`, for the later iterations |
 
 Moving the values changed no result: with no file, and with a file of

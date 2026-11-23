@@ -40,6 +40,38 @@ pub struct Config {
     pub embedder: Embedder,
     pub reranker: Reranker,
     pub llm: Llm,
+    /// The BM25 lists' field boosts (`--lexical bm25|both`, pg_search).
+    pub bm25: Bm25,
+}
+
+/// Each card field's boost in the BM25 card list; by default in the ratio
+/// of the native list's weights (A 1.0, B 0.4, C 0.2, D 0.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Bm25 {
+    pub terms: f64,
+    pub labels: f64,
+    pub title: f64,
+    pub summary: f64,
+    pub asks: f64,
+    pub seed: f64,
+    pub why: f64,
+    pub symbols: f64,
+}
+
+impl Default for Bm25 {
+    fn default() -> Self {
+        Bm25 {
+            terms: 10.0,
+            labels: 10.0,
+            title: 4.0,
+            summary: 4.0,
+            asks: 4.0,
+            seed: 2.0,
+            why: 2.0,
+            symbols: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
