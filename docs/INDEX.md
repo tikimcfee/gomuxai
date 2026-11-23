@@ -1069,6 +1069,58 @@ learned labels; the model rewrite stage; the concept pass in the global
 dream; the larger embedder as a batch mode; tree-sitter symbols; the bus
 op and `pull`.
 
+## How v1 measured against rg
+
+The harness is `rs/crates/agent-index/eval/` (its README says how to
+run it); the data (past sessions' search patterns and edited files, and
+plain questions) stays on the host it came from. The tree was a real dev
+tree of about 30 projects (crawl 34 s, embedding 100 s, 736 MB). It took
+three runs: an independent reviewer on another model family audited the
+first two and found flaws on both sides (the index's project preference
+applied after a global cut, `rg` over the tree drowning in data dumps
+the index skips, a glossary's source files leaking its phrasings), all
+fixed before the third. Intervals are 95% paired bootstrap, resampled by
+question or by session.
+
+- **Plain questions** (32 questions about two projects, labeled with
+  graded relevance, each asked long and short): **not yet shown.** These
+  are the questions the embedding lane used to choose the hybrid stack,
+  so they are a development set, and they flatter the index. On them, at
+  the same scope as `rg` (limited to the project), the index ranks better
+  (nDCG@10 +0.114 [+0.011, +0.223] long, +0.102 [+0.018, +0.183] short)
+  but puts a relevant file in the top 5 no more often than `rg` (+0.094
+  [−0.062, +0.250] long; 20 against 21 of 32 short). With the soft
+  project prior from the caller's directory, the long questions show 84%
+  against 66% in the top 5, but that mode fuses the lexical lists twice,
+  and it is one comparison of six. A held-out set, written blind to every
+  system and never used for tuning, decides this claim.
+- **The agent's own search patterns** (389 patterns from 62 sessions,
+  scored on the files the session then edited): level. Top 5, 17%
+  against 18%, −0.010 [−0.052, +0.044]; every interval spans zero, and 49
+  targets sit in repos the crawl kept shallow, where the index can't
+  score. This is `rg`'s home ground: the agent had already turned its
+  intent into the exact string. Single identifiers still trail (23
+  against 30 of 167 in the top 5), as do literals (phrases and string
+  contents). Run with `--kind file`, so files are compared with files.
+- **Over the whole tree, no project known**: the index's lead (0.331
+  against 0.044 nDCG on the long questions) is real in kind but inflated:
+  `rg` there still scans data dumps under a megabyte that the index
+  skips.
+- **A glossary's lay phrasings** (secondary): too concentrated to judge
+  by (one file is the target of 40% of them; a constant list scores
+  72%); on the rest, level.
+- **Cost**: about 250 ms a query from the CLI (120 ms inside the
+  search), against 5 to 40 ms for `rg` in one project and 0.2 to 2 s over
+  the whole tree.
+
+Caveats: many session targets no longer exist and were dropped; both
+sides search today's tree, not the tree before each session's edits; the
+questions come from one labeler. Next levers, by the losses: crawl nested
+repos fully, phrase and adjacency matching for literals, exact
+identifiers into the top 5, and query expansion for short asks. The
+claim the index exists for, that plain words find code better than `rg`
+does, waits on the held-out set.
+
 ## Open questions
 
 - Should a dream's worker summarize leaves too when no local endpoint
