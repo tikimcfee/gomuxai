@@ -22,11 +22,10 @@ candle-core = { version = "0.11", optional = true }
 candle-nn = { version = "0.11", optional = true }
 candle-transformers = { version = "0.11", optional = true }
 half = { version = "2", optional = true }
-rayon = { version = "1", optional = true }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["fancy-regex"] }
 
 [features]
-embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:half", "dep:rayon", "dep:tokenizers"]
+embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:half", "dep:tokenizers"]
 
 [dev-dependencies]
 tempfile.workspace = true

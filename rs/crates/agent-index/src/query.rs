@@ -206,7 +206,17 @@ fn semantic_list(
     o: &SearchOptions,
     limit: usize,
 ) -> Result<(Vec<String>, HashMap<String, f64>)> {
-    let pairs = semantic.ranked(conn, &o.query, limit)?;
+    // The filters apply after the scan, so a filtered search asks for more:
+    // on a tree of many projects, the nearest few hundred overall can hold
+    // almost nothing from the one asked for. An exact scan costs the same
+    // either way.
+    let filtered = !(o.kind.is_empty() && o.project.is_empty() && o.under.is_empty());
+    let want = if filtered {
+        limit.saturating_mul(20)
+    } else {
+        limit
+    };
+    let pairs = semantic.ranked(conn, &o.query, want)?;
     if pairs.is_empty() {
         return Ok((Vec::new(), HashMap::new()));
     }
@@ -218,6 +228,9 @@ fn semantic_list(
     let mut ids = Vec::new();
     let mut scores = HashMap::new();
     for (id, score) in pairs {
+        if ids.len() >= limit {
+            break;
+        }
         if st.exists(params![id, o.kind, o.project, o.under])? && !scores.contains_key(&id) {
             scores.insert(id.clone(), score);
             ids.push(id);

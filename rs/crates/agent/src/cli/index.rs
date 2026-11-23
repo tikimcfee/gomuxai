@@ -394,9 +394,10 @@ fn embed_def() -> Def {
 #[cfg(feature = "embed")]
 fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
     use agent_index::embed;
-    // Before any thread starts: the embedder's workers each run their
-    // matrix products on one thread (see embed::single_threaded_products).
-    embed::single_threaded_products();
+    // SAFETY: first thing in the command, before anything starts a thread
+    // (main goes straight to the command); the workers each run their matrix
+    // products on one thread (see embed::single_threaded_products).
+    unsafe { embed::single_threaded_products() };
     let mut ix = open(ctx)?;
     require_projects(&ix)?;
     let given = (!a.model_dir.is_empty()).then(|| PathBuf::from(&a.model_dir));
@@ -404,7 +405,7 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
     let emb = embed::Embedder::load(&dir)?;
     let mut last = 0;
     let r = embed::drain(&mut ix.conn, &emb, int_flag(a.limit, "limit")?, |done, total| {
-        if done == total || done >= last + 1000 {
+        if done >= last + 1000 && done < total {
             last = done;
             eprintln!("embedded {done} of {total}");
         }
@@ -414,7 +415,7 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
             "model": embed::MODEL_ID,
             "embedded": r.embedded,
             "removed": r.removed,
-            "skipped": r.skipped,
+            "settled": r.settled,
             "remaining": r.remaining,
             "secs": r.secs,
         }));
@@ -448,7 +449,16 @@ fn semantic(ctx: &Ctx, ix: &Index) -> Option<Box<dyn agent_index::Semantic>> {
     use agent_index::embed;
     let dir = match embed::model_dir(None) {
         Ok(d) => d,
-        Err(_) => return None,
+        Err(e) => {
+            let has: bool = ix
+                .conn
+                .query_row("SELECT EXISTS (SELECT 1 FROM vectors)", [], |r| r.get(0))
+                .unwrap_or(false);
+            if has {
+                ctx.hint(format!("searching by words only: the embedding model isn't here ({e:#})"));
+            }
+            return None;
+        }
     };
     match embed::VectorSemantic::open(&ix.conn, &dir) {
         Ok(Some(s)) => Some(Box::new(s)),

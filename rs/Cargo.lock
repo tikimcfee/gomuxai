@@ -188,7 +188,6 @@ dependencies = [
  "candle-transformers",
  "chrono",
  "half",
- "rayon",
  "regex",
  "rusqlite",
  "serde",

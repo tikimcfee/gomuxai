@@ -26,7 +26,7 @@ In shape it is a semantic graph over a vector store: entities and typed
 edges, each entity's meaning embedded beside its words, searched
 lexically and by vector, then walked as a graph. It is built from
 standard, embedded parts (SQLite with FTS5 and sqlite-vec, petgraph, an
-ONNX embedder; "Stack", below), not a search engine of its own: an
+CPU embedder; "Stack", below), not a search engine of its own: an
 earlier custom repo index was set aside because it couldn't show it beat
 `rg` ("An earlier attempt", below). What's new here is what goes in
 (content-keyed summaries, a learned vocabulary, cross-project concepts)
@@ -398,7 +398,7 @@ Popular, maintained, embedded parts; no daemon, no second store:
 | graph | an `edges` table with recursive CTEs for one or two hops; `petgraph` in memory for PageRank and personalized PageRank | 25,000 nodes and 200,000 edges load in milliseconds. Kùzu, the embedded graph database, was archived in 2025; DuckDB's property-graph extension is research-grade and heavy for this size |
 | walk | the `ignore` crate (ripgrep's walker) and the `git` CLI | `.gitignore` handled, non-git trees too |
 | symbols | regular expressions on day one, then `tree-sitter` | tree-sitter's grammars cover every language in the tree |
-| embedder | `fastembed` (ONNX Runtime) with `bge-small-en-v1.5` on the CPU | 384 dimensions, embeds 25,000 short texts in about a minute, and takes no GPU memory from a resident chat model. A larger model over an `/v1/embeddings` endpoint is an optional batch mode |
+| embedder | `bge-small-en-v1.5` on the CPU through `candle` (pure Rust, no ONNX Runtime), behind the cargo feature `embed` | 384 dimensions; vectors identical to fastembed's ONNX ones; about 70 cards a second on 16 cores, so 25,000 cards in about 6 minutes once, then seconds per crawl; no GPU memory taken from a resident chat model. A larger model over an `/v1/embeddings` endpoint is an optional batch mode |
 | summarizer | an HTTP JSON client to `index.llm` | any OpenAI-compatible local server |
 
 Per host. Every host crawls its own checkouts. Summaries are keyed by
@@ -725,9 +725,11 @@ So, in v1:
 - **No model summaries for fixtures and data files** (test data,
   fixture JSONL and text): a few hundred fixture summaries in one repo
   flooded the results. They keep their seeds and are ranked down.
-- **A static embedder is being measured** (a model2vec-style model:
-  tokenizer, table lookup, mean; no ONNX runtime). If it holds up in
-  the hybrid, the embedder needs no heavy dependency at all.
+- **A static embedder was measured and is the fallback, not the default**
+  (model2vec potion-retrieval-32M: table lookup and mean, 100 times
+  faster). Inside the hybrid it scored about 0.04 MRR below bge-small
+  at both corpus sizes, past the pre-registered 0.03 margin, so
+  bge-small through candle is the default.
 - **Raw half floats, exact scan.** 25,000 × 384 scans in about 20 ms; no
   vector extension is needed below roughly 400,000 vectors, so v1 stores
   plain blobs and `sqlite-vec` waits until it's needed.

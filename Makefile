@@ -1,4 +1,4 @@
-.PHONY: all build test install macos arm64 clean lint fmt manager manager-test install-manager
+.PHONY: all build test install macos arm64 clean lint fmt manager manager-test install-manager lint-embed test-embed
 
 # `agent` is two programs: the Rust CLI (rs/, binary `agent`) and the bus server it starts
 # (busd/, Go, binary `agent-busd`: the embedded nats-server). They are built, installed and
@@ -31,6 +31,14 @@ lint:
 
 fmt:
 	cd rs && $(CARGO) fmt --all
+
+# The index's embedder (cargo feature embed: candle and a model from the Hugging Face cache),
+# linted and tested apart so the default build stays lean.
+lint-embed:
+	cd rs && $(CARGO) clippy -p agent -p agent-index --features embed --all-targets -- -D warnings
+
+test-embed:
+	cd rs && $(CARGO) test -p agent-index --features embed
 
 # Install over the agent this machine runs: the one on PATH, through any symlink to the real
 # file (its store, .gomuxai/, lives beside the real file, so a second install location would

@@ -14,7 +14,12 @@ fn main() -> anyhow::Result<()> {
     let load = t.elapsed().as_secs_f64();
     let t = Instant::now();
     let v = emb.embed(&texts, query)?;
-    eprintln!("load {load:.2}s, {} texts in {:.2}s ({:.0}/s)", texts.len(), t.elapsed().as_secs_f64(), texts.len() as f64 / t.elapsed().as_secs_f64());
+    eprintln!(
+        "load {load:.2}s, {} texts in {:.2}s ({:.0}/s)",
+        texts.len(),
+        t.elapsed().as_secs_f64(),
+        texts.len() as f64 / t.elapsed().as_secs_f64()
+    );
     println!("{}", serde_json::to_string(&v)?);
     Ok(())
 }
