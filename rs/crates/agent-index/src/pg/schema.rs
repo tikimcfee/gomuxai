@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use super::Pg;
 
 /// The migrations, oldest first; a migration's version is its place (from 1).
-pub const MIGRATIONS: &[&str] = &[MIGRATION_1];
+pub const MIGRATIONS: &[&str] = &[MIGRATION_1, BM25_INDEXES];
 
 /// 1: projects, roots, entities (weighted full text, trigram text, card
 /// vector), chunks (english and simple full text), edges, labels, aliases,
@@ -197,6 +197,70 @@ CREATE TABLE queries (
     ms jsonb NOT NULL DEFAULT '{}'
 );
 "#;
+
+/// 2: the BM25 indexes of the A/B (docs/INDEX-V2.md, "ParadeDB pg_search: an
+/// A/B"), over the same card text and chunks as the native lists. Only where
+/// the database has the `pg_search` extension: elsewhere this does nothing,
+/// and [`ensure_bm25`] runs it again once the extension is there. The
+/// `source_code` tokenizer splits on punctuation, camelCase and snake_case
+/// and lowercases, so `terms`' split words come from the text itself; prose
+/// fields are stemmed too, as `to_tsvector('english', ...)` stems them.
+/// Chunks index `text` alone: `chunks.terms` holds what the tokenizer
+/// already yields. Filter columns aren't indexed: [`super::search::bm25_ctes`]
+/// filters on the heap, as the native lists do.
+const BM25_INDEXES: &str = r#"
+DO $do$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_search') THEN
+        RETURN;
+    END IF;
+    CREATE INDEX IF NOT EXISTS entities_bm25 ON entities USING paradedb (
+        id,
+        (terms::pdb.source_code),
+        (labels_text::pdb.source_code),
+        (title::pdb.source_code('stemmer=english')),
+        (summary::pdb.source_code('stemmer=english')),
+        ((words_of(asks))::pdb.source_code('stemmer=english', 'alias=asks')),
+        (seed::pdb.source_code('stemmer=english')),
+        (why::pdb.source_code('stemmer=english')),
+        (symbols::pdb.source_code));
+    CREATE INDEX IF NOT EXISTS chunks_bm25 ON chunks USING paradedb (
+        entity_id,
+        ord,
+        (text::pdb.source_code('stemmer=english')));
+END
+$do$;
+"#;
+
+/// Whether this schema has both BM25 indexes.
+pub fn has_bm25(pg: &Pg) -> Result<bool> {
+    let n: i64 = pg
+        .query(
+            "SELECT count(*) FROM pg_indexes WHERE schemaname = $1
+               AND indexname IN ('entities_bm25', 'chunks_bm25')",
+            &[&pg.schema],
+        )?
+        .first()
+        .map(|r| r.get(0))
+        .unwrap_or(0);
+    Ok(n == 2)
+}
+
+/// Makes sure the BM25 indexes are there, for a schema migrated before the
+/// database had `pg_search`; says what's missing when it still hasn't.
+pub fn ensure_bm25(pg: &Pg) -> Result<()> {
+    if has_bm25(pg)? {
+        return Ok(());
+    }
+    pg.batch(BM25_INDEXES)
+        .with_context(|| format!("building the BM25 indexes in schema {}", pg.schema))?;
+    if !has_bm25(pg)? {
+        bail!(
+            "BM25 needs the pg_search extension in this database: CREATE EXTENSION pg_search (the server must have it in shared_preload_libraries); --lexical fts uses native full text"
+        );
+    }
+    Ok(())
+}
 
 /// Brings the schema to the latest version.
 pub fn migrate(pg: &Pg) -> Result<()> {

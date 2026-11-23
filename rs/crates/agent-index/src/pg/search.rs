@@ -72,18 +72,72 @@ impl Lexical {
 }
 
 /// THE BM25 HOOK. The A/B's lists over the same card text and chunks, by
-/// `pg_search`'s BM25: (CTEs, lists as `name:cte`), or None while this
-/// schema has no BM25 index (then `--lexical bm25|both` is refused, saying
-/// so). Each CTE yields `(id, s)`, best first, at most `$12` rows, with
+/// `pg_search`'s BM25: (CTEs, lists as `name:cte`). The indexes are
+/// migration 2 in schema.rs, built only where the database has `pg_search`:
+/// `schema::ensure_bm25` builds them later, or says the extension is
+/// missing. Each CTE yields `(id, s)`, best first, at most `$12` rows, with
 /// [`FILTER`] on entity alias `e` (and [`HERE`] for the `_here` ones when
 /// `local`); the query's terms are `$1::text[]` (content words,
 /// lowercased), the whole query is `$7` when it is one word. Name the lists
 /// `bm25` / `bm25 here` (cards) and `bm25 full text` / `bm25 full text here`
 /// (chunks, an entity ranked by its best chunk), so `--explain` tells them
-/// from the native ones. The index DDL goes in a migration in schema.rs.
-pub fn bm25_ctes(_local: bool) -> Option<(Vec<String>, Vec<String>)> {
-    None
+/// from the native ones.
+pub fn bm25_ctes(local: bool) -> Option<(Vec<String>, Vec<String>)> {
+    let f = FILTER;
+    let here = format!(" AND {HERE}");
+    // Any term in any card field, the fields boosted in the ratio of the
+    // native list's weights (A 1.0, B 0.4, C 0.2, D 0.1). `|||` cuts the
+    // query with each field's own tokenizer, so `held_messages` and `running`
+    // meet the indexed `held`, `messag` and `run`.
+    let fields = [
+        ("e.terms", 10),
+        ("e.labels_text", 10),
+        ("e.title", 4),
+        ("e.summary", 4),
+        ("words_of(e.asks)", 4),
+        ("e.seed", 2),
+        ("e.why", 2),
+        ("e.symbols", 1),
+    ];
+    let matches = fields
+        .iter()
+        .map(|(col, boost)| format!("{col} ||| {BM25_QUERY}::pdb.boost({boost})"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let card = |name: &str, scope: &str| {
+        format!(
+            "{name} AS (SELECT e.id, pdb.score(e.id)::float8 AS s FROM entities e \
+             WHERE ({matches}) AND {f}{scope} ORDER BY s DESC, e.id LIMIT $12)"
+        )
+    };
+    let full = |name: &str, scope: &str| {
+        format!(
+            "{name} AS (SELECT bch.id, bch.s FROM bch JOIN entities e ON e.id = bch.id \
+             WHERE {f}{scope} ORDER BY bch.s DESC, bch.id LIMIT $12)"
+        )
+    };
+    let mut ctes = vec![card("bm25_cards", "")];
+    let mut lists = vec!["bm25:bm25_cards".to_string()];
+    if local {
+        ctes.push(card("bm25_cards_here", &here));
+        lists.push("bm25 here:bm25_cards_here".into());
+    }
+    // An entity by its best chunk.
+    ctes.push(format!(
+        "bch AS (SELECT c.entity_id AS id, max(pdb.score(c.entity_id))::float8 AS s FROM chunks c \
+         WHERE c.text ||| {BM25_QUERY} GROUP BY c.entity_id)"
+    ));
+    ctes.push(full("bm25_full", ""));
+    lists.push("bm25 full text:bm25_full".into());
+    if local {
+        ctes.push(full("bm25_full_here", &here));
+        lists.push("bm25 full text here:bm25_full_here".into());
+    }
+    Some((ctes, lists))
 }
+
+/// The query's terms as one string for `pg_search`'s match operator.
+const BM25_QUERY: &str = "array_to_string($1::text[], ' ')";
 
 /// The statement's text: which lists it holds depends on the query (every
 /// word only for several terms, the local lists only with a caller project,
@@ -665,6 +719,11 @@ fn search_entities(
         q
     };
     let ident = is_identifier(&o.query);
+    if lexical != Lexical::Fts {
+        // A schema migrated before the database had pg_search gets its
+        // BM25 indexes now, or the search says what's missing.
+        super::schema::ensure_bm25(pg)?;
+    }
     let sql = fused_sql(content.len() > 1, local, qvec.is_some(), lexical)?;
     let lim = LIST_LIMIT;
     let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![

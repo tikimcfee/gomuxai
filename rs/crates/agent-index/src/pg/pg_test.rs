@@ -345,3 +345,70 @@ fn search_show_tree_related() {
     );
     assert!(rel.groups.contains_key("depends on"), "{rel:#?}");
 }
+
+/// The A/B's BM25 lists (pg_search), where the database has the extension.
+#[test]
+fn search_bm25_lists() {
+    use super::search::Lexical;
+    let Some(t) = throwaway("bm25") else { return };
+    let pg = &t.0;
+    if !super::schema::has_bm25(pg).unwrap() {
+        // No pg_search here: asking for BM25 says so, and names the way out.
+        let e = super::search::search(pg, &opts("deliver"), None, Lexical::Bm25).unwrap_err();
+        assert!(format!("{e:#}").contains("pg_search"), "{e:#}");
+        return;
+    }
+    let (_dir, ix) = fixture();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let lists = |r: &crate::query::SearchResult| -> Vec<String> {
+        r.hits.iter().flat_map(|h| h.explain.clone()).collect()
+    };
+    // Cards: a snake_case name by its words, cut by the tokenizer.
+    let r = super::search::search(pg, &opts("deliver held"), None, Lexical::Bm25).unwrap();
+    assert!(
+        r.hits
+            .iter()
+            .take(3)
+            .any(|h| h.id.contains("deliver_held") || h.id.starts_with("alpha:src/deliver")),
+        "{:#?}",
+        r.hits
+    );
+    let l = lists(&r);
+    assert!(l.iter().any(|e| e.starts_with("bm25 #")), "{l:?}");
+    assert!(
+        !l.iter()
+            .any(|e| e.starts_with("lexical #") || e.starts_with("full text #")),
+        "{l:?}"
+    );
+    // Chunks: a word only in a body, and a camelCase identifier by its words.
+    let r = super::search::search(pg, &opts("zebraword"), None, Lexical::Bm25).unwrap();
+    assert_eq!(r.hits[0].id, "beta:src/lib.rs", "{:#?}", r.hits);
+    assert!(
+        lists(&r).iter().any(|e| e.starts_with("bm25 full text #")),
+        "{:#?}",
+        r.hits
+    );
+    let r = super::search::search(pg, &opts("render glyphs"), None, Lexical::Bm25).unwrap();
+    assert!(
+        r.hits.iter().any(|h| h.id == "alpha:src/lib.rs"),
+        "{:#?}",
+        r.hits
+    );
+    // Filters and the local lists.
+    let mut o = opts("parse config");
+    o.project = "alpha".into();
+    let r = super::search::search(pg, &o, None, Lexical::Bm25).unwrap();
+    assert!(r.hits.iter().all(|h| h.project == "alpha"));
+    let mut o = opts("deliver held");
+    o.caller_project = "alpha".into();
+    let r = super::search::search(pg, &o, None, Lexical::Both).unwrap();
+    let l = lists(&r);
+    for name in [
+        "bm25 here #",
+        "bm25 full text here #",
+        "lexical #",
+        "full text #",
+    ] {
+        assert!(l.iter().any(|e| e.starts_with(name)), "{name}: {l:?}");
+    }
+}
