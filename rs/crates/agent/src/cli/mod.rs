@@ -45,6 +45,9 @@ mod dream_evidence;
 mod dream_memory;
 // `agent dream schedule`, wired under `agent dream` by its group's def().
 mod dream_schedule;
+// The global dream's steps and the idea, ideas, judge and done verbs, wired
+// under `agent dream` by its group's def().
+mod dream_steps;
 mod friction_links;
 mod orient;
 mod resume_all;

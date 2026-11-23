@@ -3,11 +3,16 @@ of the dream scope: its sessions that have ended, handoff docs, memory, and
 the commits in its repo. The global dream covers the machine: the project
 dreams committed since the last one, every project's memory, the machine
 memory (<data dir>/memory, whose start_here.md goes into every agent's
-briefing), the friction box, and the evidence across projects. A Claude
-agent, dream-<id>, reads them and writes back only through agent dream's
-own verbs: it consolidates memory, triages friction (the global dream;
-duplicates, links, accepting what is clearly real; it never resolves an
-entry as fixed), and keeps a diary.
+briefing), the friction box, and the evidence across projects.
+
+A project dream's Claude agent, dream-<id>, reads them and writes back
+only through agent dream's own verbs: it consolidates memory and keeps a
+diary. The global dream is two agents and code: a synthesizer,
+dream-<id>-synth, proposes a change set (memory changes, and friction
+triage: duplicates, links, accepting what is clearly real; never resolving
+an entry as fixed) as ideas; a critic on the other model, dream-<id>-critic,
+checks each against the primary sources it cites; and code applies the
+approved ones and commits.
 
 Dreaming is opt-in by directory: only sessions run in a directory of the
 dream scope (or below one) are reviewed, with their memory and commits;
@@ -23,10 +28,13 @@ People (or a timer) run these:
   show     one dream: its diary and what it was given
   schedule run dreams on a timer (daily HH:MM, every Nh, off, status)
 
-The dream agent runs these, on its own open dream only:
+A dream's agents run these, on their own open dream only:
 
-  note, commit, abandon, friction dup|link|accept, limitation,
-  memory put|remove (memory get and check only read)
+  a project dream's agent: note, commit, abandon, friction dup|link|accept,
+    limitation, roster note, memory put|remove
+  the global dream's synthesizer: idea, done (and note, abandon, limitation)
+  the global dream's critic: judge, done (and note, abandon, limitation)
+  any: ideas, memory get and check, show and list (they only read)
 
 An item counts as reviewed once its dream commits, at the version it had
 then: a session written to again or a friction entry voted on comes back.
@@ -59,6 +67,10 @@ Available Commands:
   abandon     Give up your dream: its items wait for the next one
   friction    Triage friction for your dream: duplicates, links, accepting
   limitation  File friction about dreaming itself
+  idea        Propose one change for your dream's critic to judge
+  ideas       List a dream's ideas, their verdicts and what came of them
+  judge       Approve or reject one of your dream's ideas
+  done        Finish your part of the dream: the next step starts
   roster      Note how a harness and model did, from a session your dream reviewed
   memory      Read, write and check a memory directory, under a dream's guard
   schedule    Run dreams on a timer (a systemd user timer)

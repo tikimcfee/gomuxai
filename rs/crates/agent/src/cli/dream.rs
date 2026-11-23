@@ -18,8 +18,9 @@ use agent_fleet::handoff::STATE_KEY_HANDOFF;
 use agent_manage::SessionState;
 use agent_service::SpawnOptions;
 use agent_store::{
-    DREAM_COMMITTED, DREAM_KIND_GLOBAL, DREAM_OPEN, Dream, DreamItem, DreamOf, FRICTION_ACCEPTED,
-    FRICTION_OPEN, Friction, FrictionFilter, StateEntry, Time, gojson,
+    DREAM_COMMITTED, DREAM_KIND_GLOBAL, DREAM_OPEN, Dream, DreamItem, DreamOf, DreamWorker,
+    FRICTION_ACCEPTED, FRICTION_OPEN, Friction, FrictionFilter, ROLE_CRITIC, ROLE_DREAMER,
+    ROLE_GENERATOR, StateEntry, Time, gojson,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -55,11 +56,16 @@ of the dream scope: its sessions that have ended, handoff docs, memory, and
 the commits in its repo. The global dream covers the machine: the project
 dreams committed since the last one, every project's memory, the machine
 memory (<data dir>/memory, whose start_here.md goes into every agent's
-briefing), the friction box, and the evidence across projects. A Claude
-agent, dream-<id>, reads them and writes back only through agent dream's
-own verbs: it consolidates memory, triages friction (the global dream;
-duplicates, links, accepting what is clearly real; it never resolves an
-entry as fixed), and keeps a diary.
+briefing), the friction box, and the evidence across projects.
+
+A project dream's Claude agent, dream-<id>, reads them and writes back
+only through agent dream's own verbs: it consolidates memory and keeps a
+diary. The global dream is two agents and code: a synthesizer,
+dream-<id>-synth, proposes a change set (memory changes, and friction
+triage: duplicates, links, accepting what is clearly real; never resolving
+an entry as fixed) as ideas; a critic on the other model, dream-<id>-critic,
+checks each against the primary sources it cites; and code applies the
+approved ones and commits.
 
 Dreaming is opt-in by directory: only sessions run in a directory of the
 dream scope (or below one) are reviewed, with their memory and commits;
@@ -75,10 +81,13 @@ People (or a timer) run these:
   show     one dream: its diary and what it was given
   schedule run dreams on a timer (daily HH:MM, every Nh, off, status)
 
-The dream agent runs these, on its own open dream only:
+A dream's agents run these, on their own open dream only:
 
-  note, commit, abandon, friction dup|link|accept, limitation,
-  memory put|remove (memory get and check only read)
+  a project dream's agent: note, commit, abandon, friction dup|link|accept,
+    limitation, roster note, memory put|remove
+  the global dream's synthesizer: idea, done (and note, abandon, limitation)
+  the global dream's critic: judge, done (and note, abandon, limitation)
+  any: ideas, memory get and check, show and list (they only read)
 
 An item counts as reviewed once its dream commits, at the version it had
 then: a session written to again or a friction entry voted on comes back.
@@ -111,6 +120,10 @@ pub fn def() -> Def {
             abandon_def(),
             friction_def(),
             limitation_def(),
+            super::dream_steps::idea_def(),
+            super::dream_steps::ideas_def(),
+            super::dream_steps::judge_def(),
+            super::dream_steps::done_def(),
             roster_def(),
             super::dream_memory::def(),
             super::dream_schedule::def(),
@@ -1059,7 +1072,10 @@ scope. Only one dream is open at a time.
 
 1. An open dream whose agent is gone (ended, or its record removed) is
    closed as abandoned, and the agents of dreams that have closed are
-   cleaned up. If a dream's agent is still at work, run starts nothing.
+   cleaned up. If a dream's agent is still at work, run starts nothing. An
+   open global dream takes its next step if one is due: its critic, if
+   the synthesizer is done and no critic started; applying and
+   committing, if both are done; abandoning, if either is gone.
 2. It gathers (see agent dream gather). With nothing new, it records a
    quiet dream, starts no agent, and says so.
 3. Otherwise it records the dream and its items, writes the digest
@@ -1071,7 +1087,11 @@ scope. Only one dream is open at a time.
    Claude Code's projects (transcripts and memory), the scoped projects,
    the machine memory, the repos its commits are in and its handoff docs,
    edit files only in its dream's directory, and run git -C <repo> log or
-   show in those repos, without a prompt.
+   show in those repos, without a prompt. The global dream spawns its
+   synthesizer, dream-<id>-synth, instead, on claude-opus-5-5 at effort
+   xhigh or claude-fable-5-2, picked at random; its agent dream done
+   starts the critic on the other one (which edits nothing), and the
+   critic's done applies what it approved (agent dream done).
 
 --dry-run says what it would do and changes nothing."#,
     example: r#"  agent dream run --dry-run
@@ -1104,7 +1124,7 @@ pub fn run_def() -> Def {
 }
 
 /// Whether an agent is gone: no record, or ended. Its status otherwise.
-fn agent_alive(ctx: &Ctx, name: &str) -> anyhow::Result<Option<String>> {
+pub(crate) fn agent_alive(ctx: &Ctx, name: &str) -> anyhow::Result<Option<String>> {
     let svc = ctx.service()?;
     if ctx.store()?.get_agent(name)?.is_none() {
         return Ok(None);
@@ -1135,8 +1155,17 @@ pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
         )?;
     }
 
-    // Open dreams: abandon those whose agent is gone; leave one at work.
+    // Open dreams: abandon those whose agent is gone; leave one at work. A
+    // staged (global) dream takes its next step if one is due.
     for d in store.open_dreams()? {
+        if super::dream_steps::is_staged(&store.dream_workers(d.id)?) {
+            let a = super::dream_steps::advance(ctx, &d, args.dry_run)?;
+            ctx.write_out(&a.said)?;
+            if a.open {
+                return Ok(());
+            }
+            continue;
+        }
         if let Some(status) = agent_alive(ctx, &d.agent)? {
             return ctx.write_out(&format!(
                 "Dream #{} is still open: {} is {status}. Nothing started.\n",
@@ -1155,24 +1184,37 @@ pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
             d.id, d.agent
         ))?;
     }
-    // The agents of closed dreams still recorded.
+    // The agents of closed dreams still recorded: every worker.
     for d in store.list_dreams(0)? {
-        if d.status == DREAM_OPEN || d.agent.is_empty() || store.get_agent(&d.agent)?.is_none() {
+        if d.status == DREAM_OPEN {
             continue;
         }
-        if args.dry_run {
-            ctx.write_out(&format!(
-                "Would clean up {} (dream #{} is {}).\n",
-                d.agent, d.id, d.status
-            ))?;
-            continue;
+        let mut agents: Vec<String> = store
+            .dream_workers(d.id)?
+            .into_iter()
+            .map(|w| w.agent)
+            .collect();
+        if !d.agent.is_empty() && !agents.contains(&d.agent) {
+            agents.push(d.agent.clone());
         }
-        match ctx.service()?.cleanup(&d.agent) {
-            Ok(()) => ctx.write_out(&format!(
-                "Cleaned up {} (dream #{} is {}).\n",
-                d.agent, d.id, d.status
-            ))?,
-            Err(e) => ctx.write_out(&format!("Couldn't clean up {}: {e:#}\n", d.agent))?,
+        for agent in agents {
+            if store.get_agent(&agent)?.is_none() {
+                continue;
+            }
+            if args.dry_run {
+                ctx.write_out(&format!(
+                    "Would clean up {agent} (dream #{} is {}).\n",
+                    d.id, d.status
+                ))?;
+                continue;
+            }
+            match ctx.service()?.cleanup(&agent) {
+                Ok(()) => ctx.write_out(&format!(
+                    "Cleaned up {agent} (dream #{} is {}).\n",
+                    d.id, d.status
+                ))?,
+                Err(e) => ctx.write_out(&format!("Couldn't clean up {agent}: {e:#}\n"))?,
+            }
         }
     }
 
@@ -1219,15 +1261,31 @@ pub fn run_run(ctx: &Ctx, args: &RunArgs) -> anyhow::Result<()> {
             read: i.read.clone(),
         })
         .collect();
-    let d = store.open_dream_of_kind(&host, &plan.target.of(), &items, dream_agent_name)?;
+    // The global dream is staged: a generator first (its critic comes when
+    // it is done). A project dream is one dreamer.
+    let d = if plan.target == Target::Global {
+        let seed = super::dream_steps::seed();
+        store.open_dream_with(&host, &plan.target.of(), &items, |id| {
+            super::dream_steps::generator_worker(id, seed)
+        })?
+    } else {
+        store.open_dream_of_kind(&host, &plan.target.of(), &items, dream_agent_name)?
+    };
     match start_dream(ctx, &d, g) {
-        Ok(digest) => ctx.write_out(&format!(
-            "Started dream #{} {} with {}: agent {} (its digest is {digest}).\n",
-            d.id,
-            plan.target.over(),
-            describe_counts(g),
-            d.agent
-        )),
+        Ok(digest) => {
+            let who = match store.dream_worker(d.id, &d.agent)? {
+                Some(w) if w.role == ROLE_GENERATOR => {
+                    format!("its synthesizer {}", describe_worker(&w))
+                }
+                _ => format!("agent {}", d.agent),
+            };
+            ctx.write_out(&format!(
+                "Started dream #{} {} with {}: {who} (its digest is {digest}).\n",
+                d.id,
+                plan.target.over(),
+                describe_counts(g),
+            ))
+        }
         Err(e) => {
             let _ = store.abandon_dream(d.id, &format!("abandoned: couldn't start: {e:#}"));
             Err(e.context(format!("starting dream #{} (abandoned)", d.id)))
@@ -1258,10 +1316,6 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
     }
     text.push_str(&format_memory_checks(g, &projects));
     std::fs::write(&digest, text).map_err(|e| anyhow::anyhow!("writing {digest_s}: {e}"))?;
-    let brief = dir.join("brief.md");
-    let brief_s = brief.to_string_lossy().into_owned();
-    std::fs::write(&brief, format_brief(d, &digest_s))
-        .map_err(|e| anyhow::anyhow!("writing {brief_s}: {e}"))?;
 
     // Each memory dir as the dream found it: commit guards against it.
     let data_dir = ctx.data_dir();
@@ -1272,48 +1326,143 @@ fn start_dream(ctx: &Ctx, d: &Dream, g: &Gathered) -> anyhow::Result<String> {
             .with_context(|| format!("taking a snapshot of {}", i.key))?;
     }
 
-    let (allow_tools, deny_tools) = dream_tool_rules(ctx, &dir, &g.items);
+    let w = ctx
+        .store()?
+        .dream_worker(d.id, &d.agent)?
+        .with_context(|| format!("dream #{} has no worker {}", d.id, d.agent))?;
+    spawn_worker(ctx, d, &w, &ctx.non_interactive_caller_agent())?;
+    Ok(digest_s)
+}
+
+/// Writes worker w's brief and spawns it for dream d (whose digest is
+/// written): a Claude agent in `.gomuxai/dreams`, confined, on w's model
+/// and effort, its state keys naming the dream and what it may read.
+/// `spawned_by` is the dream's starter, whichever worker's step spawns it.
+pub(crate) fn spawn_worker(
+    ctx: &Ctx,
+    d: &Dream,
+    w: &DreamWorker,
+    spawned_by: &str,
+) -> anyhow::Result<()> {
+    let base = Path::new(&ctx.data_dir()).join("dreams");
+    let dir = base.join(d.id.to_string());
+    let digest = dir.join("digest.md").to_string_lossy().into_owned();
+    let brief = dir.join(match w.role.as_str() {
+        ROLE_CRITIC => "brief-critic.md",
+        ROLE_GENERATOR => "brief-synth.md",
+        _ => "brief.md",
+    });
+    let brief_s = brief.to_string_lossy().into_owned();
+    std::fs::write(&brief, format_brief(d, w, &digest))
+        .map_err(|e| anyhow::anyhow!("writing {brief_s}: {e}"))?;
+
+    let items = ctx.store()?.dream_items(d.id)?;
+    // A critic only reads: it edits no drafts.
+    let edit = w.role != ROLE_CRITIC;
+    let (allow_tools, deny_tools) = dream_tool_rules(ctx, &dir, &items, edit);
     let read_roots = rule_paths(&allow_tools);
-    let svc = ctx.service()?;
-    svc.spawn(
-        &Context::background(),
-        SpawnOptions {
-            name: d.agent.clone(),
-            backend: "claude".to_string(),
-            task_file: brief_s,
-            trust_workspace: true,
-            spawned_by: ctx.non_interactive_caller_agent(),
-            cwd: base.to_string_lossy().into_owned(),
-            allow_tools,
-            deny_tools,
-            // Nobody watches a dream: what its rules and the hook don't
-            // allow is refused, not judged by the person's own mode (auto
-            // mode let dream #8 run a plain friction accept).
-            permission_mode: "dontAsk".to_string(),
-            // Reading only, of the general commands: no send, no friction add.
-            agent_commands: Some(agent_service::DREAM_READ_COMMANDS.to_vec()),
-            confined: true,
-            ..Default::default()
-        },
-    )?;
+    let opts = SpawnOptions {
+        name: w.agent.clone(),
+        backend: "claude".to_string(),
+        task_file: brief_s,
+        trust_workspace: true,
+        spawned_by: spawned_by.to_string(),
+        cwd: base.to_string_lossy().into_owned(),
+        model: w.model.clone(),
+        effort: w.effort.clone(),
+        allow_tools,
+        deny_tools,
+        // Nobody watches a dream: what its rules and the hook don't
+        // allow is refused, not judged by the person's own mode (auto
+        // mode let dream #8 run a plain friction accept).
+        permission_mode: "dontAsk".to_string(),
+        // Reading only, of the general commands: no send, no friction add.
+        agent_commands: Some(agent_service::DREAM_READ_COMMANDS.to_vec()),
+        confined: true,
+        ..Default::default()
+    };
+    match &ctx.dream_spawns {
+        Some(rec) => {
+            ctx.store()?.create_agent(&agent_store::Agent {
+                name: w.agent.clone(),
+                session_name: format!("rpc-cli-{}", w.agent),
+                backend: "shell".into(),
+                spawned_by: spawned_by.to_string(),
+                created_at: Time::now(),
+                ..Default::default()
+            })?;
+            rec.lock().unwrap_or_else(|e| e.into_inner()).push(opts);
+        }
+        None => {
+            ctx.service()?.spawn(&Context::background(), opts)?;
+        }
+    }
     // What a dream agent on a hook-decided backend (agy) may read: the paths
     // its Read and Edit rules name (confine.rs).
     ctx.store()?.set_state(&StateEntry {
-        agent_name: d.agent.clone(),
+        agent_name: w.agent.clone(),
         key: agent_service::STATE_KEY_DREAM_READ.to_string(),
         value: serde_json::to_string(&read_roots)?,
         updated_at: Time::now(),
     })?;
     ctx.store()?.set_state(&StateEntry {
-        agent_name: d.agent.clone(),
+        agent_name: w.agent.clone(),
         key: STATE_KEY_DREAM.to_string(),
         value: d.id.to_string(),
         updated_at: Time::now(),
     })?;
-    Ok(digest_s)
+    if w.role != ROLE_DREAMER {
+        ctx.store()?
+            .append_dream_diary(d.id, &format!("{} started {}", stamp_now(), describe_worker(w)))?;
+    }
+    Ok(())
 }
 
-fn format_brief(d: &Dream, digest: &str) -> String {
+/// The time now, as diary lines start.
+pub(crate) fn stamp_now() -> String {
+    Time::now().utc().format_rfc3339()
+}
+
+/// A worker in a few words: its name, role, model and effort.
+pub(crate) fn describe_worker(w: &DreamWorker) -> String {
+    let model = if w.model.is_empty() {
+        "its default model".to_string()
+    } else {
+        w.model.clone()
+    };
+    let effort = if w.effort.is_empty() {
+        String::new()
+    } else {
+        format!(" at effort {}", w.effort)
+    };
+    let lens = if w.lens.is_empty() {
+        String::new()
+    } else {
+        format!(", lens {}", w.lens)
+    };
+    format!("{} ({}, {model}{effort}{lens})", w.agent, w.role)
+}
+
+fn format_brief(d: &Dream, w: &DreamWorker, digest: &str) -> String {
+    match w.role.as_str() {
+        ROLE_GENERATOR => {
+            return format!(
+                "You are {}, the synthesizer of dream #{}, the global dream, on this host.\n\n{}",
+                w.agent,
+                d.id,
+                agent_dream::brief_synth(digest)
+            );
+        }
+        ROLE_CRITIC => {
+            return format!(
+                "You are {}, the critic of dream #{}, the global dream, on this host.\n\n{}",
+                w.agent,
+                d.id,
+                agent_dream::brief_critic(digest)
+            );
+        }
+        _ => {}
+    }
     if d.kind == DREAM_KIND_GLOBAL {
         return format!(
             "You are {}, dreaming dream #{}, the global dream, on this host.\n\n{}",
@@ -1369,7 +1518,12 @@ fn read_rule(tool: &str, path: &str, tree: bool) -> String {
 /// its handoff docs. It edits only its own dream directory (drafts for
 /// `memory put --from`); notebooks are refused. Bash beyond the agent verbs
 /// goes through the PreToolUse hook (`git -C <repo> log|show`).
-fn dream_tool_rules(ctx: &Ctx, dream_dir: &Path, items: &[Item]) -> (Vec<String>, Vec<String>) {
+fn dream_tool_rules(
+    ctx: &Ctx,
+    dream_dir: &Path,
+    items: &[DreamItem],
+    edit: bool,
+) -> (Vec<String>, Vec<String>) {
     let mut allow: Vec<String> = Vec::new();
     for dir in super::transcript::session_dirs(ctx) {
         if dir.harness == agent_discovery::HARNESS_CLAUDE && !dir.path.is_empty() {
@@ -1399,7 +1553,13 @@ fn dream_tool_rules(ctx: &Ctx, dream_dir: &Path, items: &[Item]) -> (Vec<String>
         &machine_memory_dir(ctx).to_string_lossy(),
         true,
     ));
-    allow.push(read_rule("Edit", &dream_dir.to_string_lossy(), true));
+    if edit {
+        allow.push(read_rule("Edit", &dream_dir.to_string_lossy(), true));
+    } else {
+        // A worker that edits nothing still reads its dream's directory
+        // (the digest, the generator's drafts).
+        allow.push(read_rule("Read", &dream_dir.to_string_lossy(), true));
+    }
     allow.sort();
     allow.dedup();
     // Nobody approves anything in a dream (dontAsk), so these are refused
@@ -1540,8 +1700,25 @@ pub fn format_digest(d: &Dream, g: &Gathered) -> String {
 
 // The dream agent's own dream.
 
-/// The open dream the calling agent dreams, or why it has none.
+/// Every worker role: for the verbs any dream agent runs (note, abandon,
+/// limitation, ideas).
+pub(crate) const ANY_ROLE: &[&str] = &[ROLE_DREAMER, ROLE_GENERATOR, ROLE_CRITIC];
+/// The verbs that write memory, triage friction, note the roster and commit
+/// are a dreamer's: in the global dream code does those from approved ideas.
+pub(crate) const DREAMER: &[&str] = &[ROLE_DREAMER];
+
+/// The open dream the calling agent is a worker of, or why it has none.
 pub(crate) fn own_open_dream(ctx: &Ctx, verb: &str) -> anyhow::Result<Dream> {
+    Ok(own_worker(ctx, verb, ANY_ROLE)?.0)
+}
+
+/// The open dream the calling agent is a worker of, and its worker, if its
+/// role is one of `roles`; or why not.
+pub(crate) fn own_worker(
+    ctx: &Ctx,
+    verb: &str,
+    roles: &[&str],
+) -> anyhow::Result<(Dream, DreamWorker)> {
     let caller = ctx.caller_agent();
     let refuse = |why: String| {
         anyhow::anyhow!(
@@ -1555,14 +1732,38 @@ pub(crate) fn own_open_dream(ctx: &Ctx, verb: &str) -> anyhow::Result<Dream> {
     let by_state = store
         .get_state(&caller, STATE_KEY_DREAM)?
         .and_then(|e| e.value.parse::<i64>().ok());
-    let d = match by_state {
-        Some(id) => store.get_dream(id)?,
-        None => store.open_dream_of(&caller)?,
+    let found = match by_state {
+        Some(id) => match (store.get_dream(id)?, store.dream_worker(id, &caller)?) {
+            (Some(d), Some(w)) => Some((d, w)),
+            _ => None,
+        },
+        None => store.open_dream_worker(&caller)?,
     };
-    match d {
-        Some(d) if d.agent == caller && d.status == DREAM_OPEN => Ok(d),
-        Some(d) if d.agent == caller => Err(refuse(format!("dream #{} is {}", d.id, d.status))),
-        _ => Err(refuse(format!("{caller} has no open dream"))),
+    let (d, w) = match found {
+        Some((d, w)) if d.status == DREAM_OPEN => (d, w),
+        Some((d, _)) => return Err(refuse(format!("dream #{} is {}", d.id, d.status))),
+        None => return Err(refuse(format!("{caller} has no open dream"))),
+    };
+    if !roles.contains(&w.role.as_str()) {
+        let want = roles.join(" or ");
+        return Err(anyhow::anyhow!(
+            "agent dream {verb} is for a dream's {want}; {caller} is dream #{}'s {}{}",
+            d.id,
+            w.role,
+            role_hint(&w.role)
+        ));
+    }
+    Ok((d, w))
+}
+
+/// What a worker of `role` does instead, for a refusal.
+fn role_hint(role: &str) -> &'static str {
+    match role {
+        ROLE_GENERATOR => {
+            " (it proposes changes with agent dream idea; code applies what the critic approves)"
+        }
+        ROLE_CRITIC => " (it judges ideas with agent dream judge)",
+        _ => "",
     }
 }
 
@@ -1629,7 +1830,7 @@ pub fn commit_def() -> Def {
 }
 
 pub fn run_commit(ctx: &Ctx, _args: &CommitArgs) -> anyhow::Result<()> {
-    let d = own_open_dream(ctx, "commit")?;
+    let d = own_worker(ctx, "commit", DREAMER)?.0;
     let problems = memory_problems(ctx, &d)?;
     if !problems.is_empty() {
         let mut out = format!(
@@ -1659,34 +1860,10 @@ pub fn run_commit(ctx: &Ctx, _args: &CommitArgs) -> anyhow::Result<()> {
 /// memory dir it has a snapshot of, the whole-dir guard (files gone, source
 /// citations lost), and citations in the files it changed that name no item
 /// of the dream and none a committed dream reviewed.
-fn memory_problems(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>> {
-    let store = ctx.store()?;
-    let items = store.dream_items(d.id)?;
-    let reviewed = store.reviewed_fingerprints()?;
-    let scope = read_scope(ctx)?;
-    let known = |kind: &str, key: &str| -> bool {
-        if kind == gather::KIND_COMMIT {
-            return items
-                .iter()
-                .map(|i| (i.kind.as_str(), i.key.as_str()))
-                .chain(reviewed.keys().map(|(k, v)| (k.as_str(), v.as_str())))
-                .any(|(k, item)| k == kind && review::commit_matches(key, item))
-                || scope.iter().any(|repo| commit_in_repo(repo, key));
-        }
-        if kind == gather::KIND_DREAM {
-            // Any committed dream: the global dream cites the project dreams
-            // a lesson came from, given or reviewed earlier.
-            return key.parse::<i64>().ok().is_some_and(|id| {
-                store
-                    .get_dream(id)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|d| d.status == DREAM_COMMITTED)
-            });
-        }
-        items.iter().any(|i| i.kind == kind && i.key == key)
-            || reviewed.contains_key(&(kind.to_string(), key.to_string()))
-    };
+pub(crate) fn memory_problems(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>> {
+    let k = Known::of(ctx, d)?;
+    let known = |kind: &str, key: &str| k.knows(kind, key);
+    let items = &k.items;
     let data_dir = ctx.data_dir();
     let mut out = Vec::new();
     for i in items.iter().filter(|i| i.kind == gather::KIND_MEMORY) {
@@ -1703,6 +1880,59 @@ fn memory_problems(ctx: &Ctx, d: &Dream) -> anyhow::Result<Vec<String>> {
         }
     }
     Ok(out)
+}
+
+/// What a citation of dream d may name, by the rules commit checks: an item
+/// of the dream, an item a committed dream reviewed, any committed dream,
+/// and any commit of a scoped project.
+pub(crate) struct Known {
+    pub(crate) items: Vec<DreamItem>,
+    reviewed: HashMap<(String, String), String>,
+    scope: Vec<String>,
+    committed: std::collections::HashSet<i64>,
+}
+
+impl Known {
+    pub(crate) fn of(ctx: &Ctx, d: &Dream) -> anyhow::Result<Known> {
+        let store = ctx.store()?;
+        Ok(Known {
+            items: store.dream_items(d.id)?,
+            reviewed: store.reviewed_fingerprints()?,
+            scope: read_scope(ctx)?,
+            committed: store
+                .list_dreams(0)?
+                .into_iter()
+                .filter(|d| d.status == DREAM_COMMITTED)
+                .map(|d| d.id)
+                .collect(),
+        })
+    }
+
+    /// Whether the item kind/key (from review::citation_item) is one a
+    /// citation may name.
+    pub(crate) fn knows(&self, kind: &str, key: &str) -> bool {
+        if kind == gather::KIND_COMMIT {
+            return self
+                .items
+                .iter()
+                .map(|i| (i.kind.as_str(), i.key.as_str()))
+                .chain(self.reviewed.keys().map(|(k, v)| (k.as_str(), v.as_str())))
+                .any(|(k, item)| k == kind && review::commit_matches(key, item))
+                || self.scope.iter().any(|repo| commit_in_repo(repo, key));
+        }
+        if kind == gather::KIND_DREAM {
+            // Any committed dream: the global dream cites the project dreams
+            // a lesson came from, given or reviewed earlier.
+            return key
+                .parse::<i64>()
+                .ok()
+                .is_some_and(|id| self.committed.contains(&id));
+        }
+        self.items.iter().any(|i| i.kind == kind && i.key == key)
+            || self
+                .reviewed
+                .contains_key(&(kind.to_string(), key.to_string()))
+    }
 }
 
 /// Whether `hash` (7 or more hex digits) names a commit in the git repo at
@@ -1976,8 +2206,28 @@ pub fn run_show(ctx: &Ctx, args: &ShowArgs) -> anyhow::Result<()> {
         d.project.clone()
     };
     let _ = writeln!(b, "Over:     {over}");
-    if !d.agent.is_empty() {
+    let workers = store.dream_workers(d.id)?;
+    if workers.len() > 1 || workers.first().is_some_and(|w| w.role != ROLE_DREAMER) {
+        for w in &workers {
+            let _ = writeln!(b, "Worker:   {} {}", describe_worker(w), w.status);
+        }
+    } else if !d.agent.is_empty() {
         let _ = writeln!(b, "Agent:    {}", d.agent);
+    }
+    let ideas = store.dream_ideas(d.id)?;
+    if !ideas.is_empty() {
+        let count = |s: &str| ideas.iter().filter(|i| i.status == s).count();
+        let _ = writeln!(
+            b,
+            "Ideas:    {} ({} applied, {} skipped, {} rejected, {} approved, {} not judged; agent dream ideas {} lists them)",
+            ideas.len(),
+            count(agent_store::IDEA_APPLIED),
+            count(agent_store::IDEA_SKIPPED),
+            count(agent_store::IDEA_REJECTED),
+            count(agent_store::IDEA_APPROVED),
+            count(agent_store::IDEA_PROPOSED),
+            d.id
+        );
     }
     let _ = writeln!(b, "Started:  {}", stamp(&d.started_at));
     if !d.finished_at.is_zero() {
@@ -2060,7 +2310,7 @@ pub fn roster_note_def() -> Def {
 }
 
 pub fn run_roster_note(ctx: &Ctx, args: &super::roster::RosterNoteArgs) -> anyhow::Result<()> {
-    let d = own_open_dream(ctx, "roster note")?;
+    let d = own_worker(ctx, "roster note", DREAMER)?.0;
     if !args.by.trim().is_empty() {
         anyhow::bail!("--by is the dream's own agent ({}); leave it out", d.agent);
     }
@@ -2138,23 +2388,35 @@ pub fn friction_dup_def() -> Def {
 }
 
 pub fn run_friction_dup(ctx: &Ctx, args: &FrictionDupArgs) -> anyhow::Result<()> {
-    let d = own_open_dream(ctx, "friction dup")?;
-    let f = get_friction(ctx, &args.args[0])?;
-    let o = get_friction(ctx, &args.args[1])?;
+    let d = own_worker(ctx, "friction dup", DREAMER)?.0;
+    triage_dup(ctx, &d, &args.args[0], &args.args[1], &args.note)
+}
+
+/// Closes entry `id` as a duplicate of `original` for dream d, recording
+/// both as the dream left them: the dup verb, and an approved idea.
+pub(crate) fn triage_dup(
+    ctx: &Ctx,
+    d: &Dream,
+    id: &str,
+    original: &str,
+    note: &str,
+) -> anyhow::Result<()> {
+    let f = get_friction(ctx, id)?;
+    let o = get_friction(ctx, original)?;
     run_friction_resolve(
         ctx,
         &FrictionResolveArgs {
-            dup: args.args[1].clone(),
+            dup: original.to_string(),
             linked: false,
-            note: args.note.clone(),
+            note: note.to_string(),
             only: false,
             wontfix: false,
-            args: vec![args.args[0].clone()],
+            args: vec![id.to_string()],
         },
     )?;
     // The original may be a duplicate itself: resolve points at its original.
     let target = ctx.store()?.get_friction(f.id)?.map(|f| f.duplicate_of).unwrap_or(o.id);
-    record_friction(ctx, &d, &[f.id, o.id, target])
+    record_friction(ctx, d, &[f.id, o.id, target])
 }
 
 pub const FRICTION_LINK: Doc = Doc {
@@ -2172,11 +2434,17 @@ pub fn friction_link_def() -> Def {
 }
 
 pub fn run_dream_friction_link(ctx: &Ctx, args: &FrictionLinkArgs) -> anyhow::Result<()> {
-    let d = own_open_dream(ctx, "friction link")?;
+    let d = own_worker(ctx, "friction link", DREAMER)?.0;
+    triage_link(ctx, &d, args)
+}
+
+/// Links an entry to one on another host for dream d (the link verb, and
+/// an approved idea).
+pub(crate) fn triage_link(ctx: &Ctx, d: &Dream, args: &FrictionLinkArgs) -> anyhow::Result<()> {
     let f = get_friction(ctx, &args.args[0])?;
     run_friction_link(ctx, args)?;
     let id = if f.duplicate_of != 0 { f.duplicate_of } else { f.id };
-    record_friction(ctx, &d, &[id])
+    record_friction(ctx, d, &[id])
 }
 
 pub const FRICTION_ACCEPT: Doc = Doc {
@@ -2194,10 +2462,20 @@ pub fn friction_accept_def() -> Def {
 }
 
 pub fn run_dream_friction_accept(ctx: &Ctx, args: &FrictionAcceptArgs) -> anyhow::Result<()> {
-    let d = own_open_dream(ctx, "friction accept")?;
+    let d = own_worker(ctx, "friction accept", DREAMER)?.0;
+    triage_accept(ctx, &d, args)
+}
+
+/// Accepts an open entry for dream d (the accept verb, and an approved
+/// idea).
+pub(crate) fn triage_accept(
+    ctx: &Ctx,
+    d: &Dream,
+    args: &FrictionAcceptArgs,
+) -> anyhow::Result<()> {
     let f = get_friction(ctx, &args.args[0])?;
     run_friction_accept(ctx, args)?;
-    record_friction(ctx, &d, &[f.id])
+    record_friction(ctx, d, &[f.id])
 }
 
 // `agent dream limitation`

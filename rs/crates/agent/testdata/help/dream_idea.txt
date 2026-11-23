@@ -1,0 +1,38 @@
+Idea records one proposed change of the global dream, read as JSON from
+--from: a memory change
+
+  {"op": "put", "dir": DIR, "file": FILE, "expect_version": VERSION,
+   "draft": PATH, "why": "...", "citations": [...]}
+  {"op": "remove", "dir": DIR, "file": FILE, "expect_version": VERSION,
+   "why": "...", "citations": [...]}
+
+or a friction triage
+
+  {"op": "dup", "id": N, "other": ORIGINAL, "note": "...", "citations": [...]}
+  {"op": "link", "id": N, "other": "ID@HOST", "note": "...", "citations": [...]}
+  {"op": "accept", "id": N, "note": "...", "citations": [...]}
+
+It refuses an unknown field, a missing one, a dir that is none of the
+dream's memory directories, a draft outside the dream's directory, a second
+idea on a file, a friction entry that isn't here, and any citation that
+doesn't resolve: sessions (claude:, agy:, kimi:), friction:, commit: and
+dream: citations are checked as commit checks them, and any other kind is
+refused. A put's draft is read now: what the critic judges is what is
+applied. Nothing changes until the critic approves the idea and the dream
+applies it. Only a dream's generator runs it.
+
+Usage:
+  agent dream idea --from FILE [flags]
+
+Examples:
+  agent dream idea --from idea-start-here.json
+
+Flags:
+      --from string   The idea, as JSON, in this file
+  -h, --help          help for idea
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

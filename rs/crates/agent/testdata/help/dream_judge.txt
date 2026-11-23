@@ -1,0 +1,28 @@
+Judge records the critic's verdict on an idea of its dream, with why. To
+approve, name with --checked (repeatable) each primary source you read
+yourself, at least one of them among the idea's citations: the critic
+checks the sources, not the generator's summary of them. Scores, 1 to 5,
+are optional. An idea may be judged again until its dream applies it. Only
+a dream's critic runs it.
+
+Usage:
+  agent dream judge <idea-id> approve|reject --why "..." [flags]
+
+Examples:
+  agent dream judge 3 approve --why "both sessions show the trip" --checked claude:3f3a9c --checked dream:12 --evidence 4
+  agent dream judge 4 reject --why "one session, and the rule needs three"
+
+Flags:
+      --checked stringArray   A source you read (a citation); repeatable
+      --evidence int          How well the sources bear it out, 1 to 5
+      --feasibility int       How sure it applies cleanly, 1 to 5
+  -h, --help                  help for judge
+      --leverage int          How much it would help, 1 to 5
+      --novelty int           How new it is against what exists, 1 to 5
+      --why string            Why, from the sources
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

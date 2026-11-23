@@ -481,6 +481,10 @@ pub struct Ctx {
     /// finds every program named without a path at /usr/bin/<name> (Go:
     /// stubExec's execProcess and lookPath).
     pub exec_calls: Option<Arc<Mutex<Vec<super::exec::ExecCall>>>>,
+    /// Tests: a dream's workers are recorded here (with a shell agent record
+    /// in the store) instead of spawned, so a dream's steps run without a
+    /// Claude CLI.
+    pub dream_spawns: Option<Arc<Mutex<Vec<agent_service::SpawnOptions>>>>,
     /// Tests: whether this terminal can be handed over, for attach over ssh
     /// (Go: attachTerminal); None asks stdin.
     pub attach_terminal: Option<bool>,
@@ -581,6 +585,7 @@ impl Ctx {
             caller_chain: Mutex::new(None),
             cached_caller: Mutex::new(None),
             exec_calls: None,
+            dream_spawns: None,
             attach_terminal: None,
             argv: None,
             stdin: Mutex::new(None),
