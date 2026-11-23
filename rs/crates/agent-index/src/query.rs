@@ -203,7 +203,10 @@ fn label_matches(conn: &Connection, query: &str, o: &SearchOptions) -> Result<Ve
                 continue;
             }
             let gram = &words[i..i + n];
-            if n == 1 && (names::is_stop(&gram[0]) || gram[0].len() < 3) {
+            // One word of several is left to the lexical lists: a word that
+            // happens to name a dir somewhere ("memory") isn't what the query
+            // names. A one-word query is matched whole.
+            if n == 1 && (words.len() > 1 || names::is_stop(&gram[0]) || gram[0].len() < 3) {
                 continue;
             }
             if gram.iter().all(|w| names::is_stop(w)) {
@@ -216,11 +219,6 @@ fn label_matches(conn: &Connection, query: &str, o: &SearchOptions) -> Result<Ve
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                 })?
                 .collect::<rusqlite::Result<_>>()?;
-            let distinct: HashSet<&String> = rows.iter().map(|r| &r.0).collect();
-            // A one-word label many entities answer to isn't a name for any one.
-            if n == 1 && n < words.len() && distinct.len() > 3 {
-                continue;
-            }
             if rows.is_empty() {
                 continue;
             }

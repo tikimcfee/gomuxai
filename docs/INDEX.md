@@ -576,9 +576,9 @@ Labels come from five places:
 
 1. **Label match.** The query, normalized, against `labels`: an exact or
    near match on an alias ("word wall") goes straight to the top.
-   **built**: the whole query pins its entities to the top; a run of its
-   words (up to six; a single word only when it names three entities or
-   fewer) adds a ranked list. Labels from code (name spellings, package
+   **built**: the whole query pins its entities to the top; a run of two
+   to six of its words adds a ranked list (one word of several is left to
+   the lexical lists). Labels from code (name spellings, package
    names, README titles, the remote's name, old ids), `alias add` and
    `lexicon import` (origin `lexicon`, the definition and confusables
    kept as evidence; confusables aren't shown side by side yet).
