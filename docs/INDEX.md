@@ -357,9 +357,11 @@ Tables:
 - `search`: an FTS5 table (title, path, summary, why, symbol names,
   labels) with the porter tokenizer, and `search_tri`, FTS5 with the
   trigram tokenizer over names, paths and labels, for substrings and
-  typos.
-- `vectors`: a sqlite-vec table of entity, chunk, embedding model, half-float
-  vector, and the text key it was made from.
+  typos; and `search_full`, FTS5 (porter) over the raw text of files in
+  `full`-depth projects, with no stored copy of the text.
+- `vectors`: entity, chunk, embedding model, a half-float blob, and the
+  text key it was made from; `vector_stats` holds each model's corpus
+  mean.
 - `embed_queue`: entity, text key, reason: what the embedder has to do.
 - `queries`: each search, its caller, results, and what the caller
   opened next (below).
