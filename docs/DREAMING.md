@@ -352,7 +352,11 @@ call.
   `dream_batches`/`dream_items`): fixed prompt, narrow toolset, a cursor
   that counts an item only when the dream commits, a quiet skip, a
   de-duplicated "report limitation" tool.
-- OpenClaw dreaming: staged phases with one writer, a rewrite rejected if it
-  drops over 25% of entries or loses a source reference, the prior file
-  saved before each rewrite, a DREAMS.md diary.
+- OpenClaw dreaming (checked in `docs/research/OPENCLAW-DREAMING.md`): one
+  nightly sweep of three phases, where light and REM are deterministic
+  code that only stage and deep is the one LLM writer, behind score and
+  recall thresholds; a consolidation that would drop over 25% of prior
+  entries falls back to appending; the last few prior versions are kept;
+  new entries carry their source, but old citations aren't audited; and a
+  DREAMS.md diary that never feeds memory.
 - Devin memory: one-line entries tagged with source and date.
