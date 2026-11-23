@@ -308,3 +308,80 @@ fn hung_server_stops_the_run_quickly() {
         .get(0);
     assert_eq!(run["not_answered"], 2, "{run}");
 }
+
+/// The watchdog: a model that never answers in JSON fails every file, and
+/// the error rate stops the run; a file past its deadline fails as such and
+/// a project left out is counted as skipped.
+#[test]
+fn error_rate_deadline_and_left_out_projects() {
+    let url = fake_server(vllm(|_| (200, completion("not json"))));
+    let mut cfg = Config::default();
+    cfg.llm.summaries.endpoint = url;
+    cfg.llm.summaries.concurrency = 1;
+    let Some(t) = throwaway(cfg.clone()) else {
+        return;
+    };
+    let pg = &t.0;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("dev");
+    for n in ["a1", "a2", "a3", "a4", "a5", "a6"] {
+        write(
+            &root,
+            &format!("alpha/src/{n}.rs"),
+            &format!("pub fn {n}_x() {{}}\n").repeat(30),
+        );
+    }
+    write(&root, "beta/src/b.rs", &"pub fn b_x() {}\n".repeat(30));
+    let mut ix = Index::open(&dir.path().join("index.db")).unwrap();
+    crate::roots::add_root(&ix, &root, "full").unwrap();
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+
+    let o = Options {
+        code: "test".into(),
+        skip_projects: vec!["beta".into()],
+        own_files: [(
+            "alpha".to_string(),
+            (1..=6).map(|i| format!("src/a{i}.rs")).collect(),
+        )]
+        .into(),
+        error_window: 3,
+        max_error_rate: 0.5,
+        ..Default::default()
+    };
+    let cands = summ::candidates(pg, &o).unwrap();
+    let (files, cov) = summ::select_with(&cands, &cfg.llm.summaries, &o);
+    assert_eq!(cov.by_reason.get("project left out"), Some(&1), "{cov:?}");
+    assert_eq!(files.len(), 6);
+    let err = summ::run(pg, files.clone(), &o, &cov, &mut |_| {}).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("of the last 3 files failed"),
+        "{err:#}"
+    );
+    let run: Value = pg
+        .query(
+            "SELECT coverage FROM runs WHERE kind = 'summarize' ORDER BY id DESC LIMIT 1",
+            &[],
+        )
+        .unwrap()[0]
+        .get(0);
+    assert!(
+        run["failed"]["no usable JSON"].as_u64().unwrap() >= 3,
+        "{run}"
+    );
+    assert_eq!(run["skipped"], 1, "{run}");
+    assert_eq!(run["total"], 6, "{run}");
+
+    // A deadline already past: every file is pending (no row), so a
+    // resume asks again.
+    let o = Options {
+        code: "test".into(),
+        retry_failed: true,
+        file_timeout: Some(std::time::Duration::from_nanos(1)),
+        ..Default::default()
+    };
+    let st = summ::run(pg, files, &o, &cov, &mut |_| {}).unwrap();
+    assert_eq!(st.pending.get("file deadline"), Some(&6), "{st:?}");
+    assert_eq!((st.done, st.remaining, st.errors), (0, 0, 6), "{st:?}");
+    assert_eq!(st.pending_ids.len(), 6);
+}

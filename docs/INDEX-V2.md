@@ -294,19 +294,28 @@ writes them").
 - **Rows**: `summaries` (migration 4) keeps every attempt with its
   content key, fingerprint, sha256 of the rendered input, attempt,
   clipped, tokens and status (`live`, `superseded`, `failed`). A run
-  resumes by (content key, fingerprint), never by id. The fingerprint
-  hashes the model id and snapshot commit (read from the server's
-  `/v1/models` root), max length, server version, dtype and quantization,
-  the prompt version and the whole request skeleton, schema, sampling and
-  seed, thinking, the retry policy, the clip and fit limits, the filter,
-  scrub and check versions, the build and `[llm.summaries]`. Each run is a
-  `runs` row whose stats are rewritten as it goes and when it ends.
+  resumes by (content key, fingerprint), never by id. The fingerprint's
+  key hashes what decides an answer: the model id and snapshot commit
+  (read from the server's `/v1/models` root), max length, server version,
+  dtype and quantization, the prompt version and the whole request
+  skeleton, schema, sampling and seed, thinking, the clip and fit limits,
+  the filter, scrub and check versions. The build, `[llm.summaries]`
+  (endpoint, timeouts, concurrency, retries) and the transport retry
+  policy are recorded with the run, not keyed. Each run is a `runs` row
+  whose stats (done, remaining, skipped, errors, rate, ETA) are rewritten
+  as it goes and when it ends.
 - **Freshness**: the sync shows a live summary (and its asks) over the
   seed while its content key is the entity's, so a changed file falls back
   to its seed; its card is queued for embedding as any changed card is.
-- **A dead server**: 8 connection errors in a row, or `/health` failing 3
-  times, stop the run within seconds; it saves its stats, a sync shows
-  what was written, and it exits 1. A resume does the rest.
+- **Stopping cleanly**: 8 connection errors in a row, `/health` failing 3
+  times, no file finished for `--stall` (paused time aside), `--max-time`,
+  or over `--max-error-rate` of the last `--error-window` files failing
+  stop the run within seconds; it saves its stats, a sync shows what was
+  written, and it exits 1. A file the server didn't answer in time (5xx,
+  timeouts, past `--file-timeout`) gets no row, so a resume does it; a
+  file the model answered badly is kept as failed. `--skip-project` and
+  `--own-files PROJECT=FILE` (a fork's own files) narrow the selection,
+  and the coverage report counts what they leave out.
 
 ## Reranker
 

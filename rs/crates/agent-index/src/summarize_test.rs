@@ -461,7 +461,18 @@ fn fingerprint_follows_every_setting() {
         ..c.clone()
     };
     assert_ne!(Fingerprint::new(&t, &info, "abc").key(), a.key());
-    assert_ne!(Fingerprint::new(&c, &info, "abd").key(), a.key());
+    // The build and operational settings are recorded, not keyed.
+    assert_eq!(Fingerprint::new(&c, &info, "abd").key(), a.key());
+    let ops = Cfg {
+        concurrency: 7,
+        pause_file: "/p".into(),
+        timeout_ms: 1,
+        retries: 9,
+        backoff_ms: 9,
+        endpoint: "http://elsewhere".into(),
+        ..c.clone()
+    };
+    assert_eq!(Fingerprint::new(&ops, &info, "abc").key(), a.key());
     let other = ServerInfo {
         snapshot: "s2".into(),
         ..info.clone()

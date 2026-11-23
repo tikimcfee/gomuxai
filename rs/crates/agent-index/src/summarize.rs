@@ -476,6 +476,8 @@ pub enum CallError {
     TooLong(String),
     /// Any other 4xx, or an answer that isn't the API's shape.
     Bad(String),
+    /// The file's own deadline passed: no more calls for it.
+    Deadline,
 }
 
 impl std::fmt::Display for CallError {
@@ -485,6 +487,7 @@ impl std::fmt::Display for CallError {
             CallError::Transient(s) => write!(f, "transient: {s}"),
             CallError::TooLong(s) => write!(f, "too long: {s}"),
             CallError::Bad(s) => write!(f, "bad request: {s}"),
+            CallError::Deadline => write!(f, "the file's deadline passed"),
         }
     }
 }
@@ -1279,9 +1282,10 @@ pub struct Fingerprint {
     pub scrub_version: &'static str,
     pub scrub_words_sha: String,
     pub check_version: &'static str,
-    /// The build's commit (with "-dirty" when built with changes).
+    /// The build's commit (with "-dirty" when built with changes): in the
+    /// run's record, not in the key.
     pub code: String,
-    /// sha256 of `[llm.summaries]` as resolved.
+    /// sha256 of `[llm.summaries]` as resolved: in the record, not the key.
     pub config_sha: String,
 }
 
@@ -1326,9 +1330,23 @@ impl Fingerprint {
         }
     }
 
-    /// The short key stored with every summary.
+    /// The short key stored with every summary: what changes the output.
+    /// The build, the whole `[llm.summaries]` (endpoint, concurrency,
+    /// timeouts, retries, the pause file), the transport retry policy and
+    /// the path the server loaded from are recorded with the run, not
+    /// keyed: a commit elsewhere in the crate or a timeout change doesn't
+    /// stale every summary, and what does change an answer (model id and
+    /// snapshot, prompt and request skeleton, schema, sampling and seed,
+    /// clipping, filters, scrub, checks) has its own field.
     pub fn key(&self) -> String {
-        sha256(serde_json::to_string(self).unwrap_or_default().as_bytes())[..16].to_string()
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        if let Some(o) = v.as_object_mut() {
+            // Recorded with the run, not keyed: none decides an answer.
+            for k in ["code", "config_sha", "retry_policy", "served_root"] {
+                o.remove(k);
+            }
+        }
+        sha256(v.to_string().as_bytes())[..16].to_string()
     }
 
     /// The writer named on the entity: `model:<id>@<snapshot>`.

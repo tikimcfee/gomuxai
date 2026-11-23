@@ -807,12 +807,18 @@ project and kind, and the 20 directories with the most skipped, without
 calling the model.
 
 A run resumes: files already summarized (or failed) under the same
-fingerprint are skipped. It stops and exits 1 when the server stops
-answering (8 connection errors in a row by default), after saving its
-stats in its runs row (and --stats FILE)."#,
+fingerprint are skipped; files the server didn't answer in time (5xx,
+timeouts, past --file-timeout) get no row, so a resume asks again. It
+stops cleanly and exits 1 when the server stops answering (8 connection
+errors in a row, or /health failing), when no file finished for --stall,
+after --max-time, or when over --max-error-rate of the last --error-window
+files failed; its stats (done, remaining, skipped, errors, rate, ETA) are
+saved in its runs row and --stats FILE as it goes. --skip-project leaves a
+project out; --own-files PROJECT=FILE keeps only a fork's own files."#,
     example: r#"  agent index summarize --coverage --project gomuxai
   agent index summarize --project gomuxai --limit 100 --stats run.json
-  agent index summarize --prefix 'lab:research/' --limit 50"#,
+  agent index summarize --prefix 'lab:research/' --limit 50
+  agent index summarize --skip-project vendor-fork --max-time 4h --stats status.json"#,
     args: ArgRule::None,
     ..Doc::DEFAULT
 };
@@ -831,6 +837,20 @@ pub struct SummarizeArgs {
     pub out: String,
     #[arg(long = "stats", value_name = "string", default_value = "", help = "Rewrite the run's stats here as it goes")]
     pub stats: String,
+    #[arg(long = "skip-project", value_name = "stringArray", help = "Leave this project out (repeatable); its files count as skipped")]
+    pub skip_project: Vec<String>,
+    #[arg(long = "own-files", value_name = "stringArray", help = "PROJECT=FILE: summarize only the files FILE lists (paths in the project, one a line) of that fork; its others count as upstream (repeatable)")]
+    pub own_files: Vec<String>,
+    #[arg(long = "file-timeout", value_name = "duration", default_value = "10m", help = "One file's deadline, all its requests and retries together; past it the file fails and is kept as failed")]
+    pub file_timeout: String,
+    #[arg(long = "stall", value_name = "duration", default_value = "10m", help = "Stop the run when no file finished for this long (0: never)")]
+    pub stall: String,
+    #[arg(long = "max-time", value_name = "duration", default_value = "0", help = "Stop the run cleanly after this long (0: no cap)")]
+    pub max_time: String,
+    #[arg(long = "error-window", value_name = "int", default_value_t = 200, help = "Stop the run when over --max-error-rate of this many latest files failed (0: never)")]
+    pub error_window: i64,
+    #[arg(long = "max-error-rate", value_name = "string", default_value = "0.2", help = "The failed share of --error-window files that stops the run")]
+    pub max_error_rate: String,
     #[arg(long = "retry-failed", help = "Ask again for files that failed under this fingerprint")]
     pub retry_failed: bool,
     #[arg(long = "no-sync", help = "Don't sync afterwards (the summaries show after the next sync)")]
@@ -882,6 +902,36 @@ fn coverage_text(c: &agent_index::pg::summ::Coverage) -> String {
     s
 }
 
+/// `--own-files PROJECT=FILE`: each project's list of its own files.
+fn own_files(
+    args: &[String],
+) -> anyhow::Result<std::collections::BTreeMap<String, std::collections::HashSet<String>>> {
+    let mut out = std::collections::BTreeMap::new();
+    for a in args {
+        let Some((project, file)) = a.split_once('=') else {
+            anyhow::bail!("--own-files takes PROJECT=FILE, not {a:?}");
+        };
+        let text = std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?;
+        let set: std::collections::HashSet<String> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect();
+        out.insert(project.to_string(), set);
+    }
+    Ok(out)
+}
+
+/// A duration flag; "0" or empty is none.
+fn dur(s: &str, name: &str) -> anyhow::Result<Option<std::time::Duration>> {
+    if s.is_empty() || s == "0" {
+        return Ok(None);
+    }
+    let d = super::flags::parse_duration(s).map_err(|e| anyhow::anyhow!("--{name}: {e}"))?;
+    Ok((!d.is_zero()).then_some(d))
+}
+
 fn run_summarize(ctx: &Ctx, a: &SummarizeArgs) -> anyhow::Result<()> {
     let Some(pg) = pg_store("pg", &a.config)? else { unreachable!("pg asked") };
     let o = agent_index::pg::summ::Options {
@@ -891,13 +941,25 @@ fn run_summarize(ctx: &Ctx, a: &SummarizeArgs) -> anyhow::Result<()> {
         retry_failed: a.retry_failed,
         code: agent_base::buildinfo::id(),
         stats_path: (!a.stats.is_empty()).then(|| PathBuf::from(&a.stats)),
+        skip_projects: a.skip_project.clone(),
+        own_files: own_files(&a.own_files)?,
+        file_timeout: dur(&a.file_timeout, "file-timeout")?,
+        stall: dur(&a.stall, "stall")?,
+        max_wall: dur(&a.max_time, "max-time")?,
+        error_window: int_flag(a.error_window, "error-window")?,
+        max_error_rate: a
+            .max_error_rate
+            .parse::<f64>()
+            .ok()
+            .filter(|r| (0.0..=1.0).contains(r))
+            .context("--max-error-rate takes a number from 0 to 1")?,
     };
     let cfg = pg.cfg.llm.summaries.clone();
     let cands = agent_index::pg::summ::candidates(&pg, &o)?;
     if cands.is_empty() {
         anyhow::bail!("no files of a full-depth project match (check --project and --prefix, and that a crawl and sync ran)");
     }
-    let (files, mut cov) = agent_index::pg::summ::select(&cands, &cfg);
+    let (files, mut cov) = agent_index::pg::summ::select_with(&cands, &cfg, &o);
     let files = agent_index::pg::summ::sample(files, &o);
     cov.selected = files.len();
     if a.coverage {
@@ -921,8 +983,8 @@ fn run_summarize(ctx: &Ctx, a: &SummarizeArgs) -> anyhow::Result<()> {
     let res = agent_index::pg::summ::run(&pg, files, &o, &cov, &mut |s| {
         let failed: usize = s.failed.values().sum();
         ctx.notice(format!(
-            "  {} written, {} failed, {} not answered of {} in {:.0}s: {:.2} files/s, {:.0} prefill tok/s",
-            s.written, failed, s.not_answered, s.todo, s.wall_s, s.files_per_s, s.prefill_tok_s
+            "  {} written, {} failed, {} not answered of {} in {:.0}s: {:.2} files/s, {:.0} prefill tok/s, ETA {:.0} min",
+            s.written, failed, s.not_answered, s.todo, s.wall_s, s.files_per_s, s.prefill_tok_s, s.eta_s / 60.0
         ));
     });
     // What was written shows after a sync, whether or not the run finished.

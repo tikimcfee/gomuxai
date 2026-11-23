@@ -47,7 +47,27 @@ pub struct Options {
     pub code: String,
     /// A file the stats are written to as the run goes.
     pub stats_path: Option<PathBuf>,
+    /// Projects left out (their files counted as skipped).
+    pub skip_projects: Vec<String>,
+    /// For a fork of an upstream tree: the only files of that project to
+    /// summarize (the fork's own commits'), by path in the project; its
+    /// other files are skipped as upstream.
+    pub own_files: BTreeMap<String, HashSet<String>>,
+    /// One file's deadline (default [`DEFAULT_FILE_TIMEOUT`]); a file past it
+    /// fails and is kept as failed, never retried by a resume.
+    pub file_timeout: Option<Duration>,
+    /// The watchdog: no file finished for this long stops the run.
+    pub stall: Option<Duration>,
+    /// The whole run's cap; past it the run stops cleanly.
+    pub max_wall: Option<Duration>,
+    /// Over `max_error_rate` failed among the last `error_window` files
+    /// stops the run (0 window: no such check).
+    pub error_window: usize,
+    pub max_error_rate: f64,
 }
+
+/// A file's deadline unless the options say otherwise.
+pub const DEFAULT_FILE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Counts of one group in the coverage report.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -125,6 +145,16 @@ fn read(c: &Candidate) -> Result<String, &'static str> {
 /// first (the sensitive-name filter before any read), numbered siblings,
 /// then the text's.
 pub fn select(cands: &[Candidate], cfg: &crate::config::Summaries) -> (Vec<Candidate>, Coverage) {
+    select_with(cands, cfg, &Options::default())
+}
+
+/// [`select`], with whole projects left out ("project left out") and forks
+/// cut to their own files ("upstream, not the fork's own").
+pub fn select_with(
+    cands: &[Candidate],
+    cfg: &crate::config::Summaries,
+    o: &Options,
+) -> (Vec<Candidate>, Coverage) {
     let numbered = sm::numbered_dirs(cands.iter(), NUMBERED_SIBLINGS);
     let mut cov = Coverage {
         files: cands.len(),
@@ -134,7 +164,17 @@ pub fn select(cands: &[Candidate], cfg: &crate::config::Summaries) -> (Vec<Candi
     let mut keep = Vec::new();
     let mut dirs: HashMap<String, BTreeMap<String, usize>> = HashMap::new();
     for c in cands {
-        let reason = sm::skip_by_name(c, cfg)
+        let reason = o
+            .skip_projects
+            .contains(&c.project)
+            .then_some("project left out")
+            .or_else(|| {
+                o.own_files
+                    .get(&c.project)
+                    .is_some_and(|own| !own.contains(&c.rel))
+                    .then_some("upstream, not the fork's own")
+            })
+            .or_else(|| sm::skip_by_name(c, cfg))
             .or_else(|| {
                 numbered
                     .contains(&sm::dir_key(c))
@@ -230,6 +270,10 @@ pub struct Stats {
     pub skipped_at_read: BTreeMap<String, usize>,
     /// Requests the run gave up on when the server was gone (not written).
     pub not_answered: usize,
+    /// Files the server didn't answer in time, by reason: no row, a resume
+    /// asks again (the first 500 ids in `pending_ids`).
+    pub pending: BTreeMap<String, usize>,
+    pub pending_ids: Vec<String>,
     pub transport_retries: usize,
     pub second_attempts: usize,
     pub salvaged: usize,
@@ -248,6 +292,17 @@ pub struct Stats {
     pub paused_s: f64,
     pub aborted: Option<String>,
     pub finished: bool,
+    /// The status line's figures: files of the selection (`selected`) that
+    /// are done (written, failed, done before), what is left, skipped by
+    /// the filters, errors (failed and not answered), and the time left at
+    /// this run's rate.
+    pub total: usize,
+    pub done: usize,
+    pub remaining: usize,
+    pub skipped: usize,
+    pub errors: usize,
+    pub eta_s: f64,
+    pub updated: String,
 }
 
 /// One file's outcome, from a worker.
@@ -265,6 +320,12 @@ enum Outcome {
     Skipped(&'static str),
     /// The run stopped (server gone) before it was answered.
     NotAnswered,
+    /// The server didn't answer in time (5xx, timeouts, the file's
+    /// deadline): no row, so a resume asks again; logged in the stats.
+    Pending {
+        id: String,
+        reason: &'static str,
+    },
 }
 
 /// What one file's requests cost.
@@ -291,9 +352,25 @@ struct Shared {
     conn_errors: AtomicUsize,
     abort: Mutex<Option<String>>,
     paused_ms: AtomicUsize,
+    /// One file's deadline, all its calls and retries together.
+    file_timeout: Duration,
 }
 
 impl Shared {
+    /// One with no server, for the stats before the workers start.
+    fn idle(cfg: &crate::config::Summaries) -> Shared {
+        Shared {
+            cfg: cfg.clone(),
+            client: Client::new(cfg),
+            served: String::new(),
+            stop: AtomicBool::new(false),
+            conn_errors: AtomicUsize::new(0),
+            abort: Mutex::new(None),
+            paused_ms: AtomicUsize::new(0),
+            file_timeout: DEFAULT_FILE_TIMEOUT,
+        }
+    }
+
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
     }
@@ -325,18 +402,23 @@ impl Shared {
         }
     }
 
-    /// A call with transport retries, counted.
+    /// A call with transport retries, counted; none starts once the file's
+    /// deadline has passed.
     fn call<T>(
         &self,
         retries: &Cell<usize>,
+        deadline: Instant,
         mut f: impl FnMut() -> Result<T, CallError>,
     ) -> Result<T, CallError> {
-        let stop = || self.stopped();
+        let stop = || self.stopped() || Instant::now() > deadline;
         sm::with_retries(
             &self.cfg,
             &stop,
             |_| retries.set(retries.get() + 1),
             || {
+                if Instant::now() > deadline {
+                    return Err(CallError::Deadline);
+                }
                 let r = f();
                 self.note(&r);
                 r
@@ -361,6 +443,7 @@ impl Shared {
 /// answer fails its checks), check.
 fn one(sh: &Shared, c: Candidate) -> Outcome {
     let t0 = Instant::now();
+    let deadline = t0 + sh.file_timeout;
     let cfg = &sh.cfg;
     let text = match read(&c) {
         Ok(t) => t,
@@ -375,17 +458,21 @@ fn one(sh: &Shared, c: Candidate) -> Outcome {
     let (seed, _) = sm::scrub(&c.seed, &cfg.scrub_words);
     let served = sh.served.clone();
     let retries = Cell::new(0usize);
-    let mut count = |s: &str| sh.call(&retries, || sh.client.tokens(&served, s));
+    let mut count = |s: &str| sh.call(&retries, deadline, || sh.client.tokens(&served, s));
     let fail = |c: Candidate, mut w: Work, e: CallError| {
         w.retries = retries.get();
         w.ms = t0.elapsed().as_millis();
         match e {
             _ if sh.stopped() => Outcome::NotAnswered,
+            // The server's slowness, not the file's: no row, a resume asks again.
+            _ if Instant::now() > deadline => Outcome::Pending {
+                id: c.id,
+                reason: "file deadline",
+            },
             CallError::Connection(_) => Outcome::NotAnswered,
-            CallError::Transient(_) => Outcome::Failed {
-                c,
-                reason: "transient (retries spent)".into(),
-                w,
+            CallError::Transient(_) => Outcome::Pending {
+                id: c.id,
+                reason: "transient (retries spent)",
             },
             CallError::TooLong(_) => Outcome::Failed {
                 c,
@@ -396,6 +483,10 @@ fn one(sh: &Shared, c: Candidate) -> Outcome {
                 c,
                 reason: "bad request".into(),
                 w,
+            },
+            CallError::Deadline => Outcome::Pending {
+                id: c.id,
+                reason: "file deadline",
             },
         }
     };
@@ -456,7 +547,7 @@ fn one(sh: &Shared, c: Candidate) -> Outcome {
     for attempt in 1..=2u32 {
         w.attempt = attempt;
         let body = sm::body(cfg, &served, &user, attempt);
-        let ans = match sh.call(&retries, || sh.client.chat(&body)) {
+        let ans = match sh.call(&retries, deadline, || sh.client.chat(&body)) {
             Ok(a) => a,
             Err(e) => return fail(c, w, e),
         };
@@ -551,6 +642,7 @@ pub fn run(
         fingerprint: key.clone(),
         writer: writer.clone(),
         selected: files.len(),
+        skipped: coverage.skipped,
         ..Default::default()
     };
 
@@ -599,6 +691,7 @@ pub fn run(
         }
     }
     stats.todo = todo.len();
+    rates(&mut stats, Instant::now(), &Shared::idle(cfg));
     save(pg, &stats, o.stats_path.as_ref())?;
 
     let sh = Arc::new(Shared {
@@ -609,6 +702,7 @@ pub fn run(
         conn_errors: AtomicUsize::new(0),
         abort: Mutex::new(None),
         paused_ms: AtomicUsize::new(0),
+        file_timeout: o.file_timeout.unwrap_or(DEFAULT_FILE_TIMEOUT),
     });
     let t0 = Instant::now();
     let next = Arc::new(AtomicUsize::new(0));
@@ -662,29 +756,68 @@ pub fn run(
     let mut last = Instant::now();
     let mut processed = 0usize;
     let mut stopped_at: Option<Instant> = None;
+    // The watchdog's view: when a file last finished, and the last
+    // `error_window` files' outcomes (true: failed).
+    let mut last_done = Instant::now();
+    let mut window: std::collections::VecDeque<bool> = std::collections::VecDeque::new();
+    let stall = o.stall.unwrap_or(Duration::MAX);
+    let max_wall = o.max_wall.unwrap_or(Duration::MAX);
     loop {
-        let out = match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(o) => o,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if sh.stopped() {
-                    let at = *stopped_at.get_or_insert_with(Instant::now);
-                    if at.elapsed() > Duration::from_secs(5) {
-                        break;
-                    }
-                }
-                continue;
+        let got = rx.recv_timeout(Duration::from_millis(500));
+        if let Ok(out) = got {
+            processed += 1;
+            let settled = matches!(out, Outcome::Done { .. } | Outcome::Failed { .. });
+            if settled {
+                last_done = Instant::now();
             }
-        };
-        processed += 1;
-        if write_err.is_some() {
-            continue;
+            // Failed and pending files are the error rate's.
+            if (settled || matches!(out, Outcome::Pending { .. })) && o.error_window > 0 {
+                window.push_back(!matches!(out, Outcome::Done { .. }));
+                if window.len() > o.error_window {
+                    window.pop_front();
+                }
+            }
+            if write_err.is_none()
+                && let Err(e) = record(pg, &mut stats, out, run_id, &key, &writer)
+            {
+                // The store is gone: stop asking.
+                sh.stop.store(true, Ordering::SeqCst);
+                write_err = Some(e);
+            }
+        } else if let Err(mpsc::RecvTimeoutError::Disconnected) = got {
+            break;
         }
-        if let Err(e) = record(pg, &mut stats, out, run_id, &key, &writer) {
-            // The store is gone: stop asking.
-            sh.stop.store(true, Ordering::SeqCst);
-            write_err = Some(e);
-            continue;
+        // The watchdog. Time paused for the speech server isn't a stall.
+        if !sh.cfg.pause_file.is_empty() && std::path::Path::new(&sh.cfg.pause_file).exists() {
+            last_done = Instant::now();
+        }
+        if !sh.stopped() {
+            if last_done.elapsed() > stall {
+                sh.give_up(format!(
+                    "no file finished for {} minutes",
+                    stall.as_secs() / 60
+                ));
+            } else if t0.elapsed() > max_wall {
+                sh.give_up(format!(
+                    "the wall-clock cap of {} minutes was reached",
+                    max_wall.as_secs() / 60
+                ));
+            } else if o.error_window > 0 && window.len() >= o.error_window {
+                let bad = window.iter().filter(|b| **b).count();
+                if bad as f64 > o.max_error_rate * window.len() as f64 {
+                    sh.give_up(format!(
+                        "{bad} of the last {} files failed (over {:.0}%)",
+                        window.len(),
+                        o.max_error_rate * 100.0
+                    ));
+                }
+            }
+        }
+        if sh.stopped() {
+            let at = *stopped_at.get_or_insert_with(Instant::now);
+            if at.elapsed() > Duration::from_secs(5) {
+                break;
+            }
         }
         if last.elapsed() > Duration::from_secs(10) {
             last = Instant::now();
@@ -732,12 +865,27 @@ fn rates(stats: &mut Stats, t0: Instant, sh: &Shared) {
     stats.wall_s = (wall * 10.0).round() / 10.0;
     stats.paused_s =
         sh.paused_ms.load(Ordering::SeqCst) as f64 / 1000.0 / sh.cfg.concurrency.max(1) as f64;
-    let n = stats.written + stats.failed.values().sum::<usize>();
+    let failed = stats.failed.values().sum::<usize>();
+    let n = stats.written + failed;
+    stats.total = stats.selected;
+    stats.done = stats.done_before + n;
+    let at_read: usize = stats.skipped_at_read.values().sum();
+    let pending: usize = stats.pending.values().sum();
+    stats.remaining = stats
+        .todo
+        .saturating_sub(n + stats.not_answered + at_read + pending);
+    stats.errors = failed + stats.not_answered + pending;
     if wall > 0.0 {
         stats.files_per_s = (n as f64 / wall * 100.0).round() / 100.0;
         stats.prefill_tok_s = (stats.in_tokens as f64 / wall).round();
         stats.decode_tok_s = (stats.out_tokens as f64 / wall).round();
     }
+    stats.eta_s = if stats.files_per_s > 0.0 {
+        (stats.remaining as f64 / stats.files_per_s).round()
+    } else {
+        0.0
+    };
+    stats.updated = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 }
 
 /// One outcome into the store and the stats.
@@ -752,10 +900,18 @@ fn record(
     let (c, w, status, reason, e) = match out {
         Outcome::Skipped(r) => {
             *stats.skipped_at_read.entry(r.into()).or_default() += 1;
+            stats.skipped += 1;
             return Ok(());
         }
         Outcome::NotAnswered => {
             stats.not_answered += 1;
+            return Ok(());
+        }
+        Outcome::Pending { id, reason } => {
+            *stats.pending.entry(reason.into()).or_default() += 1;
+            if stats.pending_ids.len() < 500 {
+                stats.pending_ids.push(id);
+            }
             return Ok(());
         }
         Outcome::Done { c, e, w } => (c, w, "live", String::new(), e),
