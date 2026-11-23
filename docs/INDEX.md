@@ -679,8 +679,15 @@ So, in v1:
   the fusion it lifts the hybrid from 0.66 to 0.70 at 5,000 files and
   0.71 to 0.76 at 1,100.
 - **No all-but-the-top**: dropping top principal components hurt (−0.06,
-  p = 0.006). Mean-centering is mildly positive and optional; the
-  corpus mean is stored beside the vectors.
+  p = 0.006). The small model's vectors are L2-normalized only:
+  mean-centering hurt it. Centering is for the 8B model alone, whose
+  corpus mean is stored beside its vectors.
+- **No model summaries for fixtures and data files** (test data,
+  fixture JSONL and text): a few hundred fixture summaries in one repo
+  flooded the results. They keep their seeds and are ranked down.
+- **A static embedder is being measured** (a model2vec-style model:
+  tokenizer, table lookup, mean; no ONNX runtime). If it holds up in
+  the hybrid, the embedder needs no heavy dependency at all.
 - **Raw half floats, exact scan.** 25,000 × 384 scans in about 20 ms; no
   vector extension is needed below roughly 400,000 vectors, so v1 stores
   plain blobs and `sqlite-vec` waits until it's needed.
