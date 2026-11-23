@@ -1385,11 +1385,14 @@ fn resolve_edges(conn: &Connection) -> Result<(BTreeMap<String, usize>, usize)> 
         st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
-    // Bare file names (`stale.rs`) resolve to the one file of that name in the
-    // doc's project.
-    let mut by_base: HashMap<(String, String), Vec<String>> = HashMap::new();
+    // A bare name or a partial path (`stale.rs`, `service/held.rs`, `run/`)
+    // resolves to the one file or dir in the doc's project whose path ends
+    // with it; one that several end with is ambiguous, not drift.
+    let mut by_suffix: HashMap<(String, String), Vec<String>> = HashMap::new();
     {
-        let mut st = conn.prepare("SELECT id, project, name FROM entities WHERE kind = 'file'")?;
+        let mut st = conn.prepare(
+            "SELECT id, project, rel FROM entities WHERE kind IN ('file', 'dir') AND rel != ''",
+        )?;
         let rows = st.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -1398,8 +1401,18 @@ fn resolve_edges(conn: &Connection) -> Result<(BTreeMap<String, usize>, usize)> 
             ))
         })?;
         for row in rows {
-            let (id, project, name) = row?;
-            by_base.entry((project, name)).or_default().push(id);
+            let (id, project, rel) = row?;
+            let mut rest = rel.as_str();
+            loop {
+                by_suffix
+                    .entry((project.clone(), rest.to_string()))
+                    .or_default()
+                    .push(id.clone());
+                match rest.split_once('/') {
+                    Some((_, r)) => rest = r,
+                    None => break,
+                }
+            }
         }
     }
     let mut dangling = 0;
@@ -1422,6 +1435,15 @@ fn resolve_edges(conn: &Connection) -> Result<(BTreeMap<String, usize>, usize)> 
         }
         if hit.is_none() && trimmed.starts_with('/') {
             hit = lookup(Path::new(trimmed));
+            // A path outside every indexed tree (`/bin/bash`), or a slash
+            // command (`/resume`): nothing the index can judge.
+            let inside = |base: &str| trimmed.starts_with(&format!("{base}/"));
+            if hit.is_none()
+                && !projects.iter().any(|p| inside(&p.path))
+                && !root_paths.iter().any(|r| inside(r))
+            {
+                continue;
+            }
         }
         if hit.is_none() && !trimmed.starts_with('/') {
             let mut bases: Vec<&str> = vec![doc_dir.to_str().unwrap_or("")];
@@ -1456,11 +1478,28 @@ fn resolve_edges(conn: &Connection) -> Result<(BTreeMap<String, usize>, usize)> 
                 }
             }
             if hit.is_none()
-                && !trimmed.contains('/')
-                && let Some(c) = by_base.get(&(project.clone(), trimmed.to_string()))
-                && c.len() == 1
+                && let Some(c) = by_suffix.get(&(project.clone(), trimmed.to_string()))
             {
-                hit = Some(c[0].clone());
+                if c.len() == 1 {
+                    hit = Some(c[0].clone());
+                } else {
+                    // Several files answer: no edge, and no drift either.
+                    continue;
+                }
+            }
+            // On disk but not indexed (ignored, build output, a runtime dir):
+            // not drift.
+            if hit.is_none() {
+                let mut bases: Vec<&str> = vec![doc_dir.to_str().unwrap_or("")];
+                if let Some(pp) = project_path.get(project.as_str()) {
+                    bases.push(pp);
+                }
+                if bases
+                    .iter()
+                    .any(|b| std::fs::symlink_metadata(Path::new(b).join(trimmed)).is_ok())
+                {
+                    continue;
+                }
             }
         }
         match hit {

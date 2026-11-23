@@ -189,8 +189,10 @@ project's summary only if it changed what the file is.
 **built**: `depends-on` (manifests; `pixi.toml` and imports not yet; a
 dependency without a path resolves by package name when one indexed
 package has it), `documented-by` (from a `refs` table of each doc's
-backticked paths, resolved across projects after every crawl; the
-unresolved go to `dangling`), `tests` (naming; not `#[path]`), and
+backticked paths, resolved across projects after every crawl, a bare name or partial path
+by the one path in its project that ends with it; the unresolved go to
+`dangling`, but not a name several files end with, a path on disk that
+isn't indexed, or one outside every indexed tree), `tests` (naming; not `#[path]`), and
 `co-changes` (commits touching over 50 files left out; at least two
 shared commits). Not yet: `implements`, `about`, `same-as`, `noted-in`.
 
