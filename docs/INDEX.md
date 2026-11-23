@@ -466,6 +466,8 @@ content). Binary files get an entity with a file kind and no content.
 tree, related and stale, with `--json`; search, tree and related take
 `--budget` (`--json` isn't fitted; a budget drops the tail, never a parent
 whose children are kept). Search prints a result's why when it has one.
+A search on a whole dev tree takes 10 to 40 ms inside, about 60 ms from
+the command line without embeddings; `--json` gives each stage's time.
 `show` doesn't yet list memory notes or recent sessions, nor how far the
 code moved since a summary. Code labels are made for projects and
 directories only (name spellings, README titles, package and remote
