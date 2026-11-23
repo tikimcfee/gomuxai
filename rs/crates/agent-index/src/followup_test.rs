@@ -338,7 +338,7 @@ fn the_callers_project_and_its_dependencies_come_first() {
         "core",
         &[
             ("Cargo.toml", "[package]\nname = \"core\"\n"),
-            ("src/lib.rs", "pub fn helper() {}\n"),
+            ("src/lib.rs", "pub fn helper() {}\npub fn wheel() {}\n"),
         ],
     );
     // Another project with many exact matches, whose ids sort first.
@@ -347,7 +347,7 @@ fn the_callers_project_and_its_dependencies_come_first() {
         &[
             (
                 "src/a.rs",
-                "pub fn effort() {}\npub fn helper() {}\npub fn spin() {}\n",
+                "pub fn effort() {}\npub fn helper() {}\npub fn spin() {}\npub fn zebra() {}\n",
             ),
             ("src/b.rs", "pub fn effort() {}\n"),
             ("src/c.rs", "pub fn effort() {}\n"),
@@ -379,9 +379,21 @@ fn the_callers_project_and_its_dependencies_come_first() {
     // One in a project yours depends on beats one in an unrelated project.
     let r = top("helper", "alpha");
     assert_eq!(r[0], "core:src/lib.rs#helper", "{r:?}");
-    // With no good match at home, the exact match elsewhere still leads.
+    // A word used at home beats its definition in a dependency ...
+    let r = top("wheel", "alpha");
+    let pos = |id: &str| r.iter().position(|x| x == id).unwrap_or(99);
+    assert!(
+        pos("alpha:src/lib.rs#turn") < pos("core:src/lib.rs#wheel"),
+        "{r:?}"
+    );
+    assert!(pos("core:src/lib.rs#wheel") < 99, "{r:?}");
+    // ... and elsewhere ...
     let r = top("spin", "alpha");
-    assert_eq!(r[0], "aaa:src/a.rs#spin", "{r:?}");
+    assert!(r[0].starts_with("alpha:src/lib.rs"), "{r:?}");
+    assert!(r.iter().any(|id| id == "aaa:src/a.rs#spin"), "{r:?}");
+    // ... and with nothing at home, the exact match elsewhere leads.
+    let r = top("zebra", "alpha");
+    assert_eq!(r[0], "aaa:src/a.rs#zebra", "{r:?}");
     // From inside aaa, its own come first; with no caller, by name.
     let r = top("effort", "aaa");
     assert!(r[..3].iter().all(|id| id.starts_with("aaa:")), "{r:?}");

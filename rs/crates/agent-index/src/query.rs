@@ -714,15 +714,31 @@ fn search_entities(
         }
     }
     // The caller's project, and the projects it depends on, come first: a
-    // pin (an exact name, a whole-query label) elsewhere counts only when
-    // none of them has one, and every score there is multiplied.
-    let is_near = |id: &str| near.contains_key(model::project_of_id(id));
-    let near_pin = exact
+    // pin (an exact name, a whole-query label, a rare identifier's file)
+    // elsewhere counts only when nothing near matched at all, and every
+    // score there is multiplied. (An agent working in a project and asking
+    // for `effort` wants its own uses before another repo's definition.)
+    // Tiers: the caller's own project (0), the projects it depends on (1),
+    // the rest (2). A pin counts only in the nearest tier with any match.
+    let tier = |id: &str| -> u8 {
+        let p = model::project_of_id(id);
+        if !o.caller_project.is_empty() && p == o.caller_project {
+            0
+        } else if near.contains_key(p) {
+            1
+        } else {
+            2
+        }
+    };
+    let best_tier = exact
         .iter()
         .chain(pinned.iter())
         .chain(rare.iter())
-        .any(|id| is_near(id));
-    let pin_counts = |id: &str| !near_pin || is_near(id);
+        .chain(score.keys())
+        .map(|id| tier(id))
+        .min()
+        .unwrap_or(2);
+    let pin_counts = |id: &str| tier(id) <= best_tier;
     for (i, id) in rare.iter().enumerate() {
         if !pin_counts(id) {
             continue;
