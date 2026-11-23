@@ -107,7 +107,63 @@ pub fn is_test(rel: &str) -> bool {
         || (language(name) == "swift" && stem.ends_with("Tests"))
 }
 
-/// A file's kind: `source`, `test`, `doc`, `config`, `build`, `data`, `asset`.
+/// Directories that hold what tests read, not what they test.
+pub const FIXTURE_DIRS: &[&str] = &[
+    "testdata",
+    "test-data",
+    "test_data",
+    "fixtures",
+    "fixture",
+    "__fixtures__",
+    "__snapshots__",
+    "snapshots",
+    "golden",
+    "corpus",
+];
+
+/// Whether a file is test data: anything under a fixture directory, or a data
+/// file (`*.jsonl`, `*.txt`, `*.json`, ...) under a test directory. Such files
+/// answer many words (a fixture is named for the feature it records), so
+/// search ranks them down and dreams don't summarize them.
+pub fn is_fixture(rel: &str) -> bool {
+    let parts: Vec<&str> = rel.split('/').collect();
+    let dirs = &parts[..parts.len().saturating_sub(1)];
+    if dirs
+        .iter()
+        .any(|d| FIXTURE_DIRS.contains(&d.to_ascii_lowercase().as_str()))
+    {
+        return true;
+    }
+    let in_tests = dirs.iter().any(|d| {
+        matches!(
+            d.to_ascii_lowercase().as_str(),
+            "tests" | "test" | "__tests__" | "spec"
+        )
+    });
+    in_tests
+        && matches!(
+            ext(parts.last().copied().unwrap_or("")).as_str(),
+            "jsonl"
+                | "json"
+                | "txt"
+                | "csv"
+                | "tsv"
+                | "yaml"
+                | "yml"
+                | "xml"
+                | "html"
+                | "snap"
+                | "golden"
+                | "out"
+                | "expected"
+                | "log"
+                | "bin"
+                | "dat"
+        )
+}
+
+/// A file's kind: `source`, `test`, `fixture`, `doc`, `config`, `build`,
+/// `data`, `asset`.
 pub fn file_kind(rel: &str) -> &'static str {
     let name = rel.rsplit('/').next().unwrap_or(rel);
     let lower = name.to_ascii_lowercase();
@@ -149,6 +205,9 @@ pub fn file_kind(rel: &str) -> &'static str {
             lang,
             "markdown" | "rst" | "toml" | "yaml" | "json" | "html" | "css" | "sql" | "nix"
         );
+    if is_fixture(rel) {
+        return "fixture";
+    }
     if code && is_test(rel) {
         return "test";
     }

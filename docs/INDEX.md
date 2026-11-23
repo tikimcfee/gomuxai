@@ -139,7 +139,7 @@ worktree when the caller works in one.
 | `root` | the indexed tree | `agent index root add` |
 | `project` | a repo, or a directory marked as one | the root list, `.git` |
 | `dir` | a directory in a project | git's tree |
-| `file` | a tracked file, with a file kind: `source`, `test`, `doc`, `config`, `build`, `data`, `asset` | git's tree, extension and name rules |
+| `file` | a tracked file, with a file kind: `source`, `test`, `fixture` (anything under `testdata/`, `fixtures/`, `__snapshots__/`, `golden/`, `corpus/` and the like, or a data file such as `*.jsonl` or `*.txt` under a test dir), `doc`, `config`, `build`, `data`, `asset` (**built**, and `submodule`) | git's tree, extension and name rules |
 | `symbol` | a definition: fn, struct, enum, trait, impl, class, interface, type, const, Make target, CLI command | a parser (below) |
 | `section` | a heading in a doc | the Markdown itself |
 | `concept` | an idea several entities share, across projects | dreams and people (below) |
@@ -523,7 +523,8 @@ its trigrams, for typos, in a list of its own), the priors (own project, a
 section ranked below a file or symbol, importance from fan-in (the
 dependents that use it, the docs that document it, the files that change
 with it), kept-out-
-of-the-way dirs down, and tests and fixtures down unless `--kind test` or
+of-the-way dirs down, tests a little down and fixtures well down (below
+any code that matched) unless `--kind test`, `--kind fixture` or
 `--under` asks), RRF, and at most two results per file. The semantic
 list is a seam (`query::Semantic`) that contributes nothing until the
 embedding lane fills `vectors`. Not yet: PageRank, projects a project

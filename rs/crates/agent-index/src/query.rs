@@ -465,17 +465,12 @@ pub fn search(
             })
             .unwrap_or_default()
     };
-    let fixture = |c: &str| {
-        matches!(
-            c,
-            "testdata" | "fixtures" | "__fixtures__" | "corpus" | "snapshots" | "golden"
-        )
-    };
     let under_targets = under_parts.iter().any(|c| files::is_out_of_the_way(c));
-    let asks_tests = o.kind == "test"
-        || under_parts
-            .iter()
-            .any(|c| fixture(c) || matches!(c.as_str(), "tests" | "test" | "__tests__"));
+    let asks_tests = matches!(o.kind.as_str(), "test" | "fixture")
+        || under_parts.iter().any(|c| {
+            files::FIXTURE_DIRS.contains(&c.as_str())
+                || matches!(c.as_str(), "tests" | "test" | "__tests__")
+        });
     let mut ents: HashMap<String, Entity> = HashMap::new();
     let ids: Vec<String> = score.keys().cloned().collect();
     for id in ids {
@@ -511,13 +506,19 @@ pub fn search(
             s -= 0.008;
             ex.push("kept-out-of-the-way dir −".into());
         }
-        // Tests and their fixtures answer many words (a fixture named for the
-        // feature it records); the code itself comes first unless asked.
-        let is_testish =
-            !e.rel.is_empty() && (files::is_test(&e.rel) || e.rel.split('/').any(fixture));
-        if is_testish && !asks_tests {
-            s -= 0.004;
-            ex.push("test or fixture −".into());
+        // Fixtures answer many words (a fixture is named for the feature it
+        // records), tests fewer; the code itself comes first unless asked.
+        if !e.rel.is_empty() && !asks_tests {
+            if e.kind != "dir" && files::is_fixture(&e.rel) {
+                // Below any entity of the code that matched at all (a fixture
+                // that tops three lists still scores under 0.05 there), but
+                // above nothing: one is still found when nothing else matches.
+                s -= 0.03;
+                ex.push("fixture −".into());
+            } else if files::is_test(&e.rel) || files::is_fixture(&format!("{}/x", e.rel)) {
+                s -= 0.004;
+                ex.push("test −".into());
+            }
         }
         score.insert(id.clone(), s);
         ents.insert(id, e);

@@ -1,7 +1,71 @@
 //! Tests for the items after the review: Python and WGSL seeds, fixture
 //! files, and the full-text list.
 
+use crate::crawl::{CrawlOptions, crawl};
+use crate::db::Index;
 use crate::extract::extract;
+use crate::files::file_kind;
+use crate::index_test::{commit, git, temp, write};
+use crate::query::{NoSemantic, SearchOptions, search};
+
+#[test]
+fn fixtures_have_their_own_kind_and_rank_down() {
+    assert_eq!(
+        file_kind("rs/crates/x/testdata/corpus/held.jsonl"),
+        "fixture"
+    );
+    assert_eq!(file_kind("tests/fixtures/sample.rs"), "fixture");
+    assert_eq!(file_kind("tests/data/run.txt"), "fixture");
+    assert_eq!(file_kind("src/__snapshots__/a.snap"), "fixture");
+    assert_eq!(file_kind("tests/it.rs"), "test");
+    assert_eq!(file_kind("data/rows.jsonl"), "data");
+    assert_eq!(file_kind("docs/notes.txt"), "doc");
+
+    let dir = temp();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let r = root.join("alpha");
+    std::fs::create_dir_all(&r).unwrap();
+    git(&r, &["init", "-q", "-b", "main"]);
+    write(
+        &r,
+        "src/held.rs",
+        "/// Delivers held messages.\npub fn deliver_held() {}\n",
+    );
+    write(
+        &r,
+        "testdata/held-delivery.jsonl",
+        "{\"held\": \"delivery\"}\n",
+    );
+    write(&r, "tests/data/held-delivery.txt", "held delivery\n");
+    commit(&r, "first");
+    let mut ix = Index::open(&root.join("index.db")).unwrap();
+    crate::roots::add_project(&ix, &r, "full", "").unwrap();
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    let run = |kind: &str| {
+        search(
+            &ix.conn,
+            &SearchOptions {
+                query: "held delivery".into(),
+                kind: kind.into(),
+                limit: 10,
+                ..Default::default()
+            },
+            &NoSemantic,
+        )
+        .unwrap()
+    };
+    let r = run("");
+    assert!(
+        r.hits[0].id.starts_with("alpha:src/held.rs"),
+        "{:#?}",
+        r.hits
+    );
+    let fx = r.hits.iter().find(|h| h.file_kind == "fixture").unwrap();
+    assert!(fx.explain.iter().any(|e| e == "fixture −"));
+    let r = run("fixture");
+    assert_eq!(r.hits.len(), 2);
+    assert!(r.hits.iter().all(|h| h.file_kind == "fixture"));
+}
 
 #[test]
 fn python_docstrings_after_shebangs_comments_and_boms() {

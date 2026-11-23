@@ -516,7 +516,7 @@ and it says how many were left out. --json prints every result, unfitted:
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct SearchArgs {
-    #[arg(long = "kind", value_name = "string", default_value = "", help = "Only this kind: project, dir, file, symbol, section, or a file kind (source, test, doc, config, build, data, asset, submodule)")]
+    #[arg(long = "kind", value_name = "string", default_value = "", help = "Only this kind: project, dir, file, symbol, section, or a file kind (source, test, fixture, doc, config, build, data, asset, submodule)")]
     pub kind: String,
     #[arg(long = "project", value_name = "string", default_value = "", help = "Only this project")]
     pub project: String,
