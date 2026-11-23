@@ -15,5 +15,22 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
+# The embedder (docs/INDEX.md, "Embeddings"): bge-small-en-v1.5 on the CPU,
+# pure Rust (candle), no ONNX Runtime. Off by default: the index works
+# without vectors, and search fuses the lists it has.
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
+candle-transformers = { version = "0.11", optional = true }
+half = { version = "2", optional = true }
+rayon = { version = "1", optional = true }
+tokenizers = { version = "0.23", optional = true, default-features = false, features = ["fancy-regex"] }
+
+[features]
+embed = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:half", "dep:rayon", "dep:tokenizers"]
+
 [dev-dependencies]
 tempfile.workspace = true
+
+[[example]]
+name = "embed_texts"
+required-features = ["embed"]

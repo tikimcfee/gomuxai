@@ -1,0 +1,37 @@
+Embed gives every project, directory, file, doc section and concept a
+vector of its card: its path, title, summary or seed, why, and symbol
+names. Search then adds a third ranked list, the entities whose cards are
+nearest the query's meaning, to the two word lists (names and summaries,
+and files' full text), fused by rank. Symbols and fixture files get no
+vector.
+
+The model is bge-small-en-v1.5, run on the CPU (no GPU, no server), from
+the Hugging Face cache (~/.cache/huggingface/hub) or --model-dir, which
+holds config.json, tokenizer.json and model.safetensors. Only entities
+whose card text changed since their vector was made are embedded, so after
+the first run it takes seconds. The first run over a large tree takes a
+while (about 60 cards a second on 16 cores); --limit N stops after N, and
+the next run goes on from there.
+
+This agent embeds only when built with the cargo feature embed; without
+it, search ranks by words alone.
+
+Usage:
+  agent index embed [flags]
+
+Examples:
+  agent index crawl
+  agent index embed
+  agent index embed --limit 2000
+
+Flags:
+  -h, --help               help for embed
+      --json               Print the report as JSON
+      --limit int          Stop after this many entities (0: all)
+      --model-dir string   The model's directory (default: the Hugging Face cache's bge-small-en-v1.5)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

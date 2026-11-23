@@ -59,6 +59,7 @@ pub fn def() -> Def {
             root_def(),
             project_def(),
             crawl_def(),
+            embed_def(),
             search_def(),
             show_def(),
             tree_def(),
@@ -345,6 +346,125 @@ fn run_project_add(ctx: &Ctx, a: &ProjectAddArgs) -> anyhow::Result<()> {
     ))
 }
 
+// `agent index embed`
+
+pub const EMBED: Doc = Doc {
+    use_line: "embed",
+    short: "Embed the index's entities, so search ranks by meaning as well as words",
+    long: r#"Embed gives every project, directory, file, doc section and concept a
+vector of its card: its path, title, summary or seed, why, and symbol
+names. Search then adds a third ranked list, the entities whose cards are
+nearest the query's meaning, to the two word lists (names and summaries,
+and files' full text), fused by rank. Symbols and fixture files get no
+vector.
+
+The model is bge-small-en-v1.5, run on the CPU (no GPU, no server), from
+the Hugging Face cache (~/.cache/huggingface/hub) or --model-dir, which
+holds config.json, tokenizer.json and model.safetensors. Only entities
+whose card text changed since their vector was made are embedded, so after
+the first run it takes seconds. The first run over a large tree takes a
+while (about 60 cards a second on 16 cores); --limit N stops after N, and
+the next run goes on from there.
+
+This agent embeds only when built with the cargo feature embed; without
+it, search ranks by words alone."#,
+    example: r#"  agent index crawl
+  agent index embed
+  agent index embed --limit 2000"#,
+    args: ArgRule::None,
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct EmbedArgs {
+    #[arg(long = "limit", value_name = "int", default_value_t = 0, help = "Stop after this many entities (0: all)")]
+    pub limit: i64,
+    #[arg(long = "model-dir", value_name = "string", default_value = "", help = "The model's directory (default: the Hugging Face cache's bge-small-en-v1.5)")]
+    pub model_dir: String,
+    #[arg(long = "json", help = "Print the report as JSON")]
+    pub json: bool,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+fn embed_def() -> Def {
+    leaf!(EMBED, EmbedArgs, run_embed)
+}
+
+#[cfg(feature = "embed")]
+fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
+    use agent_index::embed;
+    // Before any thread starts: the embedder's workers each run their
+    // matrix products on one thread (see embed::single_threaded_products).
+    embed::single_threaded_products();
+    let mut ix = open(ctx)?;
+    require_projects(&ix)?;
+    let given = (!a.model_dir.is_empty()).then(|| PathBuf::from(&a.model_dir));
+    let dir = embed::model_dir(given.as_deref())?;
+    let emb = embed::Embedder::load(&dir)?;
+    let mut last = 0;
+    let r = embed::drain(&mut ix.conn, &emb, int_flag(a.limit, "limit")?, |done, total| {
+        if done == total || done >= last + 1000 {
+            last = done;
+            eprintln!("embedded {done} of {total}");
+        }
+    })?;
+    if a.json {
+        return ctx.print_json(&serde_json::json!({
+            "model": embed::MODEL_ID,
+            "embedded": r.embedded,
+            "removed": r.removed,
+            "skipped": r.skipped,
+            "remaining": r.remaining,
+            "secs": r.secs,
+        }));
+    }
+    let mut o = format!(
+        "Embedded {} entities in {:.1}s with {}",
+        r.embedded,
+        r.secs,
+        embed::MODEL_ID
+    );
+    if r.removed > 0 {
+        let _ = write!(o, "; dropped {} vectors of entities gone", r.removed);
+    }
+    o.push_str(".\n");
+    if r.remaining > 0 {
+        let _ = writeln!(o, "{} left: agent index embed goes on from there.", r.remaining);
+    }
+    ctx.write_out(&o)
+}
+
+#[cfg(not(feature = "embed"))]
+fn run_embed(_: &Ctx, _: &EmbedArgs) -> anyhow::Result<()> {
+    anyhow::bail!("this agent was built without the embedder: build it with the cargo feature embed (cargo build --features embed)")
+}
+
+/// The semantic list, when this agent has the embedder and the index has
+/// vectors. A broken store or a missing model is said, and search goes on
+/// with the word lists alone.
+#[cfg(feature = "embed")]
+fn semantic(ctx: &Ctx, ix: &Index) -> Option<Box<dyn agent_index::Semantic>> {
+    use agent_index::embed;
+    let dir = match embed::model_dir(None) {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    match embed::VectorSemantic::open(&ix.conn, &dir) {
+        Ok(Some(s)) => Some(Box::new(s)),
+        Ok(None) => None,
+        Err(e) => {
+            ctx.hint(format!("searching by words only: the vectors couldn't be used ({e:#})"));
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "embed"))]
+fn semantic(_: &Ctx, _: &Index) -> Option<Box<dyn agent_index::Semantic>> {
+    None
+}
+
 // `agent index crawl`
 
 pub const CRAWL: Doc = Doc {
@@ -559,7 +679,10 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         },
         caller_project: caller.clone(),
     };
-    let r = agent_index::search(&ix.conn, &o, &NoSemantic)?;
+    let r = match semantic(ctx, &ix) {
+        Some(sem) => agent_index::search(&ix.conn, &o, sem.as_ref())?,
+        None => agent_index::search(&ix.conn, &o, &NoSemantic)?,
+    };
     if a.json {
         return ctx.print_json(&r);
     }

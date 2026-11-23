@@ -15,6 +15,11 @@ path = "src/lib.rs"
 name = "agent"
 path = "src/main.rs"
 
+[features]
+# The index's embedder (agent index embed; semantic search). Off by default:
+# it adds candle (pure Rust) and a 130 MB model read from the Hugging Face cache.
+embed = ["agent-index/embed"]
+
 [dependencies]
 agent-base.workspace = true
 agent-store.workspace = true

@@ -12,6 +12,8 @@
 pub mod crawl;
 pub mod db;
 pub mod edges;
+#[cfg(feature = "embed")]
+pub mod embed;
 pub mod extract;
 pub mod files;
 pub mod git;

@@ -136,6 +136,7 @@ index root list
 index project
 index project add
 index crawl
+index embed
 index search
 index show
 index tree
