@@ -15,7 +15,10 @@ every change, not as a gate in front of the work.
 `docs/INDEX.md` stays the reference for the entity model, freshness
 keys, edges, labels, the two layers (index is the what, memory the
 how), dreams and confinement; this document says what v2 changes. Each
-piece is marked **built** when it is. Nothing is built yet.
+piece is marked **built** when it is. Iteration 1's store, sync, search
+(full text, trigram, vectors, RRF in SQL), show, tree, related and embed
+are built: "Iteration 1, as built" says how, and where it differs from
+this plan.
 
 ## The pipeline
 
@@ -44,21 +47,30 @@ keeps the parts only it can do (crawl, parse, scrub, chunk) and calls
 the database for everything else. The extensions and versions are
 chosen from what they do today (see "Feature check"):
 
-- **full text**: a `tsvector` per row with weighted parts (A: title,
-  name and labels; B: summary and asks; C: seed and why; D: body),
-  ranked by `ts_rank_cd`, queried with `websearch_to_tsquery`. The
-  default parser doesn't split identifiers, so Rust adds the split forms
-  (`gather_global` and `gatherGlobal` both give `gather global`) to a
-  `terms` column that feeds the vector beside the whole identifier.
-- **fuzzy**: `pg_trgm` on names, paths and labels (`word_similarity` for
-  a short query inside a longer name), with a trigram GIN index.
-- **vectors**: `pgvector` `halfvec` columns with HNSW indexes, and
-  iterative index scans, so a filtered query (one project, one corpus)
-  still returns enough rows.
-- **graph walks**: recursive CTEs over `edges` (`related`, graph
-  expansion, "what depends on this").
-- **fusion**: RRF over the lists as CTEs in one statement, so a search
-  is one round trip.
+- **full text** (**built**, code corpus): a `tsvector` per row with
+  weighted parts (A: title, name and labels; B: summary and asks; C:
+  seed and why; D: body), ranked by `ts_rank_cd`, queried with
+  `websearch_to_tsquery`. The default parser doesn't split identifiers,
+  so Rust adds the split forms (`gather_global` and `gatherGlobal` both
+  give `gather global`) to a `terms` column that feeds the vector beside
+  the whole identifier. As built, the title went to B (stemmed, with the
+  summary), A holds the terms and labels, D the children's names, and
+  the query is built per term (`plainto_tsquery` in `simple` and in
+  `english`, OR'd for "any word" and AND'd for "every word") rather than
+  by `websearch_to_tsquery`, to keep v1's query semantics.
+- **fuzzy** (**built**): `pg_trgm` on names, paths and labels
+  (`word_similarity` for a short query inside a longer name), with a
+  trigram GIN index.
+- **vectors** (**built** for cards; chunk vectors not yet): `pgvector`
+  `halfvec` columns with HNSW indexes, and iterative index scans, so a
+  filtered query (one project, one corpus) still returns enough rows.
+- **graph walks** (**built**): recursive CTEs over `edges` (`related`,
+  graph expansion, "what depends on this"); `show`'s breadcrumb and
+  `tree` walk `parent` the same way.
+- **fusion** (**built**): RRF over the lists as CTEs in one statement.
+  As built a search is four round trips: its context (the caller's
+  dependencies, whether vectors exist), the label n-grams, the fused
+  statement, and the hits' details.
 
 ParadeDB's `pg_search` (BM25) and VectorChord (vectors, and its own
 BM25) are the alternatives to weigh against native full text and
@@ -191,12 +203,114 @@ Each lands on its own, measured, and said plainly when it does:
 
 1. Postgres store and the crawl writing to it; full text, trigram and
    vectors on the code corpus; RRF in SQL; the eval running against it.
+   **Built** (the eval run is next): see "Iteration 1, as built".
 2. The warm process and the reranker.
 3. The prose, memory and friction corpora; grouped answers.
 4. Sessions as full scrubbed text.
 5. Summaries and asks for all of the dev tree, after preflight and the
    config review.
 6. Query expansion and learned labels, from the eval's misses.
+
+## Iteration 1, as built
+
+`rs/crates/agent-index/src/pg/` (`mod.rs` says the shape). The
+`agent index` commands take `--store sqlite|pg` (default
+`AGENT_INDEX_STORE`, else sqlite); the pg store's URL is `AGENT_INDEX_PG`
+(a Unix socket, peer auth), its schema `AGENT_INDEX_PG_SCHEMA` (default
+`idx`). The search flags and `--json` shape are v1's, so the eval harness
+runs unchanged against it.
+
+**Interim: the crawl's ledger stays in SQLite.** v1's crawl runs as
+before and writes `index.db`, which keeps its bookkeeping (renames and
+aliases, references, manifests, co-change state). `agent index sync` (and
+`crawl --store pg`, which runs it) mirrors that into Postgres, and every
+query reads Postgres only. Moving the bookkeeping into Postgres comes
+after the first eval run.
+
+- **Sync**: each entity's row (its card text, terms, labels, children's
+  names) is hashed into a sync key; rows whose key changed go through
+  COPY into a staging table and one upsert whose `RETURNING old.*,
+  new.*` queues changed cards for embedding and changed files for
+  chunking (read from disk again). Edges and the small tables are
+  compared by digest. One transaction under an advisory lock.
+  `sync --rebuild` empties the tables and writes everything again,
+  keeping card vectors whose text is unchanged; a test checks it gives
+  the same rows as the incremental path.
+- **Schema**: versioned migrations in `pg/schema.rs` (1: the tables; 2:
+  the BM25 indexes for the A/B, where `pg_search` exists; 3: `lexemes`).
+  Entities carry `terms` (identifiers whole and split, the path's words),
+  `tsv` (STORED: `simple` terms and labels at A; `english` title,
+  summary and asks at B; seed and why at C; `simple` children's names at
+  D), `tri` (names, paths, labels; not symbols) and `card_vec
+  halfvec(384)` on HNSW. Files' text goes into `chunks` (Markdown by
+  heading, else 400-line windows, at most 32 KB) with `english` and
+  `simple` tsvectors; `simple` gets camelCase words added.
+- **Search**: four round trips (context, label n-grams, the fused
+  statement, the hits' details). The fused statement holds every list as
+  a CTE (cards any word and every word, chunks, trigram, dense,
+  labels), each again scoped to the caller's project and its
+  dependencies, ranked `ROW_NUMBER() OVER (ORDER BY score DESC, id)`,
+  fused by `UNION ALL` + `GROUP BY` RRF (k = 60); the pins (an
+  identifier's definitions, a rare identifier's files) and the absent
+  terms come out of the same statement, and v1's priors apply in Rust.
+- **A crude IDF**: `lexemes` counts each lexeme's chunks (those in 50 or
+  more), refreshed when chunks change. The chunk list takes a query's
+  rarest terms until their chunks add up to 4,000, the cards' any-word
+  list until 8,000, and the trigram list the 4 rarest terms; the rarest
+  always counts. This was for speed (a common word's 20,000 chunks took
+  most of a second to rank) and changes ranking: the eval should sweep it
+  (`AGENT_INDEX_TUNE=chunk_budget=N,card_budget=N,trigram_terms=N`).
+- **show, tree, related** read Postgres: the breadcrumb, the subtree and
+  the neighbors are recursive CTEs; their output matches v1's (tested).
+- `--lexical fts|bm25|both` picks native full text, `pg_search`'s BM25
+  lists (written by the pg_search lane), or both; `AGENT_INDEX_EXPLAIN=1`
+  prints the fused statement's plan.
+
+### Measured (2026-11-23, the whole dev tree)
+
+461k entities (377k symbols), 66.5k chunks from 38.6k files, 82.3k card
+vectors, 47 projects. Timings on a shared 16-core host.
+
+| step | time |
+|---|---|
+| cold crawl (v1, into the ledger) | 40.0 s |
+| cold sync | 71.7 s (52 s of it cutting and indexing chunks) |
+| no-op crawl + sync | 5.5 s + 5.8 s (reading both sides' keys; 4.0 s warm) |
+| migration 2 (BM25 indexes over the full data) | about 4 s |
+| embed, 82,308 cards (bge-small, CPU) | 673 s (122 cards/s) |
+
+Size: 1,673 MB in all; `entities` 859 MB (316 MB of it indexes; HNSW 86
+MB, `tsv` GIN 47 MB, `pg_search` 44 MB, trigram 24 MB), `chunks` 787 MB
+(two GIN 148 MB, `pg_search` 82 MB), everything else under 10 MB each.
+The ledger (`index.db`) is 646 MB more.
+
+Search latency over the 64 dev questions (qrels `_s` and `_a`), from the
+dev root, as the snapshot `agent-pg-19fed9b` runs:
+
+| | median | p95 |
+|---|---|---|
+| CLI wall clock (process, model load, connect) | 247 ms | 411 ms |
+| inside the search (sum of its stages) | 200 ms | 370 ms |
+| the fused statement | 136 ms | 304 ms |
+| embedding the query (the model loaded cold each run) | 58 ms | |
+
+Before the IDF budgets and the join change the fused statement took 450
+ms median, 1.65 s p95. `EXPLAIN ANALYZE` of the fused statement (the
+snapshot, run in the gomuxai project; planning 2.4 ms each):
+
+| query | execution | cards any word | trigram | chunks | dense |
+|---|---|---|---|---|---|
+| `held message delivery` | 111 ms | 15 ms | 17 ms | 24 ms | 4 ms |
+| `parse_config` | 40 ms | 3 ms | 6 ms | 7 ms | 4 ms |
+| a 14-word question about scrubbing logs | 244 ms | 29 ms | 77 ms | 31 ms | 4 ms |
+
+The rest of each is the local (`here`) copies of the lists and building
+the candidates' JSON. The trigram list is the next thing to make cheaper.
+
+A smoke check on the first 10 short dev questions (`--kind file`, dev
+root): hit@5 v1 2/10, v2 between 2/10 and 4/10 across the tuning steps
+(MRR@10 0.07 for v1, 0.09 to 0.18 for v2). Ten questions decide nothing;
+the eval does.
 
 ## Feature check
 
