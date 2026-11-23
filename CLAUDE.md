@@ -876,6 +876,29 @@ and `restart` save the settings (`bus/settings.json`), and a later `agent
 bus start` without flags uses them, so after a reboot the hub listens and
 peers may call the same ops as before.
 
+To have the bus come back by itself after a reboot (Linux):
+
+```bash
+agent bus service install                    # a systemd user unit runs the bus from boot
+agent bus service install --resume lead,lead-build   # and resumes those agents after it
+agent bus service status                     # what is installed and whether it runs
+agent bus service remove
+```
+
+`service install` writes `gomuxai-bus.service` (in `~/.config/systemd/user`),
+which runs `agent bus run --saved`: the bus with its saved settings. With no
+bus running it starts at once; a bus already running in session `gomux-bus`
+is left alone, and `agent bus stop` then `agent bus start` hands it to the
+unit (or the next boot does). While the unit runs the bus, `bus status`,
+`start`, `stop`, `restart` and `rename` work as before, through systemctl
+instead of the session, and the bus's output is in the journal (`journalctl
+--user -u gomuxai-bus`). `--resume a,b` (or `--resume-all`, for `agent resume
+--all`) also writes `gomuxai-resume.service`, which runs once per boot after
+the bus and resumes those agents in that order; `--no-resume` removes it. The
+units start at boot only with linger on (`loginctl enable-linger`); `service
+status` says. `--dry-run` prints the units and commands and changes nothing.
+These prompt the person when an agent runs them.
+
 Dropping a peer, or renaming a host:
 
 ```bash
@@ -937,7 +960,8 @@ Start with `agent status <name> -v`, then `agent capture <name>`.
 | `unknown` (non-hook backends) | `capture` to look; coordinate on state or messages instead. |
 | `error` | The last turn failed (e.g. rate limit); it takes input again. `capture` or `logs` shows why. |
 | `ended (...)` | The reason says how (`agent statuses`); `agent resume <name>` continues its session (claude, agy), or `agent revive <name>` continues it (or takes over a CLI restarted in its pane) and sends its handoff re-brief; `agent logs <name>` shows its last output; `agent cleanup <name>` removes the record. |
-| Every agent `ended (gone)` after a reboot | `agent resume --all --dry-run`, then `agent resume --all`: it resumes each one the reboot ended, parents first, and leaves the ones ended on purpose. |
+| Every agent `ended (gone)` after a reboot | `agent resume --all --dry-run`, then `agent resume --all`: it resumes each one the reboot ended, parents first, and leaves the ones ended on purpose. `agent bus service install --resume ...` does it at boot. |
+| The bus is down after a reboot | `agent bus start` (it uses the saved settings). To have it start by itself: `agent bus service install`. |
 | `wait` timed out | `status -v` and `capture`: still working, stuck, or missed the turn? |
 | Stuck at an unexpected screen | `agent key agent-<name> Enter`, or `agent key agent-<name> c-c` to interrupt. |
 | Queued messages never arrive (not Claude or agy) | Start `agent watch` (one per host is enough). |

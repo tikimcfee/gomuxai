@@ -45,6 +45,7 @@ bus untrust
 bus rename
 bus restart
 bus ssh
+bus service
 friction
 friction add
 friction +1

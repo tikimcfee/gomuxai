@@ -322,7 +322,9 @@ arbitrary process on the host. To allow them too, add them on the hub: `agent
 bus restart --remote-ops
 list,status,capture,send,respond,friction,logs,fleet,template,manage,spawn,resume`
 (`remote ops allowed` then lists them). The bus saves its settings, so a later
-`agent bus start`, after a reboot say, runs with the same ops. Then `agent
+`agent bus start`, after a reboot say, runs with the same ops (on Linux,
+`agent bus service install` makes a systemd user unit start it at boot, and
+`--resume a,b` resumes those agents after it). Then `agent
 spawn builder@hub --backend claude --cwd /home/user/project` starts one on the
 hub; `--cwd` and a task file are paths on the hub.
 Listing `spawn` lets every linked peer run commands on the hub as the bus's

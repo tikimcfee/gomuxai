@@ -2373,6 +2373,47 @@ Two things keep a Mac's daemon in the GUI session:
   `respawn_pane` for a fresh shell under the same terminal id, preserving
   `cwd`, `env_base`, and request `env`, and the new `bus run` typed in).
 
+### The bus service (systemd)
+
+`agent bus service install|remove|status` (`rs/crates/agent/src/cli/bus_service.rs`,
+Linux) manages two systemd user units in `~/.config/systemd/user`:
+
+- `gomuxai-bus.service` runs `<binary> bus run --saved`, `Restart=on-failure`,
+  `WantedBy=default.target`. `--saved` makes `bus run` take
+  `bus/settings.json` for the flags it isn't given (`run_settings`), so the
+  unit never carries the settings: `start` and `restart` save them and
+  start or restart the unit. It doesn't pin `AGENT_HOST`: the host is the
+  bus identity's name, so `bus rename` needs no new unit.
+- `gomuxai-resume.service` (optional: `--resume a,b`, `--resume-all`) is a
+  oneshot `After=` and `Wants=` the bus unit, with one `ExecStart=-<binary>
+  resume <name>` per agent (or `resume --all`), so one that can't be resumed
+  doesn't stop the rest. It is enabled, never started by install.
+
+Both set `KillMode=process`, and the resume unit `RemainAfterExit=yes`: a
+`g3d-termd` daemon normally moves itself into a unit of its own, but if one
+ever stayed in these units' cgroups, stopping or finishing the unit must not
+kill every agent's terminal. Stopping the bus unit signals only `agent bus
+run`, which shuts `agent-busd` down (and `agent-busd` exits when its parent
+is gone, so a killed `bus run` leaves nothing behind for the restart).
+
+A unit belongs to the binary its `ExecStart` names (`own_unit`): the data dir
+sits beside the binary, so a unit for another binary runs another bus and is
+never started, stopped, replaced or removed. `running_unit` is `own_unit`
+whose `systemctl --user is-active` says `active`. With one, `bus stop` runs
+`systemctl stop`, `restart_bus` saves the settings and runs `systemctl
+restart`, `bus rename` stops and starts the unit around the rename, and `bus
+status` adds `run by systemd unit ...` (`unit` in `--json`). `bus start`,
+with the unit installed and no `gomux-bus` session, starts the unit instead
+of a session. Each waits for the bus to answer as the session path does
+(`wait_up`, the same 30s), and a failure quotes the unit's journal. Install
+starts the unit only when no bus answers: a bus running in the session keeps
+running until `bus stop`, and the unit takes over at the next `bus start` or
+boot. The units' PATH is the installer's (each directory once).
+`GOMUXAI_UNIT_PREFIX` replaces the `gomuxai` in both unit names, for a second
+binary on the machine and for trying the units against a real systemd. The
+tests use a stand-in for systemctl and their own unit directory
+(`set_test_units`); without one, a test reaches neither.
+
 ### The gomux-bus session
 
 `agent bus start` runs `env AGENT_HOST='<host>' '<binary>' bus run ...` in the

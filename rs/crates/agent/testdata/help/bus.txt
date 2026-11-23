@@ -30,6 +30,10 @@ Changing trust:
   agent bus trust <new>.pub.json --renames <old>
   agent bus restart              # apply a trust, with the same settings
 
+Coming back after a reboot (Linux):
+
+  agent bus service install      # a systemd user unit runs the bus from boot
+
 nats-server can't reload trust, so a change applies when the bus restarts.
 
 Only reaching other hosts needs a bus: everything on one host works without.
@@ -56,6 +60,7 @@ Available Commands:
   rename      Rename this host on the bus, keeping its keys
   restart     Restart the background bus with the settings it runs with
   ssh         Show or set where agent attach name@host runs ssh to
+  service     Run the bus from boot (systemd user units)
 
 Flags:
   -h, --help   help for bus

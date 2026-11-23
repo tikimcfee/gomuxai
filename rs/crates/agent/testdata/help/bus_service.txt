@@ -1,0 +1,52 @@
+Service makes this host's bus come back by itself after a reboot: a
+systemd user unit, gomuxai-bus.service in ~/.config/systemd/user, that runs
+the bus with its saved settings (what agent bus start and restart save:
+--listen, --client-port, --remote-ops).
+
+  install   write the unit and enable it. With no bus running it starts
+            now. A bus running in session gomux-bus is left alone: stop it
+            and start it again to hand it to the unit (install says how),
+            or let the unit take over at the next boot.
+  remove    stop the bus if the unit runs it, and remove the units
+  status    what is installed, what it runs, and whether it is running
+            (the default)
+
+While the unit runs the bus, agent bus status, start, stop, restart and
+rename work as before: they start and stop the unit instead of a session.
+The bus's output is in the journal (journalctl --user -u gomuxai-bus).
+
+install can also write gomuxai-resume.service, which runs once at boot,
+after the bus, and resumes agents the reboot ended:
+
+  --resume a,b,c   those agents, in that order (parents before helpers)
+  --resume-all     agent resume --all: every agent the reboot ended
+  --no-resume      remove the resume unit
+
+With none of them, install leaves an installed resume unit as it is. The
+units run this agent binary with the PATH install was run with. They start
+at boot only if the user's systemd manager does: loginctl enable-linger.
+
+--dry-run prints what install or remove would write and run, and changes
+nothing. Linux only for now.
+
+Usage:
+  agent bus service <install | remove | status> [flags]
+
+Examples:
+  agent bus service install --dry-run
+  agent bus service install --resume lead,lead-build
+  agent bus service status
+  agent bus service remove
+
+Flags:
+      --dry-run          Print the units and commands, and change nothing
+  -h, --help             help for service
+      --no-resume        install: remove the resume unit
+      --resume strings   install: also resume these agents at boot, in this order
+      --resume-all       install: also run agent resume --all at boot
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
