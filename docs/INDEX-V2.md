@@ -282,5 +282,16 @@ grows past what HNSW holds in memory.
 `bge-reranker-v2-m3` (41.4), served by vLLM's pooling runner (`/rerank`)
 or TEI. `Qwen3-Reranker-0.6B` (73.4) is the fallback when the GPU is
 busy. `jina-reranker-v3.5` scores well but is licensed non-commercial.
-Published throughput for these on a 32 GB card is unconfirmed: the
-first iteration measures it.
+
+**Built and measured** on the host's GPU (vLLM pooling runner, a
+localhost endpoint, about 300-token candidates, p50 over 20 runs):
+
+| model | GPU memory | 50 candidates | 100 candidates | throughput |
+|-------|-----------|---------------|----------------|------------|
+| Qwen3-Reranker-4B | 10.2 GB | 616 ms | 1,211 ms | 82 pairs/s |
+| Qwen3-Reranker-0.6B | 3.7 GB | 130 ms | 256 ms | 390 pairs/s |
+
+Both ranked a relevant passage first on five code-search checks. At
+these speeds the 4B over four corpora at depth 50 would add about 2.4 s
+to a query, so the eval decides between the 0.6B at depth 50 to 100,
+the 4B at depth 20 to 30, and the 4B on the code group alone.
