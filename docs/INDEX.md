@@ -371,8 +371,8 @@ Popular, maintained, embedded parts; no daemon, no second store:
 | part | choice | why, and what was passed over |
 |------|--------|-------------------------------|
 | store | SQLite through `rusqlite` (bundled), WAL | already in the workspace; one file, one transaction for entities, edges, labels, text and vectors |
-| lexical | SQLite FTS5: `porter` and `trigram` tokenizers, bm25 | compiled into the bundled SQLite already. tantivy only if raw source bodies are ever searched at scale: a second store splits transactions |
-| vector | `sqlite-vec`, half-float vectors, exact scan | lives in the same file; 25,000 × 384 dimensions is about 19 MB and scans in milliseconds. An HNSW index (`usearch`, `hnsw_rs`) only past ~150,000 vectors. LanceDB pulls Arrow and DataFusion into `agent`; Qdrant and Chroma are servers; FAISS is a heavy C++ build |
+| lexical | SQLite FTS5: `porter` and `trigram` tokenizers over cards, and a `porter` table over full file text, bm25 | compiled into the bundled SQLite already. tantivy only if raw source bodies are ever searched at scale: a second store splits transactions |
+| vector | half-float blobs in `index.db`, exact scan | 25,000 × 384 dimensions is about 19 MB and scans in about 20 ms; `sqlite-vec` once past roughly 400,000 vectors. An HNSW index (`usearch`, `hnsw_rs`) only past ~150,000 vectors. LanceDB pulls Arrow and DataFusion into `agent`; Qdrant and Chroma are servers; FAISS is a heavy C++ build |
 | graph | an `edges` table with recursive CTEs for one or two hops; `petgraph` in memory for PageRank and personalized PageRank | 25,000 nodes and 200,000 edges load in milliseconds. Kùzu, the embedded graph database, was archived in 2025; DuckDB's property-graph extension is research-grade and heavy for this size |
 | walk | the `ignore` crate (ripgrep's walker) and the `git` CLI | `.gitignore` handled, non-git trees too |
 | symbols | regular expressions on day one, then `tree-sitter` | tree-sitter's grammars cover every language in the tree |
@@ -649,33 +649,61 @@ this section is the index's side of the contract with it:
   embedder drains it, so freshness is explicit and nothing diffs every
   key.
 
-What follows is the default until that lane's experiments say otherwise.
+What follows is what that lane measured (32 plain-word questions in two
+phrasings, labeled blind, over about 1,100 and again 5,000 files with
+other projects as distractors, plus about 400 lexicon lay phrasings;
+MRR at 10, wins and losses paired, Holm-corrected):
 
-Embed what an entity means, not its raw code: its title, path, summary
-(or seed), why, labels and symbol names, a few hundred tokens each. The
-default is a small model on the CPU (`bge-small-en-v1.5` through
-`fastembed`, 384 dimensions): it embeds 25,000 such texts in about a
-minute, needs no server, and takes nothing from a GPU that a resident
-chat model already fills. Vectors are re-made only when the text they
-came from changes, so a crawl embeds only what it changed. Since seeds
-exist from the first crawl, vectors do too: the semantic list is part of
-v1, not a later stage.
+| ranking | MRR@10, 5,000 files |
+|---------|--------------------|
+| bm25 over entity cards | 0.54 |
+| `bge-small-en-v1.5` over cards, alone | 0.57 |
+| hybrid: RRF of bm25 on cards, bm25 on full text, `bge-small` on cards | **0.70** (27 wins, 2 losses, p = 0.001) |
+| an 8B embedding model alone | 0.77 |
 
-A larger model on the GPU (an 8B embedding model behind an
-`/v1/embeddings` endpoint) is an optional batch mode, run by hand when
-that GPU is free. Don't cut a large model's vectors to their
-first dimensions unless it was trained for that (Matryoshka
-representation learning); not every model that accepts a `dimensions`
-argument was. Raw embeddings from such models are also anisotropic: all
-vectors crowd one direction, so every pair looks similar. Subtracting
-the corpus mean and dropping the top few principal components
-("all-but-the-top") restores the spread, and a fitted PCA to 512
-dimensions keeps it. The small model's vectors are mean-centered too.
-Stored as half floats in sqlite-vec, 25,000 vectors are 19 to 25 MB,
-scanned exactly in milliseconds. Every load checks the count, the
-dimension and a probe query, since a silently corrupt vector store looks
-just like a working one. Embeddings also propose concept edges: near
-neighbors across a project boundary are candidates for the concept pass.
+So, in v1:
+
+- **Hybrid from the start**, with `bge-small-en-v1.5` on the CPU (384
+  dimensions, no server, no GPU taken from a resident chat model).
+  Larger small models (0.6B, code-specific ones) don't beat it
+  significantly.
+- **Embed cards, not code.** A card is the entity's path, seed (or
+  summary, why and asks once they exist) and symbol names. Embedding
+  code chunks gained nothing on plain queries and cost nine times the
+  vectors; the `chunk` column stays for long docs, at 0 otherwise.
+- **A third list: full text.** bm25 over the raw text of each file
+  (an FTS5 table with external or no stored content, `full`-depth
+  projects only, to bound its size) is the weakest list alone, but in
+  the fusion it lifts the hybrid from 0.66 to 0.70 at 5,000 files and
+  0.71 to 0.76 at 1,100.
+- **No all-but-the-top**: dropping top principal components hurt (−0.06,
+  p = 0.006). Mean-centering is mildly positive and optional; the
+  corpus mean is stored beside the vectors.
+- **Raw half floats, exact scan.** 25,000 × 384 scans in about 20 ms; no
+  vector extension is needed below roughly 400,000 vectors, so v1 stores
+  plain blobs and `sqlite-vec` waits until it's needed.
+- **Embed a summary only while it's fresh** (or drifted). Summaries
+  didn't help plain queries (−0.03, not significant) and helped the
+  lexicon set a little (+0.04), but stale ones hurt badly: with
+  summaries that no longer matched their files, the hybrid fell below
+  bm25 alone (0.47 against 0.62). A stale entity's card falls back to
+  its seed. Freshness isn't only for display: it decides what is
+  embedded.
+- **The 8B model** is the best single list, but it needs about 16 GB of
+  GPU memory at query time too, so it stays an optional batch and
+  endpoint mode, mean-centered.
+- **Summarizing** with a 4B local model took 4.4 minutes for 1,100 files
+  on one GPU (about 11,000 prefill tokens a second): about 20 minutes
+  for the 5,000 files that matter, under three hours for every tracked
+  file in a large dev tree.
+
+Don't cut a large model's vectors to their first dimensions unless it
+was trained for that (Matryoshka representation learning); not every
+model that accepts a `dimensions` argument was. Every load checks the
+count, the dimension and a probe query, since a silently corrupt vector
+store looks just like a working one. Embeddings also propose concept
+edges: near neighbors across a project boundary are candidates for the
+concept pass.
 
 ### Learning from use
 
