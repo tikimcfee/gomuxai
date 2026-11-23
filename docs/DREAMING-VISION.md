@@ -26,6 +26,85 @@ A pitch is a short proposal for a person, never a task:
 
 Under 300 words. A pitch that doesn't fit isn't ready.
 
+## The idea engine: a generator and a critic
+
+The source of ideas is a component of its own, not part of the vision
+stage: `agent-dream`'s idea engine, a **generator** paired with a separate
+**critic**, in the style of AI Co-Scientist and daydreaming loops. Three
+callers use it, each with its own question and evidence:
+
+- the vision stage (this doc): "what approach should change?";
+- the act layer's improvements: "what would you change here, and why?",
+  whose winners are filed as cited `improvement` items;
+- the step-3 global dream's synthesizer: "what should memory say now?",
+  whose winners become the change set the skeptic checks and code applies.
+
+Building it once means the diversity, the critic and the convergence
+record are shared, and a caller only supplies a question, an evidence
+bundle and what to do with the winners.
+
+**The shape.** A run takes a *question*, an *evidence bundle* (cited
+items, as a digest), the *lenses* to apply, and a sample count. It
+returns ranked *ideas*, each a structured record: a title, a claim, an
+"instead", what it unlocks and replaces, and its citations. Every stage is
+an agent spawned confined like a dream, writing only through verbs
+(`agent dream idea` for the generator, `agent dream judge` for the
+critic), so the engine never needs more trust than a dream has.
+
+**Diversity**, since one sample from one model finds one idea:
+
+- *Several samples.* The generator is run N times (3 to 5 for vision, 1 to
+  3 for the others), each a fresh agent.
+- *A random model per sample* from the high-thinking pool (Opus at xhigh,
+  Fable, agy Carbon at high, agy Neon at xhigh), at its highest effort,
+  recorded on each idea. Neither CLI takes a temperature, so models and
+  lenses are the levers.
+- *A lens per sample*, drawn from a fixed list: invert a constraint
+  ("assume we could drop X"), borrow from another project ("how does
+  glyph3d solve this"), the outsider ("what would a newcomer find absurd"),
+  the cost lens ("where do agents spend the most for the least"), and the
+  history lens ("what did we give up on, and is that still true").
+- *Zero is allowed.* A sample may return no idea, and that's a normal
+  result.
+
+**The critic**, always a different family from the idea's generator:
+
+1. The code drops any idea with a citation that doesn't resolve, before a
+   model sees it.
+2. Absolute scores, 1 to 5 with a sentence each: leverage, evidence,
+   feasibility, and novelty against what's already in the repos, the docs
+   and earlier ideas (it may answer "this exists" or "this was tried").
+3. A pairwise tournament among the run's survivors: the critic compares
+   two at a time and says which is stronger and why; the code keeps an Elo
+   score per idea over the matches. With few ideas (under five) every pair
+   is compared; with more, a Swiss-style round of about N·log N matches.
+4. The rank is the tournament score, gated by the absolute scores (an
+   idea scoring 1 on evidence never surfaces, however it fares in pairs).
+
+**Convergence across runs.** Ideas live in one table, `dream_ideas`, with
+the caller (vision, act, synthesis) on each. A new idea is matched against
+earlier ones of the same caller: first by the code (token similarity on
+title and "instead", as `similar_friction` does), then confirmed by the
+critic ("same idea as #N, or different?"). A confirmed match adds a vote
+to the old idea (the run, the model, the new evidence) instead of a
+duplicate. Votes from different models and different lenses count most;
+votes from the same model with the same lens count least, since that's the
+same sample drawn twice. A pitch's rank (below) adds its votes to its
+tournament score.
+
+**What steps 1 and 2 already give it, and what step 3 must keep open.**
+Confinement (the read-only command list, dontAsk, the fail-closed agy
+hook, snapshots outside the dream folder) already applies to any agent
+spawned confined with an open dream, so generator and critic agents need
+no new trust. Step 3 builds the first caller, the synthesizer and a
+skeptic, so it should take the engine's shape from the start: the
+synthesizer is a generator run with a "what should memory say" question,
+the skeptic is the critic, and their outputs go through `idea` and
+`judge` verbs into `dream_ideas`, not through a format private to the
+global dream. A dream run records each worker (its role, model and lens)
+in a workers table, so sessions of generators and critics are never
+re-read as new evidence.
+
 ## When a dream thinks this way
 
 A separate stage, not a mode of the consolidating dream. A session can't
@@ -60,8 +139,10 @@ context and a brief that asks a different question:
 
 ## A skeptic, then a ranking
 
-Bold ideas are cheap; good ones are rare. Each new pitch gets a second
-read by a skeptic on another model family, which scores it 1 to 5 on
+Bold ideas are cheap; good ones are rare. The vision stage runs the idea
+engine above with its question, three to five samples and every lens; its
+critic is the skeptic here. Each new pitch gets a second read by that
+skeptic on another model family, which scores it 1 to 5 on
 leverage (how much better things get), evidence (do the citations show the
 problem), and feasibility (could the first step be done in a week), with a
 sentence each, and may answer "this already exists" or "this was tried".
