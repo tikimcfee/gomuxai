@@ -736,3 +736,61 @@ fn repos_in_a_plain_container_are_projects_and_a_cap_cuts_depth_not_siblings() {
     let got = crate::walk::walk(&w, &[], 2);
     assert!(got.files.iter().all(|f| f.rel.matches('/').count() <= 1));
 }
+
+#[test]
+fn kind_file_gives_one_row_per_file() {
+    let dir = temp();
+    let root = std::fs::canonicalize(dir.path()).unwrap().join("dev");
+    let a = root.join("alpha");
+    write(
+        &a,
+        "src/frob.rs",
+        "pub fn frob_one() {}\npub fn frob_two() {}\npub fn frob_three() {}\npub struct Frob;\n",
+    );
+    write(&a, "src/other.rs", "// calls frob\nfn x() {}\n");
+    write(
+        &a,
+        "docs/FROB.md",
+        "# Frob\n\nAbout frobbing.\n\n## Frob tuning\n\nTune the frob.\n",
+    );
+    for i in 0..12 {
+        write(
+            &a,
+            &format!("src/f{i}.rs"),
+            &format!("pub fn frob_{i}() {{}}\n"),
+        );
+    }
+    let mut ix = Index::open(&root.parent().unwrap().join("index.db")).unwrap();
+    crate::roots::add_root(&ix, &root, "full").unwrap();
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    let run = |kind: &str| {
+        search(
+            &ix.conn,
+            &SearchOptions {
+                query: "frob".into(),
+                kind: kind.into(),
+                limit: 10,
+                ..Default::default()
+            },
+            &NoSemantic,
+        )
+        .unwrap()
+    };
+    let r = run("file");
+    assert_eq!(r.hits.len(), 10, "{:#?}", r.hits);
+    let ids: Vec<&str> = r.hits.iter().map(|h| h.id.as_str()).collect();
+    assert!(r.hits.iter().all(|h| h.kind == "file"), "{ids:?}");
+    let distinct: std::collections::HashSet<&&str> = ids.iter().collect();
+    assert_eq!(distinct.len(), 10, "{ids:?}");
+    assert!(ids.contains(&"alpha:src/frob.rs"), "{ids:?}");
+    // A symbol's file says which symbol brought it.
+    let f = r.hits.iter().find(|h| h.id == "alpha:src/f3.rs").unwrap();
+    assert!(
+        f.explain[0] == "by alpha:src/f3.rs#frob_3" && f.line == 1,
+        "{f:?}"
+    );
+    // A file kind maps sections to their doc.
+    let r = run("doc");
+    assert_eq!(r.hits.len(), 1);
+    assert_eq!(r.hits[0].id, "alpha:docs/FROB.md");
+}

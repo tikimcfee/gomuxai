@@ -409,7 +409,103 @@ fn label_matches(conn: &Connection, query: &str, o: &SearchOptions) -> Result<Ve
     Ok(out)
 }
 
+/// The file kinds `--kind` takes, besides the entity kinds.
+pub const FILE_KINDS: &[&str] = &[
+    "source",
+    "test",
+    "fixture",
+    "doc",
+    "config",
+    "build",
+    "data",
+    "asset",
+    "submodule",
+];
+
 pub fn search(
+    conn: &Connection,
+    o: &SearchOptions,
+    semantic: &dyn Semantic,
+) -> Result<SearchResult> {
+    if o.kind == "file" || FILE_KINDS.contains(&o.kind.as_str()) {
+        return search_files(conn, o, semantic);
+    }
+    search_entities(conn, o, semantic)
+}
+
+/// A search for files (`--kind file`, or a file kind): every kind of entity
+/// is searched, and a symbol or section counts for its file, so the list
+/// has one row per file, best first, each saying what in it matched.
+fn search_files(
+    conn: &Connection,
+    o: &SearchOptions,
+    semantic: &dyn Semantic,
+) -> Result<SearchResult> {
+    let limit = if o.limit == 0 { 10 } else { o.limit };
+    let inner = SearchOptions {
+        kind: String::new(),
+        limit: limit * 8,
+        ..o.clone()
+    };
+    let mut r = search_entities(conn, &inner, semantic)?;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut hits: Vec<Hit> = Vec::new();
+    for h in std::mem::take(&mut r.hits) {
+        let file_id = match h.kind.as_str() {
+            "file" => h.id.clone(),
+            "symbol" | "section" => model::file_of(&h.id).to_string(),
+            _ => continue,
+        };
+        if seen.contains(&file_id) {
+            continue;
+        }
+        let Some(e) = model::get(conn, &file_id)? else {
+            continue;
+        };
+        if o.kind != "file" && e.file_kind != o.kind {
+            continue;
+        }
+        seen.insert(file_id.clone());
+        let hit = if h.kind == "file" {
+            h
+        } else {
+            let summ = model::summary(conn, &file_id)?;
+            let mut explain = h.explain.clone();
+            explain.insert(0, format!("by {}", h.id));
+            let mut matched = h.matched.clone();
+            matched.insert(0, format!("{} {}", h.kind, h.title));
+            Hit {
+                rank: 0,
+                id: file_id.clone(),
+                kind: e.kind.clone(),
+                file_kind: e.file_kind.clone(),
+                project: e.project.clone(),
+                freshness: model::freshness(&e.content_key, summ.as_ref()).to_string(),
+                path: e.path.clone(),
+                // Where in the file: the symbol's or section's line.
+                line: h.line,
+                title: e.display_title().to_string(),
+                summary: summ.as_ref().map(|s| s.text.clone()).unwrap_or_default(),
+                why: summ.map(|s| s.why).unwrap_or_default(),
+                untracked: e.untracked,
+                matched,
+                score: h.score,
+                explain,
+            }
+        };
+        hits.push(Hit {
+            rank: hits.len() + 1,
+            ..hit
+        });
+        if hits.len() >= limit {
+            break;
+        }
+    }
+    r.hits = hits;
+    Ok(r)
+}
+
+fn search_entities(
     conn: &Connection,
     o: &SearchOptions,
     semantic: &dyn Semantic,
