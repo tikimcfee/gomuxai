@@ -25,6 +25,7 @@ pub mod names;
 pub mod pg;
 pub mod query;
 pub mod roots;
+pub mod summarize;
 pub mod view;
 pub mod walk;
 

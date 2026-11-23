@@ -163,6 +163,53 @@ Thinking is off for these calls, sizes are checked against the server's
 tokenizer, and JSON is validated before it lands (`INDEX.md`, "Who
 writes them").
 
+**Built** (`agent index summarize`; `agent-index` `summarize.rs`,
+`pg/summ.rs`; preflight only, no batch yet):
+
+- **Which files**: files of full-depth projects, kinds source, test,
+  doc, config and build. Skipped before any read: sensitive names, no
+  content, vendored paths (`vendor`, `third_party`), program output
+  directories (`outputs`, `results`, `snapshots`, `runs`, `logs`),
+  directories of 50+ numbered files of one extension, lock and checksum
+  files, licenses and ignore files, JSON that isn't a manifest or a small
+  hand-laid file. After reading: files under the floor (fewer than 200
+  characters and 5 non-blank lines), a generator's mark on a comment line
+  in the first 600 characters, a file changed since the crawl.
+  `--coverage` reports it by reason, project and kind, with the 20
+  directories most skipped, and calls no model.
+- **The call**: `[llm.summaries]` in the configuration (endpoint, model,
+  sampling, seed, concurrency, retries, clipping, floors, a pause file, the
+  scrub's extra words). Thinking off, a JSON schema, the file's kind in
+  the prompt, its text between unusual markers with a line saying it is
+  data. Code keeps its head and an evenly sampled symbol list; a doc its
+  heading outline, head and tail; the whole prompt is bounded by tokens.
+  The input is scrubbed (keys, tokens, sign-in URLs, emails, the
+  configured words) before the model reads it.
+- **Checks** (`checks-3`): a "This file" or "A Python script that" lead
+  cut, 3 sentences, 400/300/160 characters; every identifier-shaped token
+  (snake, camel, `::`, a call, backticks) in the file, its path or its
+  symbols, product names aside; asks holding the file name, a shaped stem,
+  a listed mixed-case symbol or an identifier shape are dropped, and an
+  entry keeps 2 to 5; the output scrub; a second attempt (seed + 1) when
+  one fails. Asks found on 4+ entries are dropped after the run. Failures
+  are counted by reason.
+- **Rows**: `summaries` (migration 4) keeps every attempt with its
+  content key, fingerprint, sha256 of the rendered input, attempt,
+  clipped, tokens and status (`live`, `superseded`, `failed`). A run
+  resumes by (content key, fingerprint), never by id. The fingerprint
+  hashes the model id and snapshot commit (read from the server's
+  `/v1/models` root), max length, server version, dtype and quantization,
+  the prompt version and the whole request skeleton, schema, sampling and
+  seed, thinking, the retry policy, the clip and fit limits, the filter,
+  scrub and check versions, the build and `[llm.summaries]`. Each run is a
+  `runs` row whose stats are rewritten as it goes and when it ends.
+- **Freshness**: the sync shows a live summary (and its asks) over the
+  seed while its content key is the entity's, so a changed file falls back
+  to its seed; its card is queued for embedding as any changed card is.
+- **A dead server**: 8 connection errors in a row, or `/health` failing 3
+  times, stop the run within seconds; it saves its stats, a sync shows
+  what was written, and it exits 1. A resume does the rest.
+
 ## Reranker
 
 A cross-encoder on the GPU scores (query, candidate) pairs for the top
@@ -407,7 +454,8 @@ The sections:
 | `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10), `doc_chars` (1,500), `max_tokens_per_doc` (512), `keep_pins` (true); see "Reranker" |
 | `[serve]` | `workers` (4) and `socket` ("" for `index.sock` beside `index.db`) of `agent index serve` |
 | `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both` |
-| `[llm.summaries]`, `[llm.query_rewrite]` | `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature`, `max_tokens`, `timeout_ms`, for the later iterations |
+| `[llm.summaries]` | `agent index summarize`: `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature` (0.2), `max_tokens` (500), `timeout_ms`, `seed`, `concurrency` (48), `retries` and `backoff_ms`, `max_connection_errors` (8), the clip (`clip_tokens` 6,000; a doc's `doc_head_tokens` 4,500 and `doc_tail_tokens` 1,500; `max_input_tokens` 9,000; `preclip_chars`; `symbols_chars` 2,500), the floors (`min_chars` 200, `min_lines` 5, `json_max_bytes`), `pause_file`, `scrub_words`, and the served `dtype` and `quantization`; every key is in each summary's fingerprint |
+| `[llm.query_rewrite]` | `endpoint`, `model`, `temperature`, `max_tokens`, `timeout_ms`, for a later iteration |
 
 Moving the values changed no result: with no file, and with a file of
 every default written out, the 64 dev questions from the dev root and

@@ -61,6 +61,7 @@ pub fn def() -> Def {
             project_def(),
             crawl_def(),
             sync_def(),
+            summarize_def(),
             config_def(),
             serve_def(),
             embed_def(),
@@ -729,6 +730,184 @@ fn run_sync(ctx: &Ctx, a: &SyncArgs) -> anyhow::Result<()> {
         if r.edges_replaced { format!("; edges rewritten ({})", r.edges) } else { String::new() },
         if r.tables_replaced.is_empty() { String::new() } else { format!("; {} rewritten", r.tables_replaced.join(", ")) },
         phases.join(", ")
+    ))
+}
+
+// `agent index summarize`
+
+pub const SUMMARIZE: Doc = Doc {
+    use_line: "summarize",
+    short: "Write file summaries and asks with a local model (the pg store)",
+    long: r#"Summarize asks a local OpenAI-compatible model server ([llm.summaries]
+endpoint in the index configuration; agent never starts one) for a summary,
+a why and three to five plain asks for each file of the full-depth projects
+that gets one, checks each answer in code, and keeps it in Postgres keyed
+by the file's content key and the run's fingerprint (the model and its
+snapshot, the server, the prompt, sampling, clipping, filters, checks and
+this build). A sync then shows a summary over the file's seed while the
+file is unchanged and queues the changed cards for agent index embed.
+
+Skipped, before any read: sensitive names, files with no content, fixture,
+data and asset kinds, vendored code, program output directories (outputs,
+results, snapshots, runs, logs), directories of 50+ numbered files, lock and
+checksum files, licenses and ignore files, JSON that isn't a manifest or a
+small hand-written file; after reading: trivial files and generated ones.
+--coverage prints what would be summarized and what is skipped and why, by
+project and kind, and the 20 directories with the most skipped, without
+calling the model.
+
+A run resumes: files already summarized (or failed) under the same
+fingerprint are skipped. It stops and exits 1 when the server stops
+answering (8 connection errors in a row by default), after saving its
+stats in its runs row (and --stats FILE)."#,
+    example: r#"  agent index summarize --coverage --project gomuxai
+  agent index summarize --project gomuxai --limit 100 --stats run.json
+  agent index summarize --prefix 'lab:research/' --limit 50"#,
+    args: ArgRule::None,
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct SummarizeArgs {
+    #[arg(long = "project", value_name = "stringArray", help = "Only this project (repeatable); default every full-depth project")]
+    pub project: Vec<String>,
+    #[arg(long = "prefix", value_name = "stringArray", help = "Only files whose id starts so, as project:dir/ (repeatable)")]
+    pub prefix: Vec<String>,
+    #[arg(long = "limit", value_name = "int", default_value_t = 0, help = "At most this many files per project (or prefix), sampled evenly; 0 is all")]
+    pub limit: i64,
+    #[arg(long = "coverage", help = "Print what would be summarized and what is skipped, and why; call no model")]
+    pub coverage: bool,
+    #[arg(long = "out", value_name = "string", default_value = "", help = "Write the coverage report (or the run's stats) as JSON here")]
+    pub out: String,
+    #[arg(long = "stats", value_name = "string", default_value = "", help = "Rewrite the run's stats here as it goes")]
+    pub stats: String,
+    #[arg(long = "retry-failed", help = "Ask again for files that failed under this fingerprint")]
+    pub retry_failed: bool,
+    #[arg(long = "no-sync", help = "Don't sync afterwards (the summaries show after the next sync)")]
+    pub no_sync: bool,
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
+    #[arg(long = "json", help = "Print the coverage report or the run's stats as JSON")]
+    pub json: bool,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+fn summarize_def() -> Def {
+    leaf!(SUMMARIZE, SummarizeArgs, run_summarize)
+}
+
+fn coverage_text(c: &agent_index::pg::summ::Coverage) -> String {
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "{} files in full-depth projects: {} to summarize, {} skipped ({} selected after --limit).",
+        c.files, c.summarize, c.skipped, c.selected
+    );
+    let mut reasons: Vec<_> = c.by_reason.iter().collect();
+    reasons.sort_by(|a, b| b.1.cmp(a.1));
+    let _ = writeln!(s, "\nSkipped, by reason:");
+    for (r, n) in reasons {
+        let _ = writeln!(s, "  {n:>7}  {r}");
+    }
+    for (title, groups) in [("project", &c.by_project), ("kind", &c.by_kind)] {
+        let _ = writeln!(s, "\nBy {title} (summarize / skipped: top reasons):");
+        for (k, g) in groups {
+            let mut rs: Vec<_> = g.skipped.iter().collect();
+            rs.sort_by(|a, b| b.1.cmp(a.1));
+            let top: Vec<String> = rs.iter().take(4).map(|(r, n)| format!("{r} {n}")).collect();
+            let _ = writeln!(
+                s,
+                "  {k:<28} {:>6} / {:>6}  {}",
+                g.summarize,
+                g.skipped.values().sum::<usize>(),
+                top.join(", ")
+            );
+        }
+    }
+    let _ = writeln!(s, "\nDirectories with the most skipped files:");
+    for (d, n, r) in &c.top_skipped_dirs {
+        let _ = writeln!(s, "  {n:>6}  {d}  ({r})");
+    }
+    s
+}
+
+fn run_summarize(ctx: &Ctx, a: &SummarizeArgs) -> anyhow::Result<()> {
+    let Some(pg) = pg_store("pg", &a.config)? else { unreachable!("pg asked") };
+    let o = agent_index::pg::summ::Options {
+        projects: a.project.clone(),
+        prefixes: a.prefix.clone(),
+        limit: int_flag(a.limit, "limit")?,
+        retry_failed: a.retry_failed,
+        code: agent_base::buildinfo::id(),
+        stats_path: (!a.stats.is_empty()).then(|| PathBuf::from(&a.stats)),
+    };
+    let cfg = pg.cfg.llm.summaries.clone();
+    let cands = agent_index::pg::summ::candidates(&pg, &o)?;
+    if cands.is_empty() {
+        anyhow::bail!("no files of a full-depth project match (check --project and --prefix, and that a crawl and sync ran)");
+    }
+    let (files, mut cov) = agent_index::pg::summ::select(&cands, &cfg);
+    let files = agent_index::pg::summ::sample(files, &o);
+    cov.selected = files.len();
+    if a.coverage {
+        if !a.out.is_empty() {
+            std::fs::write(&a.out, serde_json::to_string_pretty(&cov)?)
+                .with_context(|| format!("writing {}", a.out))?;
+        }
+        if a.json {
+            return ctx.print_json(&cov);
+        }
+        return ctx.write_out(&coverage_text(&cov));
+    }
+    ctx.notice(format!(
+        "Summarizing {} files ({} skipped by the filters) with {} at {}, {} at a time.",
+        files.len(),
+        cov.skipped,
+        if cfg.model.is_empty() { "the server's model" } else { cfg.model.as_str() },
+        cfg.endpoint,
+        cfg.concurrency
+    ));
+    let res = agent_index::pg::summ::run(&pg, files, &o, &cov, &mut |s| {
+        let failed: usize = s.failed.values().sum();
+        ctx.notice(format!(
+            "  {} written, {} failed, {} not answered of {} in {:.0}s: {:.2} files/s, {:.0} prefill tok/s",
+            s.written, failed, s.not_answered, s.todo, s.wall_s, s.files_per_s, s.prefill_tok_s
+        ));
+    });
+    // What was written shows after a sync, whether or not the run finished.
+    if !a.no_sync {
+        let ix = open(ctx)?;
+        sync_pg(ctx, &ix, &pg, false)?;
+    }
+    let stats = res?;
+    if !a.out.is_empty() {
+        std::fs::write(&a.out, serde_json::to_string_pretty(&stats)?)
+            .with_context(|| format!("writing {}", a.out))?;
+    }
+    if a.json {
+        return ctx.print_json(&stats);
+    }
+    let failed: Vec<String> = stats.failed.iter().map(|(r, n)| format!("{r} {n}")).collect();
+    ctx.write_out(&format!(
+        "Run {} (fingerprint {}, {}): {} selected, {} done before, {} copied, {} written, {} failed{}; {} clipped, {} salvaged, {} second attempts, {} asks stripped, {} repeated asks dropped; {:.0}s, {:.2} files/s, {:.0} prefill tok/s.\n",
+        stats.run_id,
+        stats.fingerprint,
+        stats.writer,
+        stats.selected,
+        stats.done_before,
+        stats.copied,
+        stats.written,
+        stats.failed.values().sum::<usize>(),
+        if failed.is_empty() { String::new() } else { format!(" ({})", failed.join(", ")) },
+        stats.clipped,
+        stats.salvaged,
+        stats.second_attempts,
+        stats.asks_stripped,
+        stats.asks_repeated_dropped,
+        stats.wall_s,
+        stats.files_per_s,
+        stats.prefill_tok_s
     ))
 }
 

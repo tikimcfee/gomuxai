@@ -8,7 +8,40 @@ use anyhow::{Context, Result, bail};
 use super::Pg;
 
 /// The migrations, oldest first; a migration's version is its place (from 1).
-pub const MIGRATIONS: &[&str] = &[MIGRATION_1, BM25_INDEXES, LEXEMES];
+pub const MIGRATIONS: &[&str] = &[MIGRATION_1, BM25_INDEXES, LEXEMES, SUMMARIES];
+
+/// 4: every summary a model wrote (`agent index summarize`, `pg::summ`),
+/// kept: the live one per entity is shown over its seed while its content
+/// key is the entity's (the sync's overlay); a newer one supersedes it; a
+/// failed attempt is kept with its reason, so a resume skips it. Done is
+/// (content key, fingerprint), never the id alone.
+const SUMMARIES: &str = r#"
+CREATE TABLE summaries (
+    id bigserial PRIMARY KEY,
+    entity_id text NOT NULL,
+    content_key text NOT NULL,
+    fingerprint text NOT NULL,
+    run_id bigint NOT NULL DEFAULT 0,
+    status text NOT NULL,                     -- live, superseded, failed
+    reason text NOT NULL DEFAULT '',          -- a failure's, by the run's names
+    summary text NOT NULL DEFAULT '',
+    why text NOT NULL DEFAULT '',
+    asks text[] NOT NULL DEFAULT '{}',
+    dropped_asks text[] NOT NULL DEFAULT '{}', -- by the ask rule or as repeated across entries
+    writer text NOT NULL DEFAULT '',          -- model:<id>@<snapshot>
+    input_sha text NOT NULL DEFAULT '',       -- sha256 of the rendered request
+    attempt integer NOT NULL DEFAULT 1,
+    clipped boolean NOT NULL DEFAULT false,
+    in_tokens integer NOT NULL DEFAULT 0,
+    out_tokens integer NOT NULL DEFAULT 0,
+    ms integer NOT NULL DEFAULT 0,
+    meta jsonb NOT NULL DEFAULT '{}',
+    at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX summaries_key ON summaries (content_key, fingerprint);
+CREATE INDEX summaries_entity ON summaries (entity_id, id);
+CREATE INDEX summaries_live ON summaries (entity_id) WHERE status = 'live';
+"#;
 
 /// 3: how many chunks hold each lexeme (of those in at least
 /// [`super::sync::LEXEME_FLOOR`]; a lexeme not listed is rarer), refreshed

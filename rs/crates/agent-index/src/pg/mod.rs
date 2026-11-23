@@ -22,13 +22,16 @@ use crate::config::Config;
 pub mod embed_pg;
 pub mod rerank;
 pub mod schema;
-pub mod serve;
 pub mod search;
+pub mod serve;
+pub mod summ;
 pub mod sync;
 pub mod view;
 
 #[cfg(test)]
 mod pg_test;
+#[cfg(test)]
+mod summ_test;
 
 /// The environment variable that holds the database URL.
 pub const URL_ENV: &str = "AGENT_INDEX_PG";

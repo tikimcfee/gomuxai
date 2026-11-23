@@ -246,6 +246,7 @@ struct Out {
     summary_key: String,
     summary_writer: String,
     summary_at: String,
+    asks: Vec<String>,
     terms: String,
     labels_text: String,
     symbols: String,
@@ -257,11 +258,12 @@ struct Out {
 
 const STAGE_COLS: &str = "id, kind, project, parent, rel, name, path, file_kind, lang, size, lines, line, \
      content_key, title, signature, untracked, no_content, importance, seed, summary, why, summary_key, \
-     summary_writer, summary_at, terms, labels_text, symbols, embed, text_key, chunk_key, sync_key";
+     summary_writer, summary_at, asks, terms, labels_text, symbols, embed, text_key, chunk_key, sync_key";
 
 impl Out {
     fn copy(&self, buf: &mut String) {
         let e = &self.e;
+        let asks = pg_array(&self.asks);
         let (size, lines, line, imp) = (
             e.size.to_string(),
             e.lines.to_string(),
@@ -295,6 +297,7 @@ impl Out {
                 &self.summary_key,
                 &self.summary_writer,
                 &self.summary_at,
+                &asks,
                 &self.terms,
                 &self.labels_text,
                 &self.symbols,
@@ -313,8 +316,55 @@ type Label = (String, String, String, String, String, f64, String);
 /// Labels by entity id.
 type Labels = HashMap<String, Vec<Label>>;
 
-/// Reads the ledger: every entity as the sync writes it, with its labels.
-fn read_ledger(sq: &Connection, cfg: &Config) -> Result<(Vec<Out>, Labels)> {
+/// A text array in Postgres's literal form (`{"a","b"}`).
+fn pg_array(items: &[String]) -> String {
+    let mut s = String::from("{");
+    for (i, a) in items.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push('"');
+        for c in a.chars() {
+            if c == '"' || c == '\\' {
+                s.push('\\');
+            }
+            s.push(c);
+        }
+        s.push('"');
+    }
+    s.push('}');
+    s
+}
+
+/// A model's summary from Postgres's `summaries` (pg::summ): the content
+/// key it was written against, summary, why, asks, writer, when.
+pub type Overlay = HashMap<String, (String, String, String, Vec<String>, String, String)>;
+
+/// The latest live model summary of each entity (`summaries`, written by
+/// `agent index summarize`). The ledger knows nothing of them; the sync
+/// shows one over a seed while its content key is the entity's, so a file
+/// that changed falls back to its seed until it is summarized again.
+pub fn read_overlay(pg: &Pg) -> Result<Overlay> {
+    let rows = pg.query(
+        "SELECT DISTINCT ON (entity_id) entity_id, content_key, summary, why, asks, writer,
+                to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
+         FROM summaries WHERE status = 'live' ORDER BY entity_id, id DESC",
+        &[],
+    )?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get(0),
+                (r.get(1), r.get(2), r.get(3), r.get(4), r.get(5), r.get(6)),
+            )
+        })
+        .collect())
+}
+
+/// Reads the ledger: every entity as the sync writes it, with its labels,
+/// and a model's summary from `overlay` where it is fresh.
+fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<Out>, Labels)> {
     // A cut other than the default one is part of each file's chunk key, so
     // changing it cuts every file again.
     let cut = if cfg.default_chunking() {
@@ -396,7 +446,18 @@ fn read_ledger(sq: &Connection, cfg: &Config) -> Result<(Vec<Out>, Labels)> {
     labels.retain(|k, _| ids.contains(k.as_str()));
     let mut out = Vec::with_capacity(ents.len());
     for e in ents {
-        let (stext, why, writer, skey, sat) = shown.remove(&e.id).unwrap_or_default();
+        let (mut stext, mut why, mut writer, mut skey, mut sat) =
+            shown.remove(&e.id).unwrap_or_default();
+        let mut asks = Vec::new();
+        if (writer.is_empty() || writer == "seed")
+            && let Some((key, s, w, a, wr, at)) = overlay.get(&e.id)
+            && !e.content_key.is_empty()
+            && *key == e.content_key
+        {
+            (stext, why, writer, skey, sat) =
+                (s.clone(), w.clone(), wr.clone(), key.clone(), at.clone());
+            asks = a.clone();
+        }
         let seed = seeds.remove(&e.id).unwrap_or_default();
         let summary = if writer == "seed" {
             String::new()
@@ -446,6 +507,7 @@ fn read_ledger(sq: &Connection, cfg: &Config) -> Result<(Vec<Out>, Labels)> {
             summary_key: skey,
             summary_writer: writer,
             summary_at: sat,
+            asks,
             terms,
             labels_text,
             symbols,
@@ -547,7 +609,8 @@ pub fn sync(sq: &Connection, pg: &Pg, rebuild: bool) -> Result<SyncReport> {
         lap = Instant::now();
     };
     let cfg = &pg.cfg;
-    let (rows, labels) = read_ledger(sq, cfg)?;
+    let overlay = read_overlay(pg)?;
+    let (rows, labels) = read_ledger(sq, cfg, &overlay)?;
     rep.entities = rows.len();
     let projects: HashMap<String, String> = crate::roots::list_projects(sq)?
         .into_iter()
