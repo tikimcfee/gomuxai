@@ -22,6 +22,16 @@ doesn't replace the files. It replaces the crawl that finds them.
 Dreams keep it true: code crawls the tree and keeps the structure exact,
 and dreams refresh the summaries that went stale, from the code itself.
 
+In shape it is a semantic graph over a vector store: entities and typed
+edges, each entity's meaning embedded beside its words, searched
+lexically and by vector, then walked as a graph. It is built from
+standard, embedded parts (SQLite with FTS5 and sqlite-vec, petgraph, an
+ONNX embedder; "Stack", below), not a search engine of its own: an
+earlier custom repo index was set aside because it couldn't show it beat
+`rg` ("An earlier attempt", below). What's new here is what goes in
+(content-keyed summaries, a learned vocabulary, cross-project concepts)
+and who keeps it true, not the engine.
+
 This document is the design. Nothing here is built; names are the plan.
 
 ## Why one index
@@ -243,6 +253,12 @@ Two writers, by level:
    but time. The endpoint is a setting (`index.llm`: URL and model);
    when it doesn't answer, leaves stay `seed` or `stale` and nothing
    fails. `agent` never starts a model server: that's the person's call.
+   Local reasoning models think by default, and thinking can spend the
+   whole output budget and return empty content, so every call turns it
+   off (`chat_template_kwargs: {"enable_thinking": false}`), strips any
+   reasoning that leaks anyway (`reasoning_content`, a `</think>`
+   block), checks the input's size with the server's `/tokenize` first,
+   and salvages JSON cut off at the token limit before refusing it.
 2. **Directories, projects and concepts: a dream worker.** These need
    judgment over a few dozen children, and there are few of them (a few
    hundred across a large tree). A `summarizer` worker in a project
@@ -280,7 +296,7 @@ CLI's `index` commands and the dream code call.
 Not inside `gomuxai.db`, because `gomuxai.db` is opened on every hook
 event of every agent and should stay small and quick to lock, while the
 index is large (on the tree above: about 25,000 entities, maybe 150,000
-symbols, an FTS index, later vectors; 100 to 300 MB) and written in bulk
+symbols, an FTS index, vectors; 100 to 300 MB) and written in bulk
 by crawls. The index is also mostly a cache: everything but summaries,
 model edges and concepts is rebuilt from disk by `agent index crawl
 --rebuild`. What can't be rebuilt (summaries, `model` and `person`
@@ -303,10 +319,25 @@ Tables:
   labels) with the porter tokenizer, and `search_tri`, FTS5 with the
   trigram tokenizer over names, paths and labels, for substrings and
   typos.
-- `vectors` (later): entity, embedding model, dimensions, a half-float
-  blob, the key it was made from.
+- `vectors`: a sqlite-vec table of entity, embedding model, half-float
+  vector, and the text key it was made from.
 - `queries`: each search, its caller, results, and what the caller
   opened next (below).
+
+### Stack
+
+Popular, maintained, embedded parts; no daemon, no second store:
+
+| part | choice | why, and what was passed over |
+|------|--------|-------------------------------|
+| store | SQLite through `rusqlite` (bundled), WAL | already in the workspace; one file, one transaction for entities, edges, labels, text and vectors |
+| lexical | SQLite FTS5: `porter` and `trigram` tokenizers, bm25 | compiled into the bundled SQLite already. tantivy only if raw source bodies are ever searched at scale: a second store splits transactions |
+| vector | `sqlite-vec`, half-float vectors, exact scan | lives in the same file; 25,000 × 384 dimensions is about 19 MB and scans in milliseconds. An HNSW index (`usearch`, `hnsw_rs`) only past ~150,000 vectors. LanceDB pulls Arrow and DataFusion into `agent`; Qdrant and Chroma are servers; FAISS is a heavy C++ build |
+| graph | an `edges` table with recursive CTEs for one or two hops; `petgraph` in memory for PageRank and personalized PageRank | 25,000 nodes and 200,000 edges load in milliseconds. Kùzu, the embedded graph database, was archived in 2025; DuckDB's property-graph extension is research-grade and heavy for this size |
+| walk | the `ignore` crate (ripgrep's walker) and the `git` CLI | `.gitignore` handled, non-git trees too |
+| symbols | regular expressions on day one, then `tree-sitter` | tree-sitter's grammars cover every language in the tree |
+| embedder | `fastembed` (ONNX Runtime) with `bge-small-en-v1.5` on the CPU | 384 dimensions, embeds 25,000 short texts in about a minute, and takes no GPU memory from a resident chat model. A larger model over an `/v1/embeddings` endpoint is an optional batch mode |
+| summarizer | an HTTP JSON client to `index.llm` | any OpenAI-compatible local server |
 
 Per host. Every host crawls its own checkouts. Summaries are keyed by
 content and prompt version, not by path, so they can travel: later, a
@@ -348,7 +379,10 @@ content). Binary files get an entity with a file kind and no content.
 ## Query surface
 
 Every read command resolves a path argument against the caller's cwd, so
-`agent index show .` works anywhere, and takes `--json`. Every list takes
+`agent index show .` works anywhere, and takes `--json`. Paths are
+canonicalized, and the crawl never follows a symlink out of its project
+(or a worktree out of its repo): an index that prints a file's contents
+must not be a way to read files outside what it indexes. Every list takes
 `--budget TOKENS` (estimated at four characters a token): it fits its
 output to the budget by cutting summaries to their first sentence, then
 dropping the tail, and says how many it left out and how to see more.
@@ -400,20 +434,23 @@ concepts, entities in other projects that share an idea with it.
 
 1. **Lexical**: FTS5's bm25 over the porter table, columns weighted
    (title and name 4, path 2, summary 2, symbols 1, why 1), with
-   identifiers split (`gatherGlobal`, `gather_global` → `gather global`);
-   and the trigram table for substrings and typos in names and paths. Two
-   ranked lists.
+   identifiers indexed both whole and split (`gather_global` and `gather
+   global`; `glyph3d` whole too, or a split `3d` matches every "3D" in
+   the tree); and the trigram table for substrings and typos in names and
+   paths. Two ranked lists. A query term that matches nothing is named
+   in the output ("no entity mentions `foo`"), so absence is information,
+   not silence.
 2. **Structure** as priors on the fused rank: the caller's own project
    first, then projects it depends on; an entity's importance (a PageRank
    over `depends-on`, `documented-by` and `co-changes`, as aider ranks its
    repo map); kind (a file or symbol over a section, unless asked); a
    small penalty for `stale`.
-3. **Semantic** (later): cosine similarity between the query's embedding
-   and each entity's, a third ranked list.
+3. **Semantic**: cosine similarity between the query's embedding and
+   each entity's, a third ranked list.
 
 The lists merge by reciprocal rank fusion (k = 60), then the priors
-apply. Fusion needs no tuned score scales, and adding the semantic list
-later changes nothing else.
+apply. Fusion needs no tuned score scales, and an entity with no vector
+yet still ranks by the other two.
 
 ### Query expansion
 
@@ -486,8 +523,12 @@ Labels come from five places:
 4. **A model rewrite**, only when the stages above came back weak or with
    `--expand`: the local model turns the request into the technical
    terms and a short hypothetical summary of what's wanted (query2doc
-   and HyDE). It is given the project's top labels and concepts (and
-   their confusables) to choose from, and the terms it returns are kept
+   and HyDE). It is given the project's opaque coinages (the made-up
+   names and initials a model can't guess) with their definitions, and
+   the confusables of any ordinary word the request uses, rather than a
+   whole glossary: models follow a definition for a word they've never
+   seen, but override a redefinition of a familiar one, so a broad
+   glossary buys little. The terms it returns are kept
    only if they are labels or symbol words in the index: a rewrite that
    drifts outside the project's own vocabulary makes code retrieval
    worse, not better. The rewrite is added beside the person's words,
@@ -518,24 +559,48 @@ it up; `--explain` prints, per result, which stage found it and through
 what label or edge, so a wrong expansion can be seen and its label
 removed.
 
-### Embeddings, later
+### Embeddings
 
-Embed what an entity means, not its raw code: its title, path, summary,
-why and symbol names, a few hundred tokens each. A small model on the
-local GPU (an 8B embedding model, or a small CPU one as the fallback)
-embeds 25,000 such texts in minutes; vectors are re-made only when the
-text they came from changes. Don't cut a large model's vectors to their
+The embedding and hybrid-search side (which model, what text, how the
+lists fuse) is a lane of its own, with experiments on the local GPU;
+this section is the index's side of the contract with it:
+
+- **one store**: vectors live in `index.db`'s `vectors` table, never a
+  second database;
+- **shared ids**: a vector belongs to an entity id (and its aliases);
+- **freshness keys reused**: each vector records the hash of the exact
+  text it embedded (its **text key**, over title, summary or seed, why,
+  labels and symbol names) and the embedding model; it is re-made when
+  either changes, and only then. The crawl and the summary commit mark
+  what changed; the embedder reads that list.
+
+What follows is the default until that lane's experiments say otherwise.
+
+Embed what an entity means, not its raw code: its title, path, summary
+(or seed), why, labels and symbol names, a few hundred tokens each. The
+default is a small model on the CPU (`bge-small-en-v1.5` through
+`fastembed`, 384 dimensions): it embeds 25,000 such texts in about a
+minute, needs no server, and takes nothing from a GPU that a resident
+chat model already fills. Vectors are re-made only when the text they
+came from changes, so a crawl embeds only what it changed. Since seeds
+exist from the first crawl, vectors do too: the semantic list is part of
+v1, not a later stage.
+
+A larger model on the GPU (an 8B embedding model behind an
+`/v1/embeddings` endpoint) is an optional batch mode, run by hand when
+that GPU is free. Don't cut a large model's vectors to their
 first dimensions unless it was trained for that (Matryoshka
 representation learning); not every model that accepts a `dimensions`
 argument was. Raw embeddings from such models are also anisotropic: all
 vectors crowd one direction, so every pair looks similar. Subtracting
 the corpus mean and dropping the top few principal components
 ("all-but-the-top") restores the spread, and a fitted PCA to 512
-dimensions keeps it. Stored as half floats, that's about 25 MB, searched
-by brute force in tens of milliseconds. Every vector file gets a count,
-dimension and probe check on load, since a silently corrupt vector
-store looks just like a working one. Embeddings also propose concept edges: near neighbors across a
-project boundary are candidates for the concept pass.
+dimensions keeps it. The small model's vectors are mean-centered too.
+Stored as half floats in sqlite-vec, 25,000 vectors are 19 to 25 MB,
+scanned exactly in milliseconds. Every load checks the count, the
+dimension and a probe query, since a silently corrupt vector store looks
+just like a working one. Embeddings also propose concept edges: near
+neighbors across a project boundary are candidates for the concept pass.
 
 ### Learning from use
 
@@ -699,9 +764,12 @@ Concepts come from three places:
 
 - **Code proposes candidates**: the same symbol or type name in two
   projects; a `depends-on` that crosses projects (a path dependency into
-  another repo); equal blob ids (`same-as`); distinctive terms (high
-  TF-IDF) that several projects' summaries share; later, embedding
-  neighbors across a project boundary.
+  another repo); equal blob ids (`same-as`); terms distinctive of a
+  project against the rest of the tree (log-odds with an informative
+  Dirichlet prior, Monroe, Colaresi and Quinn's "Fightin' Words", which
+  holds up on rare terms where TF-IDF doesn't, with sub-grams folded
+  into the n-grams that contain them) that several projects share; and
+  embedding neighbors across a project boundary.
 - **The global dream decides**, through the idea engine it already runs:
   the synthesizer proposes a concept, or an `about` edge, as an idea
   (`kind: concept` or `about`, citing the entities as `key:` citations,
@@ -752,36 +820,67 @@ staleness is mechanical, refreshed by confined dreams within a budget,
 a vocabulary learned from how people and agents name things, and
 cross-project concepts decided by a generator and a critic.
 
+## An earlier attempt
+
+A custom repo index was built before, in Rust, and set aside after two
+reviews judged it marginal. It had good ideas this design keeps:
+provenance-scoped search (test fixtures kept out structurally, not by a
+query filter), short content pins that flagged stale docs, and naming
+each query term that matched nothing. It failed on what this design
+must not repeat:
+
+- it measured itself only against its own evaluation set (recall at 10
+  of 0.70), never against `rg` and `fd`, so nobody could say it beat
+  them;
+- it indexed only a few file kinds, so whole questions had no answer;
+- it split identifiers without keeping them whole, so `glyph3d` matched
+  every "3D" in the history;
+- `show` followed a worktree symlink out of the repo, to a system file;
+- it was its own engine, about 20,000 lines of it.
+
+So: standard parts (above), every file kind, whole and split
+identifiers, canonical paths, and a baseline in every evaluation.
+"Simple retrieval and standard tools beat a custom engine" was that
+review's verdict; this design takes it, and adds only what those tools
+don't have.
+
 ## Version 1: useful in a day
 
 1. Crate `agent-index` and `index.db`: `projects`, `entities`,
-   `summaries`, `edges`, `labels`, `search` and `search_tri`.
+   `summaries`, `edges`, `labels`, `search`, `search_tri` and `vectors`.
 2. `agent index root add|remove|list`, `project add`, and `crawl` (git
    keys, file kinds, seeds, code labels, regex symbols, sections,
    `depends-on` from manifests, `documented-by` and `noted-in` from
    backticks, `tests` by naming; co-change and importance once per
-   crawl).
+   crawl; CPU embeddings of what changed).
 3. `agent index search`, `show`, `tree`, `related`, `stale`, with
-   `--budget`, `--explain` and `--json`; label match, then lexical
-   ranking with the project and kind priors, importance from fan-in
-   only; `agent index alias add` for a person's labels.
+   `--budget`, `--explain` and `--json`; label match, then lexical and
+   semantic ranking fused, with the project and kind priors, importance
+   from fan-in only; `agent index alias add` for a person's labels and
+   `lexicon import` for an existing glossary.
 4. The briefing section and the pre-allowed read commands, drafted for a
    person's yes (they change every agent on the host).
-5. An evaluation set: from past sessions in a few projects (scrubbed at
-   reading), the terms of each session's first searches and the file it
-   then edited. v1 is useful when that file is in search's top five for
-   most of them; the set measures every change after.
+5. An evaluation set, run against a baseline: from past sessions in a
+   few projects (scrubbed at reading), the terms of each session's first
+   searches and the file it then edited; and an existing lexicon's
+   lay-to-term pairs. Each is scored for `agent index search` and for
+   the best an agent does with `rg` and `fd` on the same words (recall at
+   5, and turns spent). v1 is useful when the file is in search's top
+   five clearly more often than the baseline finds it; the set measures
+   every change after. If it doesn't beat the baseline, that is the
+   finding, and the index stops there.
 
 Seeds alone make it useful on day one: every entity has a path and
-place, most have a seed, and search reaches symbol names, doc headings
-and doc comments across every project at once.
+place, most have a seed and a vector, and search reaches symbol names,
+doc headings and doc comments across every project at once.
 
 Then, in order: `agent index summarize` against the local endpoint (by
 hand), with asks; pseudo-relevance feedback and graph expansion; the
 `summarizer` role, `index` items, `key:` citations and `dream index put`
 in project dreams, with their step machine; query logging, misses and
 learned labels; the model rewrite stage; the concept pass in the global
-dream; embeddings; tree-sitter symbols; the bus op and `pull`.
+dream; the larger embedder as a batch mode; tree-sitter symbols; the bus
+op and `pull`.
 
 ## Open questions
 
@@ -794,8 +893,8 @@ dream; embeddings; tree-sitter symbols; the bus op and `pull`.
   frameworks have tens of thousands; the kind prior may be enough.
 - Does a doc section deserve a model summary, or is its heading and first
   paragraph always enough?
-- Summaries have only mechanical checks in v1, no critic. Should a
-  critic on another model family check a sample of each dream's
-  summaries against the code, as the global dream's critic checks ideas?
+- Summaries have only mechanical checks in v1, no critic. If a sampled
+  check is added, it needs two model families to agree: a single-family
+  judge favors text that overlaps its own wording.
 - How far should graph expansion reach by default before it costs more
   budget than it saves?
