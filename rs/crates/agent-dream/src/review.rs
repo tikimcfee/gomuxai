@@ -17,6 +17,11 @@ use crate::memory;
 /// The session harnesses a citation can name (`claude:<session-id>`).
 pub const SESSION_KINDS: &[&str] = &["claude", "agy", "kimi"];
 
+/// The kind of a citation naming a person (`person:<name>`): a fact that
+/// person set themselves, not one a dream inferred. A dream may keep such a
+/// citation where a file already has it, and may never add one.
+pub const KIND_PERSON: &str = "person";
+
 /// A citation in a changed memory file that names nothing the store knows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Uncited {
@@ -48,8 +53,22 @@ pub fn citation_item(citation: &str) -> Option<(&'static str, String)> {
         // A committed dream (the global dream cites the project dreams it
         // learned from).
         "dream" => Some((KIND_DREAM, id.to_string())),
+        "person" => Some((KIND_PERSON, id.to_string())),
         _ => None,
     }
+}
+
+/// The `person:` citations the memory file at `path` carries (none if it is
+/// missing or doesn't parse).
+pub fn person_citations(path: &Path, name: &str) -> std::collections::BTreeSet<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Default::default();
+    };
+    memory::parse_file(name, &content)
+        .citations()
+        .into_iter()
+        .filter(|c| c.starts_with("person:"))
+        .collect()
 }
 
 /// Whether a commit citation (a hash, or its first 7 or more characters)
@@ -92,10 +111,15 @@ pub fn unknown_citations(
     for name in changed_files(dir, snapshot_dir)? {
         let content =
             fs::read_to_string(dir.join(&name)).with_context(|| format!("reading {name}"))?;
+        // A person's citation stands only where the file had it before.
+        let had = person_citations(&snapshot_dir.join("files").join(&name), &name);
         for c in memory::parse_file(&name, &content).citations() {
-            if let Some((kind, key)) = citation_item(&c)
-                && !known(kind, &key)
-            {
+            let unknown = match citation_item(&c) {
+                Some((KIND_PERSON, _)) => !had.contains(&c),
+                Some((kind, key)) => !known(kind, &key),
+                None => false,
+            };
+            if unknown {
                 out.push(Uncited {
                     file: name.clone(),
                     citation: c,
@@ -125,9 +149,49 @@ mod tests {
         assert_eq!(citation_item("commit:abc"), Some(("commit", "abc".into())));
         assert_eq!(citation_item("dream:7"), Some(("dream", "7".into())));
         assert_eq!(citation_item("doc:README"), None);
+        assert_eq!(
+            citation_item("person:ivan"),
+            Some(("person", "ivan".into()))
+        );
         assert!(commit_matches("abcdef1", "/srv/app@abcdef1234"));
         assert!(!commit_matches("abc", "/srv/app@abcdef1234"), "too short");
         assert!(!commit_matches("abcdef9", "/srv/app@abcdef1234"));
+    }
+
+    #[test]
+    fn a_person_citation_is_kept_never_added() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("memory");
+        let snap = tmp.path().join("snap");
+        fs::create_dir_all(&dir).unwrap();
+        let person = "---\nname: a\ndescription: d\nmetadata:\n  type: feedback\n---\nA rule.\n[source: person:ivan; added: 2026-11-22]\n";
+        fs::write(dir.join("a.md"), person).unwrap();
+        fs::write(dir.join("b.md"), FACT).unwrap();
+        memory::take_snapshot(&dir, &snap).unwrap();
+        let known = |_: &str, _: &str| true;
+
+        // a.md keeps its person citation while the dream changes the fact's words.
+        fs::write(
+            dir.join("a.md"),
+            person.replace("A rule.", "A rule, reworded."),
+        )
+        .unwrap();
+        assert!(unknown_citations(&dir, &snap, &known).unwrap().is_empty());
+
+        // b.md gains one: refused, whatever else is known.
+        fs::write(
+            dir.join("b.md"),
+            FACT.replace("claude:s1", "claude:s1, person:ivan"),
+        )
+        .unwrap();
+        let got = unknown_citations(&dir, &snap, &known).unwrap();
+        assert_eq!(
+            got,
+            [Uncited {
+                file: "b.md".into(),
+                citation: "person:ivan".into()
+            }]
+        );
     }
 
     #[test]

@@ -743,11 +743,16 @@ pub fn run_idea(ctx: &Ctx, args: &IdeaArgs) -> anyhow::Result<()> {
             // The draft's own citations, by commit's rules (other kinds of
             // source are left alone, as commit leaves them).
             if !content.is_empty() {
+                // A person's citation stands only where the file has it now:
+                // a dream keeps it, never adds one.
+                let had = agent_dream::review::person_citations(&Path::new(dir).join(file), file);
                 for c in memory::parse_file(file, content).citations() {
-                    if let Some((kind, key)) = agent_dream::review::citation_item(&c)
-                        && !known.knows(kind, &key)
-                        && !bad.contains(&c)
-                    {
+                    let unknown = match agent_dream::review::citation_item(&c) {
+                        Some((agent_dream::review::KIND_PERSON, _)) => !had.contains(&c),
+                        Some((kind, key)) => !known.knows(kind, &key),
+                        None => false,
+                    };
+                    if unknown && !bad.contains(&c) {
                         bad.push(c);
                     }
                 }

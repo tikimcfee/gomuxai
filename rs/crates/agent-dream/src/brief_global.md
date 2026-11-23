@@ -73,6 +73,11 @@ friction; fixing things is a later layer.
   --repo <project>`: its findings are leads to verify, not edits to apply.
 - Prefer updating an existing memory to adding one. Keep scope, order,
   negations and exceptions when you merge entries.
+- A fact whose source line cites `person:<name>` was set by that person,
+  not inferred from evidence. Keep it as it stands, its words and its
+  source line, and never re-derive, weaken or drop it; point to it where
+  it helps. Never add a `person:` citation yourself: the code refuses one
+  a file didn't already carry.
 - Never copy secrets, tokens, pasted content, host names or personal
   paths into anything that could be committed to a repo. Memory dirs are
   personal; even there, paraphrase rather than quote.
@@ -103,13 +108,6 @@ thing every agent reads. Frontmatter: `name: start-here`, a one-line
 
 Only facts true across projects go in it, each checked and cited; no
 secrets, no tokens. Rewrite it rather than append to it.
-
-One rule belongs in the machine memory as its own fact if it isn't there
-yet, cited to the project dream that found the case: anything that mines
-other sessions' transcripts (a corpus, evidence, a summary) scrubs them
-first, dropping pasted blocks, code fences, key blocks, and lines with
-credentials, sign-in URLs or email addresses (`agent_dream::scrub::excerpt`
-in Rust).
 
 ## Cross-project lessons
 

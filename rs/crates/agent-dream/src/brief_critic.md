@@ -46,6 +46,8 @@ The dream's digest, what it was given:
   more than either;
 - a fact it adds or changes has no `[source: ...; added: ...]` line, or
   no why;
+- it changes, weakens or drops a fact whose source cites `person:<name>`
+  (a person set it; dreams keep it as it stands);
 - it carries a secret, a token, pasted content, a host name or a personal
   path into anything that could be committed to a repo, or quotes a
   transcript where a paraphrase would do;
