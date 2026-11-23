@@ -1075,7 +1075,8 @@ scope. Only one dream is open at a time.
    cleaned up. If a dream's agent is still at work, run starts nothing. An
    open global dream takes its next step if one is due: its critic, if
    the synthesizer is done and no critic started; applying and
-   committing, if both are done; abandoning, if either is gone.
+   committing, if both are done; abandoning, if either is gone, has sat
+   idle without saying done for over 30 minutes, or has run for over 90.
 2. It gathers (see agent dream gather). With nothing new, it records a
    quiet dream, starts no agent, and says so.
 3. Otherwise it records the dream and its items, writes the digest

@@ -9,7 +9,7 @@ use agent_store::{
     WORKER_RUNNING,
 };
 
-use super::{MODELS, Step, next_step};
+use super::{MODELS, Presence, Step, WORKER_IDLE_LIMIT, WORKER_RUN_LIMIT, given_up, next_step};
 use crate::cli::testenv::TestEnv;
 
 fn run(env: &mut TestEnv, words: &[&str]) -> String {
@@ -54,8 +54,8 @@ fn worker(agent: &str, role: &str, status: &str) -> DreamWorker {
 
 #[test]
 fn the_next_step_follows_the_workers() {
-    let alive = |_: &str| true;
-    let gone = |_: &str| false;
+    let alive = |_: &DreamWorker| None;
+    let gone = |_: &DreamWorker| Some("is gone".to_string());
     let g = |s: &str| worker("g", ROLE_GENERATOR, s);
     let c = |s: &str| worker("c", ROLE_CRITIC, s);
 
@@ -110,6 +110,117 @@ fn the_next_step_follows_the_workers() {
             failed: None
         }
     );
+}
+
+#[test]
+fn a_worker_idle_or_running_too_long_is_given_up() {
+    let now = Time::now();
+    let mins = |m: i64| Time(now.0 - chrono::Duration::minutes(m));
+    let w = |started: i64| DreamWorker {
+        started_at: mins(started),
+        ..worker("g", ROLE_GENERATOR, WORKER_RUNNING)
+    };
+    let here = |status: &str, idle: Option<i64>| Presence::Here {
+        status: status.into(),
+        idle_since: idle.map(mins),
+    };
+    assert_eq!(
+        given_up(&w(5), &Presence::Gone, &now).as_deref(),
+        Some("is gone")
+    );
+    assert_eq!(
+        given_up(&w(40), &here("idle", Some(10)), &now),
+        None,
+        "idle, but not for long"
+    );
+    let why = given_up(&w(40), &here("idle", Some(31)), &now).expect("idle too long");
+    assert!(
+        why.starts_with("sat idle for 31 minutes without saying done (the limit is 30)"),
+        "{why}"
+    );
+    let why = given_up(&w(35), &here("idle", None), &now).expect("idle since it started");
+    assert!(why.starts_with("sat idle for 35 minutes"), "{why}");
+    assert_eq!(
+        given_up(&w(80), &here("processing", None), &now),
+        None,
+        "at work, within the limit"
+    );
+    let why = given_up(&w(91), &here("processing", None), &now).expect("running too long");
+    assert_eq!(why, "ran for 91 minutes, past the limit of 90");
+    let why = given_up(&w(95), &here("waiting", None), &now).expect("waiting counts as running");
+    assert!(why.starts_with("ran for 95"), "{why}");
+    assert_eq!(
+        (
+            WORKER_IDLE_LIMIT.num_minutes(),
+            WORKER_RUN_LIMIT.num_minutes()
+        ),
+        (30, 90)
+    );
+    // A worker given up is abandoned like a gone one.
+    let check = |w: &DreamWorker| given_up(w, &here("idle", Some(45)), &now);
+    match next_step(&[w(50)], 1, &check) {
+        Step::Abandon { why, failed } => {
+            assert!(
+                why.starts_with("its generator g sat idle for 45 minutes"),
+                "{why}"
+            );
+            assert_eq!(failed.as_deref(), Some("g"));
+        }
+        s => panic!("{s:?}"),
+    }
+}
+
+#[test]
+fn run_gives_up_a_worker_idle_too_long() {
+    crate::require_termd!();
+    let mut g = start_global();
+    let id = g.id;
+    let synth = format!("dream-{id}-synth");
+    // Its agent's session is there (a shell at its prompt), it says it is
+    // idle, and it last reported 40 minutes ago.
+    g.env
+        .termd_ops()
+        .create_session(&format!("rpc-cli-{synth}"), &Default::default())
+        .unwrap();
+    let long_ago = Time(Time::now().0 - chrono::Duration::minutes(40));
+    g.env
+        .store()
+        .set_state(&agent_store::StateEntry {
+            agent_name: synth.clone(),
+            key: "_status".into(),
+            value: "idle".into(),
+            updated_at: long_ago,
+        })
+        .unwrap();
+    let p = presence_of(&g.env, &synth);
+    assert!(
+        matches!(&p, Presence::Here { status, idle_since: Some(t) } if status == "idle" && t.0 == long_ago.0),
+        "{p:?}"
+    );
+    g.env.set_env("AGENT_NAME", "");
+    g.env.ctx.set_caller_chain(|| Ok(Vec::new()));
+    let out = run(&mut g.env, &["dream", "run"]);
+    assert!(
+        out.contains(&format!(
+            "Closed dream #{id} as abandoned: its generator {synth} sat idle for 40 minutes"
+        )),
+        "{out}"
+    );
+    assert!(out.contains(&format!("Cleaned up {synth}")), "{out}");
+    let d = g.env.store().get_dream(id).unwrap().unwrap();
+    assert!(
+        d.diary.contains("abandoned: its generator") && d.diary.contains("without saying done"),
+        "{}",
+        d.diary
+    );
+    assert_eq!(
+        g.env.store().dream_workers(id).unwrap()[0].status,
+        WORKER_FAILED
+    );
+}
+
+fn presence_of(env: &TestEnv, agent: &str) -> Presence {
+    super::presence(&env.ctx, agent)
 }
 
 #[test]
@@ -789,33 +900,122 @@ fn applied_ideas_that_break_the_guards_are_put_back() {
     )
     .1
     .unwrap();
+    // A friction triage proposed before it: it applies only after the
+    // memory guards pass, so here it never does.
+    g.idea(
+        "accept",
+        r#"{"op":"accept","id":1,"note":"real","citations":["friction:local-1"]}"#,
+    )
+    .1
+    .unwrap();
     run(&mut g.env, &["dream", "done"]);
     be(&mut g.env, &format!("dream-{id}-critic"));
-    run(
-        &mut g.env,
-        &[
-            "dream",
-            "judge",
-            "1",
-            "approve",
-            "--why",
-            "ok",
-            "--checked",
-            "friction:local-1",
-        ],
-    );
+    for idea in ["1", "2"] {
+        run(
+            &mut g.env,
+            &[
+                "dream",
+                "judge",
+                idea,
+                "approve",
+                "--why",
+                "ok",
+                "--checked",
+                "friction:local-1",
+            ],
+        );
+    }
     let out = run(&mut g.env, &["dream", "done"]);
     assert!(out.contains("Put back"), "{out}");
-    assert!(out.contains("abandoned: the applied ideas (1 applied, 0 skipped, 0 rejected of 1 ideas) break 1 commit rule"), "{out}");
-    assert_eq!(
-        g.env.store().get_dream(id).unwrap().unwrap().status,
-        DREAM_ABANDONED
+    assert!(out.contains("abandoned: the applied memory changes (1 applied, 1 skipped, 0 rejected of 2 ideas) break 1 commit rule"), "{out}");
+    assert!(
+        out.contains("memory is put back and no friction triage was applied"),
+        "{out}"
+    );
+    let d = g.env.store().get_dream(id).unwrap().unwrap();
+    assert_eq!(d.status, DREAM_ABANDONED);
+    assert!(
+        d.diary.contains(
+            "idea #2 friction accept #1: not applied: the memory changes broke commit's guards"
+        ),
+        "{}",
+        d.diary
     );
     assert_eq!(
         std::fs::read_to_string(dir.join("a.md")).unwrap(),
         a,
         "put back"
     );
+    assert_eq!(
+        g.env.store().get_friction(1).unwrap().unwrap().status,
+        FRICTION_OPEN,
+        "nothing applied"
+    );
+    let ideas = g.env.store().dream_ideas(id).unwrap();
+    assert_eq!(ideas[0].status, agent_store::IDEA_SKIPPED);
+    assert!(
+        ideas[0]
+            .outcome
+            .ends_with("then put back: commit's guards failed"),
+        "{}",
+        ideas[0].outcome
+    );
+}
+
+#[test]
+fn friction_applies_after_the_memory_changes_pass() {
+    crate::require_termd!();
+    let mut g = start_global();
+    let id = g.id;
+    let machine = g.machine.clone();
+    be(&mut g.env, &format!("dream-{id}-synth"));
+    // The friction idea comes first by id, but applies after the memory
+    // change and the guards.
+    g.idea(
+        "accept",
+        r#"{"op":"accept","id":1,"note":"real","citations":["friction:local-1"]}"#,
+    )
+    .1
+    .unwrap();
+    let draft = g.draft("build.md", &FACT.replace("CITES", "friction:local-1"));
+    g.idea(
+        "put",
+        &format!(r#"{{"op":"put","dir":"{machine}","file":"build.md","expect_version":"new","draft":"{draft}","why":"w","citations":["friction:local-1"]}}"#),
+    )
+    .1
+    .unwrap();
+    run(&mut g.env, &["dream", "done"]);
+    be(&mut g.env, &format!("dream-{id}-critic"));
+    for idea in ["1", "2"] {
+        run(
+            &mut g.env,
+            &[
+                "dream",
+                "judge",
+                idea,
+                "approve",
+                "--why",
+                "ok",
+                "--checked",
+                "friction:local-1",
+            ],
+        );
+    }
+    let out = run(&mut g.env, &["dream", "done"]);
+    assert!(
+        out.contains("(2 applied, 0 skipped, 0 rejected of 2 ideas) and committed it"),
+        "{out}"
+    );
+    assert!(std::path::Path::new(&machine).join("build.md").exists());
+    assert_eq!(
+        g.env.store().get_friction(1).unwrap().unwrap().status,
+        FRICTION_ACCEPTED
+    );
+    let d = g.env.store().get_dream(id).unwrap().unwrap();
+    // The diary keeps id order whatever order they applied in.
+    let one = d.diary.find("idea #1 friction accept").unwrap();
+    let two = d.diary.find("idea #2 memory put").unwrap();
+    assert!(one < two, "{}", d.diary);
 }
 
 #[test]

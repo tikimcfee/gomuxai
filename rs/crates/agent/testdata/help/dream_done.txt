@@ -1,8 +1,10 @@
 Done says a worker of the global dream has finished its part, and runs
 the dream's next step in code: after the generator, the critic starts, on
 the other model (or, with no ideas, the dream commits); after the critic,
-the approved ideas are applied in order and the dream commits, or, if the
-result breaks commit's guards, memory is put back and it is abandoned. The
+the approved memory changes are applied in order and checked by commit's
+guards; if they pass, the approved friction triage is applied and the
+dream commits, and if not, memory is put back and the dream is abandoned
+with nothing applied. The
 critic's done refuses while an idea is unjudged. A dreamer commits
 instead. Only a dream's generator or critic runs it.
 

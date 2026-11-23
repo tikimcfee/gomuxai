@@ -340,14 +340,15 @@ engine's first caller (`docs/DREAMING-VISION.md`, "The idea engine"),
    the idea's citations. `--leverage --evidence --feasibility --novelty`
    (1 to 5) are recorded when given. Its `done` refuses while an idea is
    unjudged.
-5. Applying, in code: each approved idea in id order, memory changes
+5. Applying, in code: first the approved memory changes in id order,
    through `memory::put`/`remove` at the idea's expect_version (a version
    conflict, or any refusal of put's own rules, skips the idea, and the
-   diary says why), friction triage through the same calls the dream's
-   friction verbs make. Then commit's guards (`memory_problems`): if they
-   pass, the dream commits; if not, memory is put back with `restore_own`
-   and the dream is abandoned (friction triage already applied stays,
-   and the diary says so). The diary has a line per idea: what it
+   diary says why); then commit's guards (`memory_problems`). If they
+   fail, memory is put back with `restore_own` and the dream is
+   abandoned with no friction triage applied, so it leaves nothing
+   changed. If they pass, the approved friction triage applies in id
+   order, through the same calls the dream's friction verbs make, and the
+   dream commits. The diary has a line per idea, in id order: what it
    changes, who proposed it on which model, the verdict, by whom on which
    model and why, and what was applied or skipped.
 
@@ -355,7 +356,13 @@ It is a step function over the dream's state in the store, never a
 long-running process: each step runs on a worker's `done`, and `agent
 dream run` advances an open global dream whose step is due (a worker done
 but the next not started, or a worker gone: abandoned, the worker marked
-failed), so a crash between steps is picked up by the next run. `agent
+failed), so a crash between steps is picked up by the next run. A worker
+that has sat idle, its turn over, without saying `done` for more than 30
+minutes (`WORKER_IDLE_LIMIT`; idle since its last status report), or has
+run alive for more than 90 (`WORKER_RUN_LIMIT`, from when it started), is
+given up the same way: `agent dream run` marks it failed, puts memory
+back, abandons the dream saying why in the diary, and cleans up its
+workers. `agent
 dream show` lists the workers and counts the ideas; `agent dream ideas
 [<id>] [--json]` lists them with their verdicts, outcomes and a put's
 whole content.
@@ -446,9 +453,6 @@ call.
   once its confinement is proven under the current agy, several generator
   samples with lenses, and the critic's convergence check and tournament
   (`dream_ideas.rank`, a matches table).
-- A worker that sits idle without saying `done` (a turn that ended early)
-  keeps the global dream open until it is cleaned up by hand: a timeout
-  per step would close it.
 - The global dream's items hold no sessions, so a synthesizer can cite a
   session only when a committed project dream reviewed it (commit's rule,
   which `idea` shares).

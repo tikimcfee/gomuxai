@@ -16,7 +16,7 @@ use agent_dream::ideas::{
 use agent_dream::{gather, memory};
 use agent_store::{
     CALLER_SYNTHESIS, Dream, DreamIdea, DreamWorker, IDEA_APPLIED, IDEA_APPROVED, IDEA_PROPOSED,
-    IDEA_REJECTED, IDEA_SKIPPED, IdeaVote, ROLE_CRITIC, ROLE_GENERATOR, Scores, Verdict,
+    IDEA_REJECTED, IDEA_SKIPPED, IdeaVote, ROLE_CRITIC, ROLE_GENERATOR, Scores, Time, Verdict,
     WORKER_DONE, WORKER_FAILED, WORKER_RUNNING, gojson,
 };
 use anyhow::Context as _;
@@ -97,21 +97,71 @@ pub(crate) enum Step {
     Abandon { why: String, failed: Option<String> },
 }
 
+/// How long a worker may sit idle, its turn over, without saying done.
+pub(crate) const WORKER_IDLE_LIMIT: chrono::Duration = chrono::Duration::minutes(30);
+/// How long a worker may run, alive, before its step is given up.
+pub(crate) const WORKER_RUN_LIMIT: chrono::Duration = chrono::Duration::minutes(90);
+
+/// A running worker's agent, as advance finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Presence {
+    /// No record, or ended.
+    Gone,
+    /// There, with its status, and since when it has been idle (its last
+    /// status report) when it is.
+    Here {
+        status: String,
+        idle_since: Option<Time>,
+    },
+}
+
+/// Why running worker w should be given up at `now`, or None: gone, idle
+/// past WORKER_IDLE_LIMIT, or alive past WORKER_RUN_LIMIT.
+pub(crate) fn given_up(w: &DreamWorker, p: &Presence, now: &Time) -> Option<String> {
+    let mins = |d: chrono::Duration| d.num_minutes();
+    match p {
+        Presence::Gone => Some("is gone".to_string()),
+        Presence::Here { status, idle_since } => {
+            if status == "idle" {
+                let since = idle_since.as_ref().unwrap_or(&w.started_at);
+                let idle = now.0.signed_duration_since(since.0);
+                if idle > WORKER_IDLE_LIMIT {
+                    return Some(format!(
+                        "sat idle for {} minutes without saying done (the limit is {})",
+                        mins(idle),
+                        mins(WORKER_IDLE_LIMIT)
+                    ));
+                }
+            }
+            let ran = now.0.signed_duration_since(w.started_at.0);
+            if ran > WORKER_RUN_LIMIT {
+                return Some(format!(
+                    "ran for {} minutes, past the limit of {}",
+                    mins(ran),
+                    mins(WORKER_RUN_LIMIT)
+                ));
+            }
+            None
+        }
+    }
+}
+
 /// The next step of a staged dream with `workers` and `ideas` ideas, where
-/// `alive(agent)` says whether a running worker's agent is still there.
+/// `check(worker)` says why a running worker should be given up (gone, or
+/// past a time limit), or None while it may go on.
 pub(crate) fn next_step(
     workers: &[DreamWorker],
     ideas: usize,
-    alive: &dyn Fn(&str) -> bool,
+    check: &dyn Fn(&DreamWorker) -> Option<String>,
 ) -> Step {
     // The first running worker decides: steps run one worker at a time.
     if let Some(w) = workers.iter().find(|w| w.status == WORKER_RUNNING) {
-        if alive(&w.agent) {
-            return Step::Wait(w.agent.clone());
-        }
-        return Step::Abandon {
-            why: format!("its {} {} is gone", w.role, w.agent),
-            failed: Some(w.agent.clone()),
+        return match check(w) {
+            None => Step::Wait(w.agent.clone()),
+            Some(why) => Step::Abandon {
+                why: format!("its {} {} {why}", w.role, w.agent),
+                failed: Some(w.agent.clone()),
+            },
         };
     }
     if let Some(w) = workers.iter().find(|w| w.status == WORKER_FAILED) {
@@ -133,6 +183,32 @@ pub(crate) fn next_step(
     Step::Apply
 }
 
+/// Where agent is: gone, or its status and, when idle, since when (its
+/// `_status` key's last write, which the report that ended its turn made).
+fn presence(ctx: &Ctx, agent: &str) -> Presence {
+    match agent_alive(ctx, agent) {
+        Ok(None) => Presence::Gone,
+        Ok(Some(status)) => {
+            let idle_since = (status == "idle")
+                .then(|| {
+                    ctx.store()
+                        .ok()?
+                        .get_state(agent, agent_service::STATE_KEY_STATUS)
+                        .ok()
+                        .flatten()
+                        .map(|e| e.updated_at)
+                })
+                .flatten();
+            Presence::Here { status, idle_since }
+        }
+        // Can't tell: not proof it is gone, nor that it is late.
+        Err(_) => Presence::Here {
+            status: "unknown".to_string(),
+            idle_since: None,
+        },
+    }
+}
+
 /// What advancing a dream did: whether it is still open, and what to say.
 pub(crate) struct Advanced {
     pub(crate) open: bool,
@@ -144,8 +220,9 @@ pub(crate) fn advance(ctx: &Ctx, d: &Dream, dry_run: bool) -> anyhow::Result<Adv
     let store = ctx.store()?;
     let workers = store.dream_workers(d.id)?;
     let ideas = store.dream_ideas(d.id)?.len();
-    let alive = |a: &str| agent_alive(ctx, a).ok().flatten().is_some();
-    let step = next_step(&workers, ideas, &alive);
+    let now = Time::now();
+    let check = |w: &DreamWorker| given_up(w, &presence(ctx, &w.agent), &now);
+    let step = next_step(&workers, ideas, &check);
     let would = |s: &str| {
         if dry_run {
             format!("Would {s}")
@@ -261,88 +338,153 @@ fn model_of(workers: &[DreamWorker], agent: &str) -> String {
         .unwrap_or_else(|| "an unknown model".to_string())
 }
 
-/// Applies dream d's approved ideas in id order, records each idea, its
-/// verdict and what came of it in the diary, then commits, or, when the
-/// result breaks commit's guards, puts memory back and abandons. Returns
+/// How many ideas applying found in each state.
+#[derive(Default)]
+struct Tally {
+    applied: usize,
+    skipped: usize,
+    rejected: usize,
+}
+
+/// Applies (if approved) idea i, proposed as s, and returns its diary
+/// line: what it changes, who proposed it on which model, the verdict, and
+/// what came of it.
+fn apply_idea(
+    ctx: &Ctx,
+    d: &Dream,
+    workers: &[DreamWorker],
+    i: &DreamIdea,
+    s: &Synthesis,
+    t: &mut Tally,
+) -> anyhow::Result<String> {
+    let store = ctx.store()?;
+    let mut line = format!(
+        "{} idea #{} {} (by {} on {}): ",
+        stamp_now(),
+        i.id,
+        s.describe(),
+        i.worker,
+        model_of(workers, &i.worker)
+    );
+    let verdict = format!(
+        "{} by {} on {}: {}",
+        verdict_word(i),
+        i.judged_by,
+        model_of(workers, &i.judged_by),
+        i.why
+    );
+    match i.status.as_str() {
+        IDEA_APPROVED => match apply_one(ctx, d, s) {
+            Ok(what) => {
+                t.applied += 1;
+                store.set_idea_outcome(i.id, IDEA_APPLIED, &what)?;
+                let _ = write!(line, "{verdict}; applied: {what}");
+            }
+            Err(e) => {
+                t.skipped += 1;
+                let why = format!("{e:#}");
+                store.set_idea_outcome(i.id, IDEA_SKIPPED, &why)?;
+                let _ = write!(line, "{verdict}; skipped: {why}");
+            }
+        },
+        IDEA_REJECTED => {
+            t.rejected += 1;
+            let _ = write!(line, "{verdict}");
+        }
+        // An apply that stopped partway (a crash) and runs again: what it
+        // did stands, and isn't done twice.
+        IDEA_APPLIED => {
+            t.applied += 1;
+            let _ = write!(line, "{verdict}; applied before: {}", i.outcome);
+        }
+        IDEA_SKIPPED => {
+            t.skipped += 1;
+            let _ = write!(line, "{verdict}; skipped before: {}", i.outcome);
+        }
+        _ => {
+            let _ = write!(line, "not judged; not applied");
+        }
+    }
+    Ok(line)
+}
+
+/// Applies dream d's approved ideas: the memory changes in id order, then
+/// commit's guards over them, then (only if those pass) the friction
+/// triage in id order, then commits. A guard failure puts memory back and
+/// abandons the dream with no friction triage applied, so it leaves
+/// nothing changed. The diary gets a line per idea, in id order. Returns
 /// what to say.
 pub(crate) fn apply(ctx: &Ctx, d: &Dream) -> anyhow::Result<String> {
     let store = ctx.store()?;
     let workers = store.dream_workers(d.id)?;
     let ideas = store.dream_ideas(d.id)?;
-    let (mut applied, mut skipped, mut rejected) = (0, 0, 0);
-    if ideas.is_empty() {
-        store.append_dream_diary(
-            d.id,
-            &format!(
-                "{} no ideas were proposed: nothing to judge or apply",
-                stamp_now()
-            ),
-        )?;
-    }
+    let mut parsed = Vec::with_capacity(ideas.len());
     for i in &ideas {
         let s: Synthesis =
             serde_json::from_str(&i.idea).with_context(|| format!("reading idea #{}", i.id))?;
-        let mut line = format!(
-            "{} idea #{} {} (by {} on {}): ",
-            stamp_now(),
-            i.id,
-            s.describe(),
-            i.worker,
-            model_of(&workers, &i.worker)
-        );
-        let verdict = format!(
-            "{} by {} on {}: {}",
-            verdict_word(i),
-            i.judged_by,
-            model_of(&workers, &i.judged_by),
-            i.why
-        );
-        match i.status.as_str() {
-            IDEA_APPROVED => match apply_one(ctx, d, &s) {
-                Ok(what) => {
-                    applied += 1;
-                    store.set_idea_outcome(i.id, IDEA_APPLIED, &what)?;
-                    let _ = write!(line, "{verdict}; applied: {what}");
-                }
-                Err(e) => {
-                    skipped += 1;
-                    let why = format!("{e:#}");
-                    store.set_idea_outcome(i.id, IDEA_SKIPPED, &why)?;
-                    let _ = write!(line, "{verdict}; skipped: {why}");
-                }
-            },
-            IDEA_REJECTED => {
-                rejected += 1;
-                let _ = write!(line, "{verdict}");
-            }
-            // An apply that stopped partway (a crash) and runs again: what
-            // it did stands, and isn't done twice.
-            IDEA_APPLIED => {
-                applied += 1;
-                let _ = write!(line, "{verdict}; applied before: {}", i.outcome);
-            }
-            IDEA_SKIPPED => {
-                skipped += 1;
-                let _ = write!(line, "{verdict}; skipped before: {}", i.outcome);
-            }
-            _ => {
-                let _ = write!(line, "not judged; not applied");
-            }
-        }
-        store.append_dream_diary(d.id, &line)?;
+        parsed.push((i, s));
     }
-    let tally = format!(
-        "{applied} applied, {skipped} skipped, {rejected} rejected of {} ideas",
-        ideas.len()
-    );
+    let mut t = Tally::default();
+    let mut lines: std::collections::BTreeMap<i64, String> = Default::default();
+    if ideas.is_empty() {
+        lines.insert(
+            0,
+            format!(
+                "{} no ideas were proposed: nothing to judge or apply",
+                stamp_now()
+            ),
+        );
+    }
+    let is_memory = |s: &Synthesis| matches!(s, Synthesis::Memory { .. });
+    // A friction idea waits for the guards only if it is still to apply.
+    let deferred = |i: &DreamIdea, s: &Synthesis| !is_memory(s) && i.status == IDEA_APPROVED;
+    for (i, s) in &parsed {
+        if !deferred(i, s) {
+            lines.insert(i.id, apply_idea(ctx, d, &workers, i, s, &mut t)?);
+        }
+    }
     let problems = memory_problems(ctx, d)?;
     if !problems.is_empty() {
+        let held = "not applied: the memory changes broke commit's guards";
+        for (i, s) in &parsed {
+            if deferred(i, s) {
+                t.skipped += 1;
+                store.set_idea_outcome(i.id, IDEA_SKIPPED, held)?;
+                lines.insert(
+                    i.id,
+                    format!("{} idea #{} {}: {held}", stamp_now(), i.id, s.describe()),
+                );
+            }
+        }
+        for line in lines.values() {
+            store.append_dream_diary(d.id, line)?;
+        }
         let mut said = String::new();
         for f in restore_memory(ctx, d)? {
             let _ = writeln!(said, "{f}");
         }
+        for (i, s) in &parsed {
+            if is_memory(s)
+                && i.status == IDEA_APPROVED
+                && let Some(now) = store.get_dream_idea(i.id)?
+                && now.status == IDEA_APPLIED
+            {
+                store.set_idea_outcome(
+                    i.id,
+                    IDEA_SKIPPED,
+                    &format!("{}, then put back: commit's guards failed", now.outcome),
+                )?;
+            }
+        }
+        let tally = format!(
+            "{} applied, {} skipped, {} rejected of {} ideas",
+            t.applied,
+            t.skipped,
+            t.rejected,
+            ideas.len()
+        );
         let why = format!(
-            "abandoned: the applied ideas ({tally}) break {} commit rule{}: {}; memory is put back (friction triage stays)",
+            "abandoned: the applied memory changes ({tally}) break {} commit rule{}: {}; memory is put back and no friction triage was applied",
             problems.len(),
             if problems.len() == 1 { "" } else { "s" },
             problems.join("; ")
@@ -351,6 +493,21 @@ pub(crate) fn apply(ctx: &Ctx, d: &Dream) -> anyhow::Result<String> {
         let _ = writeln!(said, "Dream #{} {why}.", d.id);
         return Ok(said);
     }
+    for (i, s) in &parsed {
+        if deferred(i, s) {
+            lines.insert(i.id, apply_idea(ctx, d, &workers, i, s, &mut t)?);
+        }
+    }
+    for line in lines.values() {
+        store.append_dream_diary(d.id, line)?;
+    }
+    let tally = format!(
+        "{} applied, {} skipped, {} rejected of {} ideas",
+        t.applied,
+        t.skipped,
+        t.rejected,
+        ideas.len()
+    );
     store.commit_dream(d.id)?;
     Ok(format!(
         "Applied dream #{}'s ideas ({tally}) and committed it: its {} item{} count as reviewed.\n",
@@ -888,8 +1045,10 @@ pub const DONE: Doc = Doc {
     long: r#"Done says a worker of the global dream has finished its part, and runs
 the dream's next step in code: after the generator, the critic starts, on
 the other model (or, with no ideas, the dream commits); after the critic,
-the approved ideas are applied in order and the dream commits, or, if the
-result breaks commit's guards, memory is put back and it is abandoned. The
+the approved memory changes are applied in order and checked by commit's
+guards; if they pass, the approved friction triage is applied and the
+dream commits, and if not, memory is put back and the dream is abandoned
+with nothing applied. The
 critic's done refuses while an idea is unjudged. A dreamer commits
 instead. Only a dream's generator or critic runs it."#,
     example: "  agent dream done",
