@@ -509,6 +509,9 @@ static GO: LazyLock<Lang> = LazyLock::new(|| Lang {
         (re(r"^(?:const|var)\s+([A-Za-z_]\w*)\b"), "const"),
     ],
 });
+/// A Rust raw string's opener, `r#"` or `br##"`, not preceded by a letter,
+/// digit, `_` or quote (so not `b"r#"`, a byte string holding `r#`).
+static RUST_RAW_OPEN: LazyLock<Regex> = LazyLock::new(|| re(r#"(?:^|[^\w"'])b?r(#+)""#));
 static GO_BLOCK: LazyLock<Regex> = LazyLock::new(|| re(r"^(const|var|type)\s*\($"));
 static GO_MEMBER: LazyLock<Regex> = LazyLock::new(|| re(r"^\s+([A-Za-z_]\w*)\b"));
 static TS: LazyLock<Lang> = LazyLock::new(|| Lang {
@@ -771,6 +774,8 @@ pub fn find_symbols(lang: &str, lines: &[&str]) -> Vec<Symbol> {
     ];
     let mut out: Vec<Symbol> = Vec::new();
     let mut in_block_string = false;
+    // In a Rust raw string: the text that closes it (`"#`).
+    let mut raw_close: Option<String> = None;
     // Go's grouped `const (`, `var (` and `type (` blocks: the kind inside.
     let mut go_block: Option<&str> = None;
     for (n, raw) in lines.iter().enumerate() {
@@ -784,17 +789,22 @@ pub fn find_symbols(lang: &str, lines: &[&str]) -> Vec<Symbol> {
             continue;
         }
         if lang == "rust" {
-            if in_block_string {
-                if raw.contains("\"#") {
-                    in_block_string = false;
+            if let Some(close) = &raw_close {
+                if raw.contains(close.as_str()) {
+                    raw_close = None;
                 }
                 continue;
             }
-            if let Some(i) = raw.find("r#\"")
-                && !raw[i + 3..].contains("\"#")
-            {
-                in_block_string = true;
-                continue;
+            // A raw string that opens here and doesn't close on this line:
+            // `r#"` (any number of #) not inside another literal (`b"r#"`
+            // is a byte string, not an opener).
+            if let Some(c) = RUST_RAW_OPEN.captures(raw) {
+                let close = format!("\"{}", &c[1]);
+                let after = c.get(0).map(|m| m.end()).unwrap_or(raw.len());
+                if !raw[after..].contains(close.as_str()) {
+                    // This line's own definition (`const S: &str = r#"`) still counts.
+                    raw_close = Some(close);
+                }
             }
         }
         if in_block_string {

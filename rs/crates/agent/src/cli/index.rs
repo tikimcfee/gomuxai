@@ -696,6 +696,7 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
             n => n,
         },
         caller_project: caller.clone(),
+        scope: String::new(),
     };
     let r = match semantic(ctx, &ix) {
         Some(sem) => agent_index::search(&ix.conn, &o, sem.as_ref())?,

@@ -50,6 +50,9 @@ pub struct SearchOptions {
     pub limit: usize,
     /// The project the caller works in, ranked first.
     pub caller_project: String,
+    /// Only these projects (a JSON array of names; "" for all). Search sets
+    /// it to fetch each list again near the caller.
+    pub scope: String,
 }
 
 /// One label the query matched, and the entity it named.
@@ -131,10 +134,11 @@ fn quote(t: &str) -> String {
 /// The SQL filter of kind, project and under, on entity alias `e`, with its
 /// parameters starting at `?first`.
 fn filter_sql(first: usize) -> String {
-    let (k, p, u) = (first, first + 1, first + 2);
+    let (k, p, u, s) = (first, first + 1, first + 2, first + 3);
     format!(
         "(?{k} = '' OR e.kind = ?{k} OR e.file_kind = ?{k}) AND (?{p} = '' OR e.project = ?{p}) \
-         AND (?{u} = '' OR e.path = ?{u} OR substr(e.path, 1, length(?{u}) + 1) = ?{u} || '/')"
+         AND (?{u} = '' OR e.path = ?{u} OR substr(e.path, 1, length(?{u}) + 1) = ?{u} || '/') \
+         AND (?{s} = '' OR e.project IN (SELECT value FROM json_each(?{s})))"
     )
 }
 
@@ -178,7 +182,7 @@ fn fts_list(
     }
     let sql = fts_sql(table, bm25, limit);
     let mut st = conn.prepare_cached(&sql)?;
-    let rows = st.query_map(params![q, o.kind, o.project, o.under], |r| {
+    let rows = st.query_map(params![q, o.kind, o.project, o.under, o.scope], |r| {
         r.get::<_, String>(0)
     });
     match rows {
@@ -216,13 +220,24 @@ fn full_text_list(
         filter_sql(2)
     );
     let mut st = conn.prepare_cached(&sql)?;
-    let rows = st.query_map(params![q, o.kind, o.project, o.under], |r| {
+    let rows = st.query_map(params![q, o.kind, o.project, o.under, o.scope], |r| {
         r.get::<_, String>(0)
     });
     match rows {
         Ok(rows) => Ok(rows.collect::<rusqlite::Result<_>>()?),
         Err(e) => bail!("searching full text for {q}: {e}"),
     }
+}
+
+/// Whether a query is one identifier: a word of letters, digits and `_`,
+/// with a letter or `_` first.
+fn is_identifier(q: &str) -> bool {
+    let q = q.trim();
+    !q.is_empty()
+        && q.chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && q.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// How much the caller's project (3) and the projects it depends on (2)
@@ -280,7 +295,8 @@ fn semantic_list(
         if ids.len() >= limit {
             break;
         }
-        if st.exists(params![id, o.kind, o.project, o.under])? && !scores.contains_key(&id) {
+        if st.exists(params![id, o.kind, o.project, o.under, o.scope])? && !scores.contains_key(&id)
+        {
             scores.insert(id.clone(), score);
             ids.push(id);
         }
@@ -308,7 +324,9 @@ fn exact_names(conn: &Connection, query: &str, o: &SearchOptions) -> Result<Vec<
         );
         let mut st = conn.prepare_cached(&sql)?;
         let ids: Vec<String> = st
-            .query_map(params![q, o.kind, o.project, o.under], |r| r.get(0))?
+            .query_map(params![q, o.kind, o.project, o.under, o.scope], |r| {
+                r.get(0)
+            })?
             .collect::<rusqlite::Result<_>>()?;
         if !ids.is_empty() {
             return Ok(ids);
@@ -360,9 +378,10 @@ fn label_matches(conn: &Connection, query: &str, o: &SearchOptions) -> Result<Ve
             let phrase = gram.join(" ");
             let compact = gram.concat();
             let rows: Vec<(String, String, String, String)> = st
-                .query_map(params![phrase, compact, o.kind, o.project, o.under], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                })?
+                .query_map(
+                    params![phrase, compact, o.kind, o.project, o.under, o.scope],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?
                 .collect::<rusqlite::Result<_>>()?;
             if rows.is_empty() {
                 continue;
@@ -419,6 +438,19 @@ pub fn search(
         *ms.entry(name.to_string()).or_insert(0.0) += (d * 10.0).round() / 10.0;
         t0 = std::time::Instant::now();
     };
+    // The caller's project and the projects it depends on. Every list is
+    // fetched for them too, not only across the tree, so a local candidate
+    // the global top 300 cut off still reaches the fusion and its prior.
+    let near = near_projects(conn, &o.caller_project)?;
+    let local: Option<SearchOptions> =
+        (!near.is_empty() && o.project.is_empty() && o.scope.is_empty()).then(|| {
+            let mut names: Vec<&String> = near.keys().collect();
+            names.sort();
+            SearchOptions {
+                scope: serde_json::to_string(&names).unwrap_or_default(),
+                ..o.clone()
+            }
+        });
     let mapping = label_matches(conn, &o.query, o)?;
     lap(&mut ms, "labels");
     let mut lists: Vec<(&str, Vec<String>)> = Vec::new();
@@ -451,6 +483,12 @@ pub fn search(
         "lexical",
         fts_list(conn, "search", CARD_BM25, &porter_q, o, 300)?,
     ));
+    if let Some(l) = &local {
+        lists.push((
+            "lexical here",
+            fts_list(conn, "search", CARD_BM25, &porter_q, l, 300)?,
+        ));
+    }
 
     // Every word at once: an entity that has them all outranks one that has
     // one word many times.
@@ -464,6 +502,12 @@ pub fn search(
             "all words",
             fts_list(conn, "search", CARD_BM25, &all_q, o, 300)?,
         ));
+        if let Some(l) = &local {
+            lists.push((
+                "all words here",
+                fts_list(conn, "search", CARD_BM25, &all_q, l, 300)?,
+            ));
+        }
     }
     lap(&mut ms, "cards");
 
@@ -489,6 +533,12 @@ pub fn search(
         "trigram",
         fts_list(conn, "search_tri", "bm25(search_tri)", &tri_q, o, 300)?,
     ));
+    if let Some(l) = &local {
+        lists.push((
+            "trigram here",
+            fts_list(conn, "search_tri", "bm25(search_tri)", &tri_q, l, 300)?,
+        ));
+    }
     // A term nothing mentions is looked for by its trigrams, to catch a typo:
     // a list of its own, so its partial matches can't crowd out real ones.
     let mut fuzzy: Vec<String> = Vec::new();
@@ -519,6 +569,27 @@ pub fn search(
     if !full.is_empty() {
         lists.push(("full text", full));
     }
+    if let Some(l) = &local {
+        let full = full_text_list(conn, &porter_q, l, 300)?;
+        if !full.is_empty() {
+            lists.push(("full text here", full));
+        }
+    }
+    // A rare identifier no definition answers to: the few files that hold
+    // it (nearby ones first) are what the query is after.
+    let rare = if exact.is_empty() && is_identifier(&o.query) {
+        let q = quote(o.query.trim());
+        let mut f = Vec::new();
+        if let Some(l) = &local {
+            f = full_text_list(conn, &q, l, 4)?;
+        }
+        if f.is_empty() || f.len() > 3 {
+            f = full_text_list(conn, &q, o, 4)?;
+        }
+        if f.len() <= 3 { f } else { Vec::new() }
+    } else {
+        Vec::new()
+    };
     lap(&mut ms, "full text");
     let (sem, sem_scores) = semantic_list(conn, semantic, o, 300)?;
     if !sem.is_empty() {
@@ -549,10 +620,23 @@ pub fn search(
     // The caller's project, and the projects it depends on, come first: a
     // pin (an exact name, a whole-query label) elsewhere counts only when
     // none of them has one, and every score there is multiplied.
-    let near = near_projects(conn, &o.caller_project)?;
     let is_near = |id: &str| near.contains_key(model::project_of_id(id));
-    let near_pin = exact.iter().chain(pinned.iter()).any(|id| is_near(id));
+    let near_pin = exact
+        .iter()
+        .chain(pinned.iter())
+        .chain(rare.iter())
+        .any(|id| is_near(id));
     let pin_counts = |id: &str| !near_pin || is_near(id);
+    for (i, id) in rare.iter().enumerate() {
+        if !pin_counts(id) {
+            continue;
+        }
+        *score.entry(id.clone()).or_insert(0.0) += 1.5 - i as f64 * 0.001;
+        explain.entry(id.clone()).or_default().insert(
+            0,
+            format!("one of {} files holding \"{}\"", rare.len(), o.query.trim()),
+        );
+    }
     for (i, id) in exact.iter().enumerate() {
         if !pin_counts(id) {
             explain

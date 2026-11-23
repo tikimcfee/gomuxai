@@ -510,7 +510,7 @@ fn a_search_reaches_entities_by_index_and_times_its_stages() {
         let sql = crate::query::fts_sql(table, bm25, 300);
         let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let plan: Vec<String> = st
-            .query_map(rusqlite::params!["x", "", "", ""], |r| {
+            .query_map(rusqlite::params!["x", "", "", "", ""], |r| {
                 r.get::<_, String>(3)
             })
             .unwrap()
@@ -546,4 +546,109 @@ fn a_search_reaches_entities_by_index_and_times_its_stages() {
     ] {
         assert!(r.ms.contains_key(stage), "{:?}", r.ms);
     }
+}
+
+#[test]
+fn a_local_candidate_past_the_global_cut_still_ranks() {
+    let dir = temp();
+    let root = std::fs::canonicalize(dir.path()).unwrap().join("dev");
+    // Another project with 350 entities that match better than the local one.
+    let z = root.join("zeta");
+    for i in 0..350 {
+        write(
+            &z,
+            &format!("w/wobble_{i}.md"),
+            &format!("# Wobble {i}\n\nWobble wobble.\n"),
+        );
+    }
+    let a = root.join("alpha");
+    write(
+        &a,
+        "src/spin.rs",
+        "//! Keeps the wheel from a wobble at speed.\npub fn spin() {}\n",
+    );
+    let mut ix = Index::open(&root.parent().unwrap().join("index.db")).unwrap();
+    crate::roots::add_root(&ix, &root, "full").unwrap();
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    let run = |caller: &str| {
+        search(
+            &ix.conn,
+            &SearchOptions {
+                query: "wobble".into(),
+                caller_project: caller.into(),
+                limit: 10,
+                ..Default::default()
+            },
+            &NoSemantic,
+        )
+        .unwrap()
+    };
+    // Globally it is past the top 300 of every list.
+    assert!(!run("").hits.iter().any(|h| h.project == "alpha"));
+    let r = run("alpha");
+    assert_eq!(r.hits[0].id, "alpha:src/spin.rs", "{:#?}", r.hits);
+    assert!(
+        r.hits[0]
+            .explain
+            .iter()
+            .any(|e| e.starts_with("lexical here #1"))
+    );
+}
+
+#[test]
+fn rust_byte_strings_with_r_hash_dont_hide_the_rest_of_a_file() {
+    let text = "fn a() {\n    if name.starts_with(b\"r#\") {}\n}\n/// The parser's part.\npub fn parse_part() {}\nconst S: &str = r#\"\nfn not_a_symbol() {}\n\"#;\nfn after_raw() {}\nconst T: &str = br##\"fn inline_raw() {}\"##;\nfn last() {}\n";
+    let x = extract("p.rs", "rust", text, true);
+    let names: Vec<&str> = x.symbols.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["a", "parse_part", "S", "after_raw", "T", "last"],
+        "{names:?}"
+    );
+}
+
+#[test]
+fn a_rare_identifier_finds_the_file_that_holds_it() {
+    let dir = temp();
+    let root = std::fs::canonicalize(dir.path()).unwrap().join("dev");
+    let a = root.join("alpha");
+    write(
+        &a,
+        "src/use_it.rs",
+        "fn run() {\n    let v = frob_cache_zq.get();\n}\n",
+    );
+    write(&a, "src/frob.rs", "//! Frobs caches.\npub fn frob() {}\n");
+    for i in 0..5 {
+        write(
+            &a,
+            &format!("src/common_{i}.rs"),
+            "fn f() { let shared_word_zq = 1; }\n",
+        );
+    }
+    let mut ix = Index::open(&root.parent().unwrap().join("index.db")).unwrap();
+    crate::roots::add_root(&ix, &root, "full").unwrap();
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    let run = |q: &str| {
+        search(
+            &ix.conn,
+            &SearchOptions {
+                query: q.into(),
+                caller_project: "alpha".into(),
+                limit: 10,
+                ..Default::default()
+            },
+            &NoSemantic,
+        )
+        .unwrap()
+    };
+    let r = run("frob_cache_zq");
+    assert_eq!(r.hits[0].id, "alpha:src/use_it.rs", "{:#?}", r.hits);
+    assert!(r.hits[0].explain[0].starts_with("one of 1 files holding"));
+    // Held by five files: not rare, no pin.
+    let r = run("shared_word_zq");
+    assert!(
+        !r.hits
+            .iter()
+            .any(|h| h.explain.iter().any(|e| e.contains("files holding")))
+    );
 }
