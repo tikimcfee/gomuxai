@@ -95,7 +95,11 @@ label too), the project's remote and first-parent root commit recorded.
 Not yet: identity across hosts (nothing reads it), and worktrees are
 skipped as projects rather than resolved to their repo with paths in the
 caller's worktree. Symbol ids take a `-2`, `-3` suffix when a file defines
-a name twice (`#new-2`).
+a name twice (`#new-2`). A rename is found from git's commits since the
+last crawl, from a `git mv` not yet committed, or failing both by a gone
+file and a new one with the same content; children (symbols, sections)
+that something can't-be-rebuilt names carry with their file, and a
+directory renamed whole carries too.
 
 An entity's id is its project and its path in that project:
 
@@ -151,7 +155,11 @@ id, or person), and when.
 
 **built**, but for `drifted` (a changed key reads `stale`; nothing
 measures how far the code moved yet) and a directory's basis. Outside git
-a file's key is reused while its size and mtime hold.
+a file's key is reused while its size and mtime (in nanoseconds) hold. A
+file over 1 MB is keyed by its size and mtime, never read, and so are a
+shallow project's files outside git. A directory falls back from its HEAD
+tree id to a listing hash when anything under it differs from HEAD,
+deletions included (`git diff HEAD`).
 
 The content key comes from git for free:
 
@@ -189,7 +197,9 @@ project's summary only if it changed what the file is.
 **built**: `depends-on` (manifests; `pixi.toml` and imports not yet; a
 dependency without a path resolves by package name when one indexed
 package has it), `documented-by` (from a `refs` table of each doc's
-backticked paths, resolved across projects after every crawl, a bare name or partial path
+backticked paths and ids, symbols' and sections' too, resolved across
+projects after a crawl that changed anything: relative to the doc, its
+project, or a root (`beta/notes.md`), else a bare name or partial path
 by the one path in its project that ends with it; the unresolved go to
 `dangling`, but not a name several files end with, a path on disk that
 isn't indexed, or one outside every indexed tree), `tests` (naming; not `#[path]`), and
@@ -222,7 +232,11 @@ together forty times are related, whatever their names say.
 **built** (`agent-index` `extract.rs`, `manifest.rs`), but for CLI
 commands' `about` lines. A crate's or package's description leads its
 directory's seed, then its README's first paragraph. Shell scripts'
-leading comments are seeds too.
+leading comments are seeds too, and C-family, JVM, Zig and WGSL files'
+leading comment blocks. Symbols by regular expression cover Rust, Go
+(grouped `const`/`var`/`type` blocks too), TS/JS (class members and arrow
+functions too), Python, Swift, shell, Make, C/C++/Objective-C and
+shaders, Java/Kotlin, Ruby, Lua, Zig and WGSL.
 
 Before any model runs, most entities already have a usable summary in the
 code itself. A crawl takes, in order:
@@ -330,7 +344,9 @@ model edges and concepts is rebuilt from disk by `agent index crawl
 --rebuild`. What can't be rebuilt (summaries, `model` and `person`
 edges, concepts) is keyed by content, so it survives a rebuild.
 
-**built**: `index.db` (WAL, `PRAGMA user_version` 1) with `roots`,
+**built**: `index.db` (WAL, `PRAGMA user_version` 2; opening a version 1
+file adds `projects.crawled_depth` and writes every search row again once)
+with `roots`,
 `projects`, `entities`, `aliases`, `summaries` (v1 writes `seed` rows,
 `live`), `edges`, `labels`, `search`, `search_tri`, `vectors` and
 `embed_queue`, plus three of its own: `refs` and `manifests` (each doc's
@@ -395,10 +411,15 @@ summary is data, marked with its host.
 `root add --depth` gives (default `full`; nothing reads the dream scope
 yet), and files aren't checked against the scrub's credential markers
 (code mentions "token" and "secret" too often for that to mean a
-credential): secrets are kept out by name. Outside git the walk is
-`std`'s with a small `.gitignore` reader, not the `ignore` crate. A
-symlink is never followed: its entity says `symlink` or `symlink
-outside the project`, and nothing of its target is read or hashed.
+credential): secrets are kept out by name, and `id_*` only for SSH key
+names (`id_rsa`, `id_ed25519`, ... and their `.pub`), so `id_map.rs`
+stays. Outside git the walk is `std`'s with a small `.gitignore` reader,
+not the `ignore` crate. A symlink is never followed: a file is read or
+hashed only when its canonical path is itself (no symlink on the way,
+final or not), its entity otherwise saying `symlink` or `symlink outside
+the project`. A git submodule is an entity of file kind `submodule`.
+Changing a project's depth re-reads all of it on the next crawl, as
+`--rebuild` does.
 
 Opt-in, like dreaming. `agent index root add DIR` adds a tree (host
 state `index.roots`). Every directory directly under a root is a
@@ -431,8 +452,12 @@ content). Binary files get an entity with a file kind and no content.
 
 **built** (`agent-index` `view.rs`, the CLI's `index.rs`): search, show,
 tree, related and stale, with `--json`; search, tree and related take
-`--budget` (`--json` isn't fitted). `show` doesn't yet list memory notes
-or recent sessions, nor how far the code moved since a summary.
+`--budget` (`--json` isn't fitted; a budget drops the tail, never a parent
+whose children are kept). Search prints a result's why when it has one.
+`show` doesn't yet list memory notes or recent sessions, nor how far the
+code moved since a summary. Code labels are made for projects and
+directories only (name spellings, README titles, package and remote
+names); a file's or symbol's own name is in the search rows instead.
 
 Every read command resolves a path argument against the caller's cwd, so
 `agent index show .` works anywhere, and takes `--json`. Paths are
@@ -488,10 +513,16 @@ concepts, entities in other projects that share an idea with it.
 
 ### Ranking
 
-**built** (`agent-index` `query.rs`): the lexical lists (with a labels
-column, weight 3, beside the five above; a term no entity mentions is
-looked for by its trigrams, for typos), the priors (own project, a
-section ranked below a file or symbol, importance from fan-in, kept-out-
+**built** (`agent-index` `query.rs`): first, a query that is one
+identifier (`parse_config`, `deliver.rs`) pins the entities of exactly
+that name, symbols before files before dirs, above any label match (then
+the same ignoring case); the lexical lists (with a labels
+column, weight 3, beside the five above; every word ANDed as a list of
+its own beside the words ORed; a term no entity mentions is looked for by
+its trigrams, for typos, in a list of its own), the priors (own project, a
+section ranked below a file or symbol, importance from fan-in (the
+dependents that use it, the docs that document it, the files that change
+with it), kept-out-
 of-the-way dirs down, and tests and fixtures down unless `--kind test` or
 `--under` asks), RRF, and at most two results per file. The semantic
 list is a seam (`query::Semantic`) that contributes nothing until the
@@ -751,10 +782,14 @@ dreams' `DREAM_READ_COMMANDS` is dreaming's own call.
 **built**, with one change of method: what changed is found by comparing
 every file's key with the one stored (a listing of blob ids is cheap),
 and `git diff -M` between the last crawled commit and HEAD is read only
-for renames. A search doesn't crawl lazily yet; it says on stderr when
-the caller's project is commits ahead of its crawl. On a tree of two
-clones (about 1,550 files) and a plain directory: about 1.5 s cold, 0.6 s
-with nothing changed.
+for renames. A crawl that changed nothing writes nothing and skips the
+cross-project steps (edges, importance); one that did rewrites only the
+search rows of what it changed, and an edited file keeps its unchanged
+symbols' rows, so their vectors stay and nothing re-queues them. A search
+doesn't crawl lazily yet; it says on stderr when the project it searches
+is commits ahead of its crawl. On a tree of two clones (about 1,550
+files, 14,600 entities) and a plain directory: about 2.5 s cold or with
+`--rebuild`, 0.25 s with nothing changed.
 
 `agent index crawl [--project P] [--rebuild] [--dry-run]`:
 
