@@ -25,6 +25,8 @@ pub mod view;
 pub mod walk;
 
 #[cfg(test)]
+mod followup_test;
+#[cfg(test)]
 mod index_test;
 #[cfg(test)]
 mod review_test;

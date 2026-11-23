@@ -174,7 +174,7 @@ fn go_package_doc(lines: &[&str]) -> Option<String> {
 fn python_docstring(lines: &[&str]) -> Option<String> {
     let mut i = 0;
     while i < lines.len() {
-        let t = lines[i].trim();
+        let t = lines[i].trim().trim_start_matches('\u{feff}');
         if t.is_empty() || t.starts_with('#') {
             i += 1;
             continue;
@@ -186,12 +186,16 @@ fn python_docstring(lines: &[&str]) -> Option<String> {
 
 /// A Python docstring starting on line `i`, if one does.
 fn docstring_at(lines: &[&str], i: usize) -> Option<String> {
-    let t = lines.get(i)?.trim();
+    let t = lines.get(i)?.trim().trim_start_matches('\u{feff}');
     let t = t.trim_start_matches(['r', 'u', 'b', 'R', 'U', 'B']);
     let q = if t.starts_with("\"\"\"") {
         "\"\"\""
     } else if t.starts_with("'''") {
         "'''"
+    } else if let Some(c) = t.chars().next().filter(|c| *c == '"' || *c == '\'') {
+        // A one-line docstring in plain quotes: `"Tools for beta."`.
+        let body = &t[1..];
+        return body.find(c).map(|end| body[..end].trim().to_string());
     } else {
         return None;
     };
