@@ -192,12 +192,11 @@ fn docstring_at(lines: &[&str], i: usize) -> Option<String> {
         "\"\"\""
     } else if t.starts_with("'''") {
         "'''"
-    } else if let Some(c) = t.chars().next().filter(|c| *c == '"' || *c == '\'') {
+    } else {
         // A one-line docstring in plain quotes: `"Tools for beta."`.
+        let c = t.chars().next().filter(|c| *c == '"' || *c == '\'')?;
         let body = &t[1..];
         return body.find(c).map(|end| body[..end].trim().to_string());
-    } else {
-        return None;
     };
     let first = &t[3..];
     if let Some(end) = first.find(q) {
