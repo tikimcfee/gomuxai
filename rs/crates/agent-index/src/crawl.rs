@@ -68,6 +68,9 @@ pub struct ProjectReport {
     /// Crawled shallow though deeper was asked: a root found it, and it lists
     /// more than [`LARGE_PROJECT`] files.
     pub capped: bool,
+    /// Its walk (outside git) stopped at the file cap: its deepest levels are
+    /// missing.
+    pub truncated: bool,
     pub ms: u128,
 }
 
@@ -313,7 +316,9 @@ fn meta_key(what: &str, f: &Listed) -> String {
     ])
 }
 
-fn list(project: &Project, nested: &[String]) -> Result<(Vec<Listed>, bool)> {
+/// A project's files; whether it is a git repo; whether a plain walk stopped
+/// at its file cap.
+fn list(project: &Project, nested: &[String]) -> Result<(Vec<Listed>, bool, bool)> {
     let dir = Path::new(&project.path);
     let in_nested = |rel: &str| {
         nested
@@ -340,9 +345,13 @@ fn list(project: &Project, nested: &[String]) -> Result<(Vec<Listed>, bool)> {
                 modified: f.modified,
             });
         }
-        return Ok((out, true));
+        return Ok((out, true, false));
     }
-    let out = walk::walk(dir, nested)
+    // A shallow project needs only its top directories' files (READMEs).
+    let max_depth = if project.depth == "shallow" { 2 } else { 0 };
+    let w = walk::walk(dir, nested, max_depth);
+    let out = w
+        .files
         .into_iter()
         .map(|f| Listed {
             rel: f.rel,
@@ -356,7 +365,7 @@ fn list(project: &Project, nested: &[String]) -> Result<(Vec<Listed>, bool)> {
             mtime: f.mtime,
         })
         .collect();
-    Ok((out, false))
+    Ok((out, false, w.truncated))
 }
 
 /// Gives every listed file its key: the index blob for a clean tracked file;
@@ -724,7 +733,8 @@ fn crawl_project(
         depth: p.depth.clone(),
         ..Default::default()
     };
-    let (mut listed, is_git) = list(p, nested)?;
+    let (mut listed, is_git, truncated) = list(p, nested)?;
+    rep.truncated = truncated;
     // A project a root found (not one a person added) that turns out huge (a
     // kernel tree, a shelf of vendored code) is crawled shallow: the project
     // and its top directories. Its symbols, full text and file list are what

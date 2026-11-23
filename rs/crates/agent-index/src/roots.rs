@@ -354,8 +354,75 @@ pub struct Sync {
     pub skipped: Vec<String>,
 }
 
+fn dir_name(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Records a directory a root found as a project, unless it is one already,
+/// a worktree, or its name can't be used. A name taken by another project is
+/// tried as `<container>-<name>` when it sits in a container.
+#[allow(clippy::too_many_arguments)]
+fn add_found(
+    conn: &Connection,
+    out: &mut Sync,
+    projects: &[Project],
+    root: &str,
+    dir: &Path,
+    name: &str,
+    container: &str,
+    depth: &str,
+) -> Result<()> {
+    let path = s(dir);
+    if projects.iter().any(|p| p.path == path) || get_project_by_path(conn, &path)?.is_some() {
+        return Ok(());
+    }
+    if let Some(wt) = git::worktree_of(dir) {
+        out.skipped.push(format!(
+            "{path}: a git worktree of {}, not a project of its own",
+            wt.display()
+        ));
+        return Ok(());
+    }
+    let mut name = name.to_string();
+    if get_project(conn, &name)?.is_some() && !container.is_empty() {
+        name = format!("{container}-{name}");
+    }
+    if check_project_name(&name).is_err() {
+        out.skipped
+            .push(format!("{path}: {name:?} can't name a project"));
+        return Ok(());
+    }
+    if let Some(other) = get_project(conn, &name)? {
+        out.skipped.push(format!(
+            "{path}: the name {name} is taken by {} (agent index project add {path} --name OTHER)",
+            other.path
+        ));
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO projects (name, path, root, explicit, depth) VALUES (?, ?, ?, 0, ?)",
+        params![name, path, root, depth],
+    )?;
+    out.added.push(name);
+    Ok(())
+}
+
+fn get_project_by_path(conn: &Connection, path: &str) -> Result<Option<Project>> {
+    Ok(conn
+        .query_row(
+            &format!("SELECT {PROJECT_COLS} FROM projects WHERE path = ?"),
+            params![path],
+            project_row,
+        )
+        .optional()?)
+}
+
 /// Makes every directory directly under each root a project (new ones at the
-/// root's depth), and drops found projects whose directory is gone.
+/// root's depth, or shallow when named as kept out of the way), and each git
+/// repo directly inside a plain one; drops found projects whose directory is
+/// gone.
 pub fn sync_roots(conn: &Connection) -> Result<Sync> {
     let mut out = Sync::default();
     let roots = list_roots(conn)?;
@@ -372,34 +439,8 @@ pub fn sync_roots(conn: &Connection) -> Result<Sync> {
             .collect();
         children.sort();
         for c in children {
-            let name = c
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
+            let name = dir_name(&c);
             if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
-                continue;
-            }
-            let path = s(&c);
-            if projects.iter().any(|p| p.path == path) {
-                continue;
-            }
-            if let Some(wt) = git::worktree_of(&c) {
-                out.skipped.push(format!(
-                    "{path}: a git worktree of {}, not a project of its own",
-                    wt.display()
-                ));
-                continue;
-            }
-            if check_project_name(&name).is_err() {
-                out.skipped
-                    .push(format!("{path}: {name:?} can't name a project"));
-                continue;
-            }
-            if let Some(other) = get_project(conn, &name)? {
-                out.skipped.push(format!(
-                    "{path}: the name {name} is taken by {} (agent index project add {path} --name OTHER)",
-                    other.path
-                ));
                 continue;
             }
             // A directory kept out of the way (`_public`, `archive`, `old`)
@@ -410,11 +451,44 @@ pub fn sync_roots(conn: &Connection) -> Result<Sync> {
             } else {
                 r.depth.as_str()
             };
-            conn.execute(
-                "INSERT INTO projects (name, path, root, explicit, depth) VALUES (?, ?, ?, 0, ?)",
-                params![name, path, r.id, depth],
-            )?;
-            out.added.push(name);
+            add_found(conn, &mut out, &projects, &r.id, &c, &name, "", depth)?;
+            // A plain directory holding repos (a shelf of clones): each repo
+            // directly in it is a project of its own, at the container's depth
+            // (at least shallow), left out of the container's own crawl. A
+            // project's depth may since have been changed by project add.
+            if git::is_toplevel(&c) {
+                continue;
+            }
+            let container_depth = get_project(conn, &name)?
+                .filter(|p| p.path == s(&c))
+                .map(|p| p.depth)
+                .unwrap_or_else(|| depth.to_string());
+            let Ok(rd) = std::fs::read_dir(&c) else {
+                continue;
+            };
+            let mut inner: Vec<PathBuf> = rd
+                .flatten()
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .map(|e| e.path())
+                .filter(|p| p.join(".git").exists())
+                .collect();
+            inner.sort();
+            for n in inner {
+                let nname = dir_name(&n);
+                if nname.starts_with('.') || !git::is_toplevel(&n) {
+                    continue;
+                }
+                add_found(
+                    conn,
+                    &mut out,
+                    &projects,
+                    &r.id,
+                    &n,
+                    &nname,
+                    &name,
+                    &container_depth,
+                )?;
+            }
         }
     }
     for p in list_projects(conn)? {

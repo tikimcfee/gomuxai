@@ -574,6 +574,12 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
         if p.secret_skipped > 0 {
             notes.push(format!("{} secret-looking files never indexed", p.secret_skipped));
         }
+        if p.truncated {
+            notes.push(format!(
+                "its walk stopped at {} files: the deepest directories are left out",
+                agent_index::walk::MAX_FILES
+            ));
+        }
         if p.capped {
             notes.push(format!(
                 "over {} files, so crawled shallow: its top directories only (agent index project add {} --depth files|full asks for more)",

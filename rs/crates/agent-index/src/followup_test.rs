@@ -652,3 +652,87 @@ fn a_rare_identifier_finds_the_file_that_holds_it() {
             .any(|h| h.explain.iter().any(|e| e.contains("files holding")))
     );
 }
+
+#[test]
+fn repos_in_a_plain_container_are_projects_and_a_cap_cuts_depth_not_siblings() {
+    let dir = temp();
+    let root = std::fs::canonicalize(dir.path()).unwrap().join("dev");
+    let repo = |p: &std::path::Path, files: &[(&str, &str)]| {
+        std::fs::create_dir_all(p).unwrap();
+        git(p, &["init", "-q", "-b", "main"]);
+        for (rel, text) in files {
+            write(p, rel, text);
+        }
+        commit(p, "first");
+    };
+    // A shelf of clones (kept out of the way: shallow), and a plain dir at
+    // full depth holding a repo; both hold a repo named `tool`.
+    repo(
+        &root.join("_shelf/tool"),
+        &[
+            ("README.md", "# Tool\n\nA shelved tool.\n"),
+            ("src/t.rs", "pub fn shelved() {}\n"),
+        ],
+    );
+    repo(
+        &root.join("_shelf/procs"),
+        &[("src/p.rs", "pub fn procs() {}\n")],
+    );
+    write(&root.join("_shelf"), "notes.md", "# Shelf\n");
+    repo(
+        &root.join("work/tool"),
+        &[("src/t.rs", "pub fn worked() {}\n")],
+    );
+    write(&root.join("work"), "plan.md", "# Plan\n");
+    let mut ix = Index::open(&root.parent().unwrap().join("index.db")).unwrap();
+    crate::roots::add_root(&ix, &root, "full").unwrap();
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    let c = &ix.conn;
+    let proj = |name: &str| -> Option<(String, String)> {
+        c.query_row(
+            "SELECT path, depth FROM projects WHERE name = ?",
+            [name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()
+    };
+    let (p, d) = proj("tool").unwrap();
+    assert!(p.ends_with("/_shelf/tool") && d == "shallow", "{p} {d}");
+    assert_eq!(proj("procs").unwrap().1, "shallow");
+    let (p, d) = proj("work-tool").unwrap();
+    assert!(p.ends_with("/work/tool") && d == "full", "{p} {d}");
+    let n = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+    // Found as their own projects, not inside the container's crawl.
+    assert!(crate::model::get(c, "tool").unwrap().is_some());
+    assert_eq!(crate::model::get(c, "tool").unwrap().unwrap().title, "Tool");
+    assert_eq!(
+        n("SELECT count(*) FROM entities WHERE id = 'work-tool:src/t.rs#worked'"),
+        1
+    );
+    assert_eq!(
+        n("SELECT count(*) FROM entities WHERE project = 'work' AND rel LIKE 'tool/%'"),
+        0
+    );
+    assert_eq!(
+        n("SELECT count(*) FROM entities WHERE id = 'work:plan.md'"),
+        1
+    );
+
+    // A walk that hits its cap drops the deepest level, not a later sibling.
+    let w = root.parent().unwrap().join("wide");
+    for i in 0..30 {
+        write(&w, &format!("a/deep/x/f{i}.txt"), "x\n");
+    }
+    write(&w, "a/top.txt", "a\n");
+    write(&w, "z/top.txt", "z\n");
+    let got = crate::walk::walk_capped(&w, &[], 0, 10);
+    let rels: Vec<&str> = got.files.iter().map(|f| f.rel.as_str()).collect();
+    assert!(got.truncated);
+    assert!(
+        rels.contains(&"a/top.txt") && rels.contains(&"z/top.txt"),
+        "{rels:?}"
+    );
+    // A shallow walk stops at the top directories.
+    let got = crate::walk::walk(&w, &[], 2);
+    assert!(got.files.iter().all(|f| f.rel.matches('/').count() <= 1));
+}

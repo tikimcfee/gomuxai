@@ -2,8 +2,10 @@
 //! files reasonably (comments, `!`, `/`-anchored and dir-only patterns, `*`,
 //! `?` and `**`), skipping build output, and never following a symlink.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 
 use regex::Regex;
 
@@ -132,14 +134,90 @@ impl Ignore {
 
 /// Every file under `root` the walk keeps, relative, with `/` separators.
 /// `skip` holds relative dirs not to enter (nested projects).
-pub fn walk(root: &Path, skip: &[String]) -> Vec<WalkFile> {
-    let mut out = Vec::new();
-    let mut ignores: Vec<Ignore> = Vec::new();
-    walk_dir(root, "", skip, &mut ignores, &mut out);
+/// The ignore files in force in a directory, its own last.
+type Ignores = Rc<Vec<Rc<Ignore>>>;
+
+/// What a walk found, and whether it stopped at [`MAX_FILES`].
+#[derive(Debug, Default)]
+pub struct Walk {
+    pub files: Vec<WalkFile>,
+    pub truncated: bool,
+}
+
+/// Every file under `root` the walk keeps, relative, with `/` separators,
+/// level by level (breadth first): when a huge tree hits [`MAX_FILES`], what
+/// is cut is the deepest level, never a later sibling's top. `skip` holds
+/// relative dirs not to enter (nested projects); `max_depth` limits how many
+/// directory levels are entered (1: the top's files only; 0: no limit).
+pub fn walk(root: &Path, skip: &[String], max_depth: usize) -> Walk {
+    walk_capped(root, skip, max_depth, MAX_FILES)
+}
+
+/// [`walk`] with a file cap of its own.
+pub fn walk_capped(root: &Path, skip: &[String], max_depth: usize, cap: usize) -> Walk {
+    let mut out = Walk::default();
+    let mut queue: VecDeque<(String, usize, Ignores)> = VecDeque::new();
+    queue.push_back((String::new(), 1, Rc::new(Vec::new())));
+    while let Some((prefix, depth, inherited)) = queue.pop_front() {
+        let dir = if prefix.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(&prefix)
+        };
+        let ignores = match fs::read_to_string(dir.join(".gitignore")) {
+            Ok(t) => {
+                let mut v = (*inherited).clone();
+                v.push(Rc::new(Ignore::parse(&prefix, &t)));
+                Rc::new(v)
+            }
+            Err(_) => inherited,
+        };
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        let mut entries: Vec<_> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let rel = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if SKIP_DIRS.contains(&name.as_str())
+                    || skip.iter().any(|s| s == &rel)
+                    || ignored(&ignores, &rel, true)
+                    || (max_depth > 0 && depth >= max_depth)
+                {
+                    continue;
+                }
+                queue.push_back((rel, depth + 1, ignores.clone()));
+            } else if ft.is_file() || ft.is_symlink() {
+                if ignored(&ignores, &rel, false) {
+                    continue;
+                }
+                if out.files.len() >= cap {
+                    out.truncated = true;
+                    return out;
+                }
+                let md = e.metadata().ok();
+                out.files.push(WalkFile {
+                    rel,
+                    symlink: ft.is_symlink(),
+                    size: md.as_ref().map(|m| m.len()).unwrap_or(0),
+                    mtime: md
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos() as i64)
+                        .unwrap_or(0),
+                });
+            }
+        }
+    }
     out
 }
 
-fn ignored(ignores: &[Ignore], rel: &str, is_dir: bool) -> bool {
+fn ignored(ignores: &[Rc<Ignore>], rel: &str, is_dir: bool) -> bool {
     let mut v = false;
     for ig in ignores {
         if let Some(x) = ig.verdict(rel, is_dir) {
@@ -147,75 +225,4 @@ fn ignored(ignores: &[Ignore], rel: &str, is_dir: bool) -> bool {
         }
     }
     v
-}
-
-fn walk_dir(
-    root: &Path,
-    prefix: &str,
-    skip: &[String],
-    ignores: &mut Vec<Ignore>,
-    out: &mut Vec<WalkFile>,
-) {
-    if out.len() >= MAX_FILES {
-        return;
-    }
-    let dir = if prefix.is_empty() {
-        root.to_path_buf()
-    } else {
-        root.join(prefix)
-    };
-    let pushed = match fs::read_to_string(dir.join(".gitignore")) {
-        Ok(t) => {
-            ignores.push(Ignore::parse(prefix, &t));
-            true
-        }
-        Err(_) => false,
-    };
-    let Ok(rd) = fs::read_dir(&dir) else {
-        if pushed {
-            ignores.pop();
-        }
-        return;
-    };
-    let mut entries: Vec<_> = rd.flatten().collect();
-    entries.sort_by_key(|e| e.file_name());
-    for e in entries {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let rel = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        let Ok(ft) = e.file_type() else { continue };
-        if ft.is_dir() {
-            if SKIP_DIRS.contains(&name.as_str())
-                || skip.iter().any(|s| s == &rel)
-                || ignored(ignores, &rel, true)
-            {
-                continue;
-            }
-            walk_dir(root, &rel, skip, ignores, out);
-        } else if ft.is_file() || ft.is_symlink() {
-            if ignored(ignores, &rel, false) {
-                continue;
-            }
-            let md = e.metadata().ok();
-            out.push(WalkFile {
-                rel,
-                symlink: ft.is_symlink(),
-                size: md.as_ref().map(|m| m.len()).unwrap_or(0),
-                mtime: md
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos() as i64)
-                    .unwrap_or(0),
-            });
-            if out.len() >= MAX_FILES {
-                break;
-            }
-        }
-    }
-    if pushed {
-        ignores.pop();
-    }
 }
