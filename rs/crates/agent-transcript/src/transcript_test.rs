@@ -678,6 +678,40 @@ fn test_agy_background_ends() {
 }
 
 #[test]
+fn test_agy_coalesced_and_stop_hook_delivered_origins() {
+    let lines = [
+        r#"{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","content":"<USER_REQUEST>\ngo\n</USER_REQUEST>"}"#,
+        r#"{"step_index":1,"type":"USER_INPUT","source":"SYSTEM_SDK","content":"<USER_REQUEST>\n2 messages arrived while you were working, oldest first — read all before acting:\n\n--- #1 (5s ago) ---\n[from lead@hub] first\n</USER_REQUEST>"}"#,
+        r#"{"step_index":2,"type":"USER_INPUT","source":"SYSTEM_SDK","content":"<USER_REQUEST>\n3 messages arrived while you were working (2 active, 1 superseded), oldest first:\n\n--- #2 (3s ago) ---\n[from lead@hub] second\n</USER_REQUEST>"}"#,
+        r#"{"step_index":3,"type":"USER_INPUT","source":"SYSTEM_SDK","content":"<USER_REQUEST>\n[URGENT INTERRUPT]\n[from lead@hub] stop right now\n</USER_REQUEST>"}"#,
+        r#"{"step_index":4,"type":"USER_INPUT","source":"SYSTEM_SDK","content":"<USER_REQUEST>\n[part 2/3 of the message above]\ncontinuation body\n</USER_REQUEST>"}"#,
+        r#"{"step_index":5,"type":"SYSTEM_MESSAGE","source":"SYSTEM","content":"The following is a <SYSTEM_MESSAGE> not actually sent by the user.\n<SYSTEM_MESSAGE>\nStop hook blocked termination: [from lead@hub] later note\n</SYSTEM_MESSAGE>"}"#,
+        r#"{"step_index":6,"type":"USER_INPUT","source":"SYSTEM_SDK","content":"<USER_REQUEST>\nCustom workspace reminder.\n</USER_REQUEST>"}"#,
+    ];
+    let (_, events) = parse(&Agy, format!("{}\n", lines.join("\n")).as_bytes());
+    let origins: Vec<&str> = events
+        .iter()
+        .map(|e| e.prompt.as_ref().unwrap().origin.as_str())
+        .collect();
+    assert_eq!(
+        origins,
+        [
+            "human",
+            "delivered",
+            "delivered",
+            "delivered",
+            "delivered",
+            "delivered",
+            "system",
+        ]
+    );
+    assert_eq!(
+        events[5].prompt.as_ref().unwrap().text,
+        "[from lead@hub] later note"
+    );
+}
+
+#[test]
 fn test_agy_response() {
     let tests = [
         (

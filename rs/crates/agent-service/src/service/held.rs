@@ -44,8 +44,8 @@ use super::agent_service::{
 use super::ctx::{Ctx, CtxExt};
 use super::handover::HandoverError;
 use super::status::{
-    STATE_KEY_DETAIL, STATE_KEY_HOOKED_SESSION, STATE_KEY_SESSION_ID, STATE_KEY_SPAWN_ID,
-    StatusInfo, StatusReport,
+    STATE_KEY_DETAIL, STATE_KEY_HOOKED_SESSION, STATE_KEY_NOW_AT, STATE_KEY_SESSION_ID,
+    STATE_KEY_SPAWN_ID, StatusInfo, StatusReport,
 };
 use super::submit::UnsubmittedError;
 
@@ -412,6 +412,11 @@ impl AgentService {
             let now = Time::now();
             format_coalesced_batch(&to_coalesced(&claimed, &now), false)
         };
+        let _ = self.set_state(
+            &agent.name,
+            STATE_KEY_NOW_AT,
+            &Time::now().format_rfc3339_nano(),
+        );
         match self.send_message(ctx, &agent.name, &text, true) {
             Ok(unchecked) => {
                 res.typed = active_count.max(1);
@@ -422,6 +427,7 @@ impl AgentService {
                 if err.downcast_ref::<UnsubmittedError>().is_none()
                     && err.downcast_ref::<HandoverError>().is_none()
                 {
+                    let _ = self.storage.delete_state_key(&agent.name, STATE_KEY_NOW_AT);
                     let _ = self
                         .storage
                         .abort_failed_send(msg_id, &res.superseded_ids, &claimed);

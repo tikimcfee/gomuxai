@@ -55,6 +55,12 @@ pub const STATE_KEY_HOOKED_SESSION: &str = "_hooked_session";
 /// a send and ended before the wait began.
 pub const STATE_KEY_SENT_AT: &str = "_sent_at";
 pub const STATE_KEY_TURN_AT: &str = "_turn_at";
+/// StateKeyNowAt marks a `send --now` typed into a harness (such as agy with
+/// `queuedMessages: "send-immediately"`) that folds queued input into the
+/// running turn (`PreInvocation` with `invocationNum >= 1`) without firing a
+/// separate prompt-submit hook. Consumed on the next `PreInvocation` /
+/// `UserPromptSubmit` so `_turn_at` advances past `_sent_at` for `wait --next`.
+pub const STATE_KEY_NOW_AT: &str = "_now_at";
 /// StateKeyModel is the model spawn --model started the agent on; resume
 /// relaunches on it. Unset for the CLI's default.
 pub const STATE_KEY_MODEL: &str = "_model";
@@ -592,6 +598,8 @@ impl AgentService {
                 result = reply;
             }
         }
+        let consume_now = (hr.event == "PreInvocation" || hr.event == "UserPromptSubmit")
+            && !self.state_value(name, STATE_KEY_NOW_AT).is_empty();
         let r = StatusReport {
             status: from_backend_status(hr.status),
             end_reason: hr.end_reason.clone(),
@@ -603,11 +611,16 @@ impl AgentService {
             session_id: hr.session_id.clone(),
 
             transcript: hr.transcript.clone(),
-            clear_result: hr.clear_result,
+            clear_result: hr.clear_result || consume_now,
 
             prompt: hr.prompt,
             call_key: hr.call_key.clone(),
             agent: hr.agent.clone(),
+            drop_prompts: if consume_now {
+                vec![STATE_KEY_NOW_AT.to_string()]
+            } else {
+                Vec::new()
+            },
             ..Default::default()
         };
         let (out, res) = match provider.as_hook_deliverer() {
