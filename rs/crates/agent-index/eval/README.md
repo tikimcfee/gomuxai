@@ -51,7 +51,11 @@ with like: `index_*@cwd` with `rg_*@project`, `index_*@root` with `rg_*@tree`.
 
 Sets in the summary:
 
-- `lexicon`: one query per lay phrasing. The main plain-words set.
+- `lexicon`: one query per lay phrasing. The main plain-words set. Its
+  `most_cited_files` row is a reference that reads no query: the files the
+  lexicon cites most, the same list for every phrasing. When a few files
+  hold most targets it scores high, and `rg`'s ranking by match count
+  (which favors long files) rides on the same thing.
 - `ask_opening`: the ask that opens a session. Noisy: many asks are
   conversation, not a request. `ask_all` adds asks from later episodes, and
   is a footnote.

@@ -695,6 +695,10 @@ def main():
             sys.stderr.write(".")
             sys.stderr.flush()
 
+    if a.evalset and a.lexicon:
+        # The sessions' numbers, before the slower lexicon part.
+        report(table, notes, a, "summary-sessions.md")
+
     if a.lexicon:
         if not a.lexicon_root:
             ap.error("--lexicon needs --lexicon-root")
@@ -707,8 +711,18 @@ def main():
         # The lexicon file holds every phrasing beside its term: a hit on it
         # is the answer key, for either system, so it never counts as a hit.
         exclude = {paths.canon(os.path.realpath(a.lexicon))}
+        # A reference that reads no query: the files the lexicon cites most,
+        # the same list for every phrasing. A system that can't beat it has
+        # learned only which files are popular.
+        cited = Counter()
+        for q in lex:
+            for t in q["targets"]:
+                cited[t] += 1
+        popular = sorted(cited, key=lambda t: (-cited[t], t))[:a.limit]
         for q in lex:
             table.cluster[q["id"]] = q["cluster"]
+            table.add("lexicon", q["id"], "most_cited_files", q["phrase"], (popular, len(cited), 0.0, "constant"),
+                      q["targets"])
             for name, res in (("rg_words@project", run.rg_words(q["words"], root)),
                               ("rg_words@tree", run.rg_words(q["words"], dev)),
                               ("index_words@cwd", run.index(q["words"], root)),
@@ -720,6 +734,11 @@ def main():
 
     fh.close()
     sys.stderr.write("\n")
+    print(report(table, notes, a, "summary.md"))
+
+
+def report(table, notes, a, name):
+    """The summary so far, written to OUT/name and returned."""
     out = ["## Recall and time", "", table.summary(), ""]
     rows = []
     for label, ia, ib in COMPARISONS:
@@ -736,9 +755,9 @@ def main():
         out += ["## Searches to reach a target file (top 10)", "", table.turns_table(), ""]
     out += ["## Rows", "", *notes]
     text = "\n".join(out) + "\n"
-    with open(os.path.join(a.out, "summary.md"), "w", encoding="utf-8") as sf:
+    with open(os.path.join(a.out, name), "w", encoding="utf-8") as sf:
         sf.write(text)
-    print(text)
+    return text
 
 
 if __name__ == "__main__":
