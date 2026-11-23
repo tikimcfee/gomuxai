@@ -220,6 +220,67 @@ Checked by hand on it:
   configuration (no stemming), with Rust adding camel and snake splits
   beside the whole name; prose uses `english`.
 
-The rest (current releases and their sources: Postgres 18's new
-features, ParadeDB `pg_search`, VectorChord, hybrid search in SQL, local
-rerankers) comes from a check of the current releases, below.
+From a check of the current releases (2026-11-23, against primary docs
+and release notes):
+
+- **Postgres 18** (18.7 current; 19.0 shipped days ago, but neither
+  `pg_search` nor VectorChord supports it yet, so 18 is the target).
+  Useful here: B-tree skip scan for composite filters, `uuidv7()`,
+  `OLD`/`NEW` in `RETURNING` (a crawl's upsert reports which rows' keys
+  changed, to queue them for embedding, in one round trip), parallel GIN
+  builds, async I/O for scans and vacuum. Virtual generated columns
+  can't be indexed, so the `tsvector` columns are `STORED`.
+- **Native full text has no global IDF.** `ts_rank` and `ts_rank_cd`
+  score term frequency and proximity in the row, not how rare a term is
+  across the corpus, so a rare identifier counts no more than a common
+  word: the weakness v1's evaluation exposed. Limits: 256 positions per
+  lexeme and 1 MB per `tsvector`, so long files go in as chunks.
+- **`pg_trgm`**: put the indexed column on the left (`name %> 'query'`,
+  `ORDER BY name <->> 'query'`) for `word_similarity`. GIN serves
+  filters, only GiST (`siglen` tunable) serves `ORDER BY` distance.
+- **`pgvector` 0.8.7**: `halfvec` indexes up to 4,000 dimensions (so an
+  8B embedder's 4,096 needs a projection or `vector` capped at 2,000:
+  measure); with `relaxed_order`, re-sort through a `MATERIALIZED` CTE
+  with `ORDER BY dist + 0` (on Postgres 17 and later the planner drops
+  the sort otherwise); HNSW builds fast only while the graph fits in
+  `maintenance_work_mem`. For a selective filter (one project), a
+  partial index or partitioning can beat a global index with iterative
+  scans: measure.
+- **RRF**: no extension does it natively; every reference (pgvector's,
+  ParadeDB's, Supabase's) uses CTEs with `RANK() OVER (ORDER BY score,
+  id)` and either a full outer join or `UNION ALL` + `GROUP BY` for
+  three or more lists. v2 uses the latter.
+
+### ParadeDB `pg_search`: an A/B, not the default yet
+
+`pg_search` 0.27 (AGPL-3.0; used locally, not distributed) embeds
+Tantivy: true BM25 with corpus IDF, and a `source_code` tokenizer that
+splits camelCase and snake_case, the two things native full text lacks
+for code. Against it: one covering index per table (columns fixed at
+creation), write amplification on every update, vector search inside it
+still beta, Postgres 15 to 18 only, and installing it into this cluster
+means building with pgrx (its packages target Debian and RHEL) or
+running ParadeDB's own image as a second cluster. So v2 starts on
+native full text (installed, no new trust) and runs `pg_search` as an
+A/B through the eval loop, in a second cluster, if a person says yes.
+If BM25 wins on code clearly, it moves in.
+
+### VectorChord: not now
+
+VectorChord 1.1 (AGPL or ELv2) is built for tens of millions to
+billions of vectors on disk (IVF with RaBitQ quantization). This index
+holds a few hundred thousand to a few million vectors, comfortably
+inside pgvector HNSW's range in memory; its BM25 sibling has no code
+tokenizer, its documentation site was down on the day of the check,
+and its speed claims are the vendor's own. Revisit if the vector count
+grows past what HNSW holds in memory.
+
+### Reranker
+
+`Qwen3-Reranker-4B` (Apache-2.0, about 8 GB in BF16, 32K context):
+81.2 on MTEB-Code, level with its 8B sibling and well above the older
+`bge-reranker-v2-m3` (41.4), served by vLLM's pooling runner (`/rerank`)
+or TEI. `Qwen3-Reranker-0.6B` (73.4) is the fallback when the GPU is
+busy. `jina-reranker-v3.5` scores well but is licensed non-commercial.
+Published throughput for these on a 32 GB card is unconfirmed: the
+first iteration measures it.
