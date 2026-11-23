@@ -319,8 +319,9 @@ Tables:
   labels) with the porter tokenizer, and `search_tri`, FTS5 with the
   trigram tokenizer over names, paths and labels, for substrings and
   typos.
-- `vectors`: a sqlite-vec table of entity, embedding model, half-float
+- `vectors`: a sqlite-vec table of entity, chunk, embedding model, half-float
   vector, and the text key it was made from.
+- `embed_queue`: entity, text key, reason: what the embedder has to do.
 - `queries`: each search, its caller, results, and what the caller
   opened next (below).
 
@@ -571,8 +572,13 @@ this section is the index's side of the contract with it:
 - **freshness keys reused**: each vector records the hash of the exact
   text it embedded (its **text key**, over title, summary or seed, why,
   labels and symbol names) and the embedding model; it is re-made when
-  either changes, and only then. The crawl and the summary commit mark
-  what changed; the embedder reads that list.
+  either changes, and only then;
+- **chunks**: a long file or doc may have several vectors, keyed
+  `(entity, chunk)`, and its score is the best of them (max-pooling);
+- **a queue**: the crawl and the summary commit write `embed_queue`
+  rows (entity, text key, reason) for what they changed, and the
+  embedder drains it, so freshness is explicit and nothing diffs every
+  key.
 
 What follows is the default until that lane's experiments say otherwise.
 
