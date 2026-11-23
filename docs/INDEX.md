@@ -1092,8 +1092,20 @@ question or by session.
   [−0.062, +0.250] long; 20 against 21 of 32 short). With the soft
   project prior from the caller's directory, the long questions show 84%
   against 66% in the top 5, but that mode fuses the lexical lists twice,
-  and it is one comparison of six. A held-out set, written blind to every
-  system and never used for tuning, decides this claim.
+  and it is one comparison of six.
+- **Held-out plain questions** (pre-registered, build frozen): 40 new
+  questions over two other projects, written by a labeler on another
+  model family, blind to every system. **Not shown.** A graded file in
+  the top 5: the index (limited to the project) 25 of 40, `rg` on the
+  same words 27 of 40; −0.050 [−0.275, +0.175]. Secondaries, not
+  decisive: nDCG@10 +0.062 [−0.063, +0.190] and MRR@10 +0.072 [−0.089,
+  +0.236] at the same scope; with the soft prior, MRR +0.173 [+0.019,
+  +0.321]. Split by kind of question, the index was clearly ahead where
+  the question names a thing a user would know ("the omnibar"; 12
+  questions, top 5 9 against 5) and behind in the point estimate where
+  it only describes behavior (28 questions, 16 against 22, interval
+  spanning zero). The split was a secondary on small strata: a lead,
+  not a finding.
 - **The agent's own search patterns** (389 patterns from 62 sessions,
   scored on the files the session then edited): level. Top 5, 17%
   against 18%, −0.010 [−0.052, +0.044]; every interval spans zero, and 49
@@ -1117,9 +1129,18 @@ Caveats: many session targets no longer exist and were dropped; both
 sides search today's tree, not the tree before each session's edits; the
 questions come from one labeler. Next levers, by the losses: crawl nested
 repos fully, phrase and adjacency matching for literals, exact
-identifiers into the top 5, and query expansion for short asks. The
-claim the index exists for, that plain words find code better than `rg`
-does, waits on the held-out set.
+identifiers into the top 5, and query expansion for short asks.
+
+**Verdict for v1:** level with `rg`, not better, on both the agent's own
+patterns and fresh plain questions, and ten times slower. As "An earlier
+attempt" asked, that is the finding: v1 as built (code-derived seeds,
+names, full text and small-model vectors) doesn't earn a place in every
+agent's briefing. What it doesn't test is this design's own bet: the
+model-written summaries, "why" lines and asks, the learned vocabulary
+and query expansion, none of which v1 has. The next step is one
+pre-registered experiment on that bet (summaries and asks for two
+projects, by a local model, then a new held-out set written blind), not
+more tuning of the lexical side.
 
 ## Open questions
 
