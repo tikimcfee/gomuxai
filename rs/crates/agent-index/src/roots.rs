@@ -190,6 +190,7 @@ pub fn delete_project(conn: &Connection, name: &str) -> Result<()> {
     for (table, col, extra) in [
         ("search", "id", ""),
         ("search_tri", "id", ""),
+        ("search_rowid", "id", ""),
         ("refs", "doc", ""),
         ("dangling", "doc", ""),
         ("labels", "entity", " AND origin = 'code'"),

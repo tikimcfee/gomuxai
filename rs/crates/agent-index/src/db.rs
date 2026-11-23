@@ -131,6 +131,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(
     id UNINDEXED, title, name, path, summary, symbols, why, labels,
     tokenize = "porter unicode61 tokenchars '_'"
 );
+-- Which FTS rowid holds an entity's search and search_tri rows (the same in
+-- both), so a row is deleted by rowid rather than by scanning for its id.
+CREATE TABLE IF NOT EXISTS search_rowid (
+    id TEXT PRIMARY KEY,
+    rid INTEGER NOT NULL
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS search_tri USING fts5(
     id UNINDEXED, text,
     tokenize = 'trigram'

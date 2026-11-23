@@ -420,6 +420,21 @@ pub fn search(
             s -= 0.008;
             ex.push("kept-out-of-the-way dir −".into());
         }
+        // Tests and their fixtures answer many words (a fixture named for the
+        // feature it records); the code itself comes first unless asked.
+        let fixture = |c: &str| {
+            matches!(
+                c,
+                "testdata" | "fixtures" | "__fixtures__" | "corpus" | "snapshots" | "golden"
+            )
+        };
+        let is_testish =
+            !e.rel.is_empty() && (files::is_test(&e.rel) || e.rel.split('/').any(fixture));
+        let asks_tests = o.kind == "test" || o.under.split('/').any(|c| fixture(c) || c == "tests");
+        if is_testish && !asks_tests {
+            s -= 0.004;
+            ex.push("test or fixture −".into());
+        }
         score.insert(id.clone(), s);
         ents.insert(id, e);
     }

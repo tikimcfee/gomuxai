@@ -70,6 +70,8 @@ pub struct CrawlReport {
     pub queued: usize,
     pub dry_run: bool,
     pub ms: u128,
+    /// Milliseconds per step: projects, edges, importance, search, commit.
+    pub phases: BTreeMap<String, u128>,
 }
 
 /// The id of a directory in a project ("" is the project itself).
@@ -154,23 +156,34 @@ pub fn crawl(ix: &mut Index, opts: &CrawlOptions) -> Result<CrawlReport> {
         let r = crawl_project(ix_tx, p, &nested, opts.rebuild, &mut dirty)?;
         report.projects.push(r);
     }
+    let mut lap = start;
+    let mut phase = |report: &mut CrawlReport, name: &str| {
+        report
+            .phases
+            .insert(name.to_string(), lap.elapsed().as_millis());
+        lap = Instant::now();
+    };
+    phase(&mut report, "projects");
     // Cross-project steps run over everything: a doc in one project names files
     // in another, a manifest depends on a sibling repo.
     let (edges, dangling) = resolve_edges(ix_tx)?;
     report.edges = edges;
     report.dangling = dangling;
+    phase(&mut report, "edges");
     importance(ix_tx)?;
-    // Edges changed what a dir's or file's text says? No: search rows hold
-    // names, titles, summaries, symbols and labels, which only the crawled
-    // entities changed.
+    phase(&mut report, "importance");
+    // Search rows hold names, titles, summaries, symbols and labels, which only
+    // the crawled entities changed (edges and importance aren't in them).
     let (rows, queued) = refresh_search(ix_tx, &dirty)?;
     report.search_rows = rows;
     report.queued = queued;
+    phase(&mut report, "search");
     if opts.dry_run {
         tx.rollback()?;
     } else {
         tx.commit()?;
     }
+    phase(&mut report, "commit");
     report.ms = start.elapsed().as_millis();
     Ok(report)
 }
@@ -355,13 +368,30 @@ fn delete_children(conn: &Connection, file_id: &str, dirty: &mut BTreeSet<String
     Ok(())
 }
 
+/// Deletes an entity's search and search_tri rows, by the rowid they were
+/// written at (a delete by the unindexed id column would scan the table).
+pub fn delete_search(conn: &Connection, id: &str) -> Result<()> {
+    let rid: Option<i64> = conn
+        .query_row(
+            "SELECT rid FROM search_rowid WHERE id = ?",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(rid) = rid {
+        conn.execute("DELETE FROM search WHERE rowid = ?", params![rid])?;
+        conn.execute("DELETE FROM search_tri WHERE rowid = ?", params![rid])?;
+        conn.execute("DELETE FROM search_rowid WHERE id = ?", params![id])?;
+    }
+    Ok(())
+}
+
 /// Removes one entity's crawl-made rows: the entity, its search rows, code
 /// labels and edges, queue and vectors. Summaries and non-code edges and
 /// labels stay, keyed by id, for a rename to carry or the file to come back.
 fn delete_entity_rows(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM entities WHERE id = ?", params![id])?;
-    conn.execute("DELETE FROM search WHERE id = ?", params![id])?;
-    conn.execute("DELETE FROM search_tri WHERE id = ?", params![id])?;
+    delete_search(conn, id)?;
     conn.execute(
         "DELETE FROM labels WHERE entity = ? AND origin = 'code' AND kind != 'old'",
         params![id],
@@ -1611,27 +1641,27 @@ pub fn search_text(conn: &Connection, id: &str) -> Result<Option<SearchText>> {
 pub fn refresh_search(conn: &Connection, ids: &BTreeSet<String>) -> Result<(usize, usize)> {
     let mut rows = 0;
     let mut queued = 0;
-    let mut del = conn.prepare("DELETE FROM search WHERE id = ?")?;
-    let mut del_tri = conn.prepare("DELETE FROM search_tri WHERE id = ?")?;
     let mut ins = conn.prepare(
         "INSERT INTO search (id, title, name, path, summary, symbols, why, labels) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )?;
-    let mut ins_tri = conn.prepare("INSERT INTO search_tri (id, text) VALUES (?, ?)")?;
+    let mut ins_tri = conn.prepare("INSERT INTO search_tri (rowid, id, text) VALUES (?, ?, ?)")?;
+    let mut map = conn.prepare("INSERT OR REPLACE INTO search_rowid (id, rid) VALUES (?, ?)")?;
     for id in ids {
-        del.execute(params![id])?;
-        del_tri.execute(params![id])?;
+        delete_search(conn, id)?;
         let Some(t) = search_text(conn, id)? else {
             continue;
         };
         ins.execute(params![
             id, t.title, t.name, t.path, t.summary, t.symbols, t.why, t.labels
         ])?;
+        let rid = conn.last_insert_rowid();
+        map.execute(params![id, rid])?;
         let (rel, name) = conn.query_row(
             "SELECT rel, name FROM entities WHERE id = ?",
             params![id],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )?;
-        ins_tri.execute(params![id, format!("{name} {rel} {}", t.labels)])?;
+        ins_tri.execute(params![rid, id, format!("{name} {rel} {}", t.labels)])?;
         rows += 1;
         let text_key = hash(&[
             t.title.as_bytes(),

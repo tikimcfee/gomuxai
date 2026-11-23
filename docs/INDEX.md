@@ -32,7 +32,9 @@ earlier custom repo index was set aside because it couldn't show it beat
 (content-keyed summaries, a learned vocabulary, cross-project concepts)
 and who keeps it true, not the engine.
 
-This document is the design. Nothing here is built; names are the plan.
+This document is the design. What is built is marked **built** (version
+1: the crate `agent-index` and the `agent index` commands); the rest is
+the plan.
 
 ## Why one index
 
@@ -88,6 +90,13 @@ where to read "how do I work on it".
 
 ### Ids
 
+**built** (`agent-index` `crawl.rs`): ids, aliases for renames (an `old`
+label too), the project's remote and first-parent root commit recorded.
+Not yet: identity across hosts (nothing reads it), and worktrees are
+skipped as projects rather than resolved to their repo with paths in the
+caller's worktree. Symbol ids take a `-2`, `-3` suffix when a file defines
+a name twice (`#new-2`).
+
 An entity's id is its project and its path in that project:
 
 ```
@@ -140,6 +149,10 @@ id, or person), and when.
 
 ### Freshness keys
 
+**built**, but for `drifted` (a changed key reads `stale`; nothing
+measures how far the code moved yet) and a directory's basis. Outside git
+a file's key is reused while its size and mtime hold.
+
 The content key comes from git for free:
 
 - a file's is its blob id (`git ls-tree -r HEAD`, or `git hash-object`
@@ -173,6 +186,14 @@ project's summary only if it changed what the file is.
 
 ### Edges
 
+**built**: `depends-on` (manifests; `pixi.toml` and imports not yet; a
+dependency without a path resolves by package name when one indexed
+package has it), `documented-by` (from a `refs` table of each doc's
+backticked paths, resolved across projects after every crawl; the
+unresolved go to `dangling`), `tests` (naming; not `#[path]`), and
+`co-changes` (commits touching over 50 files left out; at least two
+shared commits). Not yet: `implements`, `about`, `same-as`, `noted-in`.
+
 One table, `edges`: source, target, kind, weight, origin (`code`, `model`,
 `person`), evidence, and the keys of both ends when it was made, so an
 edge goes stale as entities do. Containment is the parent column, not an
@@ -195,6 +216,11 @@ together forty times are related, whatever their names say.
 ## Summaries
 
 ### Seeds: what code writes
+
+**built** (`agent-index` `extract.rs`, `manifest.rs`), but for CLI
+commands' `about` lines. A crate's or package's description leads its
+directory's seed, then its README's first paragraph. Shell scripts'
+leading comments are seeds too.
 
 Before any model runs, most entities already have a usable summary in the
 code itself. A crawl takes, in order:
@@ -302,6 +328,17 @@ model edges and concepts is rebuilt from disk by `agent index crawl
 --rebuild`. What can't be rebuilt (summaries, `model` and `person`
 edges, concepts) is keyed by content, so it survives a rebuild.
 
+**built**: `index.db` (WAL, `PRAGMA user_version` 1) with `roots`,
+`projects`, `entities`, `aliases`, `summaries` (v1 writes `seed` rows,
+`live`), `edges`, `labels`, `search`, `search_tri`, `vectors` and
+`embed_queue`, plus three of its own: `refs` and `manifests` (each doc's
+references and each manifest's parse, so edges resolve across projects
+without re-reading files), `dangling` (references that resolve nowhere)
+and `search_rowid` (an entity's FTS rowid, so a row is deleted by rowid).
+`vectors` is a plain table (entity, chunk, model, text key, dim, f16
+blob) until the embedding lane brings sqlite-vec. Not yet: `concepts`,
+`concept_links`, `queries`. Roots live in `index.db`, not host state.
+
 Tables:
 
 - `projects`: name, root path, root commit, remote, depth policy, last
@@ -350,6 +387,15 @@ summary is data, marked with its host.
 
 ## What gets indexed
 
+**built**, with two differences: a root's projects start at the depth
+`root add --depth` gives (default `full`; nothing reads the dream scope
+yet), and files aren't checked against the scrub's credential markers
+(code mentions "token" and "secret" too often for that to mean a
+credential): secrets are kept out by name. Outside git the walk is
+`std`'s with a small `.gitignore` reader, not the `ignore` crate. A
+symlink is never followed: its entity says `symlink` or `symlink
+outside the project`, and nothing of its target is read or hashed.
+
 Opt-in, like dreaming. `agent index root add DIR` adds a tree (host
 state `index.roots`). Every directory directly under a root is a
 project, a repo or not: live work sits outside git too (a project
@@ -378,6 +424,11 @@ markers match in its first lines, and files over 1 MB (an entity with no
 content). Binary files get an entity with a file kind and no content.
 
 ## Query surface
+
+**built** (`agent-index` `view.rs`, the CLI's `index.rs`): search, show,
+tree, related and stale, with `--json`; search, tree and related take
+`--budget` (`--json` isn't fitted). `show` doesn't yet list memory notes
+or recent sessions, nor how far the code moved since a summary.
 
 Every read command resolves a path argument against the caller's cwd, so
 `agent index show .` works anywhere, and takes `--json`. Paths are
@@ -432,6 +483,16 @@ what depends on it, its docs and tests, what changes with it, and through
 concepts, entities in other projects that share an idea with it.
 
 ### Ranking
+
+**built** (`agent-index` `query.rs`): the lexical lists (with a labels
+column, weight 3, beside the five above; a term no entity mentions is
+looked for by its trigrams, for typos), the priors (own project, a
+section ranked below a file or symbol, importance from fan-in, kept-out-
+of-the-way dirs down, and tests and fixtures down unless `--kind test` or
+`--under` asks), RRF, and at most two results per file. The semantic
+list is a seam (`query::Semantic`) that contributes nothing until the
+embedding lane fills `vectors`. Not yet: PageRank, projects a project
+depends on, the stale penalty.
 
 1. **Lexical**: FTS5's bm25 over the porter table, columns weighted
    (title and name 4, path 2, summary 2, symbols 1, why 1), with
@@ -513,6 +574,12 @@ Labels come from five places:
 
 1. **Label match.** The query, normalized, against `labels`: an exact or
    near match on an alias ("word wall") goes straight to the top.
+   **built**: the whole query pins its entities to the top; a run of its
+   words (up to six; a single word only when it names three entities or
+   fewer) adds a ranked list. Labels from code (name spellings, package
+   names, README titles, the remote's name, old ids), `alias add` and
+   `lexicon import` (origin `lexicon`, the definition and confusables
+   kept as evidence; confusables aren't shown side by side yet).
 2. **Thesaurus expansion.** Terms that are labels of a concept add that
    concept's other labels, and its narrower concepts', at a lower weight
    (each expansion is a separate weighted query, fused by rank).
@@ -641,6 +708,14 @@ dreams' `DREAM_READ_COMMANDS` is dreaming's own call.
 ## Building and refreshing
 
 ### The crawl: code, always cheap
+
+**built**, with one change of method: what changed is found by comparing
+every file's key with the one stored (a listing of blob ids is cheap),
+and `git diff -M` between the last crawled commit and HEAD is read only
+for renames. A search doesn't crawl lazily yet; it says on stderr when
+the caller's project is commits ahead of its crawl. On a tree of two
+clones (about 1,550 files) and a plain directory: about 1.5 s cold, 0.6 s
+with nothing changed.
 
 `agent index crawl [--project P] [--rebuild] [--dry-run]`:
 
@@ -851,6 +926,9 @@ review's verdict; this design takes it, and adds only what those tools
 don't have.
 
 ## Version 1: useful in a day
+
+Items 1 to 3 are **built**, but for `noted-in` and the CPU embeddings
+(the embedding lane's: the crawl fills `embed_queue`).
 
 1. Crate `agent-index` and `index.db`: `projects`, `entities`,
    `summaries`, `edges`, `labels`, `search`, `search_tri` and `vectors`.
