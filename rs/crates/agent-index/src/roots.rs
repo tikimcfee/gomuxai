@@ -194,17 +194,22 @@ pub fn delete_project(conn: &Connection, name: &str) -> Result<()> {
     // LIKE: `_` in a name would match any character.)
     let prefix = format!("{name}:");
     let of = |col: &str| format!("({col} = ?1 OR substr({col}, 1, length(?2)) = ?2)");
-    conn.execute(
-        &format!(
-            "DELETE FROM search_full WHERE rowid IN (SELECT rid FROM search_full_ids WHERE {})",
-            of("id")
-        ),
-        params![name, prefix],
-    )?;
+    // The contentless FTS tables, by the rowids their maps hold.
+    for (fts, map) in [
+        ("search_full", "search_full_ids"),
+        ("search", "search_rowid"),
+        ("search_tri", "search_rowid"),
+    ] {
+        conn.execute(
+            &format!(
+                "DELETE FROM {fts} WHERE rowid IN (SELECT rid FROM {map} WHERE {})",
+                of("id")
+            ),
+            params![name, prefix],
+        )?;
+    }
     for (table, col, extra) in [
         ("search_full_ids", "id", ""),
-        ("search", "id", ""),
-        ("search_tri", "id", ""),
         ("search_rowid", "id", ""),
         ("refs", "doc", ""),
         ("dangling", "doc", ""),
@@ -397,9 +402,17 @@ pub fn sync_roots(conn: &Connection) -> Result<Sync> {
                 ));
                 continue;
             }
+            // A directory kept out of the way (`_public`, `archive`, `old`)
+            // starts shallow: often a shelf of clones or old copies, many
+            // times the size of the live work. project add deepens it.
+            let depth = if crate::files::is_out_of_the_way(&name) {
+                "shallow"
+            } else {
+                r.depth.as_str()
+            };
             conn.execute(
                 "INSERT INTO projects (name, path, root, explicit, depth) VALUES (?, ?, ?, 0, ?)",
-                params![name, path, r.id, r.depth],
+                params![name, path, r.id, depth],
             )?;
             out.added.push(name);
         }

@@ -552,7 +552,9 @@ static TS: LazyLock<Lang> = LazyLock::new(|| Lang {
 });
 static C: LazyLock<Lang> = LazyLock::new(|| Lang {
     pats: vec![
-        (re(r"^#\s*define\s+([A-Za-z_]\w*)"), "macro"),
+        // Function-like macros only: object-like ones (`#define REG_X 0x10`)
+        // are constants by the hundred thousand in generated headers.
+        (re(r"^#\s*define\s+([A-Za-z_]\w*)\("), "macro"),
         (
             re(
                 r"^\s*(?:typedef\s+)?(?:struct|class|enum|union)\s+([A-Za-z_]\w*)\s*(?:final\s*)?(?:[:{]|$)",

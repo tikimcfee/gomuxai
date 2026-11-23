@@ -344,10 +344,18 @@ model edges and concepts is rebuilt from disk by `agent index crawl
 --rebuild`. What can't be rebuilt (summaries, `model` and `person`
 edges, concepts) is keyed by content, so it survives a rebuild.
 
-**built**: `index.db` (WAL, `PRAGMA user_version` 2; opening a version 1
-file adds `projects.crawled_depth` and writes every search row again once)
-with `roots`,
-`projects`, `entities`, `aliases`, `summaries` (v1 writes `seed` rows,
+**built**: `index.db` (WAL, `PRAGMA user_version` 4; opening an older
+file makes its search tables anew and writes every search row again once)
+and the search tables contentless (they index text, never keep a copy).
+On a whole dev tree (30 projects, about 140,000 files
+listed) it is about 640 MB, crawled cold in 36 s: the first version
+reached 18 GB, almost all of it symbols from two Linux kernel trees
+(4.6 million object-like `#define`s) and their trigram and queue rows.
+So: no object-like macros, at most 500 symbols a file, no trigram rows
+and no embedding for symbols, projects named as kept out of the way
+(`_public`, `archive`) start shallow, and a project a root finds with
+over 30,000 files is crawled shallow unless `project add` asks for more.
+Its tables: `roots`, `projects`, `entities`, `aliases`, `summaries` (v1 writes `seed` rows,
 `live`), `edges`, `labels`, `search`, `search_tri`, `vectors` and
 `embed_queue`, plus three of its own: `refs` and `manifests` (each doc's
 references and each manifest's parse, so edges resolve across projects

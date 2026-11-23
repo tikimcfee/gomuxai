@@ -700,16 +700,18 @@ fn search_ranks_labels_names_and_says_what_is_absent() {
     o.under = f.root.join("alpha/_archive").to_string_lossy().into_owned();
     let r = search(c, &o, &NoSemantic).unwrap();
     assert_eq!(
-        r.hits[0].id,
-        "alpha:_archive/old_parser.rs#parse_config_old"
+        r.hits[0].id, "alpha:_archive/old_parser.rs#parse_config_old",
+        "{:#?}",
+        r.hits
     );
-    // A typo finds the name through trigrams.
+    // A typo finds the file through trigrams (symbols have no trigram rows:
+    // there are millions in a large tree).
     let r = search(c, &opts("WallLayuot"), &NoSemantic).unwrap();
     assert!(
         r.hits
             .iter()
             .take(5)
-            .any(|h| h.id == "alpha:word-wall/wall.ts#WallLayout"),
+            .any(|h| h.id.starts_with("alpha:word-wall/wall.ts")),
         "{:#?}",
         r.hits
     );

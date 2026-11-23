@@ -532,6 +532,7 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
         project: (!a.project.is_empty()).then(|| a.project.clone()),
         rebuild: a.rebuild,
         dry_run: a.dry_run,
+        large_project: 0,
     };
     let r = agent_index::crawl(&mut ix, &opts)?;
     if a.json {
@@ -572,6 +573,13 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
         let mut notes = Vec::new();
         if p.secret_skipped > 0 {
             notes.push(format!("{} secret-looking files never indexed", p.secret_skipped));
+        }
+        if p.capped {
+            notes.push(format!(
+                "over {} files, so crawled shallow: its top directories only (agent index project add {} --depth files|full asks for more)",
+                agent_index::crawl::LARGE_PROJECT,
+                p.path
+            ));
         }
         if p.no_content > 0 {
             notes.push(format!("{} files without content read (large, binary or symlinks)", p.no_content));

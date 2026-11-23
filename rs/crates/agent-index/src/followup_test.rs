@@ -388,3 +388,111 @@ fn the_callers_project_and_its_dependencies_come_first() {
     let r = top("effort", "");
     assert_eq!(r[0], "aaa:src/a.rs#effort", "{r:?}");
 }
+
+#[test]
+fn what_made_a_dev_tree_index_eighteen_gigabytes_stays_out() {
+    let dir = temp();
+    let root = std::fs::canonicalize(dir.path()).unwrap().join("dev");
+    // A generated header: thousands of object-like macros, a few real ones.
+    let mut header = String::from("#define REG_FN(x) ((x) + 1)\nstruct reg_block { int a; };\n");
+    for i in 0..3000 {
+        header.push_str(&format!("#define REG_{i}_MASK 0x{i:x}\n"));
+    }
+    // A file with more definitions than are kept.
+    let many: String = (0..800).map(|i| format!("pub fn f{i}() {{}}\n")).collect();
+    let app = root.join("app");
+    write(&app, "include/regs.h", &header);
+    write(&app, "src/many.rs", &many);
+    // A shelf of clones, kept out of the way, and a huge vendored tree.
+    write(
+        &root.join("_shelf"),
+        "clone/src/lib.rs",
+        "pub fn shelved() {}\n",
+    );
+    for i in 0..40 {
+        write(
+            &root.join("vendor_tree"),
+            &format!("src/f{i}.c"),
+            "int vendored(void) {\n  return 0;\n}\n",
+        );
+    }
+    let mut ix = Index::open(&root.parent().unwrap().join("index.db")).unwrap();
+    crate::roots::add_root(&ix, &root, "full").unwrap();
+    let r = crawl(
+        &mut ix,
+        &CrawlOptions {
+            large_project: 30,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let c = &ix.conn;
+    let n = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+    // Only the function-like macro and the struct from the header.
+    assert_eq!(
+        n("SELECT count(*) FROM entities WHERE kind = 'symbol' AND rel = 'include/regs.h'"),
+        2
+    );
+    assert_eq!(
+        n("SELECT count(*) FROM entities WHERE kind = 'symbol' AND rel = 'src/many.rs'"),
+        crate::crawl::MAX_SYMBOLS_PER_FILE as i64
+    );
+    // `_shelf` starts shallow: no files.
+    assert_eq!(
+        n("SELECT count(*) FROM entities WHERE project = '_shelf' AND kind = 'file'"),
+        0
+    );
+    let shelf: String = c
+        .query_row(
+            "SELECT depth FROM projects WHERE name = '_shelf'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(shelf, "shallow");
+    // The huge one is crawled at files depth, and the report says so.
+    let v = r.projects.iter().find(|p| p.name == "vendor_tree").unwrap();
+    assert!(v.capped && v.depth == "shallow", "{v:?}");
+    assert_eq!(
+        n("SELECT count(*) FROM entities WHERE project = 'vendor_tree' AND kind = 'file'"),
+        0
+    );
+    assert_eq!(
+        n("SELECT count(*) FROM entities WHERE project = 'vendor_tree' AND kind = 'symbol'"),
+        0
+    );
+    assert_eq!(
+        n("SELECT count(*) FROM search_full_ids WHERE id LIKE 'vendor_tree:%'"),
+        0
+    );
+    // Symbols: a search row, no trigram row, no embedding queued.
+    let syms = n("SELECT count(*) FROM entities WHERE kind = 'symbol'");
+    let tri = n("SELECT count(*) FROM search_tri");
+    let rows = n("SELECT count(*) FROM search_rowid");
+    assert_eq!(rows - tri, syms);
+    assert_eq!(
+        n(
+            "SELECT count(*) FROM embed_queue q JOIN entities e ON e.id = q.entity_id WHERE e.kind = 'symbol'"
+        ),
+        0
+    );
+    // A person can still ask for all of it.
+    crate::roots::add_project(&ix, &root.join("vendor_tree"), "full", "").unwrap();
+    crawl(
+        &mut ix,
+        &CrawlOptions {
+            large_project: 30,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let c = &ix.conn;
+    let syms: i64 = c
+        .query_row(
+            "SELECT count(*) FROM entities WHERE project = 'vendor_tree' AND kind = 'symbol'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(syms, 40);
+}

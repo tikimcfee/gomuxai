@@ -82,15 +82,15 @@ impl T {
     }
     /// Every search row's text, to look for leaked content.
     fn all_text(&self) -> String {
-        let mut st = self
-            .ix
-            .conn
-            .prepare("SELECT title || ' ' || summary || ' ' || labels FROM search")
-            .unwrap();
+        // The search tables keep no text (contentless): what they index is
+        // each entity's card, rebuilt the same way.
+        let mut st = self.ix.conn.prepare("SELECT id FROM search_rowid").unwrap();
         let v: Vec<String> = st
-            .query_map([], |r| r.get(0))
+            .query_map([], |r| r.get::<_, String>(0))
             .unwrap()
             .map(Result::unwrap)
+            .filter_map(|id| crate::crawl::search_text(&self.ix.conn, &id).unwrap())
+            .map(|t| format!("{} {} {} {}", t.title, t.name, t.summary, t.labels))
             .collect();
         let mut st = self.ix.conn.prepare("SELECT text FROM summaries").unwrap();
         let s: Vec<String> = st
@@ -647,12 +647,17 @@ fn ignore_manifests_refs_migration_and_more() {
     assert_eq!(t.count("SELECT count(*) FROM search_rowid"), n_before);
     write(&a, "src/deliver.rs", "pub fn deliver() { now(); }\n");
     t.crawl();
-    let dup =
-        t.count("SELECT count(*) FROM (SELECT id FROM search GROUP BY id HAVING count(*) > 1)");
-    assert_eq!(dup, 0);
+    // One search row per entity: as many rows as the map knows, no orphans.
+    assert_eq!(
+        t.count("SELECT count(*) FROM search"),
+        t.count("SELECT count(*) FROM search_rowid")
+    );
+    assert_eq!(
+        t.count("SELECT count(*) FROM search_rowid WHERE id NOT IN (SELECT id FROM entities)"),
+        0
+    );
 
     let (_, _) = roots::remove_root(&t.ix, "@dev").unwrap();
-    assert_eq!(t.count("SELECT count(*) FROM search WHERE id = '@dev'"), 0);
     assert_eq!(
         t.count("SELECT count(*) FROM search_rowid WHERE id = '@dev'"),
         0

@@ -12,7 +12,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// `agent`, and is refused rather than written under rules it doesn't know.
 /// 2: `search_rowid`, `projects.crawled_depth`, indexes on manifests' dir and
 /// entities' name and importance. 3: `search_full` and `search_full_ids`.
-pub const SCHEMA_VERSION: i64 = 3;
+/// 4: `search` and `search_tri` contentless, no symbols in `search_tri`.
+pub const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS roots (
@@ -133,8 +134,11 @@ CREATE TABLE IF NOT EXISTS dangling (
     line INTEGER NOT NULL,
     PRIMARY KEY (doc, ref)
 );
+-- Entity cards for bm25. Contentless (the text is rebuilt from the entity
+-- rows when needed): search_rowid says which entity a row is.
 CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(
-    id UNINDEXED, title, name, path, summary, symbols, why, labels,
+    title, name, path, summary, symbols, why, labels,
+    content = '', contentless_delete = 1,
     tokenize = "porter unicode61 tokenchars '_'"
 );
 -- The raw text of each file in a full-depth project (source, test, doc,
@@ -155,8 +159,11 @@ CREATE TABLE IF NOT EXISTS search_rowid (
     id TEXT PRIMARY KEY,
     rid INTEGER NOT NULL
 );
+-- Trigrams of names, paths and labels of projects, dirs, files and
+-- sections (not symbols: the porter table and exact names find those),
+-- at the same rowid as the entity's search row. Contentless too.
 CREATE VIRTUAL TABLE IF NOT EXISTS search_tri USING fts5(
-    id UNINDEXED, text,
+    text, content = '', contentless_delete = 1,
     tokenize = 'trigram'
 );
 -- The embedding lane's side of the contract (docs/INDEX.md, "Embeddings"):
@@ -223,15 +230,19 @@ impl Index {
                 .with_context(|| format!("migrating {} from schema 1", path.display()))?;
             }
         }
+        if (1..4).contains(&version) {
+            // Before 4 the search tables stored a copy of their text (and a v1
+            // file may hold rows search_rowid doesn't know): make them anew.
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS search; DROP TABLE IF EXISTS search_tri; DROP TABLE IF EXISTS search_rowid;",
+            )
+            .with_context(|| format!("migrating {} from schema {version}", path.display()))?;
+        }
         conn.execute_batch(SCHEMA)
             .with_context(|| format!("creating the index schema in {}", path.display()))?;
-        if version == 1 {
-            // A v1 file may have search rows with no search_rowid entry, which
-            // could never be deleted: write every search row again, once.
+        if (1..4).contains(&version) {
+            // Write every search row again, once.
             let tx = conn.unchecked_transaction()?;
-            tx.execute_batch(
-                "DELETE FROM search; DELETE FROM search_tri; DELETE FROM search_rowid;",
-            )?;
             let ids: std::collections::BTreeSet<String> = {
                 // As the crawl writes them: every entity but the roots.
                 let mut st = tx.prepare("SELECT id FROM entities WHERE kind != 'root'")?;

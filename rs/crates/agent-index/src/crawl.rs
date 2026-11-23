@@ -36,6 +36,9 @@ pub struct CrawlOptions {
     pub rebuild: bool,
     /// Work it all out, then write nothing.
     pub dry_run: bool,
+    /// The file count past which a root-found project is crawled shallow;
+    /// 0 means [`LARGE_PROJECT`].
+    pub large_project: usize,
 }
 
 /// What one project's crawl did.
@@ -62,6 +65,9 @@ pub struct ProjectReport {
     /// Files with an entity and no content: too large, binary, symlinks.
     pub no_content: usize,
     pub cochange: bool,
+    /// Crawled shallow though deeper was asked: a root found it, and it lists
+    /// more than [`LARGE_PROJECT`] files.
+    pub capped: bool,
     pub ms: u128,
 }
 
@@ -79,6 +85,14 @@ pub struct CrawlReport {
     /// Milliseconds per step: projects, edges, search, commit.
     pub phases: BTreeMap<String, u128>,
 }
+
+/// A project a root found with more files than this is crawled shallow
+/// unless `project add` asks for more.
+pub const LARGE_PROJECT: usize = 30_000;
+
+/// At most this many symbols are kept from one file (generated headers
+/// define tens of thousands).
+pub const MAX_SYMBOLS_PER_FILE: usize = 500;
 
 /// The id of a directory in a project ("" is the project itself).
 pub fn dir_id(project: &str, rel: &str) -> String {
@@ -179,7 +193,12 @@ pub fn crawl(ix: &mut Index, opts: &CrawlOptions) -> Result<CrawlReport> {
             .filter(|o| o.path.starts_with(&format!("{}/", p.path)))
             .map(|o| o.path[p.path.len() + 1..].to_string())
             .collect();
-        let r = crawl_project(&tx, p, &nested, opts.rebuild, &mut dirty)?;
+        let large = if opts.large_project == 0 {
+            LARGE_PROJECT
+        } else {
+            opts.large_project
+        };
+        let r = crawl_project(&tx, p, &nested, opts.rebuild, large, &mut dirty)?;
         moved |= r.removed + r.renamed > 0 || r.cochange;
         report.projects.push(r);
     }
@@ -694,6 +713,7 @@ fn crawl_project(
     p: &Project,
     nested: &[String],
     rebuild: bool,
+    large: usize,
     dirty: &mut BTreeSet<String>,
 ) -> Result<ProjectReport> {
     let start = Instant::now();
@@ -704,12 +724,23 @@ fn crawl_project(
         depth: p.depth.clone(),
         ..Default::default()
     };
+    let (mut listed, is_git) = list(p, nested)?;
+    // A project a root found (not one a person added) that turns out huge (a
+    // kernel tree, a shelf of vendored code) is crawled shallow: the project
+    // and its top directories. Its symbols, full text and file list are what
+    // make an index of a dev tree gigabytes, and an embedder hours.
+    let depth = if !p.explicit && p.depth != "shallow" && listed.len() > large {
+        rep.capped = true;
+        "shallow"
+    } else {
+        p.depth.as_str()
+    };
+    rep.depth = depth.to_string();
     // A depth changed since the last crawl reads every file again, as
     // --rebuild does, so the two agree.
-    let reread = rebuild || (!p.crawled_depth.is_empty() && p.crawled_depth != p.depth);
-    let shallow = p.depth == "shallow";
-    let symbols = p.depth == "full";
-    let (mut listed, is_git) = list(p, nested)?;
+    let reread = rebuild || (!p.crawled_depth.is_empty() && p.crawled_depth != depth);
+    let shallow = depth == "shallow";
+    let symbols = depth == "full";
     rep.git = is_git;
     let head = if is_git {
         git::head(dir)
@@ -1095,7 +1126,7 @@ fn crawl_project(
     };
     conn.execute(
         "UPDATE projects SET is_git = ?, root_commit = ?, remote = ?, last_commit = ?, last_crawled_at = ?, crawled_depth = ? WHERE name = ?",
-        params![is_git as i64, root_commit, remote, head, now(), p.depth, p.name],
+        params![is_git as i64, root_commit, remote, head, now(), depth, p.name],
     )?;
     rep.ms = start.elapsed().as_millis();
     Ok(rep)
@@ -1243,7 +1274,7 @@ fn read_file(
     let mut new_kids: HashSet<String> = HashSet::new();
     // Symbols: ids by name, made unique in the file with -2, -3.
     let mut used: HashMap<String, usize> = HashMap::new();
-    for s in &x.symbols {
+    for s in x.symbols.iter().take(MAX_SYMBOLS_PER_FILE) {
         let base = s.name.replace(' ', "-");
         let n = used.entry(base.clone()).or_insert(0);
         *n += 1;
@@ -1266,7 +1297,9 @@ fn read_file(
             s.line as i64,
             &skey,
             0,
-            &s.signature,
+            // A symbol's title is its name (display_title): the signature
+            // isn't stored twice.
+            "",
             &s.signature,
             f.untracked,
             "",
@@ -1460,6 +1493,17 @@ pub fn search_text(conn: &Connection, id: &str) -> Result<Option<SearchText>> {
     }))
 }
 
+/// Whether the embedder embeds an entity, so the crawl queues it: the kinds
+/// it embeds (not symbols, of which there are millions in a large tree),
+/// and not test data. The same rule as `embed::wants_vector`, which is
+/// built only with the embed feature.
+pub fn wants_embedding(kind: &str, rel: &str, file_kind: &str) -> bool {
+    matches!(kind, "project" | "dir" | "file" | "section" | "concept")
+        && file_kind != "fixture"
+        && !(kind == "file" && files::is_fixture(rel))
+        && !(kind == "dir" && files::is_fixture(&format!("{rel}/x")))
+}
+
 /// Rewrites the search rows of the given entities, and queues those whose
 /// embedding text changed. Returns (rows written, entities queued).
 pub fn refresh_search(conn: &Connection, ids: &BTreeSet<String>) -> Result<(usize, usize)> {
@@ -1471,17 +1515,25 @@ pub fn refresh_search(conn: &Connection, ids: &BTreeSet<String>) -> Result<(usiz
             continue;
         };
         conn.prepare_cached(
-            "INSERT INTO search (id, title, name, path, summary, symbols, why, labels) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO search (title, name, path, summary, symbols, why, labels) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )?
-        .execute(params![id, t.title, t.name, t.path, t.summary, t.symbols, t.why, t.labels])?;
+        .execute(params![t.title, t.name, t.path, t.summary, t.symbols, t.why, t.labels])?;
         let rid = conn.last_insert_rowid();
         conn.prepare_cached("INSERT OR REPLACE INTO search_rowid (id, rid) VALUES (?, ?)")?
             .execute(params![id, rid])?;
-        let (rel, name, old): (String, String, String) = conn
-            .prepare_cached("SELECT rel, name, text_key FROM entities WHERE id = ?")?
-            .query_row(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-        conn.prepare_cached("INSERT INTO search_tri (rowid, id, text) VALUES (?, ?, ?)")?
-            .execute(params![rid, id, format!("{name} {rel} {}", t.labels)])?;
+        let (rel, name, old, kind, file_kind): (String, String, String, String, String) = conn
+            .prepare_cached(
+                "SELECT rel, name, text_key, kind, file_kind FROM entities WHERE id = ?",
+            )?
+            .query_row(params![id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?;
+        // Symbols are many and their names are found whole by the porter
+        // table and the exact-name stage: no trigrams for them.
+        if kind != "symbol" {
+            conn.prepare_cached("INSERT INTO search_tri (rowid, text) VALUES (?, ?)")?
+                .execute(params![rid, format!("{name} {rel} {}", t.labels)])?;
+        }
         rows += 1;
         let text_key = hash(&[
             t.title.as_bytes(),
@@ -1497,6 +1549,9 @@ pub fn refresh_search(conn: &Connection, ids: &BTreeSet<String>) -> Result<(usiz
                 "UPDATE entities SET text_key = ? WHERE id = ?",
                 params![text_key, id],
             )?;
+            if !wants_embedding(&kind, &rel, &file_kind) {
+                continue;
+            }
             conn.execute(
                 "INSERT OR REPLACE INTO embed_queue (entity_id, text_key, reason, queued_at) VALUES (?, ?, ?, ?)",
                 params![id, text_key, if old.is_empty() { "new" } else { "changed" }, now()],

@@ -136,6 +136,22 @@ fn filter_sql(first: usize) -> String {
     )
 }
 
+/// One term for the porter table: itself, or for an identifier also its
+/// words as a phrase (`parse_config` finds `parse_config_old`, whose split
+/// words the cards hold).
+fn term_query(t: &str) -> String {
+    let words = names::split_words(t);
+    if words.len() > 1 {
+        format!("({} OR {})", quote(t), quote(&words.join(" ")))
+    } else {
+        quote(t)
+    }
+}
+
+/// bm25 over the cards, columns weighted: title 4, name 4, path 2, summary 2,
+/// symbols 1, why 1, labels 3.
+const CARD_BM25: &str = "bm25(search, 4.0, 4.0, 2.0, 2.0, 1.0, 1.0, 3.0)";
+
 fn fts_list(
     conn: &Connection,
     table: &str,
@@ -148,10 +164,11 @@ fn fts_list(
         return Ok(Vec::new());
     }
     let sql = format!(
-        "SELECT s.id FROM {table} s JOIN entities e ON e.id = s.id WHERE {table} MATCH ?1 AND {} ORDER BY {bm25} LIMIT {limit}",
+        "SELECT m.id FROM {table} s JOIN search_rowid m ON m.rid = s.rowid JOIN entities e ON e.id = m.id
+         WHERE {table} MATCH ?1 AND {} ORDER BY {bm25} LIMIT {limit}",
         filter_sql(2)
     );
-    let mut st = conn.prepare(&sql)?;
+    let mut st = conn.prepare_cached(&sql)?;
     let rows = st.query_map(params![q, o.kind, o.project, o.under], |r| {
         r.get::<_, String>(0)
     });
@@ -166,7 +183,7 @@ fn fts_list(
 /// or label.
 fn mentioned(conn: &Connection, term: &str, o: &SearchOptions) -> Result<bool> {
     Ok(
-        !fts_list(conn, "search", "s.rowid", &quote(term), o, 1)?.is_empty()
+        !fts_list(conn, "search", "s.rowid", &term_query(term), o, 1)?.is_empty()
             || (term.chars().count() >= 3
                 && !fts_list(conn, "search_tri", "s.rowid", &quote(term), o, 1)?.is_empty())
             || !full_text_list(conn, &quote(term), o, 1)?.is_empty(),
@@ -405,21 +422,16 @@ pub fn search(
         lists.push(("label", partial));
     }
 
+    // Each term, and an identifier's words as a phrase too: `parse_config`
+    // finds `parse_config_old`, whose split words the cards hold.
     let porter_q = content
         .iter()
-        .map(|t| quote(t))
+        .map(|t| term_query(t))
         .collect::<Vec<_>>()
         .join(" OR ");
     lists.push((
         "lexical",
-        fts_list(
-            conn,
-            "search",
-            "bm25(search, 0, 4.0, 4.0, 2.0, 2.0, 1.0, 1.0, 3.0)",
-            &porter_q,
-            o,
-            300,
-        )?,
+        fts_list(conn, "search", CARD_BM25, &porter_q, o, 300)?,
     ));
 
     // Every word at once: an entity that has them all outranks one that has
@@ -432,14 +444,7 @@ pub fn search(
             .join(" AND ");
         lists.push((
             "all words",
-            fts_list(
-                conn,
-                "search",
-                "bm25(search, 0, 4.0, 4.0, 2.0, 2.0, 1.0, 1.0, 3.0)",
-                &all_q,
-                o,
-                300,
-            )?,
+            fts_list(conn, "search", CARD_BM25, &all_q, o, 300)?,
         ));
     }
 
