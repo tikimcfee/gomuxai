@@ -291,11 +291,12 @@ pub fn show(conn: &Connection, r: Resolved) -> Result<Show> {
     let mut symbols: Vec<Brief> = syms.iter().map(|k| brief(conn, k)).collect::<Result<_>>()?;
     // Sections nest: a file lists all of them, in order.
     if e.kind == "file" {
+        let (lo, hi) = crate::crawl::prefix_range(&format!("{}#", e.id));
         let mut st = conn.prepare(&format!(
-            "SELECT {ENTITY_COLS} FROM entities WHERE kind = 'section' AND substr(id, 1, length(?1)) = ?1 AND parent != ?2"
+            "SELECT {ENTITY_COLS} FROM entities WHERE id >= ?1 AND id < ?2 AND kind = 'section' AND parent != ?3"
         ))?;
         let more: Vec<Entity> = st
-            .query_map(params![format!("{}#", e.id), e.id], Entity::from_row)?
+            .query_map(params![lo, hi, e.id], Entity::from_row)?
             .collect::<rusqlite::Result<_>>()?;
         for m in more {
             symbols.push(brief(conn, &m)?);
@@ -567,51 +568,90 @@ pub struct TreeLine {
 pub struct Tree {
     pub root: String,
     pub lines: Vec<TreeLine>,
-    /// Entries left out to fit the budget.
+    /// Entries left out to fit the budget (those not reached at each level
+    /// when it ran out; their own children aren't counted).
     pub left_out: usize,
+    /// The depth printed without indent: 1 under an entity, 0 for the whole
+    /// index (roots and projects at 0).
+    #[serde(skip)]
+    pub base: usize,
+}
+
+/// What a tree walk carries: the budget and what was left out.
+struct TreeWalk<'a> {
+    conn: &'a Connection,
+    max: usize,
+    budget: usize,
+    base: usize,
+    used: usize,
+    left_out: usize,
+    lines: Vec<TreeLine>,
+}
+
+impl TreeWalk<'_> {
+    /// Adds a line if the budget holds it; false (and nothing added) once it
+    /// doesn't, which ends the walk: the tail is dropped, never a parent
+    /// skipped and its children kept.
+    fn push(&mut self, e: &Entity, depth: usize, children: usize) -> Result<bool> {
+        let b = brief(self.conn, e)?;
+        let l = TreeLine {
+            depth,
+            id: e.id.clone(),
+            kind: e.kind.clone(),
+            name: e.name.clone(),
+            title: b.title,
+            summary: b.summary,
+            children,
+        };
+        let t = tokens(&tree_line(&l, self.base));
+        if self.budget > 0 && self.used + t > self.budget {
+            return Ok(false);
+        }
+        self.used += t;
+        self.lines.push(l);
+        Ok(true)
+    }
+
+    /// The children of `id` at `depth`, and theirs; false once out of budget.
+    fn walk(&mut self, id: &str, depth: usize) -> Result<bool> {
+        if depth > self.max {
+            return Ok(true);
+        }
+        let kids: Vec<Entity> = children(self.conn, id)?
+            .into_iter()
+            .filter(|k| k.kind != "symbol" && k.kind != "section")
+            .collect();
+        for (i, k) in kids.iter().enumerate() {
+            let n: i64 = self.conn.query_row(
+                "SELECT count(*) FROM entities WHERE parent = ? AND kind NOT IN ('symbol', 'section')",
+                params![k.id],
+                |r| r.get(0),
+            )?;
+            let fits = self.push(k, depth, n as usize)?
+                && (!matches!(k.kind.as_str(), "dir" | "project" | "root")
+                    || self.walk(&k.id, depth + 1)?);
+            if !fits {
+                self.left_out += kids.len() - i;
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// The subtree under `id` (or every root and project when `id` is empty), to
 /// `depth`, fitted to `budget` tokens (0: no limit).
 pub fn tree(conn: &Connection, id: &str, depth: usize, budget: usize) -> Result<Tree> {
-    let mut lines: Vec<TreeLine> = Vec::new();
-    fn walk(
-        conn: &Connection,
-        id: &str,
-        d: usize,
-        max: usize,
-        out: &mut Vec<TreeLine>,
-    ) -> Result<()> {
-        if d > max {
-            return Ok(());
-        }
-        let kids: Vec<Entity> = children(conn, id)?
-            .into_iter()
-            .filter(|k| k.kind != "symbol" && k.kind != "section")
-            .collect();
-        for k in kids {
-            let n: i64 = conn.query_row(
-                "SELECT count(*) FROM entities WHERE parent = ? AND kind NOT IN ('symbol', 'section')",
-                params![k.id],
-                |r| r.get(0),
-            )?;
-            let b = brief(conn, &k)?;
-            out.push(TreeLine {
-                depth: d,
-                id: k.id.clone(),
-                kind: k.kind.clone(),
-                name: k.name.clone(),
-                title: b.title,
-                summary: b.summary,
-                children: n as usize,
-            });
-            if matches!(k.kind.as_str(), "dir" | "project" | "root") {
-                walk(conn, &k.id, d + 1, max, out)?;
-            }
-        }
-        Ok(())
-    }
-    let root = if id.is_empty() {
+    let mut w = TreeWalk {
+        conn,
+        max: depth.max(1),
+        budget,
+        base: if id.is_empty() { 0 } else { 1 },
+        used: 0,
+        left_out: 0,
+        lines: Vec::new(),
+    };
+    if id.is_empty() {
         // Every root, and projects outside any root.
         let mut st = conn.prepare(&format!(
             "SELECT {ENTITY_COLS} FROM entities WHERE kind = 'root' OR (kind = 'project' AND parent = '') ORDER BY kind DESC, name"
@@ -619,50 +659,26 @@ pub fn tree(conn: &Connection, id: &str, depth: usize, budget: usize) -> Result<
         let tops: Vec<Entity> = st
             .query_map([], Entity::from_row)?
             .collect::<rusqlite::Result<_>>()?;
-        for t in tops {
-            let b = brief(conn, &t)?;
-            lines.push(TreeLine {
-                depth: 0,
-                id: t.id.clone(),
-                kind: t.kind.clone(),
-                name: t.name.clone(),
-                title: b.title,
-                summary: b.summary,
-                children: 0,
-            });
-            if depth >= 1 {
-                walk(conn, &t.id, 1, depth, &mut lines)?;
+        w.max = depth;
+        for (i, t) in tops.iter().enumerate() {
+            if !(w.push(t, 0, 0)? && w.walk(&t.id, 1)?) {
+                w.left_out += tops.len() - i;
+                break;
             }
         }
-        String::new()
     } else {
-        walk(conn, id, 1, depth.max(1), &mut lines)?;
-        id.to_string()
-    };
-    let mut left_out = 0;
-    if budget > 0 {
-        let mut used = 0;
-        let mut keep = Vec::new();
-        for l in lines {
-            let t = tokens(&tree_line(&l));
-            if used + t > budget {
-                left_out += 1;
-                continue;
-            }
-            used += t;
-            keep.push(l);
-        }
-        lines = keep;
+        w.walk(id, 1)?;
     }
     Ok(Tree {
-        root,
-        lines,
-        left_out,
+        root: id.to_string(),
+        lines: w.lines,
+        left_out: w.left_out,
+        base: w.base,
     })
 }
 
-fn tree_line(l: &TreeLine) -> String {
-    let indent = "  ".repeat(l.depth.saturating_sub(1));
+fn tree_line(l: &TreeLine, base: usize) -> String {
+    let indent = "  ".repeat(l.depth.saturating_sub(base));
     let slash = if matches!(l.kind.as_str(), "dir" | "project" | "root") {
         "/"
     } else {
@@ -684,7 +700,7 @@ fn tree_line(l: &TreeLine) -> String {
 pub fn render_tree(t: &Tree) -> String {
     let mut o = String::new();
     for l in &t.lines {
-        let _ = writeln!(o, "{}", tree_line(l));
+        let _ = writeln!(o, "{}", tree_line(l, t.base));
     }
     o
 }
@@ -717,13 +733,12 @@ pub fn related(conn: &Connection, id: &str) -> Result<Related> {
 
 pub fn render_related(r: &Related, budget: usize) -> (String, usize) {
     let mut o = String::new();
-    let mut left_out = 0;
+    let total: usize = r.groups.values().map(Vec::len).sum();
+    let mut shown = 0;
     let mut used = 0;
-    for (rel, v) in &r.groups {
+    'groups: for (rel, v) in &r.groups {
         let head = format!("{rel} ({}):\n", v.len());
-        used += tokens(&head);
-        o.push_str(&head);
-        for (e, b) in v {
+        for (i, (e, b)) in v.iter().enumerate() {
             let mut line = format!("  {}", b.id);
             if !e.evidence.is_empty() {
                 line = format!("{line}  ({})", e.evidence);
@@ -732,15 +747,20 @@ pub fn render_related(r: &Related, budget: usize) -> (String, usize) {
                 line = format!("{line}: {}", b.summary);
             }
             let line = format!("{}\n", crate::extract::clip(&line, 160));
-            if budget > 0 && used + tokens(&line) > budget {
-                left_out += 1;
-                continue;
+            // A group's header goes in with its first entry, or not at all.
+            let cost = tokens(&line) + if i == 0 { tokens(&head) } else { 0 };
+            if budget > 0 && used + cost > budget {
+                break 'groups;
             }
-            used += tokens(&line);
+            if i == 0 {
+                o.push_str(&head);
+            }
+            used += cost;
             o.push_str(&line);
+            shown += 1;
         }
     }
-    (o, left_out)
+    (o, total - shown)
 }
 
 /// `stale`: what needs a summary, by importance, and doc references that
@@ -763,17 +783,30 @@ pub struct DanglingRef {
 /// The kinds a model would summarize: not symbols or sections, which keep
 /// their seeds.
 pub fn stale(conn: &Connection, project: &str, limit: usize) -> Result<Stale> {
+    // Each entity with the writer and key of the summary it shows, in one
+    // statement (model::summary's choice: a model's or person's over a seed).
     let mut st = conn.prepare(&format!(
-        "SELECT {ENTITY_COLS} FROM entities WHERE kind IN ('project', 'dir', 'file') AND (?1 = '' OR project = ?1)
+        "SELECT {ENTITY_COLS},
+           (SELECT writer || char(31) || content_key FROM summaries s
+            WHERE s.entity = entities.id AND s.status = 'live' AND s.text != ''
+            ORDER BY (s.writer = 'seed'), s.seq DESC LIMIT 1)
+         FROM entities WHERE kind IN ('project', 'dir', 'file') AND (?1 = '' OR project = ?1)
          ORDER BY importance DESC, id"
     ))?;
-    let ents: Vec<Entity> = st
-        .query_map(params![project], Entity::from_row)?
+    let rows: Vec<(Entity, Option<String>)> = st
+        .query_map(params![project], |r| Ok((Entity::from_row(r)?, r.get(18)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut out = Vec::new();
-    for e in &ents {
-        let s = model::summary(conn, &e.id)?;
+    for (e, s) in &rows {
+        let s = s.as_ref().map(|s| {
+            let (writer, key) = s.split_once('\u{1f}').unwrap_or((s, ""));
+            Summary {
+                writer: writer.to_string(),
+                content_key: key.to_string(),
+                ..Default::default()
+            }
+        });
         let f = model::freshness(&e.content_key, s.as_ref());
         *counts.entry(f.to_string()).or_insert(0) += 1;
         if (f == "stale" || f == "none") && out.len() < limit && e.no_content.is_empty() {
@@ -868,6 +901,14 @@ pub fn render_search(r: &SearchResult, budget: usize, explain: bool) -> (String,
         };
         if !text.is_empty() {
             let _ = writeln!(b, "   {text}");
+        }
+        if !h.why.is_empty() {
+            let why = if short {
+                first_sentence(&h.why)
+            } else {
+                h.why.clone()
+            };
+            let _ = writeln!(b, "   Why: {why}");
         }
         if !h.matched.is_empty() {
             let _ = writeln!(b, "   matched: {}", h.matched.join("; "));

@@ -119,8 +119,12 @@ pub fn slug(heading: &str) -> String {
 pub fn query_terms(q: &str) -> Vec<String> {
     let mut out = Vec::new();
     for t in q.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
-        let t = t.trim_matches('_').to_lowercase();
-        if !t.is_empty() && !out.contains(&t) {
+        // `_parse_config` stays itself: the index holds it whole.
+        if t.chars().all(|c| c == '_') {
+            continue;
+        }
+        let t = t.to_lowercase();
+        if !out.contains(&t) {
             out.push(t);
         }
     }

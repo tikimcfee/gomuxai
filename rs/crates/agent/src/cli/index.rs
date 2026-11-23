@@ -516,7 +516,7 @@ and it says how many were left out. --json prints every result, unfitted:
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct SearchArgs {
-    #[arg(long = "kind", value_name = "string", default_value = "", help = "Only this kind: project, dir, file, symbol, section, or a file kind (source, test, doc, config, build, data, asset)")]
+    #[arg(long = "kind", value_name = "string", default_value = "", help = "Only this kind: project, dir, file, symbol, section, or a file kind (source, test, doc, config, build, data, asset, submodule)")]
     pub kind: String,
     #[arg(long = "project", value_name = "string", default_value = "", help = "Only this project")]
     pub project: String,
@@ -552,7 +552,11 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         kind: a.kind.clone(),
         project: a.project.clone(),
         under,
-        limit: int_flag(a.limit, "limit")?,
+        // 0 means the default, as search takes it, so "more matched" is said.
+        limit: match int_flag(a.limit, "limit")? {
+            0 => 10,
+            n => n,
+        },
         caller_project: caller.clone(),
     };
     let r = agent_index::search(&ix.conn, &o, &NoSemantic)?;
@@ -575,7 +579,9 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         );
     }
     ctx.write_out(&out)?;
-    behind_hint(ctx, &ix, &caller);
+    // The project searched, else the one you are in.
+    let project = if a.project.is_empty() { &caller } else { &a.project };
+    behind_hint(ctx, &ix, project);
     Ok(())
 }
 

@@ -127,7 +127,8 @@ pub fn extract(rel: &str, lang: &str, text: &str, symbols: bool) -> Extracted {
         "rust" => x.seed = rust_module_doc(&lines),
         "go" => x.seed = go_package_doc(&lines),
         "python" => x.seed = python_docstring(&lines),
-        "javascript" | "typescript" => x.seed = leading_block(&lines),
+        "javascript" | "typescript" | "wgsl" | "shader" | "c" | "cpp" | "java" | "kotlin"
+        | "zig" => x.seed = leading_block(&lines),
         "shell" => x.seed = leading_hash(&lines),
         _ => {}
     }
@@ -404,6 +405,15 @@ fn has_extension(name: &str) -> bool {
 /// `x.rs:12` → `x.rs`; trailing punctuation and `./` dropped.
 pub fn trim_ref(tok: &str) -> &str {
     let mut t = tok.trim_end_matches([',', '.', ';', ')']);
+    // `x.rs:12`, `x.rs:12:3`: drop each trailing number.
+    while let Some((head, tail)) = t.rsplit_once(':') {
+        if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+            t = head;
+        } else {
+            break;
+        }
+    }
+    // `x.py:Class`: a path, then where in it.
     if let Some((head, tail)) = t.rsplit_once(':')
         && has_extension(head)
         && !tail.contains('/')
@@ -496,6 +506,8 @@ static GO: LazyLock<Lang> = LazyLock::new(|| Lang {
         (re(r"^(?:const|var)\s+([A-Za-z_]\w*)\b"), "const"),
     ],
 });
+static GO_BLOCK: LazyLock<Regex> = LazyLock::new(|| re(r"^(const|var|type)\s*\($"));
+static GO_MEMBER: LazyLock<Regex> = LazyLock::new(|| re(r"^\s+([A-Za-z_]\w*)\b"));
 static TS: LazyLock<Lang> = LazyLock::new(|| Lang {
     pats: vec![
         (
@@ -518,7 +530,109 @@ static TS: LazyLock<Lang> = LazyLock::new(|| Lang {
             re(r"^\s*(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)"),
             "enum",
         ),
+        // `const drawAll = (x) => ...`, exported or not.
+        (
+            re(
+                r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\b|(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?=>)",
+            ),
+            "fn",
+        ),
         (re(r"^export\s+(?:const|let)\s+([A-Za-z_$][\w$]*)"), "const"),
+        // A class member: indented, a name, its parameters, then a body.
+        (
+            re(
+                r"^\s+(?:(?:public|private|protected|static|async|readonly|override|abstract|get|set)\s+)*\*?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::\s*[^={;]+)?\{\s*\}?\s*$",
+            ),
+            "method",
+        ),
+    ],
+});
+static C: LazyLock<Lang> = LazyLock::new(|| Lang {
+    pats: vec![
+        (re(r"^#\s*define\s+([A-Za-z_]\w*)"), "macro"),
+        (
+            re(
+                r"^\s*(?:typedef\s+)?(?:struct|class|enum|union)\s+([A-Za-z_]\w*)\s*(?:final\s*)?(?:[:{]|$)",
+            ),
+            "struct",
+        ),
+        // A definition at the top level: a return type, a name, its
+        // parameters, and no `;` (a declaration).
+        (
+            re(
+                r"^(?:[A-Za-z_][\w:<>,\s\*&]*?[\s\*&]+)([A-Za-z_][\w:~]*)\s*\([^;]*\)\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?\{?\s*$",
+            ),
+            "fn",
+        ),
+    ],
+});
+static JVM: LazyLock<Lang> = LazyLock::new(|| Lang {
+    pats: vec![
+        (
+            re(
+                r"^\s*(?:@\w+\s+)*(?:(?:public|private|protected|internal|abstract|final|static|open|data|sealed|inner|enum|annotation)\s+)*(?:class|interface|object|record|enum)\s+([A-Za-z_]\w*)",
+            ),
+            "class",
+        ),
+        (
+            re(
+                r"^\s*(?:@\w+\s+)*(?:(?:public|private|protected|internal|override|open|suspend|inline|operator|infix|tailrec)\s+)*fun\s+(?:<[^>]*>\s*)?(?:[\w.]+\.)?([A-Za-z_]\w*)\s*\(",
+            ),
+            "fn",
+        ),
+        (
+            re(
+                r"^\s+(?:@\w+\s+)*(?:(?:public|private|protected|static|final|abstract|synchronized|native|default)\s+)+(?:<[^>]*>\s*)?[\w<>\[\],.?\s]+?\s+([A-Za-z_]\w*)\s*\([^;]*$",
+            ),
+            "method",
+        ),
+    ],
+});
+static RUBY: LazyLock<Lang> = LazyLock::new(|| Lang {
+    pats: vec![
+        (re(r"^\s*def\s+(?:self\.)?([A-Za-z_]\w*[?!=]?)"), "fn"),
+        (re(r"^\s*(?:class|module)\s+([A-Z]\w*)"), "class"),
+    ],
+});
+static LUA: LazyLock<Lang> = LazyLock::new(|| Lang {
+    pats: vec![
+        (
+            re(r"^\s*(?:local\s+)?function\s+(?:[\w.]+[.:])?([A-Za-z_]\w*)"),
+            "fn",
+        ),
+        (
+            re(r"^\s*(?:local\s+)?([A-Za-z_]\w*)\s*=\s*function\b"),
+            "fn",
+        ),
+    ],
+});
+static ZIG: LazyLock<Lang> = LazyLock::new(|| Lang {
+    pats: vec![
+        (
+            re(r"^\s*(?:pub\s+)?(?:export\s+)?(?:inline\s+)?fn\s+([A-Za-z_]\w*)"),
+            "fn",
+        ),
+        (
+            re(
+                r"^\s*(?:pub\s+)?const\s+([A-Za-z_]\w*)\s*=\s*(?:extern\s+|packed\s+)?(?:struct|enum|union|opaque)\b",
+            ),
+            "struct",
+        ),
+    ],
+});
+static WGSL: LazyLock<Lang> = LazyLock::new(|| Lang {
+    pats: vec![
+        (
+            re(r"^\s*(?:@\w+(?:\([^)]*\))?\s*)*fn\s+([A-Za-z_]\w*)"),
+            "fn",
+        ),
+        (re(r"^\s*struct\s+([A-Za-z_]\w*)"), "struct"),
+        (
+            re(
+                r"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:var|const|override)(?:<[^>]*>)?\s+([A-Za-z_]\w*)",
+            ),
+            "var",
+        ),
     ],
 });
 static PY: LazyLock<Lang> = LazyLock::new(|| Lang {
@@ -637,26 +751,77 @@ pub fn find_symbols(lang: &str, lines: &[&str]) -> Vec<Symbol> {
         "swift" => &SWIFT,
         "shell" => &SHELL,
         "make" => &MAKE,
+        "c" | "cpp" | "objc" | "shader" => &C,
+        "java" | "kotlin" => &JVM,
+        "ruby" => &RUBY,
+        "lua" => &LUA,
+        "zig" => &ZIG,
+        "wgsl" => &WGSL,
         _ => return Vec::new(),
     };
+    // Words a member or function pattern may catch that name nothing.
+    const KEYWORDS: &[&str] = &[
+        "if", "for", "while", "switch", "catch", "return", "function", "else", "do", "try", "with",
+        "new", "delete", "sizeof", "typeof", "then", "elif", "until",
+    ];
     let mut out: Vec<Symbol> = Vec::new();
     let mut in_block_string = false;
+    // Go's grouped `const (`, `var (` and `type (` blocks: the kind inside.
+    let mut go_block: Option<&str> = None;
     for (n, raw) in lines.iter().enumerate() {
         if lang == "make" && raw.starts_with('\t') {
             continue;
         }
-        // Skip Rust raw strings and Python long strings crudely: a line with an odd
-        // count of `"""` toggles.
+        // Skip long strings crudely: Python's `"""` (an odd count on a line
+        // toggles), Rust's raw `r#"` until its `"#`.
         if lang == "python" && raw.matches("\"\"\"").count() % 2 == 1 {
             in_block_string = !in_block_string;
             continue;
         }
+        if lang == "rust" {
+            if in_block_string {
+                if raw.contains("\"#") {
+                    in_block_string = false;
+                }
+                continue;
+            }
+            if let Some(i) = raw.find("r#\"")
+                && !raw[i + 3..].contains("\"#")
+            {
+                in_block_string = true;
+                continue;
+            }
+        }
         if in_block_string {
             continue;
+        }
+        if lang == "go" {
+            let t = raw.trim_end();
+            if let Some(kind) = go_block {
+                if t.starts_with(')') {
+                    go_block = None;
+                } else if let Some(c) = GO_MEMBER.captures(raw) {
+                    out.push(Symbol {
+                        kind: kind.to_string(),
+                        name: c[1].to_string(),
+                        line: n + 1,
+                        signature: clip(raw.trim(), 160),
+                        doc: clip(&doc_above(lang, lines, n), 300),
+                    });
+                }
+                continue;
+            }
+            if let Some(c) = GO_BLOCK.captures(t) {
+                go_block = Some(if &c[1] == "type" { "type" } else { "const" });
+                continue;
+            }
         }
         for (pat, kind) in &l.pats {
             let Some(c) = pat.captures(raw) else { continue };
             let mut name = c[1].trim().to_string();
+            if KEYWORDS.contains(&name.as_str()) {
+                break;
+            }
             if *kind == "impl" {
                 name = format!("impl {}", name.split('<').next().unwrap_or(&name).trim());
                 if let Some((t, ty)) = c[1].split_once(" for ") {

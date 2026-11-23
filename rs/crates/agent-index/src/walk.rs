@@ -15,6 +15,7 @@ pub struct WalkFile {
     pub rel: String,
     pub symlink: bool,
     pub size: u64,
+    /// Nanoseconds since the epoch, so two edits in one second differ.
     pub mtime: i64,
 }
 
@@ -116,7 +117,9 @@ impl Ignore {
         };
         let mut v = None;
         for r in &self.rules {
-            if r.dir_only && !is_dir && !sub.contains('/') {
+            // A dir-only rule never matches a file: files under such a dir are
+            // never reached, since the walk doesn't enter an ignored dir.
+            if r.dir_only && !is_dir {
                 continue;
             }
             if r.re.is_match(sub) {
@@ -204,7 +207,7 @@ fn walk_dir(
                 mtime: md
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
+                    .map(|d| d.as_nanos() as i64)
                     .unwrap_or(0),
             });
             if out.len() >= MAX_FILES {

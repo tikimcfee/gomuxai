@@ -10,7 +10,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 /// The schema this build writes. A file at a higher version is from a newer
 /// `agent`, and is refused rather than written under rules it doesn't know.
-pub const SCHEMA_VERSION: i64 = 1;
+/// 2: `search_rowid`, `projects.crawled_depth`, indexes on manifests' dir and
+/// entities' name and importance.
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS roots (
@@ -31,7 +33,8 @@ CREATE TABLE IF NOT EXISTS projects (
     last_commit TEXT NOT NULL DEFAULT '',
     last_crawled_at TEXT NOT NULL DEFAULT '',
     cochange_commit TEXT NOT NULL DEFAULT '',
-    cochange_at TEXT NOT NULL DEFAULT ''
+    cochange_at TEXT NOT NULL DEFAULT '',
+    crawled_depth TEXT NOT NULL DEFAULT '' -- the depth its last crawl used
 );
 CREATE TABLE IF NOT EXISTS entities (
     id TEXT PRIMARY KEY,
@@ -59,6 +62,8 @@ CREATE TABLE IF NOT EXISTS entities (
 CREATE INDEX IF NOT EXISTS entities_parent ON entities(parent);
 CREATE INDEX IF NOT EXISTS entities_project ON entities(project);
 CREATE INDEX IF NOT EXISTS entities_path ON entities(path);
+CREATE INDEX IF NOT EXISTS entities_name ON entities(name);
+CREATE INDEX IF NOT EXISTS entities_importance ON entities(importance);
 CREATE TABLE IF NOT EXISTS aliases (
     old_id TEXT PRIMARY KEY,
     new_id TEXT NOT NULL,
@@ -120,6 +125,7 @@ CREATE TABLE IF NOT EXISTS manifests (
     name TEXT NOT NULL,
     data TEXT NOT NULL             -- JSON: deps, workspace paths
 );
+CREATE INDEX IF NOT EXISTS manifests_dir ON manifests(dir);
 -- References that resolved nowhere: doc drift, listed by stale.
 CREATE TABLE IF NOT EXISTS dangling (
     doc TEXT NOT NULL,
@@ -191,8 +197,38 @@ impl Index {
                 path.display()
             );
         }
+        if version == 1 {
+            // v1 had no crawled_depth (CREATE TABLE IF NOT EXISTS won't add it).
+            let has: i64 = conn.query_row(
+                "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'crawled_depth'",
+                [],
+                |r| r.get(0),
+            )?;
+            if has == 0 {
+                conn.execute_batch(
+                    "ALTER TABLE projects ADD COLUMN crawled_depth TEXT NOT NULL DEFAULT ''",
+                )
+                .with_context(|| format!("migrating {} from schema 1", path.display()))?;
+            }
+        }
         conn.execute_batch(SCHEMA)
             .with_context(|| format!("creating the index schema in {}", path.display()))?;
+        if version == 1 {
+            // A v1 file may have search rows with no search_rowid entry, which
+            // could never be deleted: write every search row again, once.
+            let tx = conn.unchecked_transaction()?;
+            tx.execute_batch(
+                "DELETE FROM search; DELETE FROM search_tri; DELETE FROM search_rowid;",
+            )?;
+            let ids: std::collections::BTreeSet<String> = {
+                // As the crawl writes them: every entity but the roots.
+                let mut st = tx.prepare("SELECT id FROM entities WHERE kind != 'root'")?;
+                st.query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            crate::crawl::refresh_search(&tx, &ids)?;
+            tx.commit()?;
+        }
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }

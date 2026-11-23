@@ -98,14 +98,18 @@ pub fn normalize_remote(url: &str) -> String {
     if let Some((_, r)) = u.split_once('@') {
         u = r.to_string();
     }
-    // scp form host:path
+    // host:port/path or the scp form host:path. Only an all-digit first
+    // segment is a port (`git@host:1password/cli` keeps its org).
     if let Some((h, p)) = u.split_once(':')
         && !h.contains('/')
         && !p.starts_with("//")
     {
-        let p = p
-            .trim_start_matches(|c: char| c.is_ascii_digit())
-            .trim_start_matches('/');
+        let p = match p.split_once('/') {
+            Some((port, rest)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+                rest
+            }
+            _ => p,
+        };
         u = format!("{h}/{p}");
     }
     u.trim_end_matches('/')
@@ -118,10 +122,15 @@ pub fn normalize_remote(url: &str) -> String {
 pub struct GitFile {
     pub rel: String,
     pub mode: String,
-    /// Its blob id, or the hash of its working-tree content when it differs.
+    /// Its index blob id ("" for an untracked file). When `modified`, the
+    /// working tree differs and the caller keys it (git.rs never reads a
+    /// working-tree file: the caller checks it is safe to read first).
     pub key: String,
     pub untracked: bool,
-    /// Changed in the working tree (or untracked): its dir's tree id doesn't hold.
+    /// The working-tree file differs from the index (or is untracked).
+    pub modified: bool,
+    /// Changed against HEAD in the index or working tree: its dirs' HEAD tree
+    /// ids don't hold.
     pub dirty: bool,
 }
 
@@ -129,8 +138,24 @@ fn z_split(s: &str) -> impl Iterator<Item = &str> {
     s.split('\0').filter(|x| !x.is_empty())
 }
 
+/// The paths that differ from HEAD in the index or the working tree,
+/// deletions included (`git diff HEAD`): their directories' HEAD tree ids
+/// no longer describe them. Empty without a HEAD.
+pub fn changed_vs_head(dir: &Path) -> Vec<String> {
+    run(dir, &["diff", "--name-only", "--no-renames", "-z", "HEAD"])
+        .map(|s| z_split(&s).map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Renames between HEAD and the index or working tree (a `git mv` not yet
+/// committed).
+pub fn worktree_renames(dir: &Path) -> Vec<(String, String)> {
+    renames_in(run(dir, &["diff", "-M", "--name-status", "-z", "HEAD"]).unwrap_or_default())
+}
+
 /// Every tracked file (with its index blob id) and every untracked one that
-/// isn't ignored; working-tree changes hashed with `git hash-object`.
+/// isn't ignored, marking those whose working-tree content differs. Nested
+/// repos git lists as `dir/` are left out.
 pub fn list_files(dir: &Path) -> Result<Vec<GitFile>> {
     let mut files: Vec<GitFile> = Vec::new();
     let staged = run(dir, &["ls-files", "-s", "--cached", "-z"])?;
@@ -151,6 +176,7 @@ pub fn list_files(dir: &Path) -> Result<Vec<GitFile>> {
             mode,
             key: blob,
             untracked: false,
+            modified: false,
             dirty: false,
         });
     }
@@ -164,43 +190,51 @@ pub fn list_files(dir: &Path) -> Result<Vec<GitFile>> {
             .collect();
     let others = run(dir, &["ls-files", "-z", "--others", "--exclude-standard"])?;
     for rel in z_split(&others) {
-        // Never hash what an untracked symlink points at.
-        let link =
-            std::fs::symlink_metadata(dir.join(rel)).is_ok_and(|m| m.file_type().is_symlink());
+        // A nested repo is listed as its directory: not a file.
+        if rel.ends_with('/') {
+            continue;
+        }
         files.push(GitFile {
             rel: rel.to_string(),
-            mode: if link { "120000" } else { "100644" }.into(),
+            mode: "100644".into(),
             key: String::new(),
             untracked: true,
+            modified: true,
             dirty: true,
         });
     }
-    // Index vs HEAD: staged changes also make a dir's HEAD tree id wrong.
-    let staged_changes: std::collections::HashSet<String> =
-        z_split(&run(dir, &["diff", "--cached", "--name-only", "-z"]).unwrap_or_default())
-            .map(str::to_string)
-            .collect();
-    let mut to_hash: Vec<usize> = Vec::new();
-    for (i, f) in files.iter_mut().enumerate() {
-        if staged_changes.contains(&f.rel) {
-            f.dirty = true;
+    let changed: std::collections::HashSet<String> = changed_vs_head(dir).into_iter().collect();
+    for f in files.iter_mut() {
+        if modified.contains(&f.rel) {
+            f.modified = true;
         }
-        if (f.untracked || modified.contains(&f.rel)) && f.mode != "120000" && f.mode != "160000" {
+        if f.modified || changed.contains(&f.rel) {
             f.dirty = true;
-            to_hash.push(i);
-        }
-    }
-    if !to_hash.is_empty() {
-        let paths: Vec<String> = to_hash.iter().map(|&i| files[i].rel.clone()).collect();
-        let keys = hash_objects(dir, &paths)?;
-        for (&i, k) in to_hash.iter().zip(keys) {
-            files[i].key = k;
         }
     }
     Ok(files)
 }
 
-/// `git hash-object` over paths (relative to dir), in one process.
+/// `git hash-object` over regular files (relative to dir) the caller has
+/// checked are safe to read. A path git can't hash (it vanished, or can't be
+/// read) gets "" and the rest still get theirs.
+pub fn hash_paths(dir: &Path, paths: &[String]) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::with_capacity(paths.len());
+    while keys.len() < paths.len() {
+        let rest = &paths[keys.len()..];
+        let got = hash_objects(dir, rest).unwrap_or_default();
+        let n = got.len();
+        keys.extend(got);
+        if n < rest.len() {
+            // git stopped at rest[n]: it has no key; go on after it.
+            keys.push(String::new());
+        }
+    }
+    keys
+}
+
+/// `git hash-object` over paths, in one process: the keys of the paths up to
+/// the first it couldn't hash.
 fn hash_objects(dir: &Path, paths: &[String]) -> Result<Vec<String>> {
     let mut child = Command::new("git")
         .arg("-C")
@@ -219,10 +253,7 @@ fn hash_objects(dir: &Path, paths: &[String]) -> Result<Vec<String>> {
     let out = child.wait_with_output()?;
     let _ = writer.join();
     let s = String::from_utf8_lossy(&out.stdout);
-    let mut keys: Vec<String> = s.lines().map(str::to_string).collect();
-    // A path that vanished or is a dir makes git stop; key the rest by nothing.
-    keys.resize(paths.len(), String::new());
-    Ok(keys)
+    Ok(s.lines().map(str::to_string).collect())
 }
 
 /// HEAD's tree ids by directory ("" is the top).
@@ -251,9 +282,11 @@ pub fn tree_ids(dir: &Path) -> HashMap<String, String> {
 
 /// Renames between two commits: (old, new) paths.
 pub fn renames(dir: &Path, from: &str, to: &str) -> Vec<(String, String)> {
-    let Ok(s) = run(dir, &["diff", "-M", "--name-status", "-z", from, to]) else {
-        return Vec::new();
-    };
+    renames_in(run(dir, &["diff", "-M", "--name-status", "-z", from, to]).unwrap_or_default())
+}
+
+/// The renames in `git diff -M --name-status -z` output.
+fn renames_in(s: String) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut it = z_split(&s);
     while let Some(status) = it.next() {

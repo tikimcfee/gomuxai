@@ -155,28 +155,44 @@ fn fts_list(
     }
 }
 
-/// Whether any entity mentions a term: a porter token, a substring of a name,
-/// path or label, or a label word.
-fn mentioned(conn: &Connection, term: &str) -> Result<bool> {
-    let n: i64 = conn.query_row(
-        "SELECT count(*) FROM (SELECT 1 FROM search WHERE search MATCH ?1 LIMIT 1)",
-        params![quote(term)],
-        |r| r.get(0),
-    )?;
-    if n > 0 {
-        return Ok(true);
+/// Whether any entity the search may return (its kind, project and under
+/// filters) mentions a term: a porter token, or a substring of a name, path
+/// or label.
+fn mentioned(conn: &Connection, term: &str, o: &SearchOptions) -> Result<bool> {
+    Ok(
+        !fts_list(conn, "search", "s.rowid", &quote(term), o, 1)?.is_empty()
+            || (term.chars().count() >= 3
+                && !fts_list(conn, "search_tri", "s.rowid", &quote(term), o, 1)?.is_empty()),
+    )
+}
+
+/// Stage 0: a query that is one identifier (`parse_config`, `WallLayout`,
+/// `deliver.rs`) names a definition: symbols whose name it is exactly, then
+/// files, dirs and projects of that name; then the same ignoring case.
+/// Best first.
+fn exact_names(conn: &Connection, query: &str, o: &SearchOptions) -> Result<Vec<String>> {
+    let q = query.trim();
+    if q.is_empty() || q.chars().any(char::is_whitespace) {
+        return Ok(Vec::new());
     }
-    if term.chars().count() >= 3 {
-        let n: i64 = conn.query_row(
-            "SELECT count(*) FROM (SELECT 1 FROM search_tri WHERE search_tri MATCH ?1 LIMIT 1)",
-            params![quote(term)],
-            |r| r.get(0),
-        )?;
-        if n > 0 {
-            return Ok(true);
+    // The exact name first (the name index answers it), else ignoring case.
+    for cmp in ["e.name = ?1", "lower(e.name) = lower(?1)"] {
+        let sql = format!(
+            "SELECT e.id FROM entities e WHERE {cmp}
+             AND e.kind IN ('symbol', 'file', 'dir', 'project') AND e.file_kind != 'impl' AND {}
+             ORDER BY CASE e.kind WHEN 'symbol' THEN 0 WHEN 'file' THEN 1 ELSE 2 END,
+                      e.importance DESC, e.id LIMIT 20",
+            filter_sql(2)
+        );
+        let mut st = conn.prepare_cached(&sql)?;
+        let ids: Vec<String> = st
+            .query_map(params![q, o.kind, o.project, o.under], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !ids.is_empty() {
+            return Ok(ids);
         }
     }
-    Ok(false)
+    Ok(Vec::new())
 }
 
 /// Stage 1: labels the query, or a run of its words, answers to.
@@ -190,14 +206,21 @@ fn label_matches(conn: &Connection, query: &str, o: &SearchOptions) -> Result<Ve
     if words.is_empty() {
         return Ok(out);
     }
+    // One row per entity (its best label), so a dir's five spellings of one
+    // name don't use up the limit.
     let sql = format!(
-        "SELECT l.entity, l.label, l.kind, l.origin FROM labels l JOIN entities e ON e.id = l.entity \
-         WHERE (l.norm = ?1 OR l.compact = ?2) AND {} ORDER BY l.weight DESC, e.importance DESC LIMIT 25",
+        "SELECT l.entity, l.label, l.kind, l.origin, max(l.weight) AS w FROM labels l JOIN entities e ON e.id = l.entity \
+         WHERE (l.norm = ?1 OR l.compact = ?2) AND {} GROUP BY l.entity ORDER BY w DESC, e.importance DESC LIMIT 25",
         filter_sql(3)
     );
     let mut st = conn.prepare(&sql)?;
     let mut covered: HashSet<usize> = HashSet::new();
-    for n in (1..=words.len().min(6)).rev() {
+    // Runs of up to six words, and the whole query however long.
+    let lengths: Vec<usize> = (1..=words.len())
+        .rev()
+        .filter(|&n| n <= 6 || n == words.len())
+        .collect();
+    for n in lengths {
         for i in 0..=words.len() - n {
             if (i..i + n).all(|j| covered.contains(&j)) {
                 continue;
@@ -269,7 +292,9 @@ pub fn search(
 
     let mapping = label_matches(conn, &o.query, o)?;
     let mut lists: Vec<(&str, Vec<String>)> = Vec::new();
-    // The whole query as a label pins its entities; part of it is a list.
+    // An identifier's definitions go first; then the whole query as a label
+    // pins its entities; part of it is a list.
+    let exact = exact_names(conn, &o.query, o)?;
     let pinned: Vec<String> = mapping
         .iter()
         .filter(|m| m.exact)
@@ -301,36 +326,72 @@ pub fn search(
         )?,
     ));
 
+    // Every word at once: an entity that has them all outranks one that has
+    // one word many times.
+    if content.len() > 1 {
+        let all_q = content
+            .iter()
+            .map(|t| quote(t))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        lists.push((
+            "all words",
+            fts_list(
+                conn,
+                "search",
+                "bm25(search, 0, 4.0, 4.0, 2.0, 2.0, 1.0, 1.0, 3.0)",
+                &all_q,
+                o,
+                300,
+            )?,
+        ));
+    }
+
     let mut absent: Vec<String> = Vec::new();
     for t in &content {
-        if !mentioned(conn, t)?
-            && !mapping
-                .iter()
-                .any(|m| m.phrase.split(' ').any(|w| w == t.as_str()))
-        {
+        // A label match covers its words, run together too (`shinyglow`).
+        let labeled = mapping.iter().any(|m| {
+            m.phrase.split(' ').any(|w| w == t.as_str()) || m.phrase.replace(' ', "") == **t
+        });
+        if !labeled && !mentioned(conn, t, o)? {
             absent.push((*t).clone());
         }
     }
-    // Trigrams: substrings of names, paths and labels; a term nothing mentions
-    // is looked for by its trigrams, to catch a typo.
-    let mut tri_terms: Vec<String> = content
+    // Trigrams: substrings of names, paths and labels.
+    let tri_q = content
         .iter()
         .filter(|t| t.chars().count() >= 3)
         .map(|t| quote(t))
-        .collect();
-    for t in &absent {
-        let cs: Vec<char> = t.chars().collect();
-        if cs.len() >= 5 {
-            for w in cs.windows(3) {
-                tri_terms.push(quote(&w.iter().collect::<String>()));
-            }
-        }
-    }
-    let tri_q = tri_terms.join(" OR ");
+        .collect::<Vec<_>>()
+        .join(" OR ");
     lists.push((
         "trigram",
         fts_list(conn, "search_tri", "bm25(search_tri)", &tri_q, o, 300)?,
     ));
+    // A term nothing mentions is looked for by its trigrams, to catch a typo:
+    // a list of its own, so its partial matches can't crowd out real ones.
+    let mut fuzzy: Vec<String> = Vec::new();
+    for t in &absent {
+        let cs: Vec<char> = t.chars().collect();
+        if cs.len() >= 5 {
+            for w in cs.windows(3) {
+                fuzzy.push(quote(&w.iter().collect::<String>()));
+            }
+        }
+    }
+    if !fuzzy.is_empty() {
+        lists.push((
+            "typo",
+            fts_list(
+                conn,
+                "search_tri",
+                "bm25(search_tri)",
+                &fuzzy.join(" OR "),
+                o,
+                50,
+            )?,
+        ));
+    }
     let sem = semantic.ranked(conn, &o.query, 300)?;
     if !sem.is_empty() {
         lists.push(("semantic", sem));
@@ -352,6 +413,13 @@ pub fn search(
                     .push(format!("{name} #{}", seen.len()));
             }
         }
+    }
+    for (i, id) in exact.iter().enumerate() {
+        *score.entry(id.clone()).or_insert(0.0) += 2.0 - i as f64 * 0.001;
+        explain
+            .entry(id.clone())
+            .or_default()
+            .insert(0, format!("named \"{}\"", o.query.trim()));
     }
     for (i, id) in pinned.iter().enumerate() {
         *score.entry(id.clone()).or_insert(0.0) += 1.0 - i as f64 * 0.001;
@@ -378,6 +446,36 @@ pub fn search(
         [],
         |r| r.get(0),
     )?;
+    // What --under asks for, by its path inside its project: a checkout under
+    // `/var/tmp/_work/` or `~/old/` isn't a request for kept-out-of-the-way dirs.
+    let under_parts: Vec<String> = if o.under.is_empty() {
+        Vec::new()
+    } else {
+        let projects = crate::roots::list_projects(conn)?;
+        projects
+            .iter()
+            .filter(|p| o.under == p.path || o.under.starts_with(&format!("{}/", p.path)))
+            .max_by_key(|p| p.path.len())
+            .map(|p| {
+                o.under[p.path.len()..]
+                    .split('/')
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let fixture = |c: &str| {
+        matches!(
+            c,
+            "testdata" | "fixtures" | "__fixtures__" | "corpus" | "snapshots" | "golden"
+        )
+    };
+    let under_targets = under_parts.iter().any(|c| files::is_out_of_the_way(c));
+    let asks_tests = o.kind == "test"
+        || under_parts
+            .iter()
+            .any(|c| fixture(c) || matches!(c.as_str(), "tests" | "test" | "__tests__"));
     let mut ents: HashMap<String, Entity> = HashMap::new();
     let ids: Vec<String> = score.keys().cloned().collect();
     for id in ids {
@@ -409,26 +507,14 @@ pub fn search(
         }
         let rel = if e.rel.is_empty() { "" } else { e.rel.as_str() };
         let out_of_way = rel.split('/').any(files::is_out_of_the_way);
-        let under_targets = !o.under.is_empty()
-            && o.under
-                .rsplit('/')
-                .take_while(|c| !c.is_empty())
-                .any(files::is_out_of_the_way);
         if out_of_way && !under_targets {
             s -= 0.008;
             ex.push("kept-out-of-the-way dir −".into());
         }
         // Tests and their fixtures answer many words (a fixture named for the
         // feature it records); the code itself comes first unless asked.
-        let fixture = |c: &str| {
-            matches!(
-                c,
-                "testdata" | "fixtures" | "__fixtures__" | "corpus" | "snapshots" | "golden"
-            )
-        };
         let is_testish =
             !e.rel.is_empty() && (files::is_test(&e.rel) || e.rel.split('/').any(fixture));
-        let asks_tests = o.kind == "test" || o.under.split('/').any(|c| fixture(c) || c == "tests");
         if is_testish && !asks_tests {
             s -= 0.004;
             ex.push("test or fixture −".into());
@@ -487,6 +573,23 @@ pub fn search(
     })
 }
 
+/// Whether two words are one word inflected, as the porter stemmer would
+/// have them match: both letters only, one the other plus at most three
+/// letters (`deliver`, `delivery`, `delivered`), and four letters at least.
+/// Not `parse_int` for `parse_config`, nor `renderer` for `renderglyphs`.
+fn same_stem(w: &str, term: &str) -> bool {
+    let alpha = |s: &str| s.chars().all(|c| c.is_alphabetic());
+    if !alpha(w) || !alpha(term) {
+        return false;
+    }
+    let (short, long) = if w.len() <= term.len() {
+        (w, term)
+    } else {
+        (term, w)
+    };
+    short.len() >= 4 && long.starts_with(short) && long.len() - short.len() <= 3
+}
+
 /// Which of an entity's fields hold which terms: `name "deliver"`.
 fn matched_fields(conn: &Connection, id: &str, terms: &[&String]) -> Result<Vec<String>> {
     let Some(t) = crate::crawl::search_text(conn, id)? else {
@@ -503,17 +606,11 @@ fn matched_fields(conn: &Connection, id: &str, terms: &[&String]) -> Result<Vec<
     ];
     let mut by_field: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     for term in terms {
-        // A stem: "delivery" matches "deliver", "delivered".
-        let stem: String = term
-            .chars()
-            .take(term.chars().count().clamp(3, 6))
-            .collect();
         for (i, (_, text)) in fields.iter().enumerate() {
             let lower = text.to_lowercase();
             let hit = lower
                 .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                .any(|w| w == term.as_str() || (w.starts_with(&stem) && stem.len() >= 4))
-                || (term.len() >= 4 && lower.contains(term.as_str()));
+                .any(|w| w == term.as_str() || same_stem(w, term));
             if hit {
                 by_field.entry(i).or_default().push(format!("\"{term}\""));
                 break;

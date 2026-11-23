@@ -56,6 +56,40 @@ static PATH_IN: LazyLock<Regex> =
 static WS_IN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"\bworkspace\s*=\s*true\b"#).unwrap());
 
+/// A line with its quoted strings removed.
+fn unquoted(t: &str) -> String {
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    for c in t.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+/// A TOML table header's name: `[package] # the crate` → `package`.
+fn header(t: &str) -> String {
+    let mut end = t.len();
+    let mut quote: Option<char> = None;
+    for (i, c) in t.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '#' => {
+                end = i;
+                break;
+            }
+            None => {}
+        }
+    }
+    t[..end].trim().trim_matches(['[', ']']).trim().to_string()
+}
+
 fn string_value(v: &str) -> Option<String> {
     STR.captures(v.trim()).map(|c| c[1].replace("\\\"", "\""))
 }
@@ -74,7 +108,7 @@ fn cargo(text: &str) -> Manifest {
             continue;
         }
         if t.starts_with('[') {
-            section = t.trim_matches(['[', ']']).trim().to_string();
+            section = header(t);
             table_dep = None;
             if section == "workspace" {
                 m.is_workspace = true;
@@ -250,13 +284,14 @@ fn pyproject(text: &str) -> Manifest {
                     });
                 }
             }
-            if t.contains(']') {
+            // The list ends at a `]` outside quotes (`"uvicorn[standard]"` has one inside).
+            if unquoted(t).contains(']') {
                 in_deps = false;
             }
             continue;
         }
         if t.starts_with('[') {
-            section = t.trim_matches(['[', ']']).trim().to_string();
+            section = header(t);
             continue;
         }
         let Some(c) = KV.captures(t) else { continue };
@@ -282,7 +317,7 @@ fn pyproject(text: &str) -> Manifest {
                             });
                         }
                     }
-                    in_deps = !val.contains(']');
+                    in_deps = !unquoted(val).contains(']');
                 }
             }
             ("tool.poetry.dependencies", k) if k != "python" => m.deps.push(Dep {

@@ -5,11 +5,15 @@
 pub const MAX_CONTENT: u64 = 1 << 20;
 
 /// Whether a file must never be indexed, tracked or not: `.env*`, key and
-/// certificate files (`*.pem`, `*.key`, `id_*`, `*.p12`, `*.pfx`).
+/// certificate files (`*.pem`, `*.key`, `*.p12`, `*.pfx`), and SSH keys
+/// (`id_rsa`, `id_ed25519`, ... and their `.pub`). Not every `id_*`: that
+/// would drop `id_map.rs`.
 pub fn is_secret(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n.starts_with(".env")
-        || n.starts_with("id_")
+        || ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_xmss"]
+            .iter()
+            .any(|k| n == *k || n.starts_with(&format!("{k}.")) || n.starts_with(&format!("{k}_")))
         || [".pem", ".key", ".p12", ".pfx", ".keystore", ".jks"]
             .iter()
             .any(|e| n.ends_with(e))
@@ -70,7 +74,8 @@ pub fn language(name: &str) -> &'static str {
         "rb" => "ruby",
         "lua" => "lua",
         "zig" => "zig",
-        "wgsl" | "glsl" | "metal" | "hlsl" => "shader",
+        "wgsl" => "wgsl",
+        "glsl" | "metal" | "hlsl" | "vert" | "frag" => "shader",
         "md" | "markdown" => "markdown",
         "rst" => "rst",
         "toml" => "toml",

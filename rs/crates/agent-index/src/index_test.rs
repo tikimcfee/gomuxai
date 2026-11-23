@@ -15,20 +15,20 @@ use crate::query::{NoSemantic, SearchOptions, rrf, search};
 use crate::roots;
 use crate::view;
 
-fn temp() -> tempfile::TempDir {
+pub(crate) fn temp() -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix("agent-index-")
         .tempdir_in("/var/tmp")
         .unwrap()
 }
 
-fn write(root: &Path, rel: &str, text: &str) {
+pub(crate) fn write(root: &Path, rel: &str, text: &str) {
     let p = root.join(rel);
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(p, text).unwrap();
 }
 
-fn git(dir: &Path, args: &[&str]) {
+pub(crate) fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -48,7 +48,7 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-fn commit(dir: &Path, msg: &str) {
+pub(crate) fn commit(dir: &Path, msg: &str) {
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-q", "-m", msg]);
 }

@@ -45,9 +45,12 @@ pub struct Project {
     pub last_crawled_at: String,
     pub cochange_commit: String,
     pub cochange_at: String,
+    /// The depth its last crawl used ("" before the first): a change means
+    /// every file is read again.
+    pub crawled_depth: String,
 }
 
-const PROJECT_COLS: &str = "name, path, root, explicit, depth, is_git, root_commit, remote, last_commit, last_crawled_at, cochange_commit, cochange_at";
+const PROJECT_COLS: &str = "name, path, root, explicit, depth, is_git, root_commit, remote, last_commit, last_crawled_at, cochange_commit, cochange_at, crawled_depth";
 
 fn project_row(r: &rusqlite::Row) -> rusqlite::Result<Project> {
     Ok(Project {
@@ -63,6 +66,7 @@ fn project_row(r: &rusqlite::Row) -> rusqlite::Result<Project> {
         last_crawled_at: r.get(9)?,
         cochange_commit: r.get(10)?,
         cochange_at: r.get(11)?,
+        crawled_depth: r.get(12)?,
     })
 }
 
@@ -175,6 +179,9 @@ pub fn remove_root(ix: &Index, which: &str) -> Result<(Root, Vec<String>)> {
     )?;
     tx.execute("DELETE FROM roots WHERE id = ?", params![r.id])?;
     tx.execute("DELETE FROM entities WHERE id = ?", params![r.id])?;
+    crate::crawl::delete_search(&tx, &r.id)?;
+    tx.execute("DELETE FROM embed_queue WHERE entity_id = ?", params![r.id])?;
+    tx.execute("DELETE FROM vectors WHERE entity_id = ?", params![r.id])?;
     tx.commit()?;
     Ok((r, names))
 }

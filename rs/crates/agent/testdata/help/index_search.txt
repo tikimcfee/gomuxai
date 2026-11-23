@@ -35,7 +35,7 @@ Flags:
       --explain          Say which list found each result, and the priors applied
   -h, --help             help for search
       --json             Print the results as JSON
-      --kind string      Only this kind: project, dir, file, symbol, section, or a file kind (source, test, doc, config, build, data, asset)
+      --kind string      Only this kind: project, dir, file, symbol, section, or a file kind (source, test, doc, config, build, data, asset, submodule)
       --limit int        At most this many results (default 10)
       --project string   Only this project
       --under string     Only entities at or under this path

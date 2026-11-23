@@ -11,6 +11,7 @@
 
 pub mod crawl;
 pub mod db;
+pub mod edges;
 pub mod extract;
 pub mod files;
 pub mod git;
@@ -25,6 +26,8 @@ pub mod walk;
 
 #[cfg(test)]
 mod index_test;
+#[cfg(test)]
+mod review_test;
 
 pub use crawl::{CrawlOptions, CrawlReport, ProjectReport, crawl};
 pub use db::{Index, SCHEMA_VERSION, path_beside};
