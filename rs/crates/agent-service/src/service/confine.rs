@@ -72,6 +72,16 @@ impl AgentService {
                 .map(|k| agent_backend::namedagents::agy_arg(hr.tool_input.as_bytes(), k))
                 .find(|p| !p.is_empty())
                 .unwrap_or_default();
+            // agy passes a path inside its workspace as relative to it
+            // (the agent's directory): resolve it there, then check it.
+            let cwd = self
+                .storage
+                .get_agent(name)
+                .ok()
+                .flatten()
+                .map(|a| a.cwd)
+                .unwrap_or_default();
+            let path = resolve(&path, &cwd);
             let roots = self.dream_read_roots(name);
             if under_roots(&path, &roots) {
                 return Ok("gomuxai: reading a file the dream may read");
@@ -93,6 +103,15 @@ impl AgentService {
     }
 }
 
+/// `path` made absolute against `cwd` when it is relative and `cwd` is
+/// absolute; otherwise as it is (and refused later if still relative).
+pub(crate) fn resolve(path: &str, cwd: &str) -> String {
+    if path.is_empty() || Path::new(path).is_absolute() || !Path::new(cwd).is_absolute() {
+        return path.to_string();
+    }
+    Path::new(cwd).join(path).to_string_lossy().into_owned()
+}
+
 /// Whether `path` is absolute, has no `..` or `.` parts, and is one of
 /// `roots` or below one (by path components).
 pub(crate) fn under_roots(path: &str, roots: &[String]) -> bool {
@@ -111,7 +130,23 @@ pub(crate) fn under_roots(path: &str, roots: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::under_roots;
+    use super::{resolve, under_roots};
+
+    #[test]
+    fn relative_paths_resolve_against_the_agent_dir() {
+        let roots = vec!["/data/dreams/9".to_string()];
+        assert_eq!(
+            resolve("9/brief.md", "/data/dreams"),
+            "/data/dreams/9/brief.md"
+        );
+        assert!(under_roots(&resolve("9/brief.md", "/data/dreams"), &roots));
+        assert!(!under_roots(&resolve("9/../../x", "/data/dreams"), &roots));
+        assert!(
+            !under_roots(&resolve("9/brief.md", ""), &roots),
+            "no cwd: stays relative"
+        );
+        assert_eq!(resolve("/abs/x", "/data"), "/abs/x");
+    }
 
     #[test]
     fn roots_go_by_components() {

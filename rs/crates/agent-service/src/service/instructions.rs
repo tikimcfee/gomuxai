@@ -160,6 +160,7 @@ pub const AGENT_SAFE_COMMANDS: &[&str] = &[
 /// sends no messages, files no friction (its own limitations go through
 /// `dream limitation`), and writes no roster note but through its verb.
 pub const DREAM_READ_COMMANDS: &[&str] = &[
+    "help",
     "list",
     "status",
     "statuses",
