@@ -74,12 +74,14 @@ critic), so the engine never needs more trust than a dream has.
 2. Absolute scores, 1 to 5 with a sentence each: leverage, evidence,
    feasibility, and novelty against what's already in the repos, the docs
    and earlier ideas (it may answer "this exists" or "this was tried").
-3. A pairwise tournament among the run's survivors: the critic compares
-   two at a time and says which is stronger and why; the code keeps an Elo
-   score per idea over the matches. With few ideas (under five) every pair
-   is compared; with more, a Swiss-style round of about N·log N matches.
-4. The rank is the tournament score, gated by the absolute scores (an
-   idea scoring 1 on evidence never surfaces, however it fares in pairs).
+3. The rank, in version 1, is the four scores and the convergence votes
+   (below): an idea scoring 1 on evidence never surfaces.
+4. Later, once runs produce enough ideas to rank: a pairwise tournament
+   among a run's survivors, where the critic compares two at a time and
+   the code keeps an Elo score per idea (every pair under five ideas, a
+   Swiss-style round of about N·log N matches above), gated by the scores.
+   `dream_ideas` keeps a nullable rank for it, and matches will get a
+   table of their own, so adding it reworks nothing.
 
 **Convergence across runs.** Ideas live in one table, `dream_ideas`, with
 the caller (vision, act, synthesis) on each. A new idea is matched against
@@ -90,7 +92,7 @@ to the old idea (the run, the model, the new evidence) instead of a
 duplicate. Votes from different models and different lenses count most;
 votes from the same model with the same lens count least, since that's the
 same sample drawn twice. A pitch's rank (below) adds its votes to its
-tournament score.
+scores.
 
 **What steps 1 and 2 already give it, and what step 3 must keep open.**
 Confinement (the read-only command list, dontAsk, the fail-closed agy
