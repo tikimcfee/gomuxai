@@ -56,16 +56,20 @@ false compile errors" is memory.
 
 The links run both ways, by reference, never by copying text:
 
-- Memory names entities: a start-here's pointers may cite index ids
-  (`index:gomuxai:rs/crates/agent-dream`), and `memory check` resolves
-  them as it resolves paths. The hand-kept "entrypoints" maps the
+- Memory names entities in prose, in backticks
+  (`index:gomuxai:rs/crates/agent-dream`), never in a `[source: ...]`
+  line: a source cites evidence, and an entity is a place, not evidence.
+  `memory check` gets a rule for them (`stale-index`: an id that no
+  entity or alias answers to), beside its path rule. The hand-kept "entrypoints" maps the
   dreaming survey proposes become `agent index tree` output instead.
 - An entity knows what talks about it: `noted-in` edges, from the same
   backtick reading as `documented-by` but over memory directories, point
   at the memory notes and friction entries that name it, and `show` lists
-  them. It also lists the recent sessions that worked there (sessions
-  whose cwd or edited paths fall under it, from `agent sessions`' own
-  discovery), as pointers: an id, a date, a title.
+  them (friction by id only, no text). It also lists the recent sessions
+  that worked there (sessions whose cwd or edited paths fall under it,
+  from `agent sessions`' own discovery), as pointers: an id, a date, a
+  title. A session's title comes from its first prompt, so it goes
+  through the scrub before it is shown.
 
 So an agent that asks the index "what is this" finds, beside the answer,
 where to read "how do I work on it".
@@ -94,9 +98,13 @@ alias, so `show` of the old id still answers, saying where it went.
 
 A project's name is its root directory's name, unique on the host
 (`agent index root add` refuses a clash and takes `--name`). Its identity
-across hosts and clones is its root commit (`git rev-list --max-parents=0
-HEAD`), so the same repo checked out elsewhere, on another host or at
-another path, is the same project. A git worktree is not a project of its
+across hosts and clones is its normalized remote URL when it has one,
+else its first-parent root commit (`git rev-list --first-parent
+--max-parents=0 HEAD`), so the same repo checked out elsewhere, on
+another host or at another path, is the same project. Not the set of
+all root commits: real histories have several roots on one branch
+(merged-in older repos), and two projects can share a trivial root (a
+first commit that only added a license). A git worktree is not a project of its
 own: it resolves to its main repo through `git rev-parse
 --git-common-dir`, and results are shown with paths in the caller's own
 worktree when the caller works in one.
@@ -163,7 +171,7 @@ edge.
 | kind | meaning | made by |
 |------|---------|---------|
 | `depends-on` | a project or crate uses another | manifests: `Cargo.toml` (path and workspace deps), `go.mod`, `package.json`, `pyproject.toml`, `pixi.toml`; imports later, from the parser |
-| `documented-by` | a doc names this file, dir or symbol | backticked paths and names in Markdown, found as `memory check`'s stale check finds them (`agent_dream::stale`), so a doc's references and the index agree |
+| `documented-by` | a doc names this file, dir or symbol | backticked paths and names in Markdown, found as `memory check`'s stale check finds them (`agent_dream::stale`), so a doc's references and the index agree; resolved across every indexed project, since planning docs often live in a sibling repo of the code they describe. A reference that resolves nowhere is listed by `agent index stale` as doc drift |
 | `tests` | a test covers a file | naming (`x_test.rs`, `test_x.py`, `x.test.ts`), and `#[cfg(test)] #[path]` |
 | `co-changes` | changed in the same commits | `git log --name-only` over the last 2,000 commits, weight a Jaccard ratio, kept above a floor |
 | `implements` | code realizes a design | a design doc's "built" markers, which name their files; model-proposed otherwise |
@@ -311,9 +319,12 @@ summary is data, marked with its host.
 ## What gets indexed
 
 Opt-in, like dreaming. `agent index root add DIR` adds a tree (host
-state `index.roots`). Every repo directly under a root is a project; a
-directory that isn't a repo becomes one with `agent index project add
-DIR`. A project's depth policy says how far down it goes:
+state `index.roots`). Every directory directly under a root is a
+project, a repo or not: live work sits outside git too (a project
+started in a plain directory, an experiment not yet committed), and an
+index that skips it fails the first plain question about it. A deeper
+directory becomes a project with `agent index project add DIR`. A
+project's depth policy says how far down it goes:
 
 - `full`: dirs, files, symbols, sections.
 - `files`: dirs and files, no symbols (large vendored or upstream trees).
@@ -324,9 +335,12 @@ By default a project inside the dream scope is `full`, and the rest of a
 root `shallow` until a person deepens it, so a dream never summarizes
 what it can't read and the index honors the same opt-in dreams do.
 
-Only tracked files are indexed (`git ls-tree`, so `.gitignore` already
-applies); outside git, the `ignore` crate's walk with the usual ignore
-files. Never indexed, tracked or not: `.env*`, key and certificate files
+In a repo, tracked files and untracked files that aren't ignored are
+indexed (`git ls-files --cached --others --exclude-standard`, so
+`.gitignore` applies), untracked ones marked so; outside git, the
+`ignore` crate's walk with the usual ignore files. Directories whose
+names say they're kept out of the way (a `_` or `__` prefix, `archive`,
+`old`) are indexed but ranked down unless a search asks under them. Never indexed, tracked or not: `.env*`, key and certificate files
 (`*.pem`, `*.key`, `id_*`, `*.p12`), anything the scrub's credential
 markers match in its first lines, and files over 1 MB (an entity with no
 content). Binary files get an entity with a file kind and no content.
@@ -416,7 +430,16 @@ other spellings), hidden labels (typos, old names: found, never shown),
 and asks (plain questions it answers). Concepts also have `broader`,
 `narrower` and `related` links. This is the controlled-vocabulary shape
 (a thesaurus, as SKOS writes one) rather than free tags, so expansion
-has structure to follow. Labels come from four places:
+has structure to follow.
+
+A project's own words are often its most overloaded: "seam", "slot",
+"tier" or "wall" can mean two unrelated things in one repo. So a label
+may carry **confusables**: other entities that answer to the same word,
+each with a note on how it differs (SKOS's scope note, made contrastive).
+Search shows them side by side, with the note, instead of interleaving
+them, and stage 4 below is told about them.
+
+Labels come from five places:
 
 - **code**: name variants (`word-wall`, `word wall`, `wordwall`,
   `WordWall`), crate and package names, CLI command names, README
@@ -426,16 +449,26 @@ has structure to follow. Labels come from four places:
   the index once is cheaper than expanding every query, and it works
   with lexical search alone;
 - **person**: `agent index alias add <id> "the word wall"`;
+- **an existing lexicon**: a project that already keeps a glossary (a
+  JSONL of terms with definitions, canonical names, confusables,
+  provenance as path and line, and lay phrasings, say) is imported with
+  `agent index lexicon import FILE`: lay phrasings become asks, canonical
+  names alternative labels, provenance the entity they point at. Its
+  lay-to-term pairs also become test cases for expansion;
 - **learned from use**: when a person's prompt names something in plain
   words and the session then works in one entity (edits files under it),
   the phrase becomes a candidate alias of that entity. A candidate
   becomes a label only once two or more sessions agree, as dreaming
-  needs three for a preference; a dream reviews candidates as items.
-  Only the short phrase is kept (at most six words, scrubbed at the
-  point of reading under the machine's transcript rule), with the
-  sessions as evidence. Agents' own `agent index search` queries count
-  the same way: a query, then the entity the agent opened or edited, is
-  click-through evidence.
+  needs three for a preference, and at least one of them a person's own
+  words; a dream reviews candidates as items. Only the short phrase is
+  kept (at most six words, scrubbed at the point of reading under the
+  machine's transcript rule), with the sessions as evidence. Agents' own
+  `agent index search` queries count too, as click-through evidence (a
+  query, then the entity the agent opened or edited), but weighed apart
+  from people's words and never enough alone: an agent's query often
+  echoes the summaries it just read, and a vocabulary that learns from
+  its own rewrites learns false equivalences. Every label keeps where it
+  came from, so the two can always be told apart.
 
 **At query time**, in stages that stop as soon as the answer is good
 (the top score clears a threshold):
@@ -453,8 +486,15 @@ has structure to follow. Labels come from four places:
 4. **A model rewrite**, only when the stages above came back weak or with
    `--expand`: the local model turns the request into the technical
    terms and a short hypothetical summary of what's wanted (query2doc
-   and HyDE). The terms go to lexical search, the summary to semantic
-   search once embeddings exist. About a second on a local GPU.
+   and HyDE). It is given the project's top labels and concepts (and
+   their confusables) to choose from, and the terms it returns are kept
+   only if they are labels or symbol words in the index: a rewrite that
+   drifts outside the project's own vocabulary makes code retrieval
+   worse, not better. The rewrite is added beside the person's words,
+   never in place of them. The terms go to lexical search, the summary
+   to semantic search once embeddings exist. About a second on a local
+   GPU; two samples that pick different terms mean the request is
+   ambiguous, and search says so.
 5. **Graph expansion.** From the top hits, follow edges with a decaying
    weight (spreading activation, as in personalized PageRank seeded on
    the hits): the project that contains them, their docs and tests, the
@@ -464,9 +504,19 @@ has structure to follow. Labels come from four places:
 So "I want to work on the word wall" comes back grouped: the project
 itself and its entrypoints; its docs and research notes; the concepts it
 shares with other projects; the memory notes about working on it; the
-last sessions that did. Each group is a few lines, inside the budget.
-`--explain` prints which stage found each result and through what label
-or edge, so a wrong expansion can be seen and its label removed.
+last sessions that did. Each group is a few lines, inside the budget,
+and no file or stem fills a group alone (results are diversified, as
+maximal marginal relevance does). When the hits split into unrelated
+clusters (two projects, two meanings of one word) with no clear winner,
+search leads with the split and asks which was meant rather than
+interleaving them: a wrong result costs the reader more than a missing
+one.
+
+Search always prints the mapping it used, in one line ("word wall" →
+`word-wall`, alias), because a person who sees the system's term picks
+it up; `--explain` prints, per result, which stage found it and through
+what label or edge, so a wrong expansion can be seen and its label
+removed.
 
 ### Embeddings, later
 
@@ -474,10 +524,17 @@ Embed what an entity means, not its raw code: its title, path, summary,
 why and symbol names, a few hundred tokens each. A small model on the
 local GPU (an 8B embedding model, or a small CPU one as the fallback)
 embeds 25,000 such texts in minutes; vectors are re-made only when the
-text they came from changes. Truncated to 512 dimensions and stored as
-half floats, that's about 25 MB, searched by brute force in tens of
-milliseconds, so no vector extension is needed until the index is far
-larger. Embeddings also propose concept edges: near neighbors across a
+text they came from changes. Don't cut a large model's vectors to their
+first dimensions unless it was trained for that (Matryoshka
+representation learning); not every model that accepts a `dimensions`
+argument was. Raw embeddings from such models are also anisotropic: all
+vectors crowd one direction, so every pair looks similar. Subtracting
+the corpus mean and dropping the top few principal components
+("all-but-the-top") restores the spread, and a fitted PCA to 512
+dimensions keeps it. Stored as half floats, that's about 25 MB, searched
+by brute force in tens of milliseconds. Every vector file gets a count,
+dimension and probe check on load, since a silently corrupt vector
+store looks just like a working one. Embeddings also propose concept edges: near neighbors across a
 project boundary are candidates for the concept pass.
 
 ### Learning from use
@@ -647,9 +704,14 @@ Concepts come from three places:
   neighbors across a project boundary.
 - **The global dream decides**, through the idea engine it already runs:
   the synthesizer proposes a concept, or an `about` edge, as an idea
-  (`kind: concept` or `about`, citing the entities as `key:` citations);
-  the critic, on another model family, checks it against the entities'
-  code and summaries and approves or rejects; code applies the approved
+  (`kind: concept` or `about`, citing the entities as `key:` citations,
+  and stating the relation they share: the same purpose, mechanism or
+  constraint, not only the same words); the critic, on another model
+  family, checks that relation against the entities' code and summaries
+  and approves or rejects, a rejection naming the relation that didn't
+  hold, so later dreams don't propose the same false analogy. Models
+  lean to false synthesis (two things that both "have nodes"), so
+  shared names alone never make a concept; code applies the approved
   ones on commit. `concept` and `about` join the idea kinds the `idea`
   verb validates (each entity id exists, each cited key is current) and
   the apply step's. Convergence matters here as for pitches: a
