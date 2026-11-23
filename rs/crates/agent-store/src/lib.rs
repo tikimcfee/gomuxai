@@ -5,6 +5,7 @@
 //! see [`gotime`] for timestamps and [`gojson`] for the JSON columns.
 
 pub mod commands;
+pub mod dream_workers;
 pub mod dreams;
 pub mod friction;
 pub mod friction_links;
@@ -24,6 +25,8 @@ pub mod tree;
 #[cfg(test)]
 mod commands_test;
 #[cfg(test)]
+mod dream_workers_test;
+#[cfg(test)]
 mod dreams_test;
 #[cfg(test)]
 mod friction_links_test;
@@ -36,6 +39,11 @@ mod roster_test;
 #[cfg(test)]
 mod tree_test;
 
+pub use dream_workers::{
+    CALLER_SYNTHESIS, DreamIdea, DreamWorker, IDEA_APPLIED, IDEA_APPROVED, IDEA_PROPOSED,
+    IDEA_REJECTED, IDEA_SKIPPED, IdeaVote, ROLE_CRITIC, ROLE_DREAMER, ROLE_GENERATOR, Scores,
+    Verdict, WORKER_DONE, WORKER_FAILED, WORKER_RUNNING,
+};
 pub use dreams::{
     DREAM_ABANDONED, DREAM_COMMITTED, DREAM_KIND_GLOBAL, DREAM_KIND_PROJECT, DREAM_OPEN,
     DREAM_QUIET, Dream, DreamItem, DreamOf,

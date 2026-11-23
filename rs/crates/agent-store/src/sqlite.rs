@@ -7,6 +7,7 @@ use rusqlite::types::{Type, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Params, Row, Transaction, params};
 
 use crate::commands::COMMAND_LOG_SCHEMA;
+use crate::dream_workers::{DREAM_WORKERS_MIGRATE, DREAM_WORKERS_SCHEMA};
 use crate::dreams::{DREAMS_ADDED_COLUMNS, DREAMS_SCHEMA};
 use crate::friction::FRICTION_SCHEMA;
 use crate::friction_links::FRICTION_LINKS_SCHEMA;
@@ -149,6 +150,7 @@ impl Store {
             + HOST_STATE_SCHEMA
             + MANAGE_SCHEMA
             + DREAMS_SCHEMA
+            + DREAM_WORKERS_SCHEMA
             + ROSTER_SCHEMA;
 
         let conn = self.conn();
@@ -171,6 +173,9 @@ impl Store {
         {
             add_column(&conn, table, column, def)?;
         }
+        // Every dream's agent is a worker: those from before workers become
+        // their dream's dreamer.
+        conn.execute_batch(DREAM_WORKERS_MIGRATE)?;
         let added = add_column(
             &conn,
             "agent_events",
