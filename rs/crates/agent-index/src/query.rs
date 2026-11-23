@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Result, bail};
 use rusqlite::{Connection, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::files;
 use crate::model::{self, Entity};
@@ -56,7 +56,7 @@ pub struct SearchOptions {
 }
 
 /// One label the query matched, and the entity it named.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Mapping {
     /// The words of the query that matched.
     pub phrase: String,
@@ -69,7 +69,7 @@ pub struct Mapping {
 }
 
 /// One result.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hit {
     pub rank: usize,
     pub id: String,
@@ -93,7 +93,7 @@ pub struct Hit {
     pub explain: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub query: String,
     pub terms: Vec<String>,
@@ -110,6 +110,25 @@ pub struct SearchResult {
     /// from the sqlite store's results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<String>,
+    /// What the reranker did, when it was asked (the pg store's
+    /// `--rerank`); absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<RerankInfo>,
+}
+
+/// The reranker's part in a search.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RerankInfo {
+    pub model: String,
+    /// Candidates reranked at most, per corpus.
+    pub depth: BTreeMap<String, usize>,
+    /// Candidates it scored.
+    pub scored: usize,
+    /// It answered; when false the fused order stands, and `error` says why.
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub ms: f64,
 }
 
 /// Reciprocal rank fusion: each list adds 1 / (k + rank) to every id in it
@@ -931,6 +950,7 @@ fn search_entities(
         candidates,
         ms,
         config: None,
+        rerank: None,
     })
 }
 

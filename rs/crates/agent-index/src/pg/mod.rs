@@ -20,7 +20,9 @@ use crate::config::Config;
 
 #[cfg(feature = "embed")]
 pub mod embed_pg;
+pub mod rerank;
 pub mod schema;
+pub mod serve;
 pub mod search;
 pub mod sync;
 pub mod view;

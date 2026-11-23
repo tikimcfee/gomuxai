@@ -62,6 +62,7 @@ pub fn def() -> Def {
             crawl_def(),
             sync_def(),
             config_def(),
+            serve_def(),
             embed_def(),
             search_def(),
             show_def(),
@@ -896,6 +897,10 @@ pub struct SearchArgs {
     pub config: String,
     #[arg(long = "lexical", value_name = "string", default_value = "", help = "pg store: fts (native full text, the default), bm25, or both (default: AGENT_INDEX_LEXICAL)")]
     pub lexical: String,
+    #[arg(long = "rerank", help = "pg store: rerank the top candidates with the cross-encoder ([reranker] in the configuration), even when it is off there")]
+    pub rerank: bool,
+    #[arg(long = "cold", help = "pg store: search in this process even when agent index serve is up")]
+    pub cold: bool,
     #[arg(long = "json", help = "Print the results as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -906,8 +911,8 @@ fn search_def() -> Def {
     leaf!(SEARCH, SearchArgs, run_search)
 }
 
-/// A query embedder: text to a unit vector.
-type QueryEmbedder = Box<dyn Fn(&str) -> anyhow::Result<Vec<f32>>>;
+/// A query embedder: text to a unit vector, shareable between threads.
+type QueryEmbedder = agent_index::pg::serve::Embed;
 
 /// The query embedder for the pg store: the model loads on the first query
 /// that needs it (only when the store has vectors). None without the
@@ -928,7 +933,7 @@ fn query_embedder(ctx: &Ctx, cfg: &agent_index::config::Config) -> Option<QueryE
         }
     };
     let cell: std::sync::OnceLock<Result<embed::Embedder, String>> = std::sync::OnceLock::new();
-    Some(Box::new(move |q: &str| {
+    Some(std::sync::Arc::new(move |q: &str| {
         let emb = cell
             .get_or_init(|| embed::Embedder::load(&dir).map_err(|e| format!("{e:#}")))
             .as_ref()
@@ -962,9 +967,30 @@ fn cwd_string() -> String {
     std::fs::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned()
 }
 
+/// Whether a command runs on the pg store (`--store`, else
+/// AGENT_INDEX_STORE), without connecting.
+fn wants_pg(store: &str) -> anyhow::Result<bool> {
+    let env = std::env::var("AGENT_INDEX_STORE").unwrap_or_default();
+    match if store.is_empty() { env.as_str() } else { store } {
+        "" | "sqlite" => Ok(false),
+        "pg" | "postgres" => Ok(true),
+        other => anyhow::bail!("--store takes sqlite or pg, not {other:?}"),
+    }
+}
+
+/// The warm process's socket: [serve].socket, else index.sock in the data
+/// directory.
+fn serve_socket(ctx: &Ctx, cfg: &agent_index::config::Config) -> PathBuf {
+    if cfg.serve.socket.is_empty() {
+        agent_index::pg::serve::default_socket(&agent_index::path_beside(&ctx.cfg().database_path))
+    } else {
+        PathBuf::from(&cfg.serve.socket)
+    }
+}
+
 fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
-    if let Some(pg) = pg_store(&a.store, &a.config)? {
-        return run_search_pg(ctx, a, &pg);
+    if wants_pg(&a.store)? {
+        return run_search_pg(ctx, a);
     }
     let ix = open(ctx)?;
     require_projects(&ix)?;
@@ -1017,72 +1043,152 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
 }
 
 /// Search on the pg store: the same options, output and `--json` shape as
-/// the sqlite store's, every list read from Postgres.
-fn run_search_pg(ctx: &Ctx, a: &SearchArgs, pg: &Pg) -> anyhow::Result<()> {
-    use agent_index::pg::{search, view as pgview};
-    if pgview::project_count(pg)? == 0 {
-        anyhow::bail!("nothing is in the pg store yet: agent index root add DIR, then agent index crawl --store pg");
-    }
+/// the sqlite store's, every list read from Postgres. The warm process
+/// answers when it is up (and runs this build under this configuration);
+/// otherwise the search runs cold, through the same code.
+fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
+    use agent_index::pg::serve;
+    let loaded = load_config(&a.config)?;
     let lexical = if a.lexical.is_empty() {
         std::env::var("AGENT_INDEX_LEXICAL").unwrap_or_default()
     } else {
         a.lexical.clone()
     };
-    let lexical = search::Lexical::parse(&lexical)?;
+    agent_index::pg::search::Lexical::parse(&lexical)?;
     let under = if a.under.is_empty() {
         String::new()
     } else {
         abs_dir(&a.under)?.to_string_lossy().into_owned()
     };
-    let caller = pgview::project_at(pg, &cwd_string())?;
-    let o = SearchOptions {
+    let req = serve::Request {
         query: a.args.join(" "),
         kind: a.kind.clone(),
         project: a.project.clone(),
         under,
-        // 0 (no --limit) is the configured default, said so "more matched" is.
-        limit: match int_flag(a.limit, "limit")? {
-            0 => pg.cfg.search.limit,
-            n => n,
-        },
-        caller_project: caller.clone(),
-        scope: String::new(),
+        limit: int_flag(a.limit, "limit")?,
+        cwd: cwd_string(),
+        lexical,
+        rerank: a.rerank,
+        who: std::env::var("AGENT_NAME").unwrap_or_default(),
+        fingerprint: loaded.config.fingerprint(),
+        build: serve::build_id(),
     };
-    let emb = query_embedder(ctx, &pg.cfg);
-    let r = search::search(pg, &o, emb.as_deref(), lexical)?;
-    let who = std::env::var("AGENT_NAME").unwrap_or_default();
-    if let Err(e) = search::log_query(pg, &who, &r) {
-        ctx.hint(format!("the search wasn't logged: {e:#}"));
-    }
+    let socket = serve_socket(ctx, &loaded.config);
+    let resp = match (!a.cold && socket.exists())
+        .then(|| serve::ask(&socket, &req, std::time::Duration::from_secs(120)))
+    {
+        Some(Ok(r)) => r,
+        other => {
+            if let Some(Err(e)) = other {
+                ctx.hint(format!("searched cold: the index server didn't answer ({e:#})"));
+            }
+            let Some((url, schema)) = Pg::from_env() else {
+                anyhow::bail!(
+                    "the pg store needs AGENT_INDEX_PG set to its database URL (postgresql:///DB?host=SOCKET_DIR)"
+                );
+            };
+            let pg = Pg::connect_with(&url, &schema, loaded.config.clone())?;
+            if agent_index::pg::view::project_count(&pg)? == 0 {
+                anyhow::bail!("nothing is in the pg store yet: agent index root add DIR, then agent index crawl --store pg");
+            }
+            let emb = query_embedder(ctx, &pg.cfg);
+            serve::answer(&pg, &req, emb.as_ref(), None)?
+        }
+    };
+    let Some(r) = resp.result else {
+        anyhow::bail!("the search gave no result");
+    };
     if a.json {
         return ctx.print_json(&r);
     }
     let (text, left) = view::render_search(&r, int_flag(a.budget, "budget")?, a.explain);
     let mut out = text;
+    if let Some(ri) = &r.rerank {
+        match &ri.error {
+            Some(e) => {
+                let _ = writeln!(out, "The reranker didn't answer ({e}): this is the fused order.");
+            }
+            None if a.explain => {
+                let _ = writeln!(out, "Reranked {} candidates with {} in {:.0} ms.", ri.scored, ri.model, ri.ms);
+            }
+            None => {}
+        }
+    }
     if left > 0 {
         let _ = writeln!(
             out,
             "{left} more left out to fit --budget {}: a larger --budget, or --json, shows them.",
             a.budget
         );
-    } else if r.hits.len() == o.limit && r.candidates > o.limit {
-        let _ = writeln!(out, "{} more matched: --limit N shows more.", r.candidates - o.limit);
+    } else if r.hits.len() == resp.limit && r.candidates > resp.limit {
+        let _ = writeln!(out, "{} more matched: --limit N shows more.", r.candidates - resp.limit);
     }
     ctx.write_out(&out)?;
-    let project = if a.project.is_empty() { &caller } else { &a.project };
-    if !project.is_empty()
-        && let Ok(Some((true, path, last))) = pgview::project_crawl(pg, project)
-        && !last.is_empty()
-    {
-        let head = agent_index::git::head(Path::new(&path));
-        if !head.is_empty() && head != last {
-            let n = agent_index::git::commits_between(Path::new(&path), &last, &head);
-            ctx.hint(format!(
-                "{project} is {n} commits ahead of its last crawl: agent index crawl --project {project}"
-            ));
-        }
+    if let Some(h) = resp.hint {
+        ctx.hint(h);
     }
     Ok(())
+}
+
+// `agent index serve`
+
+pub const SERVE: Doc = Doc {
+    use_line: "serve",
+    short: "Keep the pg store's search warm: a process on a Unix socket",
+    long: r#"Serve answers agent index search for the pg store from a warm process:
+it holds [serve].workers database connections, the query embedder (its
+model loaded once) and the reranker's client, on a Unix socket
+([serve].socket, else index.sock beside index.db). A search uses it when
+it answers and runs cold otherwise, through the same code, so the answer
+is the same; it runs cold too when the server is another build of agent
+or runs another configuration (its fingerprint), and says why. search
+--cold skips it. Serve runs until it is stopped (Ctrl-C); run it in a
+session of its own."#,
+    example: r#"  agent index serve
+  agent index serve --config tune/rerank50.toml"#,
+    args: ArgRule::None,
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ServeArgs {
+    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    pub config: String,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+fn serve_def() -> Def {
+    leaf!(SERVE, ServeArgs, run_serve)
+}
+
+fn run_serve(ctx: &Ctx, a: &ServeArgs) -> anyhow::Result<()> {
+    use agent_index::pg::serve;
+    let loaded = load_config(&a.config)?;
+    let Some((url, schema)) = Pg::from_env() else {
+        anyhow::bail!("the pg store needs AGENT_INDEX_PG set to its database URL (postgresql:///DB?host=SOCKET_DIR)");
+    };
+    let socket = serve_socket(ctx, &loaded.config);
+    // The embedder loaded now, not at the first search.
+    let embed = query_embedder(ctx, &loaded.config);
+    if let Some(e) = &embed
+        && let Err(err) = e("warm up")
+    {
+        ctx.hint(format!("serving without the semantic list: {err:#}"));
+    }
+    let workers = loaded.config.serve.workers;
+    ctx.notice(format!(
+        "Serving the index (schema {schema}, configuration {}) on {} with {workers} workers; Ctrl-C stops it.",
+        loaded.config.fingerprint(),
+        socket.display()
+    ));
+    let srv = serve::Server {
+        url,
+        schema,
+        config: loaded.config,
+        embed,
+    };
+    serve::serve(srv, &socket, workers)
 }
 
 /// Says when the caller's project moved since its last crawl.

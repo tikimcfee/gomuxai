@@ -42,6 +42,26 @@ pub struct Config {
     pub llm: Llm,
     /// The BM25 lists' field boosts (`--lexical bm25|both`, pg_search).
     pub bm25: Bm25,
+    pub serve: Serve,
+}
+
+/// `agent index serve`, the warm query process.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Serve {
+    /// Searches answered at once (each its own database connection).
+    pub workers: usize,
+    /// Its Unix socket; "" is `index.sock` in the data directory.
+    pub socket: String,
+}
+
+impl Default for Serve {
+    fn default() -> Self {
+        Serve {
+            workers: 4,
+            socket: String::new(),
+        }
+    }
 }
 
 /// Each card field's boost in the BM25 card list; by default in the ratio
@@ -267,13 +287,15 @@ impl Default for Embedder {
     }
 }
 
-/// The cross-encoder (docs/INDEX-V2.md, "Reranker"). Not wired into search
-/// yet: the settings are here so a run records them.
+/// The cross-encoder (docs/INDEX-V2.md, "Reranker"): after fusion and the
+/// priors, the top `depth` candidates of a corpus are scored by it and put
+/// in its order; on a timeout or an error the fused order stands, and the
+/// search says so. Off unless `enabled` or `search --rerank`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Reranker {
     pub enabled: bool,
-    /// The server's base URL (`/rerank` on it).
+    /// The server's base URL (`/score` on it: vLLM's pooling runner).
     pub endpoint: String,
     pub model: String,
     /// The task instruction sent with each query.
@@ -281,6 +303,14 @@ pub struct Reranker {
     pub timeout_ms: u64,
     /// Candidates reranked per corpus.
     pub depth: BTreeMap<String, usize>,
+    /// A candidate's text is clipped to this many characters (its card, then
+    /// its best chunk's text)...
+    pub doc_chars: usize,
+    /// ...and the server cuts it at this many tokens.
+    pub max_tokens_per_doc: usize,
+    /// An identifier's definitions, a whole-query label's entities and a
+    /// rare identifier's files stay above what the reranker orders.
+    pub keep_pins: bool,
 }
 
 impl Default for Reranker {
@@ -291,6 +321,9 @@ impl Default for Reranker {
             model: "Qwen/Qwen3-Reranker-4B".into(),
             instruction: "Given a code or technical search query, retrieve relevant code entities, SQL statements, or documentation passages that answer the query".into(),
             timeout_ms: 5000,
+            doc_chars: 1500,
+            max_tokens_per_doc: 512,
+            keep_pins: true,
             depth: [
                 ("code", 50),
                 ("prose", 20),
@@ -309,8 +342,96 @@ impl Default for Reranker {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Llm {
-    pub summaries: Endpoint,
+    pub summaries: Summaries,
     pub query_rewrite: Endpoint,
+}
+
+/// `agent index summarize` (docs/INDEX-V2.md, "Summaries and asks, by a
+/// local model"): the endpoint, how it is called, how a file's text is
+/// clipped and which files are too small to summarize. Every key here is
+/// part of each summary's fingerprint, so a change makes them stale.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Summaries {
+    /// An OpenAI-compatible base URL (`http://127.0.0.1:8095`); empty is none.
+    pub endpoint: String,
+    /// The served model name the requests carry; empty takes the server's
+    /// only model. The fingerprint records what the server says it runs.
+    pub model: String,
+    pub temperature: f64,
+    pub max_tokens: u32,
+    /// A request's timeout.
+    pub timeout_ms: u64,
+    /// The sampling seed (attempt n sends seed + n - 1).
+    pub seed: u64,
+    /// Requests in flight at once.
+    pub concurrency: usize,
+    /// Further tries of a request after a timeout, a 5xx or a refused
+    /// connection, `backoff_ms` doubling each time.
+    pub retries: u32,
+    pub backoff_ms: u64,
+    /// Refused or dropped connections in a row that stop the run (a dead
+    /// server), which then exits nonzero.
+    pub max_connection_errors: usize,
+    /// A file's text in tokens past which it is clipped; code keeps its
+    /// head, a doc its heading outline, head and tail.
+    pub clip_tokens: usize,
+    pub doc_head_tokens: usize,
+    pub doc_tail_tokens: usize,
+    /// The whole prompt's bound in tokens (under the server's max length,
+    /// less `max_tokens`).
+    pub max_input_tokens: usize,
+    /// Characters read of a file before tokenizing (head, and tail for docs).
+    pub preclip_chars: usize,
+    /// The symbol list's characters; a longer list, or a clipped file's, is
+    /// sampled evenly.
+    pub symbols_chars: usize,
+    /// Files under either floor are trivial and keep their seed.
+    pub min_chars: usize,
+    pub min_lines: usize,
+    /// A JSON file not named as a manifest or config is summarized only at
+    /// or under this size, and only when it is laid out by hand (has lines).
+    pub json_max_bytes: u64,
+    /// While this file exists no new request starts (a GPU watchdog makes
+    /// it when the speech server is busy); empty is none.
+    pub pause_file: String,
+    /// Words (host names, say) taken out of every input and refused in any
+    /// output, besides the built-in key and sign-in patterns.
+    pub scrub_words: Vec<String>,
+    /// What the server runs, as the person who started it says (the API
+    /// doesn't): recorded in the fingerprint.
+    pub dtype: String,
+    pub quantization: String,
+}
+
+impl Default for Summaries {
+    fn default() -> Self {
+        Summaries {
+            endpoint: String::new(),
+            model: String::new(),
+            temperature: 0.2,
+            max_tokens: 500,
+            timeout_ms: 180_000,
+            seed: 1,
+            concurrency: 48,
+            retries: 3,
+            backoff_ms: 2_000,
+            max_connection_errors: 8,
+            clip_tokens: 6_000,
+            doc_head_tokens: 4_500,
+            doc_tail_tokens: 1_500,
+            max_input_tokens: 9_000,
+            preclip_chars: 80_000,
+            symbols_chars: 2_500,
+            min_chars: 200,
+            min_lines: 5,
+            json_max_bytes: 16_384,
+            pause_file: String::new(),
+            scrub_words: Vec::new(),
+            dtype: String::new(),
+            quantization: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

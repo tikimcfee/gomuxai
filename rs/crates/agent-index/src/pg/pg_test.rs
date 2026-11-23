@@ -242,14 +242,16 @@ fn search_show_tree_related() {
     let (dir, ix) = fixture();
     super::sync::sync(&ix.conn, pg, false).unwrap();
     // An identifier's definition first.
-    let r = super::search::search(pg, &opts("parse_config"), None, Default::default()).unwrap();
+    let r =
+        super::search::search(pg, &opts("parse_config"), None, Default::default(), None).unwrap();
     assert_eq!(
         r.hits[0].id, "beta:src/lib.rs#parse_config",
         "{:#?}",
         r.hits
     );
     // A camelCase name by its words (terms split it).
-    let r = super::search::search(pg, &opts("wall layout"), None, Default::default()).unwrap();
+    let r =
+        super::search::search(pg, &opts("wall layout"), None, Default::default(), None).unwrap();
     assert!(
         r.hits
             .iter()
@@ -259,7 +261,7 @@ fn search_show_tree_related() {
         r.hits
     );
     // Words only in a file's body: the full-text list over chunks.
-    let r = super::search::search(pg, &opts("zebraword"), None, Default::default()).unwrap();
+    let r = super::search::search(pg, &opts("zebraword"), None, Default::default(), None).unwrap();
     assert_eq!(r.hits[0].id, "beta:src/lib.rs", "{:#?}", r.hits);
     assert!(
         r.hits[0]
@@ -268,14 +270,15 @@ fn search_show_tree_related() {
             .any(|e| e.contains("full text") || e.contains("files holding"))
     );
     // A camelCase identifier inside a body, by its words.
-    let r = super::search::search(pg, &opts("render glyphs"), None, Default::default()).unwrap();
+    let r =
+        super::search::search(pg, &opts("render glyphs"), None, Default::default(), None).unwrap();
     assert!(
         r.hits.iter().any(|h| h.id == "alpha:src/lib.rs"),
         "{:#?}",
         r.hits
     );
     // A typo, by trigrams.
-    let r = super::search::search(pg, &opts("delivr"), None, Default::default()).unwrap();
+    let r = super::search::search(pg, &opts("delivr"), None, Default::default(), None).unwrap();
     assert!(
         r.hits.iter().any(|h| h.id.starts_with("alpha:src/deliver")),
         "{:#?}",
@@ -283,7 +286,7 @@ fn search_show_tree_related() {
     );
     assert_eq!(r.absent, vec!["delivr".to_string()]);
     // A label (the package name, the README title) pins its entity.
-    let r = super::search::search(pg, &opts("Alpha"), None, Default::default()).unwrap();
+    let r = super::search::search(pg, &opts("Alpha"), None, Default::default(), None).unwrap();
     assert!(
         r.mapping.iter().any(|m| m.entity == "alpha" && m.exact),
         "{r:#?}"
@@ -292,16 +295,16 @@ fn search_show_tree_related() {
     // --kind file maps a symbol to its file; --project and --under filter.
     let mut o = opts("deliver held");
     o.kind = "file".into();
-    let r = super::search::search(pg, &o, None, Default::default()).unwrap();
+    let r = super::search::search(pg, &o, None, Default::default(), None).unwrap();
     assert!(r.hits.iter().all(|h| h.kind == "file"), "{:#?}", r.hits);
     let mut o = opts("parse config");
     o.project = "alpha".into();
-    let r = super::search::search(pg, &o, None, Default::default()).unwrap();
+    let r = super::search::search(pg, &o, None, Default::default(), None).unwrap();
     assert!(r.hits.iter().all(|h| h.project == "alpha"));
     // The caller's project first, and its dependency next.
     let mut o = opts("lib");
     o.caller_project = "alpha".into();
-    let r = super::search::search(pg, &o, None, Default::default()).unwrap();
+    let r = super::search::search(pg, &o, None, Default::default(), None).unwrap();
     assert_eq!(r.hits[0].project, "alpha", "{:#?}", r.hits);
     assert!(
         r.hits
@@ -356,7 +359,7 @@ fn search_show_tree_related() {
 /// A search's results without its timings, to compare two runs.
 fn results(pg: &Pg, o: &SearchOptions) -> serde_json::Value {
     let mut v =
-        serde_json::to_value(super::search::search(pg, o, None, Default::default()).unwrap())
+        serde_json::to_value(super::search::search(pg, o, None, Default::default(), None).unwrap())
             .unwrap();
     v.as_object_mut().unwrap().remove("ms");
     v
@@ -444,7 +447,8 @@ fn search_semantic_list() {
     pg.batch("INSERT INTO meta (key, value) VALUES ('vectors', '1')")
         .unwrap();
     let embed = |_: &str| -> anyhow::Result<Vec<f32>> { Ok(other.clone()) };
-    let r = super::search::search(pg, &opts("guide"), Some(&embed), Default::default()).unwrap();
+    let r =
+        super::search::search(pg, &opts("guide"), Some(&embed), Default::default(), None).unwrap();
     let hit = r
         .hits
         .iter()
@@ -465,7 +469,7 @@ fn search_bm25_lists() {
     let pg = &t.0;
     if !super::schema::has_bm25(pg).unwrap() {
         // No pg_search here: asking for BM25 says so, and names the way out.
-        let e = super::search::search(pg, &opts("deliver"), None, Lexical::Bm25).unwrap_err();
+        let e = super::search::search(pg, &opts("deliver"), None, Lexical::Bm25, None).unwrap_err();
         assert!(format!("{e:#}").contains("pg_search"), "{e:#}");
         return;
     }
@@ -475,7 +479,7 @@ fn search_bm25_lists() {
         r.hits.iter().flat_map(|h| h.explain.clone()).collect()
     };
     // Cards: a snake_case name by its words, cut by the tokenizer.
-    let r = super::search::search(pg, &opts("deliver held"), None, Lexical::Bm25).unwrap();
+    let r = super::search::search(pg, &opts("deliver held"), None, Lexical::Bm25, None).unwrap();
     assert!(
         r.hits
             .iter()
@@ -492,14 +496,14 @@ fn search_bm25_lists() {
         "{l:?}"
     );
     // Chunks: a word only in a body, and a camelCase identifier by its words.
-    let r = super::search::search(pg, &opts("zebraword"), None, Lexical::Bm25).unwrap();
+    let r = super::search::search(pg, &opts("zebraword"), None, Lexical::Bm25, None).unwrap();
     assert_eq!(r.hits[0].id, "beta:src/lib.rs", "{:#?}", r.hits);
     assert!(
         lists(&r).iter().any(|e| e.starts_with("bm25 full text #")),
         "{:#?}",
         r.hits
     );
-    let r = super::search::search(pg, &opts("render glyphs"), None, Lexical::Bm25).unwrap();
+    let r = super::search::search(pg, &opts("render glyphs"), None, Lexical::Bm25, None).unwrap();
     assert!(
         r.hits.iter().any(|h| h.id == "alpha:src/lib.rs"),
         "{:#?}",
@@ -508,11 +512,11 @@ fn search_bm25_lists() {
     // Filters and the local lists.
     let mut o = opts("parse config");
     o.project = "alpha".into();
-    let r = super::search::search(pg, &o, None, Lexical::Bm25).unwrap();
+    let r = super::search::search(pg, &o, None, Lexical::Bm25, None).unwrap();
     assert!(r.hits.iter().all(|h| h.project == "alpha"));
     let mut o = opts("deliver held");
     o.caller_project = "alpha".into();
-    let r = super::search::search(pg, &o, None, Lexical::Both).unwrap();
+    let r = super::search::search(pg, &o, None, Lexical::Both, None).unwrap();
     let l = lists(&r);
     for name in [
         "bm25 here #",
@@ -522,4 +526,149 @@ fn search_bm25_lists() {
     ] {
         assert!(l.iter().any(|e| e.starts_with(name)), "{name}: {l:?}");
     }
+}
+
+/// A stand-in reranker: answers `/score` with each document's index as its
+/// score, so the last candidate sent comes first. Its address.
+fn fake_reranker() -> String {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut w = s;
+                loop {
+                    let mut len = 0usize;
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    loop {
+                        let mut h = String::new();
+                        r.read_line(&mut h).unwrap();
+                        if h.trim().is_empty() {
+                            break;
+                        }
+                        if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                            len = v.trim().parse().unwrap();
+                        }
+                    }
+                    let mut body = vec![0; len];
+                    r.read_exact(&mut body).unwrap();
+                    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let n = v["documents"].as_array().unwrap().len();
+                    let data: Vec<_> = (0..n)
+                        .map(|i| serde_json::json!({"index": i, "score": i as f64}))
+                        .collect();
+                    let out = serde_json::json!({"data": data}).to_string();
+                    write!(
+                        w,
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{out}",
+                        out.len()
+                    )
+                    .unwrap();
+                }
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// The reranker reorders the top candidates (pins kept above), and a
+/// reranker that doesn't answer leaves the fused order, saying so.
+#[test]
+fn rerank_reorders_and_falls_back() {
+    let Some(t) = throwaway("rerank") else { return };
+    let pg = &t.0;
+    let (_dir, ix) = fixture();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let o = opts("deliver held message");
+    let plain = super::search::search(pg, &o, None, Default::default(), None).unwrap();
+    let mut cfg = crate::config::Config::default();
+    cfg.reranker.endpoint = fake_reranker();
+    cfg.reranker.depth.insert("code".into(), 4);
+    let rc = super::rerank::Client::new(&cfg.reranker);
+    let (url, _) = Pg::from_env().unwrap();
+    let pg2 = Pg::connect_with(&url, &pg.schema, cfg.clone()).unwrap();
+    let r = super::search::search(&pg2, &o, None, Default::default(), Some(&rc)).unwrap();
+    let info = r.rerank.as_ref().unwrap();
+    assert!(info.ok && info.scored > 0, "{info:?}");
+    assert!(r.ms.contains_key("rerank"));
+    // The stand-in reverses what it was sent; nothing past the depth moves.
+    let ids =
+        |r: &crate::query::SearchResult| r.hits.iter().map(|h| h.id.clone()).collect::<Vec<_>>();
+    let (a, b) = (ids(&plain), ids(&r));
+    assert_ne!(a, b);
+    assert!(
+        r.hits.iter().any(|h| h.explain[0].starts_with("rerank #1")),
+        "{:#?}",
+        r.hits
+    );
+    // Nothing answers: the fused order, and why.
+    cfg.reranker.endpoint = "http://127.0.0.1:9".into();
+    cfg.reranker.timeout_ms = 500;
+    let rc = super::rerank::Client::new(&cfg.reranker);
+    let r = super::search::search(&pg2, &o, None, Default::default(), Some(&rc)).unwrap();
+    let info = r.rerank.as_ref().unwrap();
+    assert!(!info.ok && info.error.is_some(), "{info:?}");
+    assert_eq!(ids(&r), a);
+    assert!(
+        r.hits
+            .iter()
+            .any(|h| h.explain.iter().any(|e| e.contains("fused order kept")))
+    );
+}
+
+/// The warm process answers what a cold search answers.
+#[test]
+fn serve_answers_as_cold() {
+    let Some(t) = throwaway("serve") else { return };
+    let pg = &t.0;
+    let (dir, ix) = fixture();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let (url, _) = Pg::from_env().unwrap();
+    let sock = dir.path().join("index.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let srv = super::serve::Server {
+        url: url.clone(),
+        schema: pg.schema.clone(),
+        config: crate::config::Config::default(),
+        embed: None,
+    };
+    std::thread::spawn(move || super::serve::serve_on(srv, listener, 2));
+    let cwd = dir.path().join("dev/alpha").to_string_lossy().into_owned();
+    let strip = |r: &super::serve::Response| {
+        let mut v = serde_json::to_value(r).unwrap();
+        v["result"].as_object_mut().unwrap().remove("ms");
+        v
+    };
+    for (q, kind) in [
+        ("parse_config", ""),
+        ("deliver held", "file"),
+        ("wall layout", ""),
+        ("delivr", ""),
+    ] {
+        let req = super::serve::Request {
+            query: q.into(),
+            kind: kind.into(),
+            cwd: cwd.clone(),
+            fingerprint: pg.cfg.fingerprint(),
+            build: super::serve::build_id(),
+            ..Default::default()
+        };
+        let warm = super::serve::ask(&sock, &req, std::time::Duration::from_secs(30)).unwrap();
+        let cold = super::serve::answer(pg, &req, None, None).unwrap();
+        assert_eq!(strip(&warm), strip(&cold), "{q}");
+        assert_eq!(warm.caller, "alpha");
+    }
+    // Another configuration is refused (the client then runs cold).
+    let req = super::serve::Request {
+        query: "lib".into(),
+        fingerprint: "other".into(),
+        build: super::serve::build_id(),
+        ..Default::default()
+    };
+    assert!(super::serve::ask(&sock, &req, std::time::Duration::from_secs(30)).is_err());
 }

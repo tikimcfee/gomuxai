@@ -38,7 +38,7 @@ use crate::config::Config;
 use crate::files;
 use crate::model::{self, Summary};
 use crate::names;
-use crate::query::{FILE_KINDS, Hit, Mapping, SearchOptions, SearchResult};
+use crate::query::{FILE_KINDS, Hit, Mapping, RerankInfo, SearchOptions, SearchResult};
 
 // Every number a search tunes on is in crate::config (the runtime TOML):
 // the lists' depth, the rarest-term budgets (ranking a chunk detoasts its
@@ -576,16 +576,19 @@ fn is_identifier(q: &str) -> bool {
 /// The query embedder: called only when the index has vectors.
 pub type QueryEmbed<'a> = &'a dyn Fn(&str) -> Result<Vec<f32>>;
 
+/// A search. `rerank`, when given, reorders each corpus's top candidates
+/// after fusion and the priors (crate::config's `[reranker]`).
 pub fn search(
     pg: &Pg,
     o: &SearchOptions,
     embed: Option<QueryEmbed>,
     lexical: Lexical,
+    rerank: Option<&super::rerank::Client>,
 ) -> Result<SearchResult> {
     if o.kind == "file" || FILE_KINDS.contains(&o.kind.as_str()) {
-        return search_files(pg, o, embed, lexical);
+        return search_files(pg, o, embed, lexical, rerank);
     }
-    search_entities(pg, o, embed, lexical)
+    search_entities(pg, o, embed, lexical, rerank)
 }
 
 /// Details of the hits, by id.
@@ -656,6 +659,7 @@ fn search_files(
     o: &SearchOptions,
     embed: Option<QueryEmbed>,
     lexical: Lexical,
+    rerank: Option<&super::rerank::Client>,
 ) -> Result<SearchResult> {
     let limit = if o.limit == 0 {
         pg.cfg.search.limit
@@ -667,7 +671,7 @@ fn search_files(
         limit: limit * pg.cfg.search.files_depth_factor,
         ..o.clone()
     };
-    let mut r = search_entities(pg, &inner, embed, lexical)?;
+    let mut r = search_entities(pg, &inner, embed, lexical, rerank)?;
     let t0 = Instant::now();
     let file_ids: Vec<String> = r
         .hits
@@ -740,6 +744,7 @@ fn search_entities(
     o: &SearchOptions,
     embed: Option<QueryEmbed>,
     lexical: Lexical,
+    rerank: Option<&super::rerank::Client>,
 ) -> Result<SearchResult> {
     let terms = names::query_terms(&o.query);
     if terms.is_empty() {
@@ -1068,6 +1073,32 @@ fn search_entities(
     }
     let mut order: Vec<(String, f64)> = score.into_iter().collect();
     order.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    lap(&mut ms, "fuse and priors");
+    // The reranker, on each corpus's top candidates.
+    let rerank_info = rerank.map(|rc| {
+        let pins: HashSet<&String> = if cfg.reranker.keep_pins {
+            exact
+                .iter()
+                .chain(pinned.iter())
+                .chain(rare.iter())
+                .filter(|id| pin_counts(id))
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        let info = apply_rerank(
+            pg,
+            rc,
+            &o.query,
+            &content,
+            &mut order,
+            &cands,
+            &pins,
+            &mut explain,
+        );
+        lap(&mut ms, "rerank");
+        info
+    });
     // At most two results per file.
     let mut per_file: HashMap<String, usize> = HashMap::new();
     let mut chosen: Vec<(String, f64)> = Vec::new();
@@ -1082,6 +1113,7 @@ fn search_entities(
             break;
         }
     }
+    // (Added to the stage's time before the reranker.)
     lap(&mut ms, "fuse and priors");
     let ids: Vec<String> = chosen.iter().map(|(i, _)| i.clone()).collect();
     let det = details(pg, &ids)?;
@@ -1122,7 +1154,91 @@ fn search_entities(
         candidates,
         ms,
         config: Some(cfg.fingerprint()),
+        rerank: rerank_info,
     })
+}
+
+/// Reorders each corpus's top `[reranker].depth` candidates by the
+/// reranker's scores, in the places they held (another corpus's candidates
+/// keep theirs); pins, when kept, keep their places and aren't sent. On a
+/// timeout or an error nothing moves, and the report says why.
+#[allow(clippy::too_many_arguments)]
+fn apply_rerank(
+    pg: &Pg,
+    rc: &super::rerank::Client,
+    query: &str,
+    terms: &[String],
+    order: &mut [(String, f64)],
+    cands: &HashMap<String, Cand>,
+    pins: &HashSet<&String>,
+    explain: &mut HashMap<String, Vec<String>>,
+) -> RerankInfo {
+    let cfg = &pg.cfg.reranker;
+    let mut info = RerankInfo {
+        model: cfg.model.clone(),
+        ..Default::default()
+    };
+    // Each corpus's top places (indexes into order), pins left out.
+    let mut by_corpus: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for (i, (id, _)) in order.iter().enumerate() {
+        let corpus = cands.get(id).map(|c| c.corpus.as_str()).unwrap_or("code");
+        let depth = cfg.depth.get(corpus).copied().unwrap_or(0);
+        let n = seen.entry(corpus.to_string()).or_insert(0);
+        if *n >= depth {
+            continue;
+        }
+        *n += 1;
+        if !pins.contains(id) {
+            by_corpus.entry(corpus.to_string()).or_default().push(i);
+        }
+    }
+    info.depth = cfg.depth.clone();
+    let t0 = Instant::now();
+    let result = (|| -> Result<Vec<(Vec<usize>, Vec<f64>)>> {
+        let mut out = Vec::new();
+        for slots in by_corpus.values() {
+            let ids: Vec<String> = slots.iter().map(|&i| order[i].0.clone()).collect();
+            let docs = super::rerank::texts(pg, &ids, terms)?;
+            out.push((slots.clone(), rc.score(query, &docs)?));
+        }
+        Ok(out)
+    })();
+    info.ms = round1(t0.elapsed().as_secs_f64() * 1000.0);
+    match result {
+        Ok(scored) => {
+            for (slots, scores) in scored {
+                info.scored += slots.len();
+                // The slots' entities, best score first (ties by fused place).
+                let mut ranked: Vec<(usize, f64)> = slots.iter().copied().zip(scores).collect();
+                ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+                let moved: Vec<(String, f64)> =
+                    ranked.iter().map(|(i, _)| order[*i].clone()).collect();
+                for (k, (&slot, (id_score, (_, s)))) in
+                    slots.iter().zip(moved.into_iter().zip(&ranked)).enumerate()
+                {
+                    explain
+                        .entry(id_score.0.clone())
+                        .or_default()
+                        .insert(0, format!("rerank #{} ({s:.3})", k + 1));
+                    order[slot] = id_score;
+                }
+            }
+            info.ok = true;
+        }
+        Err(e) => {
+            info.error = Some(format!("{e:#}"));
+            for slots in by_corpus.values() {
+                for &i in slots {
+                    explain
+                        .entry(order[i].0.clone())
+                        .or_default()
+                        .push("rerank failed: fused order kept".into());
+                }
+            }
+        }
+    }
+    info
 }
 
 /// v1's stemming test for `matched`.

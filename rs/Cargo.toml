@@ -59,6 +59,8 @@ unicode-width = "0.2"
 tempfile = "3"
 postgres = { version = "0.19", features = ["with-serde_json-1"] }
 toml = "1"
+# Plain HTTP to local model servers (the index's reranker); no TLS.
+ureq = { version = "3", default-features = false }
 
 [profile.release]
 opt-level = 2

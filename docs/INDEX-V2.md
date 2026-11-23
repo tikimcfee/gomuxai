@@ -172,12 +172,66 @@ state of the art that fits beside the other resident models (see
 loop: the eval measures the pipeline with and without it, and at
 several candidate depths.
 
+**Built** (pg store; `pg/rerank.rs`, `apply_rerank` in `pg/search.rs`):
+off by default; `search --rerank` or `[reranker] enabled = true` turns it
+on. After fusion and the priors, each corpus's top `[reranker.depth]`
+candidates (code: 50) go to the endpoint's `/score` (vLLM's pooling
+runner, one score per candidate in their order) with the configured
+instruction, and are put in its order in the places they held, so the
+candidates past the depth, and another corpus's, don't move. A
+candidate's text is its card (path, title, summary or seed, the names it
+defines; a symbol's own name and signature) and then the chunk of its
+file the query's terms best match (a symbol's or section's own chunk),
+clipped to `doc_chars` (1,500) and cut by the server at
+`max_tokens_per_doc` (512). With `keep_pins` (on), an identifier's
+definitions, a whole-query label's entities and a rare identifier's files
+keep their places above it. `--explain` shows `rerank #n (score)` first
+on each reranked hit; `--json` has a `rerank` object (model, depth,
+scored, ok, error, ms) and `ms.rerank`. On a timeout (`timeout_ms`, 5 s)
+or any error nothing moves: the hits say `rerank failed: fused order
+kept`, `rerank.error` says why, and the text output says so in a line.
+Tests run it against a stand-in server (it reorders; an endpoint that
+doesn't answer leaves the fused order).
+
 ## A warm query process
 
 `agent index serve` keeps a database pool, the query embedder and the
 reranker client warm, behind a local socket; `agent index search` sends
 it the query and prints the answer, and runs cold (slower, same answer)
 when it isn't up. No search pays model load or connection setup.
+
+**Built** (`pg/serve.rs`): `agent index serve` listens on
+`[serve].socket` (else `index.sock` beside `index.db`, so each `agent`
+copy has its own) with `[serve].workers` (4) threads, each with its own
+database connection and reranker client, sharing the query embedder,
+whose model it loads at start. `search` on the pg store asks it first
+(one JSON line each way) and runs cold when nothing answers there, when
+the server is another build of `agent` (its path, size and modification
+time), or when it runs another configuration (its fingerprint): those
+say so in a hint. `search --cold` skips it. Warm and cold go through one
+function (`serve::answer`: the caller's project from its directory, the
+search, the query log, the behind-its-crawl hint), and a test checks
+that the server's answers equal the cold ones, timings aside.
+
+**Measured** (2026-11-23; the 64 dev questions, `--kind file`, from the
+dev root; the reranker `Qwen3-Reranker-4B` on the local GPU; each
+reranking variant with its own instruction suffix so the server's prefix
+cache can't carry one variant's prompts into another's; a shared host
+under load, so read the differences more than the absolutes):
+
+| variant | CLI median | CLI p95 | in search, median | reranker median | reranker p95 |
+|---|---|---|---|---|---|
+| cold, no reranker | 215 ms | 285 ms | 164 ms | | |
+| warm, no reranker | 134 ms | 185 ms | 129 ms | | |
+| cold, rerank 50 | 903 ms | 1,039 ms | 849 ms | 691 ms | 808 ms |
+| warm, rerank 20 | 417 ms | 488 ms | 413 ms | 286 ms | 342 ms |
+| warm, rerank 50 | 804 ms | 913 ms | 799 ms | 677 ms | 793 ms |
+| warm, rerank 100 | 1,525 ms | 1,708 ms | 1,520 ms | 1,414 ms | 1,575 ms |
+
+The warm process saves about 80 ms a search (the embedding model's load
+and the connection). The reranker's time is about 14 ms a candidate (texts
+of up to 1,500 characters), so depth sets the cost: 20 keeps a search
+under half a second, 100 costs a second and a half. None fell back.
 
 ## Eval: a tuning and regression loop at full scale
 
@@ -204,7 +258,8 @@ Each lands on its own, measured, and said plainly when it does:
 1. Postgres store and the crawl writing to it; full text, trigram and
    vectors on the code corpus; RRF in SQL; the eval running against it.
    **Built** (the eval run is next): see "Iteration 1, as built".
-2. The warm process and the reranker.
+2. The warm process and the reranker. **Built** (the eval with and
+   without the reranker is next).
 3. The prose, memory and friction corpora; grouped answers.
 4. Sessions as full scrubbed text.
 5. Summaries and asks for all of the dev tree, after preflight and the
@@ -349,7 +404,8 @@ The sections:
 | `[chunks]` | the cut (`max_lines` 400, `max_bytes` 32,768), `lexeme_floor` (50) and the `file_kinds` cut into chunks. A cut other than the default becomes part of each file's chunk key, so the next sync cuts every file again; a new floor recounts `lexemes` |
 | `[cards]` | `children` named in a card's search text (200), `symbols` after `defines:` in the embedded card (60), `max_chars` (2,000); a change rewrites the cards and re-queues their vectors at the next sync |
 | `[embedder]` | `model` (this build runs `bge-small-en-v1.5` only and refuses another), `model_dir` (the Hugging Face cache's when empty; `embed --model-dir` wins), `batch` (512) |
-| `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10). Recorded, not wired into search yet: the next step |
+| `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10), `doc_chars` (1,500), `max_tokens_per_doc` (512), `keep_pins` (true); see "Reranker" |
+| `[serve]` | `workers` (4) and `socket` ("" for `index.sock` beside `index.db`) of `agent index serve` |
 | `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both` |
 | `[llm.summaries]`, `[llm.query_rewrite]` | `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature`, `max_tokens`, `timeout_ms`, for the later iterations |
 

@@ -16,6 +16,7 @@ serde_json.workspace = true
 sha2.workspace = true
 postgres.workspace = true
 toml.workspace = true
+ureq.workspace = true
 
 # The embedder (docs/INDEX.md, "Embeddings"): bge-small-en-v1.5 on the CPU,
 # pure Rust (candle), no ONNX Runtime. Off by default: the index works
