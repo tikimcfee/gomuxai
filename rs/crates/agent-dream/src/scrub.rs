@@ -25,6 +25,22 @@ const CREDENTIAL_MARKERS: &[&str] = &[
     "authorization:",
 ];
 
+/// Marks of a sign-in or authorization URL (an OAuth consent link, a
+/// callback carrying a code), checked on lines that hold a URL: such a link
+/// can carry a live code or state, and has no place in a dream's excerpt.
+const AUTH_URL_MARKERS: &[&str] = &[
+    "oauth",
+    "client_id=",
+    "code_challenge",
+    "redirect_uri=",
+    "response_type=code",
+    "code=",
+    "state=",
+    "/authorize",
+    "/signin",
+    "/login?",
+];
+
 static OPEN_TAG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<([A-Za-z_][A-Za-z0-9_.:-]*)(?:\s[^<>]*)?>").unwrap());
 static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -78,10 +94,13 @@ pub fn excerpt(text: &str, max_chars: usize) -> String {
     clip(&out.join("\n"), max_chars)
 }
 
-/// Whether a line carries a credential marker or an email address.
+/// Whether a line carries a credential marker, an email address, or a
+/// sign-in or authorization URL.
 pub fn has_credential(line: &str) -> bool {
     let l = line.to_lowercase();
-    CREDENTIAL_MARKERS.iter().any(|m| l.contains(m)) || EMAIL_RE.is_match(line)
+    CREDENTIAL_MARKERS.iter().any(|m| l.contains(m))
+        || EMAIL_RE.is_match(line)
+        || (l.contains("://") && AUTH_URL_MARKERS.iter().any(|m| l.contains(m)))
 }
 
 /// Removes each `<tag ...>...</tag>` block, from its opening tag to the first
@@ -127,6 +146,24 @@ pub fn clip(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sign_in_urls_are_dropped() {
+        for line in [
+            "Please visit https://accounts.example.com/o/oauth2/auth?access_type=offline&client_id=123.apps",
+            "  https://example.com/callback?code=abc&state=xyz",
+            "open https://login.example.com/authorize?response_type=code",
+        ] {
+            assert!(has_credential(line), "{line}");
+        }
+        for line in [
+            "The sign-in step uses OAuth, as the docs say.",
+            "See https://example.com/docs/state-machines for the design.",
+            "Read https://github.com/example/repo/blob/main/README.md",
+        ] {
+            assert!(!has_credential(line), "{line}");
+        }
+    }
 
     #[test]
     fn drops_pasted_and_harness_blocks() {
