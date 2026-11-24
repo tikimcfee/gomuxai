@@ -25,12 +25,17 @@ Examples:
   agent index embed --limit 2000
 
 Flags:
+      --bulk               Build the vector indexes after the rows instead of into them (a first pass)
       --config string      The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+      --endpoint string    Embed with this OpenAI-compatible server (a GPU's /v1/embeddings) instead of the CPU; with --model
   -h, --help               help for embed
       --json               Print the report as JSON
       --limit int          Stop after this many entities (0: all)
+      --model string       Only this model's vectors (pg store; default: every model the configuration names)
       --model-dir string   The model's directory (default: the Hugging Face cache's bge-small-en-v1.5)
+      --served string      The model's name on --endpoint (default: the model's)
       --store string       sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite)
+      --workers int        The CPU embedder's threads (0: half the logical CPUs)
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

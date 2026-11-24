@@ -446,7 +446,7 @@ fn search_semantic_list() {
     .unwrap();
     pg.batch("INSERT INTO meta (key, value) VALUES ('vectors', '1')")
         .unwrap();
-    let embed = |_: &str| -> anyhow::Result<Vec<f32>> { Ok(other.clone()) };
+    let embed = |_: &str, _: &str| -> anyhow::Result<Vec<f32>> { Ok(other.clone()) };
     let r =
         super::search::search(pg, &opts("guide"), Some(&embed), Default::default(), None).unwrap();
     let hit = r
@@ -1483,4 +1483,145 @@ fn one_ledger_per_schema() {
     assert_eq!(super::sync::synced_ledger(pg).unwrap(), now);
     super::sync::sync(&ix2.conn, pg, false).unwrap();
     assert!(super::sync::sync(&ix1.conn, pg, false).is_err());
+}
+
+#[cfg(feature = "embed")]
+/// A stand-in encoder for the model tables: one direction for text that
+/// mentions `deliver_held`, another for the rest.
+struct Toward(usize);
+
+#[cfg(feature = "embed")]
+impl crate::embed::Encode for Toward {
+    fn dim(&self) -> usize {
+        self.0
+    }
+    fn embed(&self, texts: &[String], _: bool) -> anyhow::Result<Vec<Vec<f32>>> {
+        Ok(texts
+            .iter()
+            .map(|t| {
+                let mut v = vec![0.0f32; self.0];
+                v[usize::from(!t.contains("deliver_held"))] = 1.0;
+                v
+            })
+            .collect())
+    }
+}
+
+/// Another model's vectors (pg::vecs): cards and chunk windows in tables of
+/// their own, one model per corpus, their lists in the search, and the
+/// sync dropping rows of what is gone.
+#[cfg(feature = "embed")]
+#[test]
+fn model_tables_and_chunk_lists() {
+    use super::vecs::{self, Model};
+    let Some(t) = throwaway("vecs") else { return };
+    let (url, _) = Pg::from_env().unwrap();
+    let (dir, mut ix) = fixture();
+    super::sync::sync(&ix.conn, &t.0, false).unwrap();
+    let cfg = crate::config::Config::parse(
+        "[embedder]\ndims = 8\n[embedder.chunks]\nenabled = true\nwindow_chars = 400\n[embedder.corpus]\ncode = \"qwen3-embedding-0.6b\"\n",
+    )
+    .unwrap();
+    let pg = &Pg::connect_with(&url, &t.0.schema, cfg.clone()).unwrap();
+    let corpora: Vec<String> = ["code", "prose"].map(String::from).to_vec();
+    let plan = vecs::plan(&cfg, &corpora).unwrap();
+    assert_eq!(
+        plan.iter()
+            .map(|(m, c)| (m.key.as_str(), c.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("qwen3_8", vec!["code".to_string()]),
+            ("bge", vec!["prose".to_string()])
+        ]
+    );
+    let m = Model::of(&cfg.embedder, "qwen3-embedding-0.6b").unwrap();
+    let mut lines = Vec::new();
+    let code = vec!["code".to_string()];
+    let r = super::embed_pg::drain_model(
+        pg,
+        &Toward(8),
+        &m,
+        &code,
+        Some(&cfg.embedder.chunks),
+        None,
+        true,
+        &mut |l| lines.push(l.to_string()),
+    )
+    .unwrap();
+    assert!(r.cards > 0 && r.windows > 0, "{r:?}");
+    let count = |sql: &str| -> i64 { pg.query(sql, &[]).unwrap()[0].get(0) };
+    assert_eq!(
+        count("SELECT count(*) FROM vec_cards_qwen3_8 WHERE corpus <> 'code'"),
+        0
+    );
+    assert!(
+        count("SELECT count(*) FROM vec_chunks_qwen3_8 WHERE entity_id = 'alpha:src/lib.rs'") > 0
+    );
+    // A second pass embeds nothing: every key is the same.
+    let again = super::embed_pg::drain_model(
+        pg,
+        &Toward(8),
+        &m,
+        &code,
+        Some(&cfg.embedder.chunks),
+        None,
+        false,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!(
+        (again.cards, again.windows, again.removed),
+        (0, 0, 0),
+        "{again:?}"
+    );
+    assert_eq!(again.windows_seen, r.windows_seen);
+
+    // The search: the model's lists over code, named for the model.
+    let embed = |model: &str, _: &str| -> anyhow::Result<Vec<f32>> {
+        assert_eq!(model, "qwen3-embedding-0.6b");
+        let mut v = vec![0.0f32; 8];
+        v[0] = 1.0;
+        Ok(v)
+    };
+    let res = super::search::search(
+        pg,
+        &opts("deliver held"),
+        Some(&embed),
+        Default::default(),
+        None,
+    )
+    .unwrap();
+    let lib = res
+        .hits
+        .iter()
+        .find(|h| h.id == "alpha:src/lib.rs")
+        .expect("lib.rs");
+    assert!(
+        lib.explain
+            .iter()
+            .any(|e| e.starts_with("semantic chunks qwen3_8 #")),
+        "{:#?}",
+        lib.explain
+    );
+    assert!(
+        res.hits
+            .iter()
+            .flat_map(|h| &h.explain)
+            .any(|e| e.starts_with("semantic qwen3_8 #")),
+        "{:#?}",
+        res.hits
+    );
+
+    // A file gone: its rows go with it.
+    std::fs::remove_file(dir.path().join("dev/alpha/src/lib.rs")).unwrap();
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM vec_chunks_qwen3_8 WHERE entity_id = 'alpha:src/lib.rs'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM vec_cards_qwen3_8 WHERE entity_id LIKE 'alpha:src/lib.rs%'"),
+        0
+    );
 }

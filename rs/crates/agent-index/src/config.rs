@@ -622,13 +622,92 @@ pub struct SummaryPolicy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Embedder {
-    /// The model; this build runs bge-small-en-v1.5 (384 dimensions) only.
+    /// The model: bge-small-en-v1.5 (384 dimensions), qwen3-embedding-0.6b
+    /// (1,024, Matryoshka) or coderankembed (768). The keys after `batch`
+    /// are written out (and so in the fingerprint) only when they aren't
+    /// their defaults, so a configuration from before them keeps its
+    /// fingerprint.
     pub model: String,
     /// Its directory (config.json, tokenizer.json, model.safetensors); ""
     /// is the Hugging Face cache's.
     pub model_dir: String,
     /// Cards embedded per round trip.
     pub batch: usize,
+    /// The vectors' width: a Matryoshka cut of the model's (0: full).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub dims: usize,
+    /// The query instruction ("": the model's own).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub query_instruction: String,
+    /// "candle" (on the CPU, in process) or "http" (an OpenAI-compatible
+    /// `/v1/embeddings` server at `endpoint`, serving it as `served`).
+    #[serde(skip_serializing_if = "is_candle")]
+    pub backend: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub endpoint: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub served: String,
+    /// The longest text embedded, in tokens (cut beyond).
+    #[serde(skip_serializing_if = "is_default_max_tokens")]
+    pub max_tokens: usize,
+    /// Vectors on chunks too (`[embedder.chunks]`).
+    #[serde(skip_serializing_if = "ChunkVecs::is_default")]
+    pub chunks: ChunkVecs,
+    /// A model for a corpus (code, prose, session, memory, friction), over
+    /// `model`: `[embedder.corpus] code = "coderankembed"`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub corpus: BTreeMap<String, String>,
+}
+
+impl Embedder {
+    /// The model that embeds a corpus.
+    pub fn model_for(&self, corpus: &str) -> &str {
+        self.corpus
+            .get(corpus)
+            .map(String::as_str)
+            .unwrap_or(&self.model)
+    }
+}
+
+/// Vectors on chunks: each chunk cut into windows at line ends, each window
+/// embedded with a context header (crate::pg::vecs).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChunkVecs {
+    pub enabled: bool,
+    /// A window's most characters (about 1,000 tokens of code).
+    pub window_chars: usize,
+    /// none, path, or full (path, the file's summary in a sentence, what the
+    /// window defines or its heading path).
+    pub header: String,
+}
+
+impl Default for ChunkVecs {
+    fn default() -> Self {
+        ChunkVecs {
+            enabled: false,
+            window_chars: 3500,
+            header: "full".into(),
+        }
+    }
+}
+
+impl ChunkVecs {
+    fn is_default(&self) -> bool {
+        *self == ChunkVecs::default()
+    }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+fn is_candle(s: &String) -> bool {
+    s == "candle"
+}
+
+fn is_default_max_tokens(n: &usize) -> bool {
+    *n == 2048
 }
 
 impl Default for Embedder {
@@ -637,6 +716,14 @@ impl Default for Embedder {
             model: "bge-small-en-v1.5".into(),
             model_dir: String::new(),
             batch: 512,
+            dims: 0,
+            query_instruction: String::new(),
+            backend: "candle".into(),
+            endpoint: String::new(),
+            served: String::new(),
+            max_tokens: 2048,
+            chunks: ChunkVecs::default(),
+            corpus: BTreeMap::new(),
         }
     }
 }
@@ -1014,7 +1101,19 @@ impl Config {
     /// A list's weight in fusion (its `here` copy takes the list's).
     pub fn list_weight(&self, list: &str) -> f64 {
         let base = list.strip_suffix(" here").unwrap_or(list);
-        self.lists.get(base).copied().unwrap_or(1.0)
+        // A model's dense list (`semantic qwen3`, `semantic chunks crk`)
+        // takes its kind's weight, unless named itself.
+        if let Some(w) = self.lists.get(base) {
+            return *w;
+        }
+        let kind = if base.starts_with("semantic chunks") {
+            "semantic chunks"
+        } else if base.starts_with("semantic") {
+            "semantic"
+        } else {
+            base
+        };
+        self.lists.get(kind).copied().unwrap_or(1.0)
     }
 
     /// A corpus's boost.

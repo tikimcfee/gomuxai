@@ -1197,6 +1197,21 @@ fn sync_inner(
             "DELETE FROM embed_queue WHERE entity_id = ANY($1)",
             &[&gone],
         )?;
+        // Other models' vectors (pg::vecs), which hold no key to entities.
+        let tables: Vec<String> = tx
+            .query(
+                "SELECT tablename FROM pg_tables WHERE schemaname = $1 AND tablename LIKE 'vec\\_%'",
+                &[&pg.schema],
+            )?
+            .into_iter()
+            .map(|r| r.get(0))
+            .collect();
+        for t in tables {
+            tx.execute(
+                &format!("DELETE FROM {t} WHERE entity_id = ANY($1)"),
+                &[&gone],
+            )?;
+        }
     }
     rep.deleted = gone.len();
 

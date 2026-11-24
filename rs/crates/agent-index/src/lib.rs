@@ -15,6 +15,8 @@ pub mod db;
 pub mod edges;
 #[cfg(feature = "embed")]
 pub mod embed;
+#[cfg(feature = "embed")]
+pub mod embed_models;
 pub mod eval;
 pub mod extract;
 pub mod files;

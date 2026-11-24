@@ -46,3 +46,7 @@ tempfile.workspace = true
 [[example]]
 name = "embed_texts"
 required-features = ["embed"]
+
+[[example]]
+name = "embed_timing"
+required-features = ["embed"]

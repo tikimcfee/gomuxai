@@ -24,7 +24,8 @@ use crate::config::Config;
 use crate::query::{SearchOptions, SearchResult};
 
 /// A query embedder that threads may share.
-pub type Embed = Arc<dyn Fn(&str) -> Result<Vec<f32>> + Send + Sync>;
+/// (The model's name, the query) to its query vector (pg::vecs's models).
+pub type Embed = Arc<dyn Fn(&str, &str) -> Result<Vec<f32>> + Send + Sync>;
 
 /// One search, as the CLI asks it.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -179,7 +180,7 @@ pub fn answer(
     } else {
         None
     };
-    let f = embed.map(|e| e.as_ref() as &dyn Fn(&str) -> Result<Vec<f32>>);
+    let f = embed.map(|e| e.as_ref() as &dyn Fn(&str, &str) -> Result<Vec<f32>>);
     // No --kind: grouped by corpus (its `hits` are the flat answer); a
     // --kind (as --kind file): one flat list, as before groups existed.
     let mut r = if o.kind.is_empty() {

@@ -1125,6 +1125,39 @@ pub struct EmbedArgs {
         help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
     )]
     pub config: String,
+    #[arg(
+        long = "model",
+        value_name = "string",
+        default_value = "",
+        help = "Only this model's vectors (pg store; default: every model the configuration names)"
+    )]
+    pub model: String,
+    #[arg(
+        long = "endpoint",
+        value_name = "string",
+        default_value = "",
+        help = "Embed with this OpenAI-compatible server (a GPU's /v1/embeddings) instead of the CPU; with --model"
+    )]
+    pub endpoint: String,
+    #[arg(
+        long = "served",
+        value_name = "string",
+        default_value = "",
+        help = "The model's name on --endpoint (default: the model's)"
+    )]
+    pub served: String,
+    #[arg(
+        long = "bulk",
+        help = "Build the vector indexes after the rows instead of into them (a first pass)"
+    )]
+    pub bulk: bool,
+    #[arg(
+        long = "workers",
+        value_name = "int",
+        default_value_t = 0,
+        help = "The CPU embedder's threads (0: half the logical CPUs)"
+    )]
+    pub workers: i64,
     #[arg(long = "json", help = "Print the report as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -1154,13 +1187,34 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
         }
         None => require_projects(&ix)?,
     }
-    // --model-dir, else the pg store's configured one, else the cache's.
-    let mut given = (!a.model_dir.is_empty()).then(|| PathBuf::from(&a.model_dir));
     if let Some(pg) = &pg {
         check_embedder(&pg.cfg)?;
-        if given.is_none() && !pg.cfg.embedder.model_dir.is_empty() {
-            given = Some(PathBuf::from(&pg.cfg.embedder.model_dir));
+        if !a.model.is_empty() {
+            agent_index::pg::vecs::spec(&a.model)?;
         }
+        if !a.endpoint.is_empty() && a.model.is_empty() {
+            anyhow::bail!("--endpoint serves one model: name it with --model");
+        }
+        // Only bge's cards, as before: the report as it was.
+        let e = &pg.cfg.embedder;
+        let bge_only = e.model == "bge-small-en-v1.5"
+            && e.corpus.values().all(|m| m == "bge-small-en-v1.5")
+            && !e.chunks.enabled
+            && e.backend != "http";
+        if !bge_only || !a.model.is_empty() || !a.endpoint.is_empty() {
+            let workers = usize::try_from(a.workers.max(0)).unwrap_or(0);
+            return embed_models_pg(ctx, a, pg, workers);
+        }
+    } else if !a.model.is_empty() || !a.endpoint.is_empty() {
+        anyhow::bail!("--model and --endpoint need the pg store (--store pg)");
+    }
+    // --model-dir, else the pg store's configured one, else the cache's.
+    let mut given = (!a.model_dir.is_empty()).then(|| PathBuf::from(&a.model_dir));
+    if let Some(pg) = &pg
+        && given.is_none()
+        && !pg.cfg.embedder.model_dir.is_empty()
+    {
+        given = Some(PathBuf::from(&pg.cfg.embedder.model_dir));
     }
     let dir = embed::model_dir(given.as_deref())?;
     let emb = embed::Embedder::load(&dir)?;
@@ -1203,6 +1257,87 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
             "{} left: agent index embed goes on from there.",
             r.remaining
         );
+    }
+    ctx.write_out(&o)
+}
+
+/// `agent index embed` on the pg store: bge's card vectors (when bge
+/// serves a corpus), then each other model's cards and every model's chunk
+/// windows ([embedder.chunks]), for the corpora each serves.
+#[cfg(feature = "embed")]
+fn embed_models_pg(
+    ctx: &Ctx,
+    a: &EmbedArgs,
+    pg: &agent_index::pg::Pg,
+    workers: usize,
+) -> anyhow::Result<()> {
+    use agent_index::pg::{embed_pg, vecs};
+    use agent_index::embed_models;
+    let corpora: Vec<String> = agent_index::config::CORPORA.iter().map(|c| c.to_string()).collect();
+    let plan = vecs::plan(&pg.cfg, &corpora)?;
+    let wanted = |name: &str| a.model.is_empty() || a.model == name;
+    let mut reports: Vec<serde_json::Value> = Vec::new();
+    let mut o = String::new();
+    let mut ecfg = pg.cfg.embedder.clone();
+    if !a.model_dir.is_empty() {
+        ecfg.model_dir = a.model_dir.clone();
+    }
+    if !a.endpoint.is_empty() {
+        ecfg.backend = "http".into();
+        ecfg.endpoint = a.endpoint.trim_end_matches('/').trim_end_matches("/v1").to_string();
+        ecfg.served = if a.served.is_empty() { a.model.clone() } else { a.served.clone() };
+    }
+    if !a.model.is_empty() && !plan.iter().any(|(m, _)| m.name == a.model) {
+        anyhow::bail!(
+            "the configuration doesn't embed with {} ([embedder].model or [embedder.corpus])",
+            a.model
+        );
+    }
+    for (m, served) in &plan {
+        if !wanted(&m.name) {
+            continue;
+        }
+        let enc = embed_models::load_model(&ecfg, &m.name, workers)?;
+        if m.legacy_cards {
+            let mut last = 0;
+            let r = embed_pg::drain(pg, enc.as_ref(), int_flag(a.limit, "limit")?, |done, total| {
+                if done >= last + 1000 && done < total {
+                    last = done;
+                    eprintln!("{}: cards {done} of {total}", m.name);
+                }
+            })?;
+            let _ = writeln!(o, "{}: {} card vectors in {:.1}s ({} left)", m.name, r.embedded, r.secs, r.remaining);
+            reports.push(serde_json::json!({"model": m.name, "key": m.key, "cards": r.embedded,
+                "removed": r.removed, "remaining": r.remaining, "secs": r.secs}));
+            if !pg.cfg.embedder.chunks.enabled {
+                continue;
+            }
+        }
+        let r = embed_pg::drain_model(
+            pg,
+            enc.as_ref(),
+            m,
+            served,
+            Some(&pg.cfg.embedder.chunks),
+            None,
+            a.bulk,
+            &mut |line| eprintln!("{line}"),
+        )?;
+        let _ = writeln!(
+            o,
+            "{} ({}): {} card vectors, {} window vectors of {} windows, {} dropped, in {:.1}s",
+            m.name,
+            served.join(", "),
+            r.cards,
+            r.windows,
+            r.windows_seen,
+            r.removed,
+            r.secs
+        );
+        reports.push(serde_json::to_value(&r)?);
+    }
+    if a.json {
+        return ctx.print_json(&serde_json::json!({ "models": reports }));
     }
     ctx.write_out(&o)
 }
@@ -2211,37 +2346,61 @@ fn search_def() -> Def {
     leaf!(SEARCH, SearchArgs, run_search)
 }
 
-/// A query embedder: text to a unit vector, shareable between threads.
+/// A query embedder: (model, text) to a unit vector, shareable between
+/// threads.
 type QueryEmbedder = agent_index::pg::serve::Embed;
 
-/// The query embedder for the pg store: the model loads on the first query
-/// that needs it (only when the store has vectors). None without the
-/// embedder or its model.
+/// The models a configuration embeds with: `[embedder].model` and each
+/// `[embedder.corpus]` choice, each once.
+fn embedder_models(cfg: &agent_index::config::Config) -> Vec<String> {
+    let mut out = vec![cfg.embedder.model.clone()];
+    for m in cfg.embedder.corpus.values() {
+        if !out.contains(m) {
+            out.push(m.clone());
+        }
+    }
+    out
+}
+
+/// The query embedder for the pg store: each model loads on the first query
+/// that needs it (only for models whose vectors the store has). None
+/// without the embedder or a model it names.
 #[cfg(feature = "embed")]
 fn query_embedder(ctx: &Ctx, cfg: &agent_index::config::Config) -> Option<QueryEmbedder> {
-    use agent_index::embed;
+    use agent_index::embed_models;
     if let Err(e) = check_embedder(cfg) {
         ctx.hint(format!("searching without the semantic list: {e:#}"));
         return None;
     }
-    let given =
-        (!cfg.embedder.model_dir.is_empty()).then(|| PathBuf::from(&cfg.embedder.model_dir));
-    let dir = match embed::model_dir(given.as_deref()) {
-        Ok(d) => d,
-        Err(e) => {
-            ctx.hint(format!(
-                "searching without the semantic list: the embedding model isn't here ({e:#})"
-            ));
-            return None;
+    if cfg.embedder.backend != "http" {
+        for m in embedder_models(cfg) {
+            let Ok(spec) = embed_models::spec(&m) else { continue };
+            let given = (m == cfg.embedder.model && !cfg.embedder.model_dir.is_empty())
+                .then(|| PathBuf::from(&cfg.embedder.model_dir));
+            if let Err(e) = embed_models::model_dir(spec.repo, given.as_deref()) {
+                ctx.hint(format!(
+                    "searching without the semantic list: the embedding model {m} isn't here ({e:#})"
+                ));
+                return None;
+            }
         }
-    };
-    let cell: std::sync::OnceLock<Result<embed::Embedder, String>> = std::sync::OnceLock::new();
-    Some(std::sync::Arc::new(move |q: &str| {
-        let emb = cell
-            .get_or_init(|| embed::Embedder::load(&dir).map_err(|e| format!("{e:#}")))
-            .as_ref()
-            .map_err(|e| anyhow::anyhow!("loading the embedding model: {e}"))?;
-        Ok(emb.embed(&[q.to_string()], true)?.remove(0))
+    }
+    let ecfg = cfg.embedder.clone();
+    type Loaded = Result<embed_models::Shared, String>;
+    let cells: std::sync::Mutex<std::collections::HashMap<String, Loaded>> = Default::default();
+    Some(std::sync::Arc::new(move |model: &str, q: &str| {
+        let enc = {
+            let mut c = cells
+                .lock()
+                .map_err(|_| anyhow::anyhow!("the embedder's lock"))?;
+            c.entry(model.to_string())
+                .or_insert_with(|| {
+                    embed_models::load_model(&ecfg, model, 1).map_err(|e| format!("{e:#}"))
+                })
+                .clone()
+                .map_err(|e| anyhow::anyhow!("loading the embedding model {model}: {e}"))?
+        };
+        Ok(enc.embed(&[q.to_string()], true)?.remove(0))
     }))
 }
 
@@ -2250,16 +2409,12 @@ fn query_embedder(_: &Ctx, _: &agent_index::config::Config) -> Option<QueryEmbed
     None
 }
 
-/// This build embeds with bge-small-en-v1.5 only: another configured model
-/// is refused rather than silently replaced.
+/// Every model the configuration names must be one this build embeds
+/// with: another is refused rather than silently replaced.
 #[cfg_attr(not(feature = "embed"), allow(dead_code))]
 fn check_embedder(cfg: &agent_index::config::Config) -> anyhow::Result<()> {
-    let want = "bge-small-en-v1.5";
-    if cfg.embedder.model != want {
-        anyhow::bail!(
-            "embedder.model is {:?}, but this agent embeds with {want} only (the vectors in the store are its)",
-            cfg.embedder.model
-        );
+    for m in embedder_models(cfg) {
+        agent_index::pg::vecs::spec(&m)?;
     }
     Ok(())
 }
@@ -2639,10 +2794,12 @@ fn run_serve(ctx: &Ctx, a: &ServeArgs) -> anyhow::Result<()> {
     let socket = serve_socket(ctx, &loaded.config);
     // The embedder loaded now, not at the first search.
     let embed = query_embedder(ctx, &loaded.config);
-    if let Some(e) = &embed
-        && let Err(err) = e("warm up")
-    {
-        ctx.hint(format!("serving without the semantic list: {err:#}"));
+    if let Some(e) = &embed {
+        for m in embedder_models(&loaded.config) {
+            if let Err(err) = e(&m, "warm up") {
+                ctx.hint(format!("serving without the semantic list of {m}: {err:#}"));
+            }
+        }
     }
     let workers = loaded.config.serve.workers;
     ctx.notice(format!(

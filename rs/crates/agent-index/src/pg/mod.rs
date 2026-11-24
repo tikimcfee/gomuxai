@@ -31,6 +31,7 @@ pub mod sessions;
 pub mod side;
 pub mod summ;
 pub mod sync;
+pub mod vecs;
 pub mod view;
 
 #[cfg(test)]

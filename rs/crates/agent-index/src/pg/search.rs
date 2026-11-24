@@ -321,7 +321,7 @@ const BM25_QUERY: &str = "array_to_string($1::text[], ' ')";
 pub fn fused_sql(
     several_terms: bool,
     local: bool,
-    dense: bool,
+    dense: &[DenseSpec],
     lexical: Lexical,
     filtered: bool,
     push: Option<&Push>,
@@ -459,19 +459,46 @@ pub fn fused_sql(
         ctes.extend(c);
         lists.extend(l);
     }
-    if dense {
-        let dense = |name: &str, scope: &str| {
-            format!(
-                "{name}_0 AS MATERIALIZED (SELECT e.id, (e.card_vec <=> $14::text::halfvec(384))::float8 AS d FROM entities e \
-                 WHERE e.card_vec IS NOT NULL AND {f}{scope} ORDER BY e.card_vec <=> $14::text::halfvec(384) LIMIT $12), \
-                 {name} AS (SELECT id, 1 - d AS s FROM {name}_0 ORDER BY d + 0, id)"
-            )
+    // The dense lists, each with its query vector at $14, $15, ...
+    for (i, d) in dense.iter().enumerate() {
+        let p = 14 + i;
+        let dims = d.dims;
+        let only = if d.only.is_empty() {
+            String::new()
+        } else {
+            let names: Vec<String> = d
+                .only
+                .iter()
+                .filter(|c| CORPORA.contains(&c.as_str()))
+                .map(|c| format!("'{c}'"))
+                .collect();
+            format!(" AND e.corpus IN ({})", names.join(", "))
         };
-        ctes.push(dense("dense", ""));
-        lists.push("semantic:dense".into());
+        let sql = |name: &str, scope: &str| -> String {
+            match (&d.table, d.chunks) {
+                (None, _) => format!(
+                    "{name}_0 AS MATERIALIZED (SELECT e.id, (e.card_vec <=> ${p}::text::halfvec(384))::float8 AS d FROM entities e \
+                     WHERE e.card_vec IS NOT NULL AND {f}{scope}{only} ORDER BY e.card_vec <=> ${p}::text::halfvec(384) LIMIT $12), \
+                     {name} AS (SELECT id, 1 - d AS s FROM {name}_0 ORDER BY d + 0, id)"
+                ),
+                (Some(t), false) => format!(
+                    "{name}_0 AS MATERIALIZED (SELECT e.entity_id AS id, (e.vec <=> ${p}::text::halfvec({dims}))::float8 AS d FROM {t} e \
+                     WHERE {f}{scope}{only} ORDER BY e.vec <=> ${p}::text::halfvec({dims}) LIMIT $12), \
+                     {name} AS (SELECT id, 1 - d AS s FROM {name}_0 ORDER BY d + 0, id)"
+                ),
+                // A chunk list: the nearest windows, each entity by its best.
+                (Some(t), true) => format!(
+                    "{name}_0 AS MATERIALIZED (SELECT e.entity_id AS id, (e.vec <=> ${p}::text::halfvec({dims}))::float8 AS d FROM {t} e \
+                     WHERE {f}{scope}{only} ORDER BY e.vec <=> ${p}::text::halfvec({dims}) LIMIT $12 * 4), \
+                     {name} AS (SELECT id, 1 - min(d) AS s FROM {name}_0 GROUP BY id ORDER BY 1 - min(d) DESC, id LIMIT $12)"
+                ),
+            }
+        };
+        ctes.push(sql(&d.cte, ""));
+        lists.push(format!("{}:{}", d.list, d.cte));
         if local {
-            ctes.push(dense("dense_here", &here));
-            lists.push("semantic here:dense_here".into());
+            ctes.push(sql(&format!("{}_here", d.cte), &here));
+            lists.push(format!("{} here:{}_here", d.list, d.cte));
         }
     }
     // Pins: an identifier's definitions, exact name first, else ignoring case.
@@ -583,7 +610,10 @@ struct Cand {
 /// projects (to read `--under`).
 struct Context {
     near: HashMap<String, f64>,
+    /// bge's card vectors exist (`entities.card_vec`).
     vectors: bool,
+    /// The search's dense lists (set once the corpora are known).
+    dense: Vec<DenseSpec>,
     max_imp: f64,
     projects: Vec<(String, String)>,
     /// The projects crawled at full depth (the others hold no files).
@@ -622,6 +652,7 @@ fn context(pg: &Pg, caller: &str) -> Result<Context> {
     Ok(Context {
         near,
         vectors: r.get(1),
+        dense: Vec::new(),
         max_imp: r.get(2),
         projects: names.into_iter().zip(paths).collect(),
         full: r.get::<_, Vec<String>>(5).into_iter().collect(),
@@ -741,8 +772,100 @@ fn is_identifier(q: &str) -> bool {
         && q.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// The query embedder: called only when the index has vectors.
-pub type QueryEmbed<'a> = &'a dyn Fn(&str) -> Result<Vec<f32>>;
+/// The query embedder: (the model's name, the query) to the model's query
+/// vector. Called only for a model whose vectors the store has.
+pub type QueryEmbed<'a> = &'a dyn Fn(&str, &str) -> Result<Vec<f32>>;
+
+/// A dense list of the fused statement: one model's card or chunk vectors
+/// over the corpora it serves (crate::pg::vecs).
+#[derive(Debug, Clone)]
+pub struct DenseSpec {
+    /// The model's name (what the query embedder takes).
+    pub model: String,
+    pub key: String,
+    pub dims: usize,
+    /// None: bge's card vectors in `entities.card_vec`; else the table.
+    pub table: Option<String>,
+    pub chunks: bool,
+    /// The corpora this list serves, when they aren't all the search's
+    /// (one model per corpus); empty otherwise.
+    pub only: Vec<String>,
+    /// The list's name and its CTE's.
+    pub list: String,
+    pub cte: String,
+}
+
+/// The dense lists a search over `corpora` has: for each model serving
+/// some of them, its cards and (with `[embedder.chunks]`) its chunk
+/// windows, where the store holds them.
+fn dense_specs(pg: &Pg, corpora: &[String], legacy_vectors: bool) -> Result<Vec<DenseSpec>> {
+    let plan = super::vecs::plan(&pg.cfg, corpora)?;
+    let several = plan.len() > 1;
+    let mut out = Vec::new();
+    for (m, served) in &plan {
+        let only = if several { served.clone() } else { Vec::new() };
+        let tag = if several {
+            format!(" {}", m.key)
+        } else {
+            String::new()
+        };
+        let cards = if m.legacy_cards {
+            legacy_vectors.then_some(None)
+        } else {
+            let t = m.cards_table();
+            super::vecs::has_rows(pg, &t)?.then_some(Some(t))
+        };
+        if let Some(table) = cards {
+            let first = out.is_empty();
+            out.push(DenseSpec {
+                model: m.name.clone(),
+                key: m.key.clone(),
+                dims: m.dims,
+                table,
+                chunks: false,
+                only: only.clone(),
+                list: format!("semantic{tag}"),
+                cte: if first {
+                    "dense".into()
+                } else {
+                    format!("dense_{}", m.key)
+                },
+            });
+        }
+        if pg.cfg.embedder.chunks.enabled {
+            let t = m.chunks_table();
+            if super::vecs::has_rows(pg, &t)? {
+                out.push(DenseSpec {
+                    model: m.name.clone(),
+                    key: m.key.clone(),
+                    dims: m.dims,
+                    table: Some(t),
+                    chunks: true,
+                    only: only.clone(),
+                    list: format!("semantic chunks{tag}"),
+                    cte: format!("dchunk_{}", m.key),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The query's vector for each dense list (one embedding per model).
+fn query_vecs(embed: Option<QueryEmbed>, specs: &[DenseSpec], q: &str) -> Result<Vec<String>> {
+    let Some(f) = embed else {
+        return Ok(Vec::new());
+    };
+    let mut by_model: HashMap<&str, String> = HashMap::new();
+    let mut out = Vec::new();
+    for s in specs {
+        if !by_model.contains_key(s.model.as_str()) {
+            by_model.insert(&s.model, super::vec_text(&f(&s.model, q)?));
+        }
+        out.push(by_model[s.model.as_str()].clone());
+    }
+    Ok(out)
+}
 
 /// A search. `rerank`, when given, reorders each corpus's top candidates
 /// after fusion and the priors (crate::config's `[reranker]`).
@@ -1075,12 +1198,14 @@ struct Ask<'a> {
     partial: &'a [String],
     pinned: &'a [String],
     check: &'a [String],
-    qvec: Option<&'a String>,
+    /// The query's vector for each of the search's dense lists (none: no
+    /// dense list).
+    qvecs: &'a [String],
 }
 
 impl<'a> Ask<'a> {
     /// A sub-query's ask: the lists only, no pins, labels or absent terms.
-    fn lists_only(content: &'a [String], tri: &'a [String], qvec: Option<&'a String>) -> Ask<'a> {
+    fn lists_only(content: &'a [String], tri: &'a [String], qvecs: &'a [String]) -> Ask<'a> {
         Ask {
             content,
             tri,
@@ -1089,7 +1214,7 @@ impl<'a> Ask<'a> {
             partial: &[],
             pinned: &[],
             check: &[],
-            qvec,
+            qvecs,
         }
     }
 }
@@ -1126,10 +1251,15 @@ fn run_fused(
     } else {
         None
     };
+    let dense: &[DenseSpec] = if !a.qvecs.is_empty() && a.qvecs.len() == ctx.dense.len() {
+        &ctx.dense
+    } else {
+        &[]
+    };
     let sql = fused_sql(
         a.content.len() > 1,
         local,
-        a.qvec.is_some(),
+        dense,
         lexical,
         filtered,
         push.as_ref(),
@@ -1161,8 +1291,10 @@ fn run_fused(
         &lim,
         &corpora,
     ];
-    if let Some(v) = &a.qvec {
-        params.push(*v);
+    if !dense.is_empty() {
+        for v in a.qvecs {
+            params.push(v);
+        }
     }
     // AGENT_INDEX_EXPLAIN=1 prints the fused statement's plan, run, on
     // stderr (for tuning; the search then runs as usual).
@@ -1298,8 +1430,13 @@ fn search_entities(
         *ms.entry(name.to_string()).or_insert(0.0) += round1(t0.elapsed().as_secs_f64() * 1000.0);
         t0 = Instant::now();
     };
-    let ctx = context(pg, &o.caller_project)?;
+    let mut ctx = context(pg, &o.caller_project)?;
     let corpora = corpora_of(o);
+    ctx.dense = if embed.is_some() {
+        dense_specs(pg, &corpora, ctx.vectors)?
+    } else {
+        Vec::new()
+    };
     // [cross]: a search over the whole tree, of the crawled corpora, may
     // span projects; the caller's parts of a query (`o.queries`) are
     // searched each on their own.
@@ -1359,10 +1496,14 @@ fn search_entities(
     lap(&mut ms, "context");
     let mapping = label_matches(pg, &o.query, o)?;
     lap(&mut ms, "labels");
-    let qvec = match (embed, ctx.vectors) {
-        (Some(f), true) => Some(super::vec_text(&f(&o.query)?)),
-        _ => None,
-    };
+    let qvecs = query_vecs(embed, &ctx.dense, &o.query)?;
+    // [cross] routing compares with bge's card vectors: the query's, when
+    // bge serves the cards.
+    let qvec: Option<String> = ctx
+        .dense
+        .iter()
+        .position(|d| d.table.is_none())
+        .map(|i| qvecs[i].clone());
     lap(&mut ms, "embed query");
     let pinned: Vec<String> = mapping
         .iter()
@@ -1413,7 +1554,7 @@ fn search_entities(
         partial: &partial,
         pinned: &pinned,
         check: &check,
-        qvec: qvec.as_ref(),
+        qvecs: &qvecs,
     };
     let mut fused = run_fused(pg, o, &ask, lexical, local, &near_names, &ctx)?;
     lap(&mut ms, "fused statement");
@@ -1538,12 +1679,9 @@ fn search_entities(
             .filter(|t| t.chars().count() >= 3)
             .cloned()
             .collect();
-        let pv = match (embed, ctx.vectors) {
-            (Some(f), true) => Some(super::vec_text(&f(part)?)),
-            _ => None,
-        };
+        let pv = query_vecs(embed, &ctx.dense, part)?;
         let key = format!("query:{}", i + 1);
-        let a = Ask::lists_only(&pc, &ptri, pv.as_ref());
+        let a = Ask::lists_only(&pc, &ptri, &pv);
         let sub = run_fused(pg, o, &a, lexical, local, &near_names, &ctx)?;
         let ids = pool_sub(
             &mut cands,
