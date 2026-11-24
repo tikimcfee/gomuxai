@@ -125,7 +125,9 @@ Spawn pre-allows these for the agent's session: `send`, `deliver`, `list`,
 `status`, `statuses`, `wait`, `events`, `capture`, `logs`, `sessions`,
 `transcript`, `state get`, `history`, `friction add`, `friction +1`, `friction
 list`, `friction show`, `friction link`, `friction links`, `roster list`,
-`roster show`, `roster pick`, `roster picks`, `roster note`.
+`roster show`, `roster pick`, `roster picks`, `roster note`, and the index's
+reads: `index search`, `index show`, `index tree`, `index related`, `index
+stale`, `index config`, `index usage`.
 
 Everything else prompts the person, on purpose: `spawn`, `resume`, `revive`,
 `template`, and `cleanup` start and stop agents; `run` runs a script; `approve`,

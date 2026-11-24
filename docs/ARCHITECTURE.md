@@ -301,7 +301,9 @@ Notes on each:
 - **Pre-allowed commands** (`AGENT_SAFE_COMMANDS`): `send`, `deliver`, `list`,
   `status`, `statuses`, `wait`, `events`, `capture`, `logs`, `sessions`,
   `transcript`, `state get`, `history`, `friction add`, `friction +1`,
-  `friction list`, `friction show`, `friction link`, `friction links`. Each becomes two rules, `agent <cmd>` and
+  `friction list`, `friction show`, `friction link`, `friction links`, the
+  roster's reads and `roster note`, and the index's reads (`index search`,
+  `show`, `tree`, `related`, `stale`, `config`, `usage`). Each becomes two rules, `agent <cmd>` and
   `<full binary path> <cmd>`, for that Claude session only. Left out on
   purpose: `approve`, `deny`, `keys`, and `send --force` (one agent answering
   another's prompts), `spawn` and `cleanup` (a person approves each), and

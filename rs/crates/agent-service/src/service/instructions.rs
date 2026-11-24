@@ -153,6 +153,15 @@ pub const AGENT_SAFE_COMMANDS: &[&str] = &[
     "roster pick",
     "roster picks",
     "roster note",
+    // The index's reads only: never crawl, sync, embed, summarize, serve,
+    // root, project, alias or lexicon, which write or start a process.
+    "index search",
+    "index show",
+    "index tree",
+    "index related",
+    "index stale",
+    "index config",
+    "index usage",
 ];
 
 /// DREAM_READ_COMMANDS are what a dream's agent may run of the general
