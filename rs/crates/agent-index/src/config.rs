@@ -48,6 +48,45 @@ pub struct Config {
     /// `[summaries]`: which model summaries go live (not how they are
     /// written: that is `[llm.summaries]`).
     pub summaries: SummaryPolicy,
+    pub sessions: Sessions,
+}
+
+/// The session corpus (docs/INDEX-V2.md, "Sessions as full text").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Sessions {
+    /// Leave the session corpus out.
+    pub off: bool,
+    /// A session whose working directory holds any of these is a scripted
+    /// batch's, left out.
+    pub skip_cwd: Vec<String>,
+    /// When set, only sessions whose working directory starts with one of
+    /// these (a trial on a few).
+    pub only_cwd: Vec<String>,
+    /// A subagent's own session too (they are the parent's work, mostly
+    /// tool calls).
+    pub include_subagents: bool,
+    /// A transcript over this many MB is left out (0: none is).
+    pub max_mb: usize,
+    /// A chunk holds whole turns up to this many characters (about 500
+    /// tokens); a longer turn is cut in windows...
+    pub chunk_chars: usize,
+    /// ...each starting with this many characters of the one before.
+    pub overlap_chars: usize,
+}
+
+impl Default for Sessions {
+    fn default() -> Self {
+        Sessions {
+            off: false,
+            skip_cwd: vec!["style-distill".into()],
+            only_cwd: Vec::new(),
+            include_subagents: false,
+            max_mb: 200,
+            chunk_chars: 2000,
+            overlap_chars: 200,
+        }
+    }
 }
 
 /// `agent index serve`, the warm query process.
@@ -237,7 +276,7 @@ impl Default for Corpus {
 }
 
 /// The corpora a grouped search answers from, in the order shown.
-pub const CORPORA: &[&str] = &["code", "prose", "memory", "friction"];
+pub const CORPORA: &[&str] = &["code", "prose", "memory", "friction", "session"];
 
 /// What memory notes the sync reads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -634,6 +673,7 @@ impl Config {
             "code" => (8, 700),
             "prose" => (5, 450),
             "memory" => (3, 200),
+            "session" => (3, 300),
             _ => (3, 150),
         };
         let c = self.corpora.get(corpus);

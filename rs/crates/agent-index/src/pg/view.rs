@@ -236,6 +236,11 @@ fn relation(kind: &str, outgoing: bool) -> String {
         ("same-as", _) => "same as",
         ("implements", true) => "implements",
         ("implements", false) => "implemented by",
+        // The side corpora's edges (docs/INDEX-V2.md, "Corpora, composed").
+        ("touched", true) => "touched",
+        ("touched", false) => "touched by sessions",
+        ("reported-in", true) => "reported in",
+        ("reported-in", false) => "reports",
         (k, _) => k,
     }
     .to_string()

@@ -774,7 +774,10 @@ fn side_corpora_and_groups() {
             .unwrap();
     let groups = g.groups.as_ref().unwrap();
     let names: Vec<&str> = groups.iter().map(|g| g.corpus.as_str()).collect();
-    assert_eq!(names, vec!["code", "prose", "memory", "friction"]);
+    assert_eq!(
+        names,
+        vec!["code", "prose", "memory", "friction", "session"]
+    );
     assert_eq!(groups[2].hits[0].id, "memory:alpha/feedback_quokka.md");
     assert!(groups[3].hits.is_empty() && groups[3].note.is_some());
     let flat =
@@ -885,4 +888,115 @@ fn asks_switch_and_withhold() {
     let pg_hold = Pg::connect_with(&url, &pg.schema, hold).unwrap();
     super::sync::sync(&ix.conn, &pg_hold, false).unwrap();
     assert_eq!(row(&pg_hold).0, "seed");
+}
+
+/// Sessions: read through the transcript model, scrubbed, cut by turn,
+/// tied to the files they touched; an unchanged one isn't read again; a
+/// scripted batch's is left out. (A synthetic transcript, nothing real.)
+#[test]
+fn sessions_corpus() {
+    let Some(t) = throwaway("sessions") else {
+        return;
+    };
+    let pg = &t.0;
+    let (dir, ix) = fixture();
+    let alpha = dir.path().join("dev/alpha").to_string_lossy().into_owned();
+    let lib = format!("{alpha}/src/lib.rs");
+    let lines = [
+        format!(r#"{{"type":"user","uuid":"u1","promptId":"p1","timestamp":"2026-11-01T10:00:00Z","cwd":"{alpha}","message":{{"role":"user","content":"make the platypus gauge faster\n<pasted_content>secret paste</pasted_content>\napi_key = abc123"}}}}"#),
+        r#"{"type":"assistant","uuid":"a1","timestamp":"2026-11-01T10:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"Looking at the platypus gauge in lib.rs."}]}}"#.to_string(),
+        format!(r#"{{"type":"assistant","uuid":"a2","timestamp":"2026-11-01T10:00:06Z","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t1","name":"Read","input":{{"file_path":"{lib}"}}}}]}}}}"#),
+        r#"{"type":"user","uuid":"u2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"fn x() {}"}]}}"#.to_string(),
+        format!(r#"{{"type":"assistant","uuid":"a3","timestamp":"2026-11-01T10:00:07Z","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"t2","name":"Edit","input":{{"file_path":"{lib}","old_string":"a","new_string":"b"}}}}]}}}}"#),
+        r#"{"type":"user","uuid":"u3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"The file has been updated"}]}}"#.to_string(),
+    ];
+    let path = dir.path().join("s1.jsonl");
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    let projects: Vec<(String, String)> = crate::roots::list_projects(&ix.conn)
+        .unwrap()
+        .into_iter()
+        .map(|p| (p.name, p.path))
+        .collect();
+    let refs = vec![
+        super::sessions::SessionRef {
+            harness: "claude".into(),
+            session_id: "s1".into(),
+            path: path.to_string_lossy().into_owned(),
+            cwd: alpha.clone(),
+            size: 1,
+            mtime: "m1".into(),
+            ..Default::default()
+        },
+        super::sessions::SessionRef {
+            harness: "claude".into(),
+            session_id: "batch".into(),
+            path: path.to_string_lossy().into_owned(),
+            cwd: format!("{alpha}/style-distill/run3"),
+            ..Default::default()
+        },
+    ];
+    let cfg = crate::config::Sessions::default();
+    let (notes, rep) = super::sessions::session_notes(&refs, &Default::default(), &projects, &cfg);
+    assert_eq!((rep.read, rep.scripted, rep.failed), (1, 1, 0), "{rep:?}");
+    assert_eq!(rep.pasted_blocks, 1, "{rep:?}");
+    assert!(rep.credential_lines >= 1, "{rep:?}");
+    let n = &notes[0];
+    let text: String = n.chunks.iter().map(|c| c.text.clone()).collect();
+    assert!(
+        text.contains("platypus gauge") && text.contains("- edit"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("secret paste") && !text.contains("abc123"),
+        "{text}"
+    );
+    assert_eq!(n.project, "alpha");
+    super::sync::sync_with(&ix.conn, pg, false, Some(&notes)).unwrap();
+    let edges: Vec<(String, String, String)> = pg
+        .query(
+            "SELECT src, dst, evidence FROM edges WHERE kind = 'touched'",
+            &[],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2)))
+        .collect();
+    assert_eq!(
+        edges,
+        vec![(
+            "session:claude:s1".into(),
+            "alpha:src/lib.rs".into(),
+            "edit, read".into()
+        )]
+    );
+    let meta: serde_json::Value = pg
+        .query(
+            "SELECT meta FROM chunks WHERE entity_id = 'session:claude:s1'",
+            &[],
+        )
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(meta["corpus"], "session");
+    assert_eq!(meta["files"], serde_json::json!([lib]));
+    let g =
+        super::search::search_grouped(pg, &opts("platypus gauge"), None, Default::default(), None)
+            .unwrap();
+    let s = g
+        .groups
+        .unwrap()
+        .into_iter()
+        .find(|g| g.corpus == "session")
+        .unwrap();
+    assert_eq!(s.hits[0].id, "session:claude:s1");
+    // Unchanged: kept, not read; its row, chunks and edges stay.
+    let known = super::sessions::known_keys(pg).unwrap();
+    let (notes2, rep2) = super::sessions::session_notes(&refs, &known, &projects, &cfg);
+    assert_eq!((rep2.read, rep2.kept), (0, 1));
+    let r = super::sync::sync_with(&ix.conn, pg, false, Some(&notes2)).unwrap();
+    assert_eq!(r.written, 0, "{r:?}");
+    let n: i64 = pg
+        .query("SELECT count(*) FROM edges WHERE kind = 'touched'", &[])
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(n, 1);
 }

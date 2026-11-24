@@ -179,6 +179,7 @@ pub fn memory_notes(dirs: &[PathBuf], data: &Path, projects: &[(String, String)]
                 body: body.to_string(),
                 refs,
                 status: get("type"),
+                ..Default::default()
             });
         }
     }
@@ -248,5 +249,6 @@ pub fn friction_note(f: &FrictionEntry, projects: &[(String, String)]) -> SideNo
             "{}, {}, filed by {} {}",
             f.status, f.kind, f.filed_by, f.created_at
         ),
+        ..Default::default()
     }
 }

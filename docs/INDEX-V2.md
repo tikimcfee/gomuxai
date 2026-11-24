@@ -237,6 +237,59 @@ This corpus is personal. It lives only in the local database, is never
 exported or committed, and a query from another host (later) sees it
 only if the host says so.
 
+**Built** (`pg/sessions.rs`; corpus `session`, a group in grouped
+answers; `[sessions]` in the configuration):
+
+- **Which**: the sessions `agent sessions` lists (its discovery over the
+  Claude Code and agy directories, `agent_discovery::scan`), less those
+  run from a scripted batch's directory (`skip_cwd`, default
+  `style-distill`), subagents' own sessions (`include_subagents`, off:
+  their work is the parent's, mostly tool calls) and transcripts over
+  `max_mb` (200). `only_cwd` limits a trial to some directories.
+- **Read** through the transcript event model (`agent_transcript::
+  read_file`, folded to each event's latest state, so a tool call shows
+  once with its result); branches the person left (edited or rewound
+  prompts) and request records are skipped.
+- **Scrubbed at the point of reading**: each prompt and reply goes
+  through `agent_dream::scrub::excerpt` (pasted and harness-inserted
+  blocks, code blocks, quotes, private key blocks, and lines with a
+  credential marker, an email address or a sign-in URL dropped); a tool
+  line (action, target or clipped detail, a failed status) with a
+  credential is dropped whole. The scrubber is broad by design (any line
+  naming a token goes), and the sync reports what it dropped.
+- **Chunked by turn**: a turn is `Person:`, `Agent:` and `- action
+  target` lines under `## Turn n time`; whole turns are gathered up to
+  `chunk_chars` (2,000, about 500 tokens) and a longer turn is cut in
+  windows, each starting with the last `overlap_chars` (200) of the one
+  before. A chunk's meta: session, harness, project, time, its turns and
+  the files they touched.
+- **The entity** `session:<harness>:<id>`: its project (the indexed
+  project holding its directory), title (the harness's, else the first
+  prompt's line), seed (its first prompt, scrubbed), its card embedded
+  like any other; `touched` edges session → file for each file it read,
+  edited or wrote (an absolute path resolved to the crawled file), the
+  call count as weight and the actions as evidence, so a file's
+  `related` (and `show`) lists the sessions that worked on it ("touched
+  by sessions").
+- **Incremental**: a session's key is its transcript's path, size and
+  last write and the reader's version; one unchanged since the last sync
+  isn't read again, its row, chunks and edges kept.
+
+**Measured** (2026-11-23, every session on this host, in a trial schema
+with one project crawled; the full index's grouped latency waits for the
+evals reading it):
+
+| | |
+|---|---|
+| sessions listed | 2,363 |
+| left out: scripted batches, subagents | 1,433, 492 |
+| read | 438 (cold sync, reading included, 18 s; a no-op sync reads none) |
+| turns, chunks | 4,414 turns in 14,626 chunks (84 MB of rows), average 1,805 characters |
+| scrubbed | 322 pasted blocks, 5 inserted blocks, 8,361 credential-shaped lines; 74% of prompt and reply lines kept |
+| left in the text (checked by pattern) | no keys or tokens, sign-in URLs, emails or inserted tags; two mentions of a key format's name, no key |
+| session cards embedded | 438 (part of 1,352 in 22 s) |
+| search, `--corpus session`, 64 dev questions | 79 ms warm, 155 ms cold (median); every question found sessions |
+
 ## Summaries and asks, by a local model
 
 `INDEX.md`'s bet (a what, a why and three to five plain asks per entity)
@@ -416,7 +469,8 @@ Each lands on its own, measured, and said plainly when it does:
    without the reranker is next).
 3. The prose, memory and friction corpora; grouped answers. **Built**
    (see "Corpora, composed"); bm25 the default lexical list.
-4. Sessions as full scrubbed text.
+4. Sessions as full scrubbed text. **Built** (see "Sessions as full text");
+   the full index takes them at its next sync.
 5. Summaries and asks for all of the dev tree, after preflight and the
    config review.
 6. Query expansion and learned labels, from the eval's misses.
@@ -555,7 +609,8 @@ The sections:
 | `[search]` | RRF's `rrf_k` (60); the default `limit` (10, what `--limit` 0 or none gives); `list_depth` (300 a list); `per_file` (2); `files_depth_factor` (8, for `--kind file`); `local_lists` (the copies scoped to the caller's project); the rarest-term budgets `chunk_budget` (4,000), `card_budget` (8,000), `trigram_terms` (4); `trigram_threshold` (0.6); `ts_rank_cd`'s `rank_weights` (D, C, B, A: 0.1, 0.2, 0.4, 1.0) and `rank_normalization` (1); `hnsw_ef_search` (100); the label n-grams' `label_max_words` (6) and `labels_per_run` (25); `exact_limit` (20); `rare_files` (3); `lexical` (`auto`: bm25 where the schema has pg_search's indexes, else fts; or `fts`, `bm25`, `both`) |
 | `[lists]` | each list's weight in fusion, by name (`lexical`, `all words`, `full text`, `trigram`, `semantic`, `label`, `bm25`, `bm25 full text`); a `here` copy takes its list's; 1 when unnamed |
 | `[priors]` | the pins (`pin_exact` 2, `pin_label` 1, `pin_rare` 1.5), `section` (−0.002), `importance` (0.004), `out_of_the_way` (−0.008), `fixture` (−0.03), `test` (−0.004), and the multipliers `own_project` (3) and `dependency` (2) |
-| `[corpora.NAME]` | `boost`, multiplying a positive score in that corpus (1), and its group's `limit` and `budget` (code 8 and 700 tokens, prose 5 and 450, memory 3 and 200, friction 3 and 150) |
+| `[corpora.NAME]` | `boost`, multiplying a positive score in that corpus (1), and its group's `limit` and `budget` (code 8 and 700 tokens, prose 5 and 450, memory 3 and 200, friction 3 and 150, session 3 and 300) |
+| `[sessions]` | `off`, `skip_cwd` (`style-distill`), `only_cwd` (a trial), `include_subagents` (false), `max_mb` (200), `chunk_chars` (2,000), `overlap_chars` (200); see "Sessions as full text" |
 | `[memory]` | `dirs`: the note directories (`~/.claude/projects/*/memory`, `{data}/memory`; `~` home, `*` one directory, `{data}` the agent's data directory) |
 | `[friction]` | `store` (another agent's `gomuxai.db`, read only; "" this agent's) and `off` |
 | `[chunks]` | the cut (`max_lines` 400, `max_bytes` 32,768), `lexeme_floor` (50) and the `file_kinds` cut into chunks. A cut other than the default becomes part of each file's chunk key, so the next sync cuts every file again; a new floor recounts `lexemes` |

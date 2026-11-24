@@ -125,10 +125,13 @@ fn resync(ctx: &Ctx, ix: &Index) -> anyhow::Result<()> {
 /// Mirrors the ledger into Postgres, with the memory and friction corpora,
 /// saying so on stderr.
 fn sync_pg(ctx: &Ctx, ix: &Index, pg: &Pg, rebuild: bool) -> anyhow::Result<agent_index::pg::sync::SyncReport> {
-    let side = side_notes(ctx, ix, &pg.cfg)?;
-    let r = agent_index::pg::sync::sync_with(&ix.conn, pg, rebuild, Some(&side))?;
+    let t0 = std::time::Instant::now();
+    let (side, sessions) = side_notes(ctx, ix, pg)?;
+    let read_ms = t0.elapsed().as_millis();
+    let mut r = agent_index::pg::sync::sync_with(&ix.conn, pg, rebuild, Some(&side))?;
+    r.phases.insert("read side corpora".into(), read_ms);
     ctx.notice(format!(
-        "Synced to Postgres ({}, schema {}): {} entities ({} memory notes and friction entries, {} edges from them), {} written, {} removed, {} files cut into {} chunks, {} queued for embedding, in {}.",
+        "Synced to Postgres ({}, schema {}): {} entities ({} memory notes, friction entries and sessions, {} edges from them), {} written, {} removed, {} files cut into {} chunks, {} queued for embedding, in {}.",
         pg.url_shown,
         pg.schema,
         r.entities,
@@ -139,20 +142,46 @@ fn sync_pg(ctx: &Ctx, ix: &Index, pg: &Pg, rebuild: bool) -> anyhow::Result<agen
         r.chunked_files,
         r.chunks,
         r.queued,
-        secs(r.ms)
+        secs(r.ms + read_ms)
     ));
+    if let Some(s) = &sessions {
+        ctx.notice(format!(
+            "Sessions: {} listed, {} read, {} unchanged, {} left out (scripted {}, subagents {}, too large {}), {} unreadable; {} turns in {} chunks; scrubbed {} pasted and {} inserted blocks and {} credential lines ({} of {} prose lines kept).",
+            s.listed,
+            s.read,
+            s.kept,
+            s.scripted + s.subagents + s.too_large,
+            s.scripted,
+            s.subagents,
+            s.too_large,
+            s.failed,
+            s.turns,
+            s.chunks,
+            s.pasted_blocks,
+            s.inserted_blocks,
+            s.credential_lines,
+            s.lines_kept,
+            s.lines_in
+        ));
+    }
+    r.sessions = sessions;
     Ok(r)
 }
 
-/// The memory notes ([memory].dirs) and this host's friction entries (the
-/// agent store, or [friction].store opened read only), as the sync's side
-/// notes.
+/// The memory notes ([memory].dirs), this host's friction entries (the
+/// agent store, or [friction].store opened read only) and its Claude and
+/// agy sessions (the directories agent sessions scans), as the sync's side
+/// notes; a session unchanged since the last sync is kept, not read.
 fn side_notes(
     ctx: &Ctx,
     ix: &Index,
-    cfg: &agent_index::config::Config,
-) -> anyhow::Result<Vec<agent_index::pg::sync::SideNote>> {
+    pg: &Pg,
+) -> anyhow::Result<(
+    Vec<agent_index::pg::sync::SideNote>,
+    Option<agent_index::pg::sessions::SessionsReport>,
+)> {
     use agent_index::pg::side;
+    let cfg = &pg.cfg;
     let projects: Vec<(String, String)> = agent_index::roots::list_projects(&ix.conn)?
         .into_iter()
         .map(|p| (p.name, p.path))
@@ -187,7 +216,29 @@ fn side_notes(
             notes.push(side::friction_note(&e, &projects));
         }
     }
-    Ok(notes)
+    let mut report = None;
+    if !cfg.sessions.off {
+        use agent_index::pg::sessions;
+        let listed = agent_discovery::scan(&super::transcript::session_dirs(ctx));
+        let refs: Vec<sessions::SessionRef> = listed
+            .into_iter()
+            .map(|s| sessions::SessionRef {
+                harness: s.harness,
+                session_id: s.session_id,
+                path: s.path,
+                cwd: s.cwd,
+                title: s.title,
+                size: s.size,
+                mtime: s.mtime.map(|t| t.to_rfc3339()).unwrap_or_default(),
+                parent: s.parent_session.map(|p| p.session_id).unwrap_or_default(),
+            })
+            .collect();
+        let known = sessions::known_keys(pg)?;
+        let (more, rep) = sessions::session_notes(&refs, &known, &projects, &cfg.sessions);
+        notes.extend(more);
+        report = Some(rep);
+    }
+    Ok((notes, report))
 }
 
 fn cwd() -> anyhow::Result<PathBuf> {

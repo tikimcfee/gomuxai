@@ -17,7 +17,7 @@
 //! (keeping card vectors whose text is unchanged): the result is the same
 //! rows an incremental sync reaches.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::Path;
 use std::time::Instant;
@@ -36,9 +36,12 @@ use crate::names;
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SyncReport {
     pub entities: usize,
-    /// Of them, memory notes and friction entries.
+    /// Of them, memory notes, friction entries and sessions.
     pub side: usize,
     pub side_edges: usize,
+    /// What reading the sessions did (set by the caller that read them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<super::sessions::SessionsReport>,
     pub written: usize,
     pub deleted: usize,
     pub queued: usize,
@@ -270,6 +273,8 @@ struct Out {
     /// A note's text to cut into chunks (memory); None for a file, whose
     /// chunks are cut from the file on disk.
     body: Option<String>,
+    /// A note's chunks, cut already (a session's turns).
+    side_chunks: Vec<SideChunk>,
     seed: String,
     summary: String,
     why: String,
@@ -561,6 +566,7 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
             e,
             corpus,
             body: None,
+            side_chunks: Vec::new(),
             seed,
             summary,
             why,
@@ -594,17 +600,39 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
 /// The corpora that come from outside the crawl: their entities are written
 /// by the sync from what the caller read (memory notes from their
 /// directories, friction entries from the agent store).
-pub const SIDE_CORPORA: &[&str] = &["memory", "friction"];
+pub const SIDE_CORPORA: &[&str] = &["memory", "friction", "session"];
+
+/// A chunk a side note brings cut already (a session's turns), with its meta
+/// (the corpus is added).
+#[derive(Debug, Clone, Default)]
+pub struct SideChunk {
+    pub line_start: usize,
+    pub line_end: usize,
+    pub heading: String,
+    pub text: String,
+    pub meta: serde_json::Value,
+}
 
 /// One note of a side corpus, as the caller read it.
 #[derive(Debug, Clone, Default)]
 pub struct SideNote {
-    /// `memory:<project>/<file>`, `friction:<uid>`.
+    /// `memory:<project>/<file>`, `friction:<uid>`, `session:<harness>:<id>`.
     pub id: String,
-    /// memory, friction.
+    /// memory, friction, session.
     pub corpus: String,
-    /// note, friction.
+    /// note, friction, session.
     pub kind: String,
+    /// Unchanged since the last sync (its key matches): the row, chunks and
+    /// edges it has stay, and nothing else here is read.
+    pub keep: bool,
+    /// Its content key ("": a hash of its text, title, seed and status).
+    pub key: String,
+    /// Its chunks, when it brings them cut ([`SideChunk`]); else `body` is
+    /// cut as Markdown.
+    pub chunks: Vec<SideChunk>,
+    /// Absolute paths of files it worked on, with how (`read`, `edit`), for
+    /// `touched` edges from it (sessions).
+    pub touched: Vec<(String, String)>,
     /// The indexed project it is about, when known ("" otherwise).
     pub project: String,
     pub name: String,
@@ -628,19 +656,36 @@ pub struct SideNote {
 fn side_rows(
     side: &[SideNote],
     files: &[(String, String, String)],
+    projects: &HashMap<String, String>,
     cfg: &Config,
 ) -> (Vec<Out>, Vec<Vec<String>>) {
     // Files by their path in their project, and by base name.
     let mut by_rel: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
     let mut by_base: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
+    let mut by_project_rel: HashMap<(&str, &str), &str> = HashMap::new();
     for (id, project, rel) in files {
         by_rel.entry(rel.as_str()).or_default().push((id, project));
         let base = rel.rsplit('/').next().unwrap_or(rel);
         by_base.entry(base).or_default().push((id, rel));
+        by_project_rel.insert((project.as_str(), rel.as_str()), id.as_str());
     }
+    // An absolute path's file: the deepest project holding it, then its path there.
+    let mut roots: Vec<(&str, &str)> = projects
+        .iter()
+        .map(|(n, p)| (n.as_str(), p.as_str()))
+        .collect();
+    roots.sort_by_key(|(_, p)| std::cmp::Reverse(p.len()));
+    let file_at = |abs: &str| -> Option<&str> {
+        let (name, root) = roots
+            .iter()
+            .find(|(_, p)| abs.starts_with(&format!("{p}/")))?;
+        by_project_rel
+            .get(&(*name, &abs[root.len() + 1..]))
+            .copied()
+    };
     let mut outs = Vec::new();
     let mut edges = Vec::new();
-    for n in side {
+    for n in side.iter().filter(|n| !n.keep) {
         let e = Entity {
             id: n.id.clone(),
             kind: n.kind.clone(),
@@ -649,12 +694,16 @@ fn side_rows(
             name: n.name.clone(),
             path: n.path.clone(),
             file_kind: n.corpus.clone(),
-            content_key: hash(&[
-                n.body.as_bytes(),
-                n.title.as_bytes(),
-                n.seed.as_bytes(),
-                n.status.as_bytes(),
-            ]),
+            content_key: if n.key.is_empty() {
+                hash(&[
+                    n.body.as_bytes(),
+                    n.title.as_bytes(),
+                    n.seed.as_bytes(),
+                    n.status.as_bytes(),
+                ])
+            } else {
+                n.key.clone()
+            },
             title: n.title.clone(),
             signature: n.status.clone(),
             ..Default::default()
@@ -671,7 +720,7 @@ fn side_rows(
             &[],
             &cfg.cards,
         );
-        let chunk_key = if n.body.trim().is_empty() {
+        let chunk_key = if n.body.trim().is_empty() && n.chunks.is_empty() {
             String::new()
         } else {
             format!("{}|{CHUNK_META_VERSION}", e.content_key)
@@ -686,6 +735,7 @@ fn side_rows(
             e,
             corpus: n.corpus.clone(),
             body: Some(n.body.clone()),
+            side_chunks: n.chunks.clone(),
             asks: Vec::new(),
             seed: n.seed.clone(),
             summary: String::new(),
@@ -708,6 +758,28 @@ fn side_rows(
         o.copy(&mut row);
         o.sync_key = hash(&[row.as_bytes()]);
         outs.push(o);
+        // A session's files: session → file, `touched`, weighed by how many
+        // calls, the actions as evidence.
+        let mut touched: BTreeMap<&str, (usize, BTreeSet<&str>)> = BTreeMap::new();
+        for (abs, how) in &n.touched {
+            if let Some(f) = file_at(abs) {
+                let t = touched.entry(f).or_default();
+                t.0 += 1;
+                t.1.insert(how.as_str());
+            }
+        }
+        for (f, (count, how)) in touched {
+            edges.push(vec![
+                n.id.clone(),
+                f.to_string(),
+                "touched".into(),
+                count.to_string(),
+                n.corpus.clone(),
+                how.into_iter().collect::<Vec<_>>().join(", "),
+                String::new(),
+                String::new(),
+            ]);
+        }
         let kind = if n.corpus == "memory" {
             "noted-in"
         } else {
@@ -860,23 +932,30 @@ pub fn sync_with(
     let cfg = &pg.cfg;
     let overlay = read_overlay(pg)?;
     let (mut rows, labels) = read_ledger(sq, cfg, &overlay)?;
+    let projects: HashMap<String, String> = crate::roots::list_projects(sq)?
+        .into_iter()
+        .map(|p| (p.name, p.path))
+        .collect();
     let mut side_edges: Vec<Vec<String>> = Vec::new();
+    // Side notes unchanged since the last sync: their rows, chunks and edges stay.
+    let kept: Vec<String> = side
+        .into_iter()
+        .flatten()
+        .filter(|n| n.keep)
+        .map(|n| n.id.clone())
+        .collect();
     if let Some(side) = side {
         let files: Vec<(String, String, String)> = rows
             .iter()
             .filter(|o| o.e.kind == "file")
             .map(|o| (o.e.id.clone(), o.e.project.clone(), o.e.rel.clone()))
             .collect();
-        let (outs, edges) = side_rows(side, &files, cfg);
-        rep.side = outs.len();
+        let (outs, edges) = side_rows(side, &files, &projects, cfg);
+        rep.side = outs.len() + kept.len();
         rows.extend(outs);
         side_edges = edges;
     }
-    rep.entities = rows.len();
-    let projects: HashMap<String, String> = crate::roots::list_projects(sq)?
-        .into_iter()
-        .map(|p| (p.name, p.path))
-        .collect();
+    rep.entities = rows.len() + kept.len();
     phase(&mut rep, "read ledger");
 
     let mut c = pg.client();
@@ -924,9 +1003,10 @@ pub fn sync_with(
 
     // Entities gone from the ledger.
     let ledger_ids: HashSet<&str> = rows.iter().map(|o| o.e.id.as_str()).collect();
+    let kept_ids: HashSet<&str> = kept.iter().map(String::as_str).collect();
     let gone: Vec<String> = have
         .keys()
-        .filter(|id| !ledger_ids.contains(id.as_str()))
+        .filter(|id| !ledger_ids.contains(id.as_str()) && !kept_ids.contains(id.as_str()))
         .cloned()
         .collect();
     if !gone.is_empty() {
@@ -1062,6 +1142,30 @@ pub fn sync_with(
                 }
             };
             rep.chunked_files += 1;
+            // Chunks a side note brought cut (a session's turns), with their meta.
+            if !o.side_chunks.is_empty() {
+                for (i, ch) in o.side_chunks.iter().enumerate() {
+                    let (ord, a, b) = (
+                        i.to_string(),
+                        ch.line_start.to_string(),
+                        ch.line_end.to_string(),
+                    );
+                    let mut meta = ch.meta.clone();
+                    if let Some(m) = meta.as_object_mut() {
+                        m.insert("corpus".into(), serde_json::json!(o.corpus));
+                    } else {
+                        meta = serde_json::json!({"corpus": o.corpus});
+                    }
+                    let terms = camel_terms(&ch.text);
+                    let meta = meta.to_string();
+                    copy_row(
+                        &mut buf,
+                        &[id, &ord, &a, &b, &ch.heading, &ch.text, &terms, &meta],
+                    );
+                    rep.chunks += 1;
+                }
+                continue;
+            }
             for (i, ch) in chunk_text(&text, markdown, &cfg.chunks).iter().enumerate() {
                 let (ord, a, b) = (
                     i.to_string(),
@@ -1132,7 +1236,7 @@ pub fn sync_with(
         copy_in(&mut tx, "stage_edges", EDGE_COLS, &buf)?;
         // The side corpora's edges (origin memory, friction) are theirs.
         tx.batch_execute(&format!(
-            "DELETE FROM edges e WHERE e.origin NOT IN ('memory', 'friction') AND NOT EXISTS (
+            "DELETE FROM edges e WHERE e.origin NOT IN ('memory', 'friction', 'session') AND NOT EXISTS (
                  SELECT 1 FROM stage_edges s WHERE s.src = e.src AND s.dst = e.dst AND s.kind = e.kind);
              INSERT INTO edges ({EDGE_COLS}) SELECT {EDGE_COLS} FROM stage_edges
              ON CONFLICT (src, dst, kind) DO UPDATE SET weight = excluded.weight, origin = excluded.origin,
@@ -1147,9 +1251,11 @@ pub fn sync_with(
     }
     // The side corpora's edges, made again from their notes.
     if side.is_some() {
+        // A kept note's edges stay (they are what its last read made).
         tx.execute(
-            "DELETE FROM edges WHERE origin IN ('memory', 'friction')",
-            &[],
+            "DELETE FROM edges WHERE origin IN ('memory', 'friction', 'session')
+             AND NOT (src = ANY($1) OR dst = ANY($1))",
+            &[&kept],
         )?;
         let mut buf = String::new();
         for r in &side_edges {

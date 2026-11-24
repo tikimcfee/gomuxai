@@ -24,6 +24,7 @@ pub mod rerank;
 pub mod schema;
 pub mod search;
 pub mod serve;
+pub mod sessions;
 pub mod side;
 pub mod summ;
 pub mod sync;

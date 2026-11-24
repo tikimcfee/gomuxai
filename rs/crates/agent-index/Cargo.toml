@@ -7,6 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Sessions (docs/INDEX-V2.md, "Sessions as full text"): read through the
+# transcript event model, scrubbed by the dreams' scrubber.
+agent-transcript.workspace = true
+agent-dream.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 regex.workspace = true
