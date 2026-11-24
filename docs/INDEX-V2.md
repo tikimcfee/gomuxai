@@ -499,6 +499,58 @@ Every change runs the eval over all of the dev tree:
 Each run stores its config fingerprint beside its numbers, so a
 regression can be traced to the change that caused it.
 
+## How v2 measured against rg
+
+Every set below was written before the system it tests was final. Each
+had a pre-registration saying what counts as the claim (a grade ≥ 1
+file in the top 5, index against `rg` on the question's content words at
+the same scope), scored with a paired bootstrap by question (10,000
+resamples, fixed seed). No system was tuned on any of them, before or
+after. Pre-registrations and results live with the eval data, outside
+the repo.
+
+| set | questions | index, top 5 | rg, top 5 | difference [95% CI] | verdict |
+|---|---|---|---|---|---|
+| held-out (v1's set) | 40 | 36 (reranker depth 50) | 27 | +0.225 [+0.075, +0.400] | holds |
+| blind 2: three new projects | 60 | 54 | 19 | +0.583 [+0.450, +0.717] | holds |
+| blind 3: harder, five more projects | 60 | 54 | 35 | +0.317 [+0.183, +0.450] | holds |
+
+v1 tied `rg` on the held-out set (25 against 27, not shown).
+
+**Blind 2, what each part is worth** (the same 60, top 5; secondaries,
+not decisive): the full pipeline 54; without the reranker 40 (+0.233
+[+0.100, +0.367]); without summaries 48 (+0.100 [+0.017, +0.183]);
+without the asks 55 (−0.017 [−0.067, +0.033]: the asks add nothing to
+top 5, and lift top 1 from 33 to 38); v1 30. Caveat: only 11 of the 60
+questions are under 8 words, and long plain questions are `rg`'s worst
+case. So the size of the gap owes something to the set's style.
+
+**Blind 3** was written to be harder and fairer to `rg`: long
+situations, multi-hop, cross-project, why-in-prose and short questions,
+over five projects no earlier set used, with gomuxai as the partner in
+cross-project questions. `rg` scores 0.58
+here against 0.32 on blind 2. System under test: snapshot dad8abb,
+schema `idx` after the full-tree summaries and the sessions sync,
+reranker depth 20, `--kind file`. Secondaries:
+
+- Top 1: 38 against 16. MRR@10 0.751 against 0.419.
+- By kind, top 5 (each kind is small): long 14/9 of 15, multi-hop 12/8
+  of 12, cross 6/1 of 10, why 12/10 of 13, short 10/7 of 10. Only
+  multi-hop and cross are clear of zero on their own; why-in-prose shows
+  no difference (`rg` already finds the doc).
+- Multi-hop, every needed file in the top 10: 8 against 3 of 12.
+  Cross, a right file from each project in the top 10: 2 against 0 of
+  10, the weakest spot. Three of those ten were impossible for the
+  index: their gomuxai answer was written after the index's crawl.
+  Leaving those three out: 53 against 35 of 57, +0.316 [+0.175, +0.456].
+- Reranker: top 5 54 against 50 without it (not shown), top 1 38
+  against 27 (+0.183 [+0.033, +0.317]). It fixes the order more than
+  the recall. Without it the index still beats `rg` 50 to 35.
+- The soft project prior from the caller's directory: 49 of 50, the
+  same as the hard project filter (48 of 50).
+- Latency, median inside the index: 0.64 s in a project, 0.49 s over
+  the tree, 0.26 s at cwd; `rg` 30 ms in a project, 1.4 s over the tree.
+
 ## Iterations
 
 Each lands on its own, measured, and said plainly when it does:
@@ -513,7 +565,16 @@ Each lands on its own, measured, and said plainly when it does:
 4. Sessions as full scrubbed text. **Built** (see "Sessions as full text");
    the full index takes them at its next sync.
 5. Summaries and asks for all of the dev tree, after preflight and the
-   config review.
+   config review. **Built and run** (2026-11-24): 14,694 file summaries
+   (run 16: 9,262 written in 46 min, alone on the GPU, about 1.5% failed,
+   mostly too few asks), then the bottom-up pass. Folder summaries are
+   composed only from their children's summaries, READMEs and names,
+   giving 3,237 folders and all 27 projects in 4 min (0.5% failed).
+   After a 50-unit preflight in a scratch schema and a skeptic's review,
+   the sessions sync added 439 sessions in 14,759 scrubbed chunks. The
+   snapshot binary has no ledger beside it, so any later sync of `idx`
+   must run with the ledger the summaries were written against, or it
+   starts from an empty one.
 6. Query expansion and learned labels, from the eval's misses.
 
 ## Iteration 1, as built
