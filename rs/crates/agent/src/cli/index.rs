@@ -1055,7 +1055,7 @@ pub struct SummarizeArgs {
         long = "stats",
         value_name = "string",
         default_value = "",
-        help = "Rewrite the run's stats here as it goes"
+        help = "Rewrite the run's stats here as it goes (with --dirs: the whole pass's status)"
     )]
     pub stats: String,
     #[arg(
@@ -1080,21 +1080,21 @@ pub struct SummarizeArgs {
         long = "file-timeout",
         value_name = "duration",
         default_value = "10m",
-        help = "One file's deadline, all its requests and retries together; past it the file fails and is kept as failed"
+        help = "One file's deadline, all its requests and retries together; past it the file gets no row, so a resume asks again"
     )]
     pub file_timeout: String,
     #[arg(
         long = "stall",
         value_name = "duration",
         default_value = "10m",
-        help = "Stop the run when no file finished for this long (0: never)"
+        help = "Stop the run when no file finished for this long (0: never; with --dirs, over the whole pass)"
     )]
     pub stall: String,
     #[arg(
         long = "max-time",
         value_name = "duration",
         default_value = "0",
-        help = "Stop the run cleanly after this long (0: no cap)"
+        help = "Stop the run cleanly after this long (0: no cap; with --dirs, counted from the pass's start)"
     )]
     pub max_time: String,
     #[arg(
@@ -1234,14 +1234,17 @@ fn run_dirs(
     files: Vec<agent_index::summarize::Candidate>,
 ) -> anyhow::Result<()> {
     use agent_index::pg::dirsum;
-    let units = dirsum::sample(dirsum::units(pg, &files)?, o.limit);
+    // The scope is the whole selection's, a sample's too: a sampled
+    // parent whose children weren't sampled is written provisional.
+    let scope = dirsum::scope(&files);
+    let units = dirsum::sample(dirsum::units(pg, &files, o)?, o.limit);
     if units.is_empty() {
         anyhow::bail!(
             "no directories hold a selected file (check --project, --prefix and --skip-prefix)"
         );
     }
     if a.coverage {
-        let cov = dirsum::coverage(pg, &units, o)?;
+        let cov = dirsum::coverage(pg, &units, &scope, o)?;
         if !a.out.is_empty() {
             let v = serde_json::json!({"coverage": cov, "units": units});
             std::fs::write(&a.out, serde_json::to_string_pretty(&v)?)
@@ -1280,7 +1283,7 @@ fn run_dirs(
         cfg.endpoint,
         cfg.concurrency
     ));
-    let res = dirsum::run(pg, units, o, &mut |label, s| {
+    let res = dirsum::run(pg, units, &scope, o, &mut |label, s| {
         let failed: usize = s.failed.values().sum();
         ctx.notice(format!(
             "  {label}: {} written, {} failed, {} not answered of {} in {:.0}s: {:.2} units/s, {:.0} prefill tok/s",

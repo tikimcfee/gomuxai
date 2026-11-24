@@ -64,6 +64,10 @@ pub struct Candidate {
     pub composed: Option<String>,
     /// A part's place: "part 2 of 3".
     pub part: String,
+    /// A directory unit composed while this many of its children in the
+    /// pass weren't settled yet (no summary, or a provisional one): its
+    /// summary is kept and shown, but a resume composes it again.
+    pub incomplete: usize,
 }
 
 /// Directory names that hold a program's output, not its source.
@@ -322,7 +326,9 @@ const CLOSE: &str = "<<<<< END OF FILE TEXT 7c41 >>>>>";
 // wording and versions, so file summaries keep their fingerprint.
 
 /// The directory prompt's version.
-pub const DIR_PROMPT_VERSION: &str = "dirs-1";
+/// dirs-2: a large directory is composed from its parts only (never its
+/// first entries), and withheld children are named, not described.
+pub const DIR_PROMPT_VERSION: &str = "dirs-2";
 /// The directory answers' checks' version (the file checks, a directory's
 /// lead taken off first).
 pub const DIR_CHECK_VERSION: &str = "dir-checks-1";

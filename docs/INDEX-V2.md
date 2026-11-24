@@ -383,17 +383,33 @@ writes them").
   seed (marked "its first line"). A directory whose entries don't fit the
   prompt's bound is cut into parts; each part is summarized from some of
   its entries and kept as status `part` (never shown, reused by a
-  resume), and the directory from its README, listing and parts. Units
-  go through the same run as files (one run per depth, and one for a
-  depth's parts): the same request bound, stops, stats and resume, under
-  their own fingerprint (prompt `dirs-1`, checks `dir-checks-1`: the file
+  resume), and the directory from its README, listing and parts only:
+  while a part is missing (failed, or not answered) the directory waits
+  with no row, and a resume (`--retry-failed` for a failed part) does it.
+  The README is scrubbed as it is read, like every input. A child under
+  `--skip-prefix` or `[summaries].withhold` is named in the listing and
+  nothing more (no entry, no README read from it), and a withheld
+  directory is no unit, so no parent is built from a withheld child.
+  Units go through the same run as files (one run per depth, and one for
+  a depth's parts): the same request bound, checks and resume, under
+  their own fingerprint (prompt `dirs-2`, checks `dir-checks-1`: the file
   checks, a "This directory" lead cut first, a child's name allowed as an
-  identifier), so file summaries keep theirs. A unit's content key is its
-  directory's, a hash of everything under it: its summary shows while
-  nothing under it changed, so run the pass after the files (a child
-  summarized again later doesn't stale its directory). `--coverage`
-  reports units by depth, how many are cut into parts and how many hold
-  no summarized child yet; `--limit N` samples N units (a preflight).
+  identifier), so file summaries keep theirs. The stops span the pass:
+  `--max-time` counts from its start, and the stall clock, the error
+  window and the connection errors in a row carry from one run to the
+  next. `--stats` is the pass's status (done of total units and parts,
+  errors, rate, time left, the wave running, each finished wave). A
+  unit's content key is its directory's, a hash of everything under it:
+  its summary shows while nothing under it changed, so run the pass after
+  the files (a child summarized again later doesn't stale its directory).
+  A unit composed while one of its children in the pass wasn't settled (no
+  summary and no failure, or a provisional summary of its own) is written
+  provisional (`meta.incomplete`, the count): shown, but not done, so a
+  resume composes it again; a preflight's sample leaves no parent built
+  from seeds for good. `--coverage` reports units by depth, how many are
+  cut into parts and how many hold no summarized child yet; `--limit N`
+  samples N units (a preflight, best in a scratch schema: its failures
+  count as done there).
 
 ## Reranker
 

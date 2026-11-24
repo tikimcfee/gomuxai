@@ -62,7 +62,7 @@ pub struct Options {
     /// other files are skipped as upstream.
     pub own_files: BTreeMap<String, HashSet<String>>,
     /// One file's deadline (default [`DEFAULT_FILE_TIMEOUT`]); a file past it
-    /// fails and is kept as failed, never retried by a resume.
+    /// is pending: no row, so a resume asks again.
     pub file_timeout: Option<Duration>,
     /// The watchdog: no file finished for this long stops the run.
     pub stall: Option<Duration>,
@@ -783,6 +783,73 @@ pub fn fingerprint(
     Ok((client, info, fp))
 }
 
+/// The stops' view across runs: one pass of several runs (the bottom-up
+/// pass's waves) shares one wall-clock cap, one stall clock, one error
+/// window and one count of connection errors in a row.
+pub struct Watch {
+    /// When the pass started: `max_wall` counts from here.
+    pub t0: Instant,
+    /// When a file last finished (or the pass started).
+    pub last_done: Instant,
+    /// The last `error_window` outcomes (true: failed or pending).
+    pub window: std::collections::VecDeque<bool>,
+    pub conn_errors: usize,
+}
+
+impl Default for Watch {
+    fn default() -> Self {
+        let now = Instant::now();
+        Watch {
+            t0: now,
+            last_done: now,
+            window: Default::default(),
+            conn_errors: 0,
+        }
+    }
+}
+
+impl Watch {
+    /// Why the pass must stop now, if it must: the cap reached, no file
+    /// finished for `stall`, or too many failures in the window.
+    pub fn verdict(&self, o: &Options) -> Option<String> {
+        let stall = o.stall.unwrap_or(Duration::MAX);
+        let max_wall = o.max_wall.unwrap_or(Duration::MAX);
+        if self.last_done.elapsed() > stall {
+            return Some(format!(
+                "no file finished for {} minutes",
+                stall.as_secs() / 60
+            ));
+        }
+        if self.t0.elapsed() > max_wall {
+            return Some(format!(
+                "the wall-clock cap of {} minutes was reached",
+                max_wall.as_secs() / 60
+            ));
+        }
+        if o.error_window > 0 && self.window.len() >= o.error_window {
+            let bad = self.window.iter().filter(|b| **b).count();
+            if bad as f64 > o.max_error_rate * self.window.len() as f64 {
+                return Some(format!(
+                    "{bad} of the last {} files failed (over {:.0}%)",
+                    self.window.len(),
+                    o.max_error_rate * 100.0
+                ));
+            }
+        }
+        None
+    }
+
+    fn push(&mut self, failed: bool, o: &Options) {
+        if o.error_window == 0 {
+            return;
+        }
+        self.window.push_back(failed);
+        while self.window.len() > o.error_window {
+            self.window.pop_front();
+        }
+    }
+}
+
 /// Summarizes `files` (already selected). Returns the run's stats; Err
 /// after the stats are saved when the server went away.
 pub fn run(
@@ -790,6 +857,19 @@ pub fn run(
     files: Vec<Candidate>,
     o: &Options,
     coverage: &Coverage,
+    progress: &mut dyn FnMut(&Stats),
+) -> Result<Stats> {
+    run_watched(pg, files, o, coverage, &mut Watch::default(), progress)
+}
+
+/// [`run`] as one of a pass's runs: its stops count from `watch`, which
+/// it leaves updated for the next.
+pub fn run_watched(
+    pg: &Pg,
+    files: Vec<Candidate>,
+    o: &Options,
+    coverage: &Coverage,
+    watch: &mut Watch,
     progress: &mut dyn FnMut(&Stats),
 ) -> Result<Stats> {
     let cfg = &pg.cfg.llm.summaries;
@@ -823,7 +903,8 @@ pub fn run(
         ..Default::default()
     };
 
-    // Done under this fingerprint: by content key, never by id alone.
+    // Done under this fingerprint: by content key, never by id alone. A
+    // directory composed before its children were settled is not done.
     let statuses: &[&str] = if o.retry_failed {
         &["live", "superseded", "part"]
     } else {
@@ -832,7 +913,8 @@ pub fn run(
     let statuses: Vec<String> = statuses.iter().map(|s| s.to_string()).collect();
     let done: HashSet<String> = pg
         .query(
-            "SELECT DISTINCT content_key FROM summaries WHERE fingerprint = $1 AND status = ANY($2)",
+            "SELECT DISTINCT content_key FROM summaries WHERE fingerprint = $1 AND status = ANY($2)
+               AND coalesce((meta->>'incomplete')::int, 0) = 0",
             &[&key, &statuses],
         )?
         .iter()
@@ -876,11 +958,15 @@ pub fn run(
         client: client.clone(),
         served: info.served.clone(),
         stop: AtomicBool::new(false),
-        conn_errors: AtomicUsize::new(0),
+        conn_errors: AtomicUsize::new(watch.conn_errors),
         abort: Mutex::new(None),
         paused_ms: AtomicUsize::new(0),
         file_timeout: o.file_timeout.unwrap_or(DEFAULT_FILE_TIMEOUT),
     });
+    // The pass stopped already (between its runs): nothing is asked.
+    if let Some(why) = watch.verdict(o) {
+        sh.give_up(why);
+    }
     let t0 = Instant::now();
     let next = Arc::new(AtomicUsize::new(0));
     let todo = Arc::new(todo);
@@ -933,26 +1019,19 @@ pub fn run(
     let mut last = Instant::now();
     let mut processed = 0usize;
     let mut stopped_at: Option<Instant> = None;
-    // The watchdog's view: when a file last finished, and the last
-    // `error_window` files' outcomes (true: failed).
-    let mut last_done = Instant::now();
-    let mut window: std::collections::VecDeque<bool> = std::collections::VecDeque::new();
-    let stall = o.stall.unwrap_or(Duration::MAX);
-    let max_wall = o.max_wall.unwrap_or(Duration::MAX);
+    // The watchdog's view (`watch`, the pass's): when a file last
+    // finished, and the last `error_window` files' outcomes.
     loop {
         let got = rx.recv_timeout(Duration::from_millis(500));
         if let Ok(out) = got {
             processed += 1;
             let settled = matches!(out, Outcome::Done { .. } | Outcome::Failed { .. });
             if settled {
-                last_done = Instant::now();
+                watch.last_done = Instant::now();
             }
             // Failed and pending files are the error rate's.
-            if (settled || matches!(out, Outcome::Pending { .. })) && o.error_window > 0 {
-                window.push_back(!matches!(out, Outcome::Done { .. }));
-                if window.len() > o.error_window {
-                    window.pop_front();
-                }
+            if settled || matches!(out, Outcome::Pending { .. }) {
+                watch.push(!matches!(out, Outcome::Done { .. }), o);
             }
             if write_err.is_none()
                 && let Err(e) = record(pg, &mut stats, out, run_id, &key, &writer)
@@ -966,29 +1045,12 @@ pub fn run(
         }
         // The watchdog. Time paused for the speech server isn't a stall.
         if !sh.cfg.pause_file.is_empty() && std::path::Path::new(&sh.cfg.pause_file).exists() {
-            last_done = Instant::now();
+            watch.last_done = Instant::now();
         }
-        if !sh.stopped() {
-            if last_done.elapsed() > stall {
-                sh.give_up(format!(
-                    "no file finished for {} minutes",
-                    stall.as_secs() / 60
-                ));
-            } else if t0.elapsed() > max_wall {
-                sh.give_up(format!(
-                    "the wall-clock cap of {} minutes was reached",
-                    max_wall.as_secs() / 60
-                ));
-            } else if o.error_window > 0 && window.len() >= o.error_window {
-                let bad = window.iter().filter(|b| **b).count();
-                if bad as f64 > o.max_error_rate * window.len() as f64 {
-                    sh.give_up(format!(
-                        "{bad} of the last {} files failed (over {:.0}%)",
-                        window.len(),
-                        o.max_error_rate * 100.0
-                    ));
-                }
-            }
+        if !sh.stopped()
+            && let Some(why) = watch.verdict(o)
+        {
+            sh.give_up(why);
         }
         if sh.stopped() {
             let at = *stopped_at.get_or_insert_with(Instant::now);
@@ -1004,6 +1066,7 @@ pub fn run(
         }
     }
     finished.store(true, Ordering::SeqCst);
+    watch.conn_errors = sh.conn_errors.load(Ordering::SeqCst);
     // Files started and never answered (their workers left behind).
     let started = next.load(Ordering::SeqCst).min(todo.len());
     stats.not_answered += started.saturating_sub(processed);
@@ -1149,7 +1212,8 @@ fn record(
             &tout,
             &ms,
             &json!({"salvaged": w.salvaged, "trimmed": e.trimmed, "redactions_in": w.redactions,
-                    "first_attempt_failed": w.first_fail, "unit": c.file_kind, "part": c.part}),
+                    "first_attempt_failed": w.first_fail, "unit": c.file_kind, "part": c.part,
+                    "incomplete": c.incomplete}),
         ],
     )?;
     tx.commit()?;
