@@ -353,9 +353,11 @@ pub struct Cards {
     /// The embedded card is clipped to this many characters.
     pub max_chars: usize,
     /// A model's asks (the questions an entity answers) in its card, its
-    /// vector and its text search; off leaves them out of all three (for an
-    /// A/B: switching rewrites the summarized entities' rows and re-queues
-    /// their vectors at the next sync).
+    /// vector and its text search. Off by default: they added nothing
+    /// measurable (docs/INDEX-V2.md), so they stay stored, and the
+    /// summarizer still writes them, but no list reads them. Switching
+    /// rewrites the summarized entities' rows and re-queues their vectors at
+    /// the next sync.
     pub asks: bool,
 }
 
@@ -365,7 +367,7 @@ impl Default for Cards {
             children: 200,
             symbols: 60,
             max_chars: 2000,
-            asks: true,
+            asks: false,
         }
     }
 }

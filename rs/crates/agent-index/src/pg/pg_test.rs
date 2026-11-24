@@ -941,11 +941,14 @@ fn side_corpora_and_groups() {
 }
 
 /// A model's asks go in the card, the vector's text and the text search,
-/// or (`[cards].asks` off) in none; `[summaries].withhold` keeps the seed.
+/// with `[cards].asks` on, or (off, the default) in none; `[summaries].withhold`
+/// keeps the seed.
 #[test]
 fn asks_switch_and_withhold() {
     let Some(t) = throwaway("asks") else { return };
-    let pg = &t.0;
+    let (url, _) = Pg::from_env().unwrap();
+    let on = crate::config::Config::parse("[cards]\nasks = true\n").unwrap();
+    let pg = &Pg::connect_with(&url, &t.0.schema, on).unwrap();
     let (_dir, ix) = fixture();
     super::sync::sync(&ix.conn, pg, false).unwrap();
     let key: String = pg
@@ -975,11 +978,10 @@ fn asks_switch_and_withhold() {
     super::sync::sync(&ix.conn, pg, false).unwrap();
     let (w, asks, with_key, found) = row(pg);
     assert_eq!((w.as_str(), asks.len(), found), ("model:test", 2, true));
-    let (url, _) = Pg::from_env().unwrap();
-    let off = crate::config::Config::parse("[cards]\nasks = false\n").unwrap();
-    let pg_off = Pg::connect_with(&url, &pg.schema, off).unwrap();
-    super::sync::sync(&ix.conn, &pg_off, false).unwrap();
-    let (w, asks, without_key, found) = row(&pg_off);
+    let pg_off = &t.0;
+    assert!(!pg_off.cfg.cards.asks, "off by default");
+    super::sync::sync(&ix.conn, pg_off, false).unwrap();
+    let (w, asks, without_key, found) = row(pg_off);
     assert_eq!((w.as_str(), asks.len(), found), ("model:test", 0, false));
     assert_ne!(
         with_key, without_key,

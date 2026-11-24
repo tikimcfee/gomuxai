@@ -171,7 +171,16 @@ fn summarize_resume_overlay_and_dead_server() {
     let (summary, asks, writer, queued): (String, Vec<String>, String, i64) =
         (e[0].get(0), e[0].get(1), e[0].get(2), e[0].get(3));
     assert!(summary.starts_with("Handles the parse part"));
-    assert_eq!(asks.len(), 4);
+    // [cards].asks is off by default: the asks are stored, not in the row.
+    assert!(asks.is_empty());
+    let stored: Vec<String> = pg
+        .query(
+            "SELECT asks FROM summaries WHERE entity_id = 'alpha:src/parse.rs' AND status = 'live'",
+            &[],
+        )
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(stored.len(), 4);
     assert!(writer.starts_with("model:"));
     assert_eq!(queued, 1);
     // A sync with nothing new writes nothing.
