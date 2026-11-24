@@ -1,0 +1,68 @@
+Run asks each question at its own scope, as the published numbers were
+measured: a question with a project is asked --under the project
+(index@scope), from it with the index's soft project prior (index@cwd), and
+of rg on its content words in the project (rg@scope). A question whose
+project is "*", or that lists "projects", is asked over the tree: the index
+from the dev root, rg over the tree, skipping what the index skips and the
+top-level directories it holds only shallow (rg@tree_all keeps those).
+--systems run_eval asks run_eval.py's systems instead (words and sentence,
+@project, @cwd and @root, and the most-cited files).
+
+Episodes ({session, cwd, searches, edits, ask}) are asked as run_eval.py
+asked them: each pattern the agent ran, by rg and fd (rg_patterns) and by the
+index on the pattern's words, in the session's project, from its directory
+and over the tree; the episode's patterns as one interleaved list; and its
+ask as plain words.
+
+Every search is --kind file, the top 50 entities cut to 10 files, a plain
+query cut to 12 words. The numbers: hit@1, @5 and @10, MRR@10, nDCG@10, the
+kinds' checks (multihop: every grade-2 file in the top 10; cross: a grade-2
+file from each project; why: a grade-2 prose file in the top 5), and
+latency; each configuration against rg and against each other, by a paired
+bootstrap (by question; by session for episodes) with Python's own random
+numbers, so the intervals are the Python harness's.
+
+--heldout spends a set: its sha256 goes in the spent-sets ledger
+(~/.local/share/gomuxai/eval/spent.jsonl), and a second run on it is
+refused unless --again says why. --prereg records a pre-registration's
+sha256. With a configuration whose reranker is on, the reranker's /health is
+checked before (a run refuses when it is down) and every 5 s; a failed poll
+marks the run. The eval never stops the reranker.
+
+Usage:
+  agent index eval run [flags]
+
+Examples:
+  agent index eval run --config base=~/.config/gomuxai/index.toml --qrels q.jsonl
+  agent index eval run --config a=a.toml --config b=b.toml --qrels q.jsonl --episodes sessions.jsonl
+  agent index eval run --config base=base.toml --qrels test.jsonl --heldout --prereg prereg.md
+
+Flags:
+      --again string            Why a spent held-out set is run again (recorded)
+      --allow-reranker-down     Run even when a configuration's reranker is down before the run (marked)
+      --config stringArray      A configuration to run, as NAME=FILE (repeatable)
+      --dev-root string         The tree the index crawled (default ~/dev)
+      --episodes stringArray    Session episodes, JSON lines (repeatable)
+      --heldout                 The sets are held out: spend them (a second run is refused without --again)
+  -h, --help                    help for run
+      --index-limit int         Entities asked of the index, cut to --limit files (default 50)
+      --kind string             The index's --kind ("" for none) (default "file")
+      --label string            A word for the run's directory name
+      --limit int               Files kept per answer (default 10)
+      --max-queries int         Per set, for a quick trial (0: all)
+      --max-words int           Words of a plain query given to either system (default 12)
+      --no-rg                   Leave the rg and fd baselines out
+      --no-tree                 Episodes: leave the whole-tree systems out (the slow part)
+      --out string              The run's directory (default ~/.local/share/gomuxai/eval/runs/TIME-LABEL)
+      --prereg string           The pre-registration this run follows (its sha256 is recorded)
+      --qrels stringArray       Graded questions, JSON lines (repeatable; the set is named for the file)
+      --resamples int           Bootstrap resamples (default 10000)
+      --seed int                Bootstrap seed (default 20261123)
+      --systems string          Questions: scope (each at its own scope), or run_eval (run_eval.py's systems) (default "scope")
+      --tree-skip stringArray   A top-level directory rg over the tree skips (repeatable; default: the projects the index holds only shallow)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -594,6 +594,67 @@ Every change runs the eval over all of the dev tree:
 Each run stores its config fingerprint beside its numbers, so a
 regression can be traced to the change that caused it.
 
+**Built: `agent index eval`** (`agent-index/src/eval/`). The Python
+harness (`eval/run_eval.py`, and the blind-3 and cross runners and
+scorers beside it) is now one command, so anyone can measure a change
+the same way:
+- **Configurations and sets.** `agent index eval run --config NAME=FILE`
+  (repeatable) runs graded question sets (`--qrels`) and session
+  episodes (`--episodes`).
+- **In process.** Every search goes through `serve::answer`, one store
+  per configuration, with no server and no copy of the binary. rg and
+  fd stay subprocesses, since they are what is measured.
+- **Scopes.** A question with a project is asked `--under` it
+  (`index@scope`), from it (`index@cwd`), and of rg in it. A question
+  with project `"*"`, or with a `"projects"` list, is asked over the
+  tree. Over the tree, rg skips what the index skips, plus the top-level
+  directories the index holds only shallow, which it reads from the
+  store. `--systems run_eval` asks run_eval.py's systems instead.
+- **Episodes.** They are asked as run_eval.py asked them: each pattern,
+  the episode's patterns interleaved, its ask, and the searches it took
+  to reach a target.
+- **Numbers.** hit@1, @5 and @10, MRR@10, nDCG@10, the kinds' checks
+  (multihop, cross, why), and latency. Each configuration is compared
+  with rg and with the others by a paired bootstrap (by question, or by
+  session for episodes). It draws Python's own random numbers (MT19937
+  as CPython seeds it), so an interval is the one the Python harness
+  printed.
+- **What a run leaves.** A directory (default
+  `~/.local/share/gomuxai/eval/runs/TIME-LABEL`) with `results.jsonl`
+  (ids, ranks, top files, grades and times, never a question's text),
+  `summary.md` and `run.json`. `run.json` records the build, each
+  configuration's fingerprint and sha256, each set's sha256, the
+  store's size before and after (the watcher is live), and the
+  reranker's health polls.
+- **Comparing runs.** `agent index eval compare A B` is cmp.py, with
+  its own resampling.
+- **Guards.** `--heldout` spends a set in a ledger of spent sets, and a
+  second run on it needs `--again "why"`. `--prereg` records a
+  pre-registration's sha256. A run with a reranker that is down before
+  it starts is refused. The eval's calls go to the query log as agent
+  `eval`, and `usage` leaves them out without `--all`.
+
+Parity, on idx with the reranker off, each set run by the Python harness
+and then by `agent index eval` with the same binary and configuration:
+- blind 2: 1,080 of 1,080 rows the same (its 9 systems, with its strata),
+  and every bootstrap interval;
+- blind 3: 180 of 180 the same (top 10, rank, grades), and
+  blind3_score.py's every number and interval. This is with blind3.sh's
+  four tree skips; the list read from the store adds a fifth (a large
+  project held shallow since), which moves two of rg's top 10s, at the
+  same ranks;
+- the cross dev 20: 60 of 60 the same;
+- the 734 episodes: the same 245 rows kept from 73 sessions, with the
+  same drops, and 3,798 of 3,798 rows the same (patterns, interleaved
+  episodes, asks, rg and fd); every interval and the searches-to-target
+  table are the same.
+
+With the reranker on, blind 3's ranks all agree, but 3 of 170 index top
+10s differ below the first hit (from position 4 or 5). Two Rust runs of
+the same differ as much (3 or 4 of 170, with the same ranks, recall@5
+and MRR), so that is the reranker's own run-to-run variance, not the
+harness.
+
 ## How v2 measured against rg
 
 Every set below was written before the system it tests was final. Each

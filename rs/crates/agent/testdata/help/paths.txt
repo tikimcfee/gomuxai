@@ -148,6 +148,10 @@ index tree
 index related
 index stale
 index usage
+index eval
+index eval run
+index eval compare
+index eval show
 index watch
 index touch
 index alias

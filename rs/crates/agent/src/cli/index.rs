@@ -71,6 +71,7 @@ pub fn def() -> Def {
             related_def(),
             stale_def(),
             usage_def(),
+            index_eval::eval_def(),
             watch_def(),
             touch_def(),
             alias_def(),
@@ -481,6 +482,8 @@ pub struct UsageArgs {
         help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
     )]
     pub config: String,
+    #[arg(long = "all", help = "Count the eval's own searches too (agent eval; left out by default)")]
+    pub all: bool,
     #[arg(long = "json", help = "Print the counts as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -499,7 +502,7 @@ fn run_usage(ctx: &Ctx, a: &UsageArgs) -> anyhow::Result<()> {
         anyhow::bail!("no query log: HOME isn't set and [log].path is empty");
     };
     let since = (!a.since.is_empty()).then_some(a.since.as_str());
-    let u = agent_index::qlog::usage(&path, since)
+    let u = agent_index::qlog::usage(&path, since, a.all)
         .map_err(|e| anyhow::anyhow!("reading the query log {}: {e}", path.display()))?;
     if a.json {
         return ctx.print_json(&serde_json::json!({"log": path, "enabled": cfg.log.enabled, "usage": u}));
@@ -549,6 +552,13 @@ fn run_usage(ctx: &Ctx, a: &UsageArgs) -> anyhow::Result<()> {
     }
     if u.unreadable > 0 {
         let _ = writeln!(o, "{} lines weren't entries (skipped).", u.unreadable);
+    }
+    if u.eval_left_out > 0 {
+        let _ = writeln!(
+            o,
+            "{} calls by the eval (agent eval) left out: --all counts them.",
+            u.eval_left_out
+        );
     }
     ctx.write_out(&o)
 }
@@ -3173,6 +3183,9 @@ fn run_lexicon_import(ctx: &Ctx, a: &LexiconImportArgs) -> anyhow::Result<()> {
     }
     ctx.write_out(&o)
 }
+
+#[path = "index_eval.rs"]
+mod index_eval;
 
 #[cfg(test)]
 #[path = "index_test.rs"]

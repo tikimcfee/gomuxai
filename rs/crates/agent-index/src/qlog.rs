@@ -92,11 +92,17 @@ pub struct Usage {
     /// Command → (median, p90) milliseconds.
     pub latency: BTreeMap<String, (f64, f64)>,
     pub errors: usize,
+    /// Calls by the eval (agent `eval`), left out unless asked for.
+    pub eval_left_out: usize,
 }
 
+/// The agent name an eval's searches go by: its calls aren't anyone's use.
+pub const EVAL_AGENT: &str = "eval";
+
 /// Reads the log (entries at or after `since`, an RFC 3339 prefix such as
-/// a date, when given). A missing file is an empty log.
-pub fn usage(path: &Path, since: Option<&str>) -> std::io::Result<Usage> {
+/// a date, when given; the eval's calls only with `with_eval`). A missing
+/// file is an empty log.
+pub fn usage(path: &Path, since: Option<&str>, with_eval: bool) -> std::io::Result<Usage> {
     let mut u = Usage::default();
     let f = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -114,6 +120,10 @@ pub fn usage(path: &Path, since: Option<&str>) -> std::io::Result<Usage> {
             continue;
         };
         if since.is_some_and(|s| e.time.as_str() < s) {
+            continue;
+        }
+        if !with_eval && e.agent.as_deref() == Some(EVAL_AGENT) {
+            u.eval_left_out += 1;
             continue;
         }
         u.entries += 1;
@@ -161,6 +171,7 @@ mod tests {
             (Some("a1"), "search", 30.0, None),
             (None, "show", 5.0, None),
             (Some("a2"), "search", 20.0, Some("boom".to_string())),
+            (Some(EVAL_AGENT), "search", 99.0, None),
         ] {
             let mut e = Entry::new(cmd, "numbat counter");
             e.agent = agent.map(str::to_string);
@@ -177,8 +188,11 @@ mod tests {
             .unwrap()
             .write_all(b"not json\n")
             .unwrap();
-        let u = usage(&path, None).unwrap();
+        let u = usage(&path, None, false).unwrap();
         assert_eq!((u.entries, u.unreadable, u.errors), (4, 1, 1));
+        // The eval's calls are left out, unless asked for.
+        assert_eq!(u.eval_left_out, 1);
+        assert_eq!(usage(&path, None, true).unwrap().entries, 5);
         assert_eq!(u.by_agent["a1"]["search"], 2);
         assert_eq!(u.by_agent["(none)"]["show"], 1);
         assert_eq!(u.latency["search"], (10.0, 30.0));
@@ -191,9 +205,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first.flags.len(), 1, "a default flag isn't recorded");
-        assert!(usage(&path, Some("2999")).unwrap().entries == 0);
+        assert!(usage(&path, Some("2999"), false).unwrap().entries == 0);
         // Never fails: a path under a file can't be written, and nothing is said.
         append(&path.join("under-a-file"), &first);
-        assert!(usage(&dir.path().join("none.jsonl"), None).unwrap().entries == 0);
+        assert!(
+            usage(&dir.path().join("none.jsonl"), None, false)
+                .unwrap()
+                .entries
+                == 0
+        );
     }
 }

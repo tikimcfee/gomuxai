@@ -1,0 +1,32 @@
+Eval runs question sets (--qrels: graded questions) and session episodes
+(--episodes) against one or more named configurations of the pg store, in
+process (no server, no copy of the binary), and against rg and fd, the
+baselines an agent already has. Each run gets a directory with results.jsonl
+(one line per set, query and system: ids, ranks, the top files, grades,
+times; never a question's text), summary.md and run.json.
+
+eval compare reads two runs and prints them against each other.
+
+Usage:
+  agent index eval [flags]
+  agent index eval [command]
+
+Examples:
+  agent index eval run --config base=base.toml --qrels questions.jsonl
+  agent index eval compare RUN_A RUN_B --set questions
+
+Available Commands:
+  run         Run question sets and episodes against named configurations and rg
+  compare     Compare two eval runs, set by set and system by system
+  show        Print an eval run's summary again
+
+Flags:
+  -h, --help   help for eval
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent index eval [command] --help" for more information about a command.

@@ -14,6 +14,7 @@ Examples:
   agent index usage --since 2026-11-24 --json
 
 Flags:
+      --all             Count the eval's own searches too (agent eval; left out by default)
       --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
   -h, --help            help for usage
       --json            Print the counts as JSON

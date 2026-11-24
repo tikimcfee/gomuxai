@@ -1,0 +1,26 @@
+Compare reads two runs' results.jsonl and, for each set and system both
+hold, prints each run's hit@1, @5 and @10, MRR@10, nDCG@10 and median times
+over the queries both answered, then first minus second for recall@5 and
+MRR@10 with a 95% interval (a bootstrap by question, or by session for
+episodes, as cmp.py drew it), how many queries flip in or out of the top 5,
+and how many top 10s differ.
+
+Usage:
+  agent index eval compare RUN_A RUN_B [flags]
+
+Examples:
+  agent index eval compare runs/A runs/B
+  agent index eval compare runs/A runs/B --set blind3 --system base:index@scope
+
+Flags:
+  -h, --help            help for compare
+      --resamples int   Bootstrap resamples (default 10000)
+      --seed int        Bootstrap seed (default 20261123)
+      --set string      Only this set
+      --system string   Only this system
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
