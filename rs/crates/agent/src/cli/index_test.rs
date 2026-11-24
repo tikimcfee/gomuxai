@@ -105,6 +105,26 @@ fn index_root_crawl_search_show_tree() {
     let out = must(&mut env, &["index", "search", "qqzzx"]);
     assert!(out.contains("No entity mentions `qqzzx`.") && out.contains("Nothing in the index matches"), "{out}");
 
+    // Each search went to the query log (under the test's HOME), with its
+    // top paths and the flags given; usage counts them.
+    let log = crate::cli::testenv::isolate()
+        .home
+        .join(".local/share/gomuxai/index-queries.jsonl");
+    let text = std::fs::read_to_string(&log).unwrap();
+    let mine: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["query"] == "place_words")
+        .collect();
+    assert_eq!(mine.len(), 1, "{text}");
+    assert_eq!(mine[0]["command"], "search");
+    assert_eq!(mine[0]["store"], "sqlite");
+    assert_eq!(mine[0]["flags"]["json"], true);
+    assert_eq!(mine[0]["top"][0], format!("{r}/alpha/word-wall/wall.rs:4"));
+    assert!(mine[0]["ms"].as_f64().unwrap() > 0.0);
+    let out = must(&mut env, &["index", "usage"]);
+    assert!(out.contains("By agent:") && out.contains("search "), "{out}");
+
     let file = format!("{r}/alpha/word-wall/wall.rs");
     let out = must(&mut env, &["index", "show", &file]);
     assert!(out.starts_with("alpha:word-wall/wall.rs   file (source, rust)  seed\n"), "{out}");

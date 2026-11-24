@@ -702,7 +702,17 @@ the code:
   `runs.fingerprint` records it for every sync and embed, with the whole
   configuration in `runs.config`; each logged query carries it in its
   `ms` JSON under `config` (a column of its own would be a migration,
-  which older binaries refuse; it comes with the next one).
+  which older binaries refuse; it comes with the next one). `[store]`,
+  `[ledger]` and `[log]` are left out of it: they say where things are,
+  not what a search answers.
+- **The query log**: each `search`, `show`, `tree` and `related` appends
+  one JSON line to `~/.local/share/gomuxai/index-queries.jsonl`: the
+  time, the agent (`AGENT_NAME`, else null), the command, its query and
+  the flags given, the top five paths, the time taken, the store and the
+  fingerprint (and the error, for a call that failed). It is one append
+  whose errors are dropped, so it never fails or slows a command.
+  `agent index usage` counts it by agent and command and by day, with
+  each command's median and p90 time.
 
 The sections:
 
@@ -721,6 +731,9 @@ The sections:
 | `[embedder]` | `model` (this build runs `bge-small-en-v1.5` only and refuses another), `model_dir` (the Hugging Face cache's when empty; `embed --model-dir` wins), `batch` (512) |
 | `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10), `doc_chars` (1,500), `max_tokens_per_doc` (512), `keep_pins` (true), `flat_depth` (50, a flat search's one pool); see "Reranker" |
 | `[serve]` | `workers` (4) and `socket` ("" for `index.sock` beside `index.db`) of `agent index serve` |
+| `[store]` | the store a command uses when neither `--store` nor `AGENT_INDEX_STORE` says: `kind` ("" is sqlite, or `pg`), and the pg store's `url` and `schema` when `AGENT_INDEX_PG` and `AGENT_INDEX_PG_SCHEMA` aren't set ("" is `idx`); not in the fingerprint |
+| `[ledger]` | `path`: the crawl's ledger ("" is `index.db` beside the binary's `gomuxai.db`, which ties it to one copy of the binary); every sync of a schema should use the ledger the schema was built from; not in the fingerprint |
+| `[log]` | the query log: `enabled` (true) and `path` ("" is `$XDG_DATA_HOME/gomuxai/index-queries.jsonl`); not in the fingerprint |
 | `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both`; `pushdown` (true: kind, project, corpus and `--under`'s projects filtered inside pg_search's query; see "Filters inside the BM25 query") |
 | `[llm.summaries]` | `agent index summarize`: `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature` (0.2), `max_tokens` (500), `timeout_ms`, `seed`, `concurrency` (48), `retries` and `backoff_ms`, `max_connection_errors` (8), the clip (`clip_tokens` 6,000; a doc's `doc_head_tokens` 4,500 and `doc_tail_tokens` 1,500; `max_input_tokens` 9,000; `preclip_chars`; `symbols_chars` 2,500), the floors (`min_chars` 200, `min_lines` 5, `json_max_bytes`), `pause_file`, `scrub_words`, and the served `dtype` and `quantization`; every key is in each summary's fingerprint |
 | `[llm.query_rewrite]` | `endpoint`, `model`, `temperature`, `max_tokens`, `timeout_ms`, for a later iteration |

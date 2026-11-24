@@ -48,6 +48,7 @@ Available Commands:
   tree        Print a map of a project or directory, with one-line summaries
   related     List an entity's neighbors by edge: dependencies, docs, tests, co-changes
   stale       List what needs a summary, by importance, and doc references that resolve nowhere
+  usage       Count the logged searches, shows, trees and relateds, by agent and by day
   alias       Add a person's label to an entity
   lexicon     Import an existing glossary as labels
 

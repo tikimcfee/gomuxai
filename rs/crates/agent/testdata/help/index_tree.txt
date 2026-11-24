@@ -18,7 +18,7 @@ Flags:
       --depth int       How many levels down (default 2)
   -h, --help            help for tree
       --json            Print the tree as JSON
-      --store string    sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)
+      --store string    sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite)
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

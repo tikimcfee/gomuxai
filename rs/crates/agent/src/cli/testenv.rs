@@ -169,6 +169,17 @@ pub fn isolate() -> &'static Isolation {
             std::env::set_var("TZ", "UTC");
             std::env::remove_var("AGENT_NAME");
             std::env::remove_var("AGENT_HOST");
+            // The index's configuration and query log follow HOME (under
+            // the temp dir), never a person's own: no store, config or log
+            // of theirs steers or receives a test's commands.
+            for k in [
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "AGENT_INDEX_CONFIG",
+                "AGENT_INDEX_STORE",
+            ] {
+                std::env::remove_var(k);
+            }
         }
         let _ = ISOLATION.set(Isolation {
             home,

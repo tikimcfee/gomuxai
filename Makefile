@@ -11,12 +11,16 @@ export CARGO_BUILD_JOBS ?= 12
 CARGO = cargo
 GOFLAGS = -trimpath
 LDFLAGS = -s -w
+# Cargo features of the installed agent. embed is the index's embedder (candle, pure Rust, and
+# bge-small from the Hugging Face cache): without it agent index search, serve and embed have
+# no semantic list and make no vectors. AGENT_FEATURES= builds without it.
+AGENT_FEATURES ?= embed
 
 all: build
 
 build:
 	@mkdir -p $(BUILD_DIR)
-	cd rs && $(CARGO) build --release -p agent
+	cd rs && $(CARGO) build --release -p agent $(if $(AGENT_FEATURES),--features $(AGENT_FEATURES))
 	cd busd && go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(CURDIR)/$(BUILD_DIR)/agent-busd .
 	cp $(CARGO_TARGET_DIR)/release/agent $(BUILD_DIR)/agent
 	@echo "Built $(BUILD_DIR)/agent and $(BUILD_DIR)/agent-busd"

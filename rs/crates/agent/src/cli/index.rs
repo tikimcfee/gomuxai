@@ -70,45 +70,161 @@ pub fn def() -> Def {
             tree_def(),
             related_def(),
             stale_def(),
+            usage_def(),
             alias_def(),
             lexicon_def(),
         ],
     )
 }
 
-/// This binary's index, beside its gomuxai.db.
-fn open(ctx: &Ctx) -> anyhow::Result<Index> {
-    let path = agent_index::path_beside(&ctx.cfg().database_path);
-    Index::open(&path)
+// `agent index usage`
+
+pub const USAGE: Doc = Doc {
+    use_line: "usage",
+    short: "Count the logged searches, shows, trees and relateds, by agent and by day",
+    long: r#"Usage reads the query log (one JSON line per search, show, tree and
+related: when, which agent from AGENT_NAME, the command, query and flags,
+the top five paths, the time taken and the configuration's fingerprint),
+and counts the calls by agent and command and by day, with each
+command's median and 90th percentile time. The log is
+~/.local/share/gomuxai/index-queries.jsonl ($XDG_DATA_HOME), or [log].path
+in the index configuration; [log].enabled = false stops it."#,
+    example: r#"  agent index usage
+  agent index usage --since 2026-11-24 --json"#,
+    args: ArgRule::None,
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct UsageArgs {
+    #[arg(
+        long = "since",
+        value_name = "string",
+        default_value = "",
+        help = "Only calls at or after this time (UTC, RFC 3339 or a prefix: 2026-11-24)"
+    )]
+    pub since: String,
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
+    pub config: String,
+    #[arg(long = "json", help = "Print the counts as JSON")]
+    pub json: bool,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
 }
 
-/// The Postgres store, when the command uses it: `--store pg`, or no
-/// `--store` and `AGENT_INDEX_STORE=pg`. Its URL is `AGENT_INDEX_PG`, its
-/// schema `AGENT_INDEX_PG_SCHEMA` (default idx). None for the SQLite store
-/// (the default). With Postgres, index.db is the crawl's ledger only: every
-/// query reads Postgres. Its tunables come from the configuration file
-/// (`--config`, else AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml;
-/// none there means the defaults).
-fn pg_store(store: &str, config: &str) -> anyhow::Result<Option<Pg>> {
-    let env = std::env::var("AGENT_INDEX_STORE").unwrap_or_default();
-    let which = if store.is_empty() {
-        env.as_str()
-    } else {
-        store
+fn usage_def() -> Def {
+    leaf!(USAGE, UsageArgs, run_usage)
+}
+
+fn run_usage(ctx: &Ctx, a: &UsageArgs) -> anyhow::Result<()> {
+    let cfg = load_config(&a.config)?.config;
+    let mut log = cfg.clone();
+    log.log.enabled = true;
+    let Some(path) = log.log_path() else {
+        anyhow::bail!("no query log: HOME isn't set and [log].path is empty");
     };
-    match which {
-        "" | "sqlite" => Ok(None),
-        "pg" | "postgres" => {
-            let Some((url, schema)) = Pg::from_env() else {
-                anyhow::bail!(
-                    "the pg store needs AGENT_INDEX_PG set to its database URL (postgresql:///DB?host=SOCKET_DIR)"
-                );
-            };
-            let cfg = load_config(config)?.config;
-            Ok(Some(Pg::connect_with(&url, &schema, cfg)?))
-        }
-        other => anyhow::bail!("--store takes sqlite or pg, not {other:?}"),
+    let since = (!a.since.is_empty()).then_some(a.since.as_str());
+    let u = agent_index::qlog::usage(&path, since)
+        .map_err(|e| anyhow::anyhow!("reading the query log {}: {e}", path.display()))?;
+    if a.json {
+        return ctx.print_json(&serde_json::json!({"log": path, "enabled": cfg.log.enabled, "usage": u}));
     }
+    let mut o = String::new();
+    let counts = |m: &std::collections::BTreeMap<String, usize>| {
+        m.iter()
+            .map(|(k, n)| format!("{k} {n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let _ = writeln!(
+        o,
+        "{} logged calls{} in {}{}.",
+        u.entries,
+        if u.entries > 0 {
+            format!(" from {} to {}", u.first, u.last)
+        } else {
+            String::new()
+        },
+        path.display(),
+        if u.errors > 0 {
+            format!(", {} of them failed", u.errors)
+        } else {
+            String::new()
+        }
+    );
+    if !cfg.log.enabled {
+        let _ = writeln!(o, "The log is off ([log].enabled = false).");
+    }
+    if !u.by_agent.is_empty() {
+        let w = u.by_agent.keys().map(String::len).max().unwrap_or(0);
+        let _ = writeln!(o, "By agent:");
+        for (agent, m) in &u.by_agent {
+            let _ = writeln!(o, "  {agent:<w$}  {}", counts(m));
+        }
+        let _ = writeln!(o, "By day (UTC):");
+        for (day, m) in &u.by_day {
+            let _ = writeln!(o, "  {day}  {}", counts(m));
+        }
+        let lat: Vec<String> = u
+            .latency
+            .iter()
+            .map(|(c, (p50, p90))| format!("{c} {p50:.0} / {p90:.0}"))
+            .collect();
+        let _ = writeln!(o, "Time, median / 90th percentile ms: {}.", lat.join("; "));
+    }
+    if u.unreadable > 0 {
+        let _ = writeln!(o, "{} lines weren't entries (skipped).", u.unreadable);
+    }
+    ctx.write_out(&o)
+}
+
+/// The index (the pg store's crawl ledger): the one the configuration
+/// names (`[ledger].path`, the configuration as Config::load finds it),
+/// else index.db beside this binary's gomuxai.db.
+fn open(ctx: &Ctx) -> anyhow::Result<Index> {
+    open_with(ctx, "")
+}
+
+/// [`open`], with `--config`.
+fn open_with(ctx: &Ctx, config: &str) -> anyhow::Result<Index> {
+    open_cfg(ctx, &load_config(config)?.config)
+}
+
+/// [`open`], with a configuration in hand.
+fn open_cfg(ctx: &Ctx, cfg: &agent_index::config::Config) -> anyhow::Result<Index> {
+    Index::open(&cfg.ledger_path(agent_index::path_beside(&ctx.cfg().database_path)))
+}
+
+/// The pg store's URL and schema (AGENT_INDEX_PG, else `[store].url`), or
+/// an error saying how to give one.
+fn pg_target(cfg: &agent_index::config::Config) -> anyhow::Result<(String, String)> {
+    cfg.pg_target().ok_or_else(|| {
+        anyhow::anyhow!(
+            "the pg store needs its database URL (postgresql:///DB?host=SOCKET_DIR): AGENT_INDEX_PG, or [store].url in the index configuration"
+        )
+    })
+}
+
+/// The Postgres store, when the command uses it: `--store pg`, else
+/// `AGENT_INDEX_STORE=pg`, else `[store].kind = "pg"` in the configuration.
+/// Its URL is `AGENT_INDEX_PG`, else `[store].url`; its schema
+/// `AGENT_INDEX_PG_SCHEMA`, else `[store].schema`, else idx. None for the
+/// SQLite store (the default). With Postgres, index.db is the crawl's
+/// ledger only: every query reads Postgres. Its tunables come from the
+/// configuration file (`--config`, else AGENT_INDEX_CONFIG, else
+/// ~/.config/gomuxai/index.toml; none there means the defaults).
+fn pg_store(store: &str, config: &str) -> anyhow::Result<Option<Pg>> {
+    let cfg = load_config(config)?.config;
+    if !cfg.wants_pg(store)? {
+        return Ok(None);
+    }
+    let (url, schema) = pg_target(&cfg)?;
+    Ok(Some(Pg::connect_with(&url, &schema, cfg)?))
 }
 
 /// The configuration: `--config` when given, else as Config::load finds it.
@@ -619,7 +735,7 @@ pub struct EmbedArgs {
         long = "store",
         value_name = "string",
         default_value = "",
-        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite)"
     )]
     pub store: String,
     #[arg(
@@ -647,7 +763,7 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
     // products on one thread (see embed::single_threaded_products).
     unsafe { embed::single_threaded_products() };
     let pg = pg_store(&a.store, &a.config)?;
-    let mut ix = open(ctx)?;
+    let mut ix = open_with(ctx, &a.config)?;
     match &pg {
         Some(pg) => {
             if agent_index::pg::view::project_count(pg)? == 0 {
@@ -808,7 +924,7 @@ pub struct CrawlArgs {
         long = "store",
         value_name = "string",
         default_value = "",
-        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite); pg syncs the crawl into Postgres"
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite); pg syncs the crawl into Postgres"
     )]
     pub store: String,
     #[arg(
@@ -936,7 +1052,7 @@ fn sync_def() -> Def {
 }
 
 fn run_sync(ctx: &Ctx, a: &SyncArgs) -> anyhow::Result<()> {
-    let ix = open(ctx)?;
+    let ix = open_with(ctx, &a.config)?;
     let Some(pg) = pg_store("pg", &a.config)? else {
         unreachable!("pg asked")
     };
@@ -1291,7 +1407,7 @@ fn run_dirs(
         ));
     });
     if !a.no_sync {
-        let ix = open(ctx)?;
+        let ix = open_cfg(ctx, &pg.cfg)?;
         sync_pg(ctx, &ix, pg, false)?;
     }
     let runs = res?;
@@ -1402,7 +1518,7 @@ fn run_summarize(ctx: &Ctx, a: &SummarizeArgs) -> anyhow::Result<()> {
     });
     // What was written shows after a sync, whether or not the run finished.
     if !a.no_sync {
-        let ix = open(ctx)?;
+        let ix = open_cfg(ctx, &pg.cfg)?;
         sync_pg(ctx, &ix, &pg, false)?;
     }
     let stats = res?;
@@ -1445,7 +1561,7 @@ fn secs(ms: u128) -> String {
 }
 
 fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
-    let mut ix = open(ctx)?;
+    let mut ix = open_with(ctx, &a.config)?;
     let opts = CrawlOptions {
         project: (!a.project.is_empty()).then(|| a.project.clone()),
         rebuild: a.rebuild,
@@ -1634,7 +1750,7 @@ pub struct SearchArgs {
         long = "store",
         value_name = "string",
         default_value = "",
-        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite)"
     )]
     pub store: String,
     #[arg(
@@ -1740,19 +1856,48 @@ fn cwd_string() -> String {
         .into_owned()
 }
 
-/// Whether a command runs on the pg store (`--store`, else
-/// AGENT_INDEX_STORE), without connecting.
-fn wants_pg(store: &str) -> anyhow::Result<bool> {
-    let env = std::env::var("AGENT_INDEX_STORE").unwrap_or_default();
-    match if store.is_empty() {
-        env.as_str()
-    } else {
-        store
-    } {
-        "" | "sqlite" => Ok(false),
-        "pg" | "postgres" => Ok(true),
-        other => anyhow::bail!("--store takes sqlite or pg, not {other:?}"),
+/// Logs one read command to the query log ([log]; agent_index::qlog):
+/// how long it took, its top paths or its error. Never fails.
+fn log_call(
+    cfg: &agent_index::config::Config,
+    mut e: agent_index::qlog::Entry,
+    t0: std::time::Instant,
+    pg: bool,
+    res: &anyhow::Result<Vec<String>>,
+) {
+    let Some(path) = cfg.log_path() else {
+        return;
+    };
+    e.ms = (t0.elapsed().as_secs_f64() * 1e4).round() / 10.0;
+    e.fingerprint = cfg.fingerprint();
+    e.store = if pg { "pg" } else { "sqlite" }.to_string();
+    match res {
+        Ok(top) => e.top = top.iter().take(5).cloned().collect(),
+        Err(err) => e.error = Some(format!("{err:#}")),
     }
+    agent_index::qlog::append(&path, &e);
+}
+
+/// The first paths of a search's answer (its flat list).
+fn top_paths(r: &agent_index::SearchResult) -> Vec<String> {
+    r.hits
+        .iter()
+        .take(5)
+        .map(|h| {
+            if h.line > 0 {
+                format!("{}:{}", h.path, h.line)
+            } else {
+                h.path.clone()
+            }
+        })
+        .collect()
+}
+
+/// The flags every read command shares, for the log.
+fn log_common(e: &mut agent_index::qlog::Entry, store: &str, config: &str, json: bool) {
+    e.flag("store", store, store.is_empty());
+    e.flag("config", config, config.is_empty());
+    e.flag("json", json, !json);
 }
 
 /// The warm process's socket: [serve].socket, else index.sock in the data
@@ -1766,10 +1911,33 @@ fn serve_socket(ctx: &Ctx, cfg: &agent_index::config::Config) -> PathBuf {
 }
 
 fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
-    if wants_pg(&a.store)? {
-        return run_search_pg(ctx, a);
-    }
-    let ix = open(ctx)?;
+    let t0 = std::time::Instant::now();
+    let cfg = load_config(&a.config)?.config;
+    let pg = cfg.wants_pg(&a.store)?;
+    let res = if pg {
+        run_search_pg(ctx, a)
+    } else {
+        run_search_sqlite(ctx, a)
+    };
+    let mut e = agent_index::qlog::Entry::new("search", &a.args.join(" "));
+    e.flag("kind", a.kind.as_str(), a.kind.is_empty());
+    e.flag("project", a.project.as_str(), a.project.is_empty());
+    e.flag("under", a.under.as_str(), a.under.is_empty());
+    e.flag("limit", a.limit, a.limit == 0);
+    e.flag("budget", a.budget, a.budget == 1500);
+    e.flag("explain", a.explain, !a.explain);
+    e.flag("lexical", a.lexical.as_str(), a.lexical.is_empty());
+    e.flag("corpus", a.corpus.as_str(), a.corpus.is_empty());
+    e.flag("rerank", a.rerank, !a.rerank);
+    e.flag("cold", a.cold, !a.cold);
+    log_common(&mut e, &a.store, &a.config, a.json);
+    log_call(&cfg, e, t0, pg, &res);
+    res.map(|_| ())
+}
+
+/// Search on the sqlite store; the answer's top paths.
+fn run_search_sqlite(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<Vec<String>> {
+    let ix = open_with(ctx, &a.config)?;
     require_projects(&ix)?;
     let under = if a.under.is_empty() {
         String::new()
@@ -1795,8 +1963,10 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         Some(sem) => agent_index::search(&ix.conn, &o, sem.as_ref())?,
         None => agent_index::search(&ix.conn, &o, &NoSemantic)?,
     };
+    let top = top_paths(&r);
     if a.json {
-        return ctx.print_json(&r);
+        ctx.print_json(&r)?;
+        return Ok(top);
     }
     let (text, left) = view::render_search(&r, int_flag(a.budget, "budget")?, a.explain);
     let mut out = text;
@@ -1821,14 +1991,15 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         &a.project
     };
     behind_hint(ctx, &ix, project);
-    Ok(())
+    Ok(top)
 }
 
 /// Search on the pg store: the same options, output and `--json` shape as
 /// the sqlite store's, every list read from Postgres. The warm process
 /// answers when it is up (and runs this build under this configuration);
-/// otherwise the search runs cold, through the same code.
-fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
+/// otherwise the search runs cold, through the same code. The answer's top
+/// paths.
+fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<Vec<String>> {
     use agent_index::pg::serve;
     let loaded = load_config(&a.config)?;
     let lexical = if a.lexical.is_empty() {
@@ -1866,11 +2037,7 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
                     "searched cold: the index server didn't answer ({e:#})"
                 ));
             }
-            let Some((url, schema)) = Pg::from_env() else {
-                anyhow::bail!(
-                    "the pg store needs AGENT_INDEX_PG set to its database URL (postgresql:///DB?host=SOCKET_DIR)"
-                );
-            };
+            let (url, schema) = pg_target(&loaded.config)?;
             let pg = Pg::connect_with(&url, &schema, loaded.config.clone())?;
             if agent_index::pg::view::project_count(&pg)? == 0 {
                 anyhow::bail!(
@@ -1884,8 +2051,10 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
     let Some(r) = resp.result else {
         anyhow::bail!("the search gave no result");
     };
+    let top = top_paths(&r);
     if a.json {
-        return ctx.print_json(&r);
+        ctx.print_json(&r)?;
+        return Ok(top);
     }
     let budget = int_flag(a.budget, "budget")?;
     if let Some(groups) = &r.groups {
@@ -1893,7 +2062,7 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         if let Some(h) = resp.hint {
             ctx.hint(h);
         }
-        return Ok(());
+        return Ok(top);
     }
     let (text, left) = view::render_search(&r, budget, a.explain);
     let mut out = text;
@@ -1932,7 +2101,7 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
     if let Some(h) = resp.hint {
         ctx.hint(h);
     }
-    Ok(())
+    Ok(top)
 }
 
 /// A grouped answer as text: each corpus under its name, fitted to its
@@ -2041,11 +2210,7 @@ fn serve_def() -> Def {
 fn run_serve(ctx: &Ctx, a: &ServeArgs) -> anyhow::Result<()> {
     use agent_index::pg::serve;
     let loaded = load_config(&a.config)?;
-    let Some((url, schema)) = Pg::from_env() else {
-        anyhow::bail!(
-            "the pg store needs AGENT_INDEX_PG set to its database URL (postgresql:///DB?host=SOCKET_DIR)"
-        );
-    };
+    let (url, schema) = pg_target(&loaded.config)?;
     let socket = serve_socket(ctx, &loaded.config);
     // The embedder loaded now, not at the first search.
     let embed = query_embedder(ctx, &loaded.config);
@@ -2114,7 +2279,7 @@ pub struct ShowArgs {
         long = "store",
         value_name = "string",
         default_value = "",
-        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite)"
     )]
     pub store: String,
     #[arg(
@@ -2148,22 +2313,31 @@ fn pg_read(store: &str, config: &str) -> anyhow::Result<Option<Pg>> {
 }
 
 fn run_show(ctx: &Ctx, a: &ShowArgs) -> anyhow::Result<()> {
+    let t0 = std::time::Instant::now();
+    let cfg = load_config(&a.config)?.config;
     let arg = a.args.first().map(String::as_str).unwrap_or(".");
-    if let Some(pg) = pg_read(&a.store, &a.config)? {
-        let s =
-            agent_index::pg::view::show(&pg, agent_index::pg::view::resolve(&pg, arg, &cwd()?)?)?;
-        if a.json {
-            return ctx.print_json(&s);
-        }
-        return ctx.write_out(&view::render_show(&s));
-    }
-    let ix = open(ctx)?;
-    require_projects(&ix)?;
-    let s = view::show(&ix.conn, resolve(&ix, arg)?)?;
+    let res = show(ctx, a, arg);
+    let mut e = agent_index::qlog::Entry::new("show", arg);
+    log_common(&mut e, &a.store, &a.config, a.json);
+    log_call(&cfg, e, t0, cfg.wants_pg(&a.store)?, &res);
+    res.map(|_| ())
+}
+
+/// Show; the entity's path.
+fn show(ctx: &Ctx, a: &ShowArgs, arg: &str) -> anyhow::Result<Vec<String>> {
+    let s = if let Some(pg) = pg_read(&a.store, &a.config)? {
+        agent_index::pg::view::show(&pg, agent_index::pg::view::resolve(&pg, arg, &cwd()?)?)?
+    } else {
+        let ix = open_with(ctx, &a.config)?;
+        require_projects(&ix)?;
+        view::show(&ix.conn, resolve(&ix, arg)?)?
+    };
     if a.json {
-        return ctx.print_json(&s);
+        ctx.print_json(&s)?;
+    } else {
+        ctx.write_out(&view::render_show(&s))?;
     }
-    ctx.write_out(&view::render_show(&s))
+    Ok(vec![s.entity.path.clone()])
 }
 
 // `agent index tree`
@@ -2193,7 +2367,7 @@ pub struct TreeArgs {
         long = "store",
         value_name = "string",
         default_value = "",
-        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite)"
     )]
     pub store: String,
     #[arg(
@@ -2214,6 +2388,20 @@ fn tree_def() -> Def {
 }
 
 fn run_tree(ctx: &Ctx, a: &TreeArgs) -> anyhow::Result<()> {
+    let t0 = std::time::Instant::now();
+    let cfg = load_config(&a.config)?.config;
+    let res = tree(ctx, a);
+    let mut e =
+        agent_index::qlog::Entry::new("tree", a.args.first().map(String::as_str).unwrap_or(""));
+    e.flag("depth", a.depth, a.depth == 2);
+    e.flag("budget", a.budget, a.budget == 1500);
+    log_common(&mut e, &a.store, &a.config, a.json);
+    log_call(&cfg, e, t0, cfg.wants_pg(&a.store)?, &res);
+    res.map(|_| ())
+}
+
+/// Tree; the path it maps.
+fn tree(ctx: &Ctx, a: &TreeArgs) -> anyhow::Result<Vec<String>> {
     let (depth, budget) = (int_flag(a.depth, "depth")?, int_flag(a.budget, "budget")?);
     let (t, head) = if let Some(pg) = pg_read(&a.store, &a.config)? {
         use agent_index::pg::view as pgview;
@@ -2229,7 +2417,7 @@ fn run_tree(ctx: &Ctx, a: &TreeArgs) -> anyhow::Result<()> {
         };
         (t, head)
     } else {
-        let ix = open(ctx)?;
+        let ix = open_with(ctx, &a.config)?;
         require_projects(&ix)?;
         let id = match a.args.first() {
             Some(arg) => resolve(&ix, arg)?.id,
@@ -2242,8 +2430,10 @@ fn run_tree(ctx: &Ctx, a: &TreeArgs) -> anyhow::Result<()> {
         };
         (t, head)
     };
+    let top: Vec<String> = head.iter().map(|(e, _)| e.path.clone()).collect();
     if a.json {
-        return ctx.print_json(&t);
+        ctx.print_json(&t)?;
+        return Ok(top);
     }
     let mut o = String::new();
     if let Some((e, s)) = head {
@@ -2261,7 +2451,8 @@ fn run_tree(ctx: &Ctx, a: &TreeArgs) -> anyhow::Result<()> {
             t.left_out, a.budget
         );
     }
-    ctx.write_out(&o)
+    ctx.write_out(&o)?;
+    Ok(top)
 }
 
 // `agent index related`
@@ -2286,7 +2477,7 @@ pub struct RelatedArgs {
         long = "store",
         value_name = "string",
         default_value = "",
-        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite)"
     )]
     pub store: String,
     #[arg(
@@ -2307,17 +2498,38 @@ fn related_def() -> Def {
 }
 
 fn run_related(ctx: &Ctx, a: &RelatedArgs) -> anyhow::Result<()> {
+    let t0 = std::time::Instant::now();
+    let cfg = load_config(&a.config)?.config;
+    let res = related(ctx, a);
+    let mut e = agent_index::qlog::Entry::new("related", &a.args[0]);
+    e.flag("budget", a.budget, a.budget == 1500);
+    log_common(&mut e, &a.store, &a.config, a.json);
+    log_call(&cfg, e, t0, cfg.wants_pg(&a.store)?, &res);
+    res.map(|_| ())
+}
+
+/// Related; its neighbors' ids, heaviest edges first.
+fn related(ctx: &Ctx, a: &RelatedArgs) -> anyhow::Result<Vec<String>> {
     let r = if let Some(pg) = pg_read(&a.store, &a.config)? {
         let res = agent_index::pg::view::resolve(&pg, &a.args[0], &cwd()?)?;
         agent_index::pg::view::related(&pg, &res.id)?
     } else {
-        let ix = open(ctx)?;
+        let ix = open_with(ctx, &a.config)?;
         require_projects(&ix)?;
         let res = resolve(&ix, &a.args[0])?;
         view::related(&ix.conn, &res.id)?
     };
+    let mut near: Vec<(f64, String)> = r
+        .groups
+        .values()
+        .flatten()
+        .map(|(edge, b)| (edge.weight, b.id.clone()))
+        .collect();
+    near.sort_by(|x, y| y.0.total_cmp(&x.0));
+    let top: Vec<String> = near.into_iter().map(|(_, p)| p).take(5).collect();
     if a.json {
-        return ctx.print_json(&r);
+        ctx.print_json(&r)?;
+        return Ok(top);
     }
     let (text, left) = view::render_related(&r, int_flag(a.budget, "budget")?);
     let mut o = format!("Related to {}:\n", r.id);
@@ -2330,7 +2542,8 @@ fn run_related(ctx: &Ctx, a: &RelatedArgs) -> anyhow::Result<()> {
     if left > 0 {
         let _ = writeln!(o, "{left} more left out to fit --budget {}.", a.budget);
     }
-    ctx.write_out(&o)
+    ctx.write_out(&o)?;
+    Ok(top)
 }
 
 // `agent index stale`

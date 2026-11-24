@@ -30,7 +30,7 @@ Flags:
       --json               Print the report as JSON
       --limit int          Stop after this many entities (0: all)
       --model-dir string   The model's directory (default: the Hugging Face cache's bge-small-en-v1.5)
-      --store string       sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)
+      --store string       sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite)
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

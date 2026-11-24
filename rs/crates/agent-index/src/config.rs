@@ -49,6 +49,68 @@ pub struct Config {
     /// written: that is `[llm.summaries]`).
     pub summaries: SummaryPolicy,
     pub sessions: Sessions,
+    /// Which store the commands use, and where it is. With the next two,
+    /// left out of the fingerprint: they change where things are, not what
+    /// a search answers.
+    pub store: Store,
+    /// Where the crawl's ledger lives.
+    pub ledger: Ledger,
+    /// The query log.
+    pub log: Log,
+}
+
+/// The store the commands use when neither `--store` nor
+/// `AGENT_INDEX_STORE` says.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct Store {
+    /// `sqlite` or `pg`; "" is sqlite.
+    pub kind: String,
+    /// The pg store's database URL (`postgresql:///DB?host=SOCKET_DIR`),
+    /// when `AGENT_INDEX_PG` isn't set.
+    pub url: String,
+    /// Its schema, when `AGENT_INDEX_PG_SCHEMA` isn't set; "" is `idx`.
+    pub schema: String,
+}
+
+/// The crawl's SQLite ledger (index.db).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct Ledger {
+    /// Its path ("~/" is the home directory); "" is `index.db` beside the
+    /// binary's `gomuxai.db`, which ties the ledger to one copy of the
+    /// binary. Every sync of a schema should use the one ledger it was built
+    /// from.
+    pub path: String,
+}
+
+/// The query log: one JSON line per search, show, tree and related, for
+/// `agent index usage`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Log {
+    pub enabled: bool,
+    /// The file ("~/" is the home directory); "" is
+    /// `$XDG_DATA_HOME/gomuxai/index-queries.jsonl`
+    /// (`~/.local/share/gomuxai/index-queries.jsonl`).
+    pub path: String,
+}
+
+impl Default for Log {
+    fn default() -> Self {
+        Log {
+            enabled: true,
+            path: String::new(),
+        }
+    }
+}
+
+/// A path from the configuration: "~/" is the home directory.
+fn home_path(p: &str) -> PathBuf {
+    match (p.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(p),
+    }
 }
 
 /// The session corpus (docs/INDEX-V2.md, "Sessions as full text").
@@ -573,6 +635,9 @@ pub struct Loaded {
     pub path: Option<PathBuf>,
 }
 
+/// The sections [`Config::fingerprint`] leaves out.
+const NOT_FINGERPRINTED: &[&str] = &["store", "ledger", "log"];
+
 /// The default file: `$XDG_CONFIG_HOME/gomuxai/index.toml`, else
 /// `~/.config/gomuxai/index.toml`.
 pub fn default_path() -> Option<PathBuf> {
@@ -614,7 +679,63 @@ impl Config {
         if self.lists.values().any(|w| !w.is_finite() || *w < 0.0) {
             bail!("lists: a list's weight must be a number of 0 or more");
         }
+        if !["", "sqlite", "pg", "postgres"].contains(&self.store.kind.as_str()) {
+            bail!("store.kind takes sqlite or pg, not {:?}", self.store.kind);
+        }
         Ok(())
+    }
+
+    /// Whether the pg store is the one to use: `flag` (`--store`), else
+    /// `AGENT_INDEX_STORE`, else `[store].kind`; sqlite when none says.
+    pub fn wants_pg(&self, flag: &str) -> Result<bool> {
+        let env = std::env::var("AGENT_INDEX_STORE").unwrap_or_default();
+        let which = [flag, env.as_str(), self.store.kind.as_str()]
+            .into_iter()
+            .find(|s| !s.is_empty())
+            .unwrap_or("");
+        match which {
+            "" | "sqlite" => Ok(false),
+            "pg" | "postgres" => Ok(true),
+            other => bail!("--store takes sqlite or pg, not {other:?}"),
+        }
+    }
+
+    /// The pg store's URL and schema: `AGENT_INDEX_PG`, else
+    /// `[store].url`; `AGENT_INDEX_PG_SCHEMA`, else `[store].schema`, else
+    /// `idx`. None without a URL.
+    pub fn pg_target(&self) -> Option<(String, String)> {
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let url = env(crate::pg::URL_ENV)
+            .or_else(|| (!self.store.url.trim().is_empty()).then(|| self.store.url.clone()))?;
+        let schema = env(crate::pg::SCHEMA_ENV)
+            .or_else(|| (!self.store.schema.is_empty()).then(|| self.store.schema.clone()))
+            .unwrap_or_else(|| crate::pg::DEFAULT_SCHEMA.to_string());
+        Some((url, schema))
+    }
+
+    /// The ledger's path: `[ledger].path`, else `beside` (index.db beside
+    /// the binary's gomuxai.db).
+    pub fn ledger_path(&self, beside: PathBuf) -> PathBuf {
+        if self.ledger.path.is_empty() {
+            beside
+        } else {
+            home_path(&self.ledger.path)
+        }
+    }
+
+    /// The query log's file, when the log is on.
+    pub fn log_path(&self) -> Option<PathBuf> {
+        if !self.log.enabled {
+            return None;
+        }
+        if !self.log.path.is_empty() {
+            return Some(home_path(&self.log.path));
+        }
+        let base = match std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+            Some(x) => PathBuf::from(x),
+            None => PathBuf::from(std::env::var_os("HOME")?).join(".local/share"),
+        };
+        Some(base.join("gomuxai").join("index-queries.jsonl"))
     }
 
     /// Reads `path`. None: `AGENT_INDEX_CONFIG`, else the default file,
@@ -656,9 +777,17 @@ impl Config {
     }
 
     /// A short hash of the resolved values: equal configurations have equal
-    /// fingerprints, however their files are written.
+    /// fingerprints, however their files are written. `[store]`, `[ledger]`
+    /// and `[log]` are left out: they change no answer (and a configuration
+    /// from before them keeps its fingerprint).
     pub fn fingerprint(&self) -> String {
-        let v = serde_json::to_vec(self).unwrap_or_default();
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        if let Some(m) = v.as_object_mut() {
+            for k in NOT_FINGERPRINTED {
+                m.remove(*k);
+            }
+        }
+        let v = serde_json::to_vec(&v).unwrap_or_default();
         Sha256::digest(&v)
             .iter()
             .take(6)
@@ -737,5 +866,59 @@ mod tests {
         let l = Config::load(Some(&p)).unwrap();
         assert_eq!(l.config.search.limit, 20);
         assert_eq!(l.path.as_deref(), Some(p.as_path()));
+    }
+
+    /// Where things are ([store], [ledger], [log]) is no part of the
+    /// fingerprint; the store comes from the file when nothing else says.
+    #[test]
+    fn store_ledger_and_log() {
+        let d = Config::default();
+        let c = Config::parse(
+            "[store]\nkind = \"pg\"\nurl = \"postgresql:///db?host=/run/pg\"\nschema = \"idx_t\"\n\
+             [ledger]\npath = \"~/ledger/index.db\"\n[log]\nenabled = false\n",
+        )
+        .unwrap();
+        assert_eq!(c.fingerprint(), d.fingerprint());
+        assert!(Config::parse("[store]\nkind = \"mysql\"\n").is_err());
+        // --store wins; then AGENT_INDEX_STORE (unset in tests unless the
+        // runner sets it); then the file.
+        assert!(!c.wants_pg("sqlite").unwrap());
+        assert!(c.wants_pg("pg").unwrap());
+        if std::env::var("AGENT_INDEX_STORE")
+            .unwrap_or_default()
+            .is_empty()
+        {
+            assert!(c.wants_pg("").unwrap());
+            assert!(!d.wants_pg("").unwrap());
+        }
+        let (url, schema) = c.pg_target().unwrap();
+        match std::env::var(crate::pg::URL_ENV)
+            .ok()
+            .filter(|u| !u.trim().is_empty())
+        {
+            Some(env) => assert_eq!(url, env),
+            None => assert_eq!(url, "postgresql:///db?host=/run/pg"),
+        }
+        if std::env::var(crate::pg::SCHEMA_ENV)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            assert_eq!(schema, "idx_t");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(
+                c.ledger_path(PathBuf::from("/x/index.db")),
+                PathBuf::from(home).join("ledger/index.db")
+            );
+        }
+        assert_eq!(
+            d.ledger_path(PathBuf::from("/x/index.db")),
+            PathBuf::from("/x/index.db")
+        );
+        assert_eq!(c.log_path(), None, "off");
+        assert!(
+            d.log_path()
+                .is_none_or(|p| p.ends_with("gomuxai/index-queries.jsonl"))
+        );
     }
 }

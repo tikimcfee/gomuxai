@@ -43,7 +43,7 @@ Flags:
       --limit int        At most this many results (default 10; the pg store's search.limit)
       --project string   Only this project
       --rerank           pg store: rerank the top candidates with the cross-encoder ([reranker] in the configuration), even when it is off there
-      --store string     sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)
+      --store string     sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite)
       --under string     Only entities at or under this path
 
 Global Flags:

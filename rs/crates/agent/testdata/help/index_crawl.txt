@@ -31,7 +31,7 @@ Flags:
       --json             Print the crawl's report as JSON
       --project string   Only this project
       --rebuild          Read every file again, not only what changed
-      --store string     sqlite or pg (default: AGENT_INDEX_STORE, else sqlite); pg syncs the crawl into Postgres
+      --store string     sqlite or pg (default: AGENT_INDEX_STORE, else [store].kind in the index configuration, else sqlite); pg syncs the crawl into Postgres
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

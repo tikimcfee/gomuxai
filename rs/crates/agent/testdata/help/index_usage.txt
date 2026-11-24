@@ -1,0 +1,26 @@
+Usage reads the query log (one JSON line per search, show, tree and
+related: when, which agent from AGENT_NAME, the command, query and flags,
+the top five paths, the time taken and the configuration's fingerprint),
+and counts the calls by agent and command and by day, with each
+command's median and 90th percentile time. The log is
+~/.local/share/gomuxai/index-queries.jsonl ($XDG_DATA_HOME), or [log].path
+in the index configuration; [log].enabled = false stops it.
+
+Usage:
+  agent index usage [flags]
+
+Examples:
+  agent index usage
+  agent index usage --since 2026-11-24 --json
+
+Flags:
+      --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+  -h, --help            help for usage
+      --json            Print the counts as JSON
+      --since string    Only calls at or after this time (UTC, RFC 3339 or a prefix: 2026-11-24)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

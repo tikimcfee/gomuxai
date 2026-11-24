@@ -23,6 +23,7 @@ pub mod manifest;
 pub mod model;
 pub mod names;
 pub mod pg;
+pub mod qlog;
 pub mod query;
 pub mod roots;
 pub mod summarize;
