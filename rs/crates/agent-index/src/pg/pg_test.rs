@@ -722,6 +722,83 @@ fn rerank_reorders_and_falls_back() {
     );
 }
 
+/// `[cross]`: off, a search says nothing of it; on, a question over both
+/// projects is routed to both, searched again in each, gives each a place
+/// in the reranker's pool, and answers with each near the top; a question
+/// in parts is searched part by part.
+#[test]
+fn cross_spans_projects() {
+    let Some(t) = throwaway("cross") else { return };
+    let pg = &t.0;
+    let (_dir, ix) = fixture();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let o = SearchOptions {
+        kind: "file".into(),
+        ..opts("held message delivery parse config")
+    };
+    let plain = super::search::search(pg, &o, None, Default::default(), None).unwrap();
+    assert!(plain.cross.is_none());
+    let mut cfg = crate::config::Config::default();
+    cfg.reranker.endpoint = fake_reranker();
+    cfg.reranker.flat_depth = 4;
+    let x = &mut cfg.cross;
+    (x.route, x.split, x.slots, x.touched) = (true, true, true, true);
+    (x.route_ratio, x.slot_min, x.top_cap) = (0.0, 1, 1);
+    let rc = super::rerank::Client::new(&cfg.reranker);
+    let (url, _) = Pg::from_env().unwrap();
+    let pg2 = Pg::connect_with(&url, &pg.schema, cfg.clone()).unwrap();
+    let r = super::search::search(&pg2, &o, None, Default::default(), Some(&rc)).unwrap();
+    let c = r.cross.as_ref().expect("cross");
+    let mut spans = c.spans.clone();
+    spans.sort();
+    assert_eq!(spans, ["alpha", "beta"], "{c:?}");
+    assert_eq!(c.reason.as_deref(), Some("routed"), "{c:?}");
+    let mut sub = c.sub.clone();
+    sub.sort();
+    assert_eq!(sub, ["project:alpha", "project:beta"], "{c:?}");
+    assert!(
+        c.pool.iter().all(|(_, n)| *n >= 1) && c.pool.len() >= 2,
+        "{c:?}"
+    );
+    // The cap of one: the first two files are one from each.
+    let top: Vec<&str> = r.hits.iter().take(2).map(|h| h.project.as_str()).collect();
+    assert!(
+        top.contains(&"alpha") && top.contains(&"beta"),
+        "{:#?}",
+        r.hits
+    );
+    // Without a reranker there is no pool to give places in.
+    let r = super::search::search(&pg2, &o, None, Default::default(), None).unwrap();
+    assert!(r.cross.as_ref().unwrap().pool.is_empty());
+    // In parts, with no [cross] switch on: each part searched and pooled.
+    let parts = SearchOptions {
+        queries: vec!["held message delivery".into(), "parse config".into()],
+        ..o.clone()
+    };
+    let mut cfg = crate::config::Config::default();
+    cfg.reranker.endpoint = fake_reranker();
+    let rc = super::rerank::Client::new(&cfg.reranker);
+    let pg3 = Pg::connect_with(&url, &pg.schema, cfg).unwrap();
+    let r = super::search::search(&pg3, &parts, None, Default::default(), Some(&rc)).unwrap();
+    let c = r.cross.as_ref().expect("cross");
+    assert_eq!(c.reason.as_deref(), Some("queries"));
+    assert_eq!(c.sub, ["query:1", "query:2"]);
+    let mut keys: Vec<&str> = c.pool.iter().map(|(k, _)| k.as_str()).collect();
+    keys.sort();
+    assert_eq!(keys, ["query:1", "query:2"], "{c:?}");
+    assert!(r.hits.iter().any(|h| h.project == "beta"), "{:#?}", r.hits);
+    assert!(r.hits.iter().any(|h| h.project == "alpha"), "{:#?}", r.hits);
+    // The text's own parts, cut at a lone |.
+    let (q, p) = super::serve::split_query("held message | parse config", &[]);
+    assert_eq!((q.as_str(), p.len()), ("held message parse config", 2));
+    let (q, p) = super::serve::split_query("a|b", &["c d".into()]);
+    assert_eq!(
+        (q.as_str(), p),
+        ("a|b c d", vec!["a|b".to_string(), "c d".to_string()])
+    );
+    assert!(super::serve::split_query("just one", &[]).1.is_empty());
+}
+
 /// The warm process answers what a cold search answers.
 #[test]
 fn serve_answers_as_cold() {
@@ -1366,6 +1443,7 @@ fn stale_mark() {
         rerank: None,
         groups: None,
         lexical: None,
+        cross: None,
     };
     let stale = super::fresh::check(pg, &mut res).unwrap();
     let marks: Vec<&str> = res.hits.iter().map(|h| h.stale.as_str()).collect();

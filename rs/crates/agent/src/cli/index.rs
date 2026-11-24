@@ -2089,6 +2089,13 @@ and symbols over doc sections, important entities up, and directories
 kept out of the way (_x, archive, old) down unless --under is in one.
 At most two results come from one file.
 
+A question about two things (how project A and project B each do
+something) can come in parts, on the pg store: the words cut by a lone |
+("layout engine cache | build script cache"), or --query for each further
+part. Each part is searched on its own over the whole tree, each gets
+places among what the reranker reads, and each result is reranked against
+the part that found it.
+
 Each result: its id, kind and freshness; the absolute path to open (with
 a line for a symbol or section); its summary; and what matched. The
 labels used are printed first, and any word no entity mentions is named.
@@ -2178,6 +2185,12 @@ pub struct SearchArgs {
         help = "pg store: search in this process even when agent index serve is up"
     )]
     pub cold: bool,
+    #[arg(
+        long = "query",
+        value_name = "string",
+        help = "pg store: another part of the question, searched on its own and pooled with the others (repeatable; or cut the words with a lone |)"
+    )]
+    pub queries: Vec<String>,
     #[arg(long = "json", help = "Print the results as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -2352,6 +2365,12 @@ fn run_search_sqlite(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<Vec<String>> {
         caller_project: caller.clone(),
         scope: String::new(),
         corpora: Vec::new(),
+        // The sqlite store searches the parts as one query.
+        queries: Vec::new(),
+    };
+    let o = SearchOptions {
+        query: agent_index::pg::serve::split_query(&o.query, &a.queries).0,
+        ..o
     };
     let r = match semantic(ctx, &ix) {
         Some(sem) => agent_index::search(&ix.conn, &o, sem.as_ref())?,
@@ -2408,6 +2427,7 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<Vec<String>> {
     };
     let req = serve::Request {
         query: a.args.join(" "),
+        queries: a.queries.clone(),
         kind: a.kind.clone(),
         project: a.project.clone(),
         under,

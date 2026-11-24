@@ -57,6 +57,11 @@ pub struct SearchOptions {
     /// empty: code and prose, what the crawl found. The sqlite store has
     /// code only and ignores it.
     pub corpora: Vec<String>,
+    /// The pg store: the query's parts when the caller split it (two or
+    /// more; `query` is them joined). Each is retrieved on its own, pooled
+    /// with slots for each, and its candidates reranked against it. The
+    /// sqlite store searches `query`.
+    pub queries: Vec<String>,
 }
 
 /// One label the query matched, and the entity it named.
@@ -133,6 +138,39 @@ pub struct SearchResult {
     /// The pg store's lexical lists this search ran (fts, bm25, both).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lexical: Option<String>,
+    /// What `[cross]` did (the pg store, when any of it is on or the
+    /// search had several queries); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross: Option<CrossInfo>,
+}
+
+/// The pg store's `[cross]` part in a search: the projects it routed to,
+/// the sub-queries it ran and what joined the pool.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct CrossInfo {
+    /// Projects by route score, best first (routing on).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routed: Vec<(String, f64)>,
+    /// The projects the query was taken to span (two or more: slots, the
+    /// cap and a softened own-project prior apply).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<String>,
+    /// Why the query read as spanning projects: `routed`, `names
+    /// <project>`, `compares`, `queries`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The caller's own-project prior was softened to `[cross].own_project`.
+    #[serde(default)]
+    pub softened: bool,
+    /// Sub-queries run: `project:<name>` or `query:<n>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub: Vec<String>,
+    /// Candidates the session-touched edges added or raised.
+    #[serde(default)]
+    pub touched: usize,
+    /// The reranker's pool by key (project, or sub-query), when slots ran.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pool: Vec<(String, usize)>,
 }
 
 /// One corpus's part of a grouped answer.
@@ -990,6 +1028,7 @@ fn search_entities(
         rerank: None,
         groups: None,
         lexical: None,
+        cross: None,
     })
 }
 

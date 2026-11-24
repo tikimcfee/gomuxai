@@ -30,6 +30,11 @@ pub type Embed = Arc<dyn Fn(&str) -> Result<Vec<f32>> + Send + Sync>;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Request {
     pub query: String,
+    /// More queries, each a part of the question (`search --query`); with
+    /// `query`'s own parts (cut at ` | `), two or more are searched each on
+    /// its own and pooled (`SearchOptions::queries`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queries: Vec<String>,
     pub kind: String,
     pub project: String,
     /// Absolute and canonical, or "".
@@ -89,6 +94,38 @@ pub fn build_id() -> String {
     )
 }
 
+/// The separator of a query's parts in its text: `held messages | bus
+/// routing` is two queries.
+pub const PART_SEPARATOR: &str = " | ";
+
+/// A query and the caller's extra queries as (the whole text, its parts):
+/// the parts are the text cut at [`PART_SEPARATOR`] (a lone `|` word) and
+/// the extras, blanks dropped; fewer than two parts is one query, no parts.
+pub fn split_query(query: &str, extra: &[String]) -> (String, Vec<String>) {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    for w in query.split_whitespace() {
+        if w == "|" {
+            parts.push(cur.join(" "));
+            cur.clear();
+        } else {
+            cur.push(w);
+        }
+    }
+    parts.push(cur.join(" "));
+    parts.extend(
+        extra
+            .iter()
+            .map(|q| q.split_whitespace().collect::<Vec<_>>().join(" ")),
+    );
+    parts.retain(|p| !p.is_empty());
+    match parts.len() {
+        0 => (query.trim().to_string(), Vec::new()),
+        1 => (parts.remove(0), Vec::new()),
+        _ => (parts.join(" "), parts),
+    }
+}
+
 /// The one search path, cold or warm: the caller's project from its
 /// directory, the search, the query log, and the behind-its-crawl hint.
 pub fn answer(
@@ -103,8 +140,10 @@ pub fn answer(
     } else {
         req.limit
     };
+    let (query, queries) = split_query(&req.query, &req.queries);
     let o = SearchOptions {
-        query: req.query.clone(),
+        query,
+        queries,
         kind: req.kind.clone(),
         project: req.project.clone(),
         under: req.under.clone(),

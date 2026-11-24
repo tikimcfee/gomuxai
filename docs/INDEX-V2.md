@@ -646,6 +646,173 @@ reranker depth 20, `--kind file`. Secondaries:
 - Latency, median inside the index: 0.64 s in a project, 0.49 s over
   the tree, 0.26 s at cwd; `rg` 30 ms in a project, 1.4 s over the tree.
 
+## Across projects
+
+The weak spot blind 3 found: a question whose answer lies in two projects
+("how do project A and project B each start at boot") got a
+right file from each project into the top 10 for 2 of 10. One project
+fills the candidates before the reranker sees the other (RRF over lists
+that one project's vocabulary dominates, a cap per file and none per
+project, the own-project prior ×3 from a caller inside one of them), a
+question with two intents buries one, and the sessions' `touched` edges,
+the one signal that already joins files across projects, went unused.
+
+**Built** (`pg/cross.rs`, called from `search_entities` in `pg/search.rs`;
+`[cross]` in the configuration, every switch off by default). It applies
+only to a search that may span projects: no `--project`, no `--under`, the
+crawled corpora (code and prose). Each part has its own switch:
+
+- **Route** (`route`): the projects ranked for the query, from four
+  lists, each scaled to its best and averaged with its weight: project and
+  folder cards by BM25 on their summary, asks, seed and why
+  (`route_summary`; each project's best three of the top 60 summed;
+  pg_search's `kind` term keeps it to those cards), the query's vector
+  against each project's card (`route_dense`; scaled from the worst
+  project to the best; the folder cards have no index to reach them
+  cheaply by kind), the fused candidates' mass (`route_fused`; each
+  project's best three fusion scores among the top 100), and the projects
+  the query names (`route_names`). Projects crawled shallow hold no files
+  and aren't ranked. The routed projects are the best and those with at
+  least `route_ratio` of its score, `route_projects` at most. Two or more
+  make the query read as spanning projects for a caller in no project;
+  from inside a project that takes an explicit sign (below) unless
+  `route_caller`, since nearly any query has a second project with some
+  mass. `--json` has `cross.routed` (the top eight with their scores) and
+  `cross.spans`. The defaults are the dev set's best (below): the
+  candidates' mass and the names, two projects; the summaries and the
+  projects' vectors are off, because they routed worse.
+- **Read as spanning before any list**: a query in parts (below), one
+  with a comparing word (`both`, `each`, `versus`, `compare`, `differ`,
+  `between`...), or one that names another project (a word equal to its
+  name; with routing on, only once the route has that project among its
+  routed ones, since a project's name can be a plain word too).
+- **Sub-queries** (`split`): each spanned project searched again on its
+  own (the fused statement, labels and pins included, with that project as
+  its filter, which pg_search's pushdown makes cheap). Its best
+  `split_depth` files' candidates join; a candidate scores the better of
+  the tree's fusion score and the project's times `split_raise`, and
+  `--explain` names the project's lists (`in alpha: bm25 #1`). Its own
+  ranking (after the priors) picks the project's places in the pool.
+- **Slots** (`slots`): the reranker's pool (`[reranker] flat_depth`, or
+  `pool_depth`) gives each spanned project its best `slot_min` files (one
+  candidate each, by its sub-query's ranking with `split`, else by place),
+  lets none hold more than `slot_cap` of it, and holds no file more than
+  `per_file` times; the pool goes first, in fused order, then the reranker
+  orders it. Without routing, the slots go to the `slot_projects` with the
+  most fused mass that clear `route_ratio`. No reranker, no pool, no slots.
+- **Top cap** (`top_cap`): a `--kind file` answer's first `limit` hold at
+  most that many files of one spanned project while another spanned
+  project has files further down.
+- **Own project** (`own_project`): when the query reads as spanning
+  projects, the caller's own project counts this much (a dependency at
+  most this) and the lists scoped to it are left out; if the route decided
+  it after those lists ran, the fused statement runs again without them.
+- **Touched** (`touched`): from the best `touched_seeds` files, the files
+  sessions touched with them join the candidates. A neighbor's strength
+  sums, over each seed and each session that touched both, the seed's
+  weight (1/√place) times the session's IDF (ln of all touched files over
+  the session's own: a session that touched hundreds says little about
+  any two) times the neighbor's (ln of the sessions over those that
+  touched it: every session reads `CLAUDE.md`), ×`touched_cross` for a
+  neighbor in another project than its seed. The best `touched_max` gain
+  `touched_weight` × the pool's last score × their share of the
+  strongest, so at weight 1 the strongest neighbor reaches the pool.
+- **A question in parts**: `agent index search "layout engine cache |
+  build script cache"`, or `--query` for each further part (the warm
+  process's `Request.queries`). Each part runs its own fused statement over
+  the tree (lists only: no pins or labels), pooled as the sub-queries are
+  (every candidate of a part joins, and its ranking picks the part's places);
+  each part gets slots in the pool whatever `slots` says, and each pooled
+  candidate is reranked against the part that scored it best (one call to
+  the reranker per part). No model call on the query side: the caller,
+  usually a frontier model, splits its own question.
+
+`cross` in `--json`: `routed`, `spans`, `reason` (`routed`, `compares`,
+`names <project>`, `queries`), `softened`, `sub` (the sub-queries run),
+`touched` (candidates it raised) and `pool` (the reranker's pool by
+project or part); `ms` gains `route`, `split`, `parts`, `touched`,
+`slots`. With every switch off a search is what it was: the same
+fingerprint (`[cross]` at its defaults isn't hashed), and the same top 10
+as the snapshot before it on blind 3's ten cross questions.
+
+**Measured** (2026-11-24, schema `idx` after the asks-off re-embed, the
+frozen 7afa987 sessions configuration plus the reranker at depth 20, as
+blind 3 ran it; `--kind file`, words cut to 12; paired bootstrap, 10,000
+resamples). Tuned on a dev set of 20 fresh blind cross-project questions
+(two or three projects each, a grade-2 file in each project) only; blind 3
+(its 10 cross questions, and the 50 with a project) and blind 2 are
+regression sets, run once per change. Main measure: a grade-2 file from
+each project in the top 10, the questions asked over the whole tree. The
+dev questions were also asked from inside their first project
+(`index@cwd1`), where the own-project prior applies.
+
+| change (alone, unless named) | dev, each project | dev from inside a project | blind 3 cross, each project | blind 3 / blind 2, top 5 in the project's directory |
+|---|---|---|---|---|
+| none | 5 of 20 | 0 of 20 | 2 of 10 | 49 of 50 / 47 of 60 |
+| slots, by fused mass | 6 (+0.05 [0, +0.15]) | 0 | 2 | 49 / 47 |
+| route, split and slots | 5 (0 [−0.15, +0.15]) | 2 | 2 | 47 / 45 |
+| route and the top cap (5) | 5 | 2 | 1 | 49 / 47 |
+| **touched** | **7 (+0.10 [0, +0.25])** | 0 | 2 | 49 / 47 |
+| route and own project 1, route alone counting | 5 | 5 (+0.25 [+0.05, +0.45]) | 2 | **33** / 43 |
+| route and own project 1, explicit signs only | 5 | 3 (+0.15 [0, +0.30]) | 2 | 47 / 46 |
+| touched, route and own project 1 (explicit) | 7 (+0.10 [0, +0.25]) | 4 (+0.20 [+0.05, +0.40]) | 2 | 47 / 46 |
+| all of route, split, slots, cap 5 and touched | 3 (−0.10 [−0.30, +0.10]) | 3 | 2 | 44 / 46 |
+
+The rows with "explicit signs" and the touched row's regression columns
+ran on 2948443, the rest on 6eda1d7 (the same code but for the explicit
+rule; both bases gave the same counts). Top 5 at the question's scope
+didn't move outside ±1 on any set (dev 18 of 20; blind 3, 53 of 60;
+blind 2, 47 of 60), nor MRR@10 outside ±0.02 for touched. Latency inside
+the index, median at the question's scope: touched within ±15 ms of the
+base (noise on a shared host); a route about 15 ms; a split +190 to 300
+ms (a fused statement per spanned project).
+
+What the dev set showed (only it was looked into):
+
+- **Coverage was rarely the problem.** In most misses both projects were
+  in the top 10 already, with the wrong files. Searched inside each of
+  its projects (`--project`, no reranker), 7 of 20 questions had a grade-2
+  file in every project's own top 5, so a perfect route plus per-project
+  places could reach about 7 of 20; but the reranker, scoring the whole
+  question against each candidate, puts a project's design notes above
+  the code file a person names (a doc on headless rendering at 0.96, the
+  wanted script at 0.06), and per-project places don't change that.
+- **Routing on summaries routed worse** than routing on the candidates
+  themselves: both gold projects in the route's top k for 3 of 20 by the
+  project and folder summaries, 6 by the projects' vectors, 12 by the
+  fused candidates' mass, 14 with the names the question holds. Big
+  projects with thousands of folder summaries win a summary list for
+  most questions.
+- **Sub-queries cost more than they found**: a project's own search
+  brings its candidates up, but they then take the pool from better
+  ones across the tree; a wrong span (7 of 20 routes) adds a project the
+  question isn't about.
+- **The session-touched boost** is the one change that helped at tree
+  scope, the same 7 of 20 on four builds, no question worse, nothing
+  lost on the regression sets. It works only where sessions touched
+  files in two projects (16 of the 70 sessions with touched files), and
+  the dev questions lean on the projects people work across most, so it
+  may help the held-out set less, or more if its questions came from the
+  same sessions.
+- **The own-project prior** is what kills a cross question asked from
+  inside one project (0 of 20). Softening it when the route alone finds a
+  second project lifts that to 5 and costs 16 of 50 single-project
+  questions, since almost every query has a second project with some
+  mass; on explicit signs only (a name, a comparing word, parts) it lifts
+  it to 3 (4 with touched) for 2 of 50 and 1 of 60.
+
+The configuration sent to the held-out run was `[cross] touched = true`
+(build 39f09f6, fingerprint a6ca93811d2b), run once as pre-registered:
+
+- held-out 20: touched 8 vs 8, not shown.
+
+So `[cross]` stays off by default, every switch of it, and the code stays
+to be switched on and measured again: `touched` as sessions across
+projects grow, `own_project` with explicit signs for an agent that
+searches from inside a project, and parts (`--query`, ` | `) for a caller
+that can split its own question (not measured here: no set has split
+questions).
+
 ## Iterations
 
 Each lands on its own, measured, and said plainly when it does:
@@ -830,6 +997,7 @@ The sections:
 | `[ledger]` | `path`: the crawl's ledger ("" is `index.db` beside the binary's `gomuxai.db`, which ties it to one copy of the binary); every sync of a schema should use the ledger the schema was built from; not in the fingerprint |
 | `[log]` | the query log: `enabled` (true) and `path` ("" is `$XDG_DATA_HOME/gomuxai/index-queries.jsonl`); not in the fingerprint |
 | `[watch]` | `agent index watch`: `socket` ("" is `index-watch.sock` beside the ledger), `settle_ms` (1,000), `max_wait_ms` (10,000), `git_lock_ms` (60,000), `tidy_quiet_s` (600), `tidy_every_s` (3,600), `embed_workers` (4: the embedder's threads in the watcher; a bulk `agent index embed` takes half the logical CPUs); not in the fingerprint |
+| `[cross]` | answers that span projects, every switch off: `route` (`route_cards` 60, `route_per_project` 3, `route_summary_best` 3, the lists' weights `route_summary` 0, `route_dense` 0, `route_fused` 1, `route_names` 1, `route_fused_depth` 100, `route_projects` 2, `route_ratio` 0.5, `route_caller` false), `split` (`split_depth` 30, `split_raise` 1), `slots` (`slot_min` 5, `slot_cap` 0.6, `slot_projects` 2, `pool_depth` 0: the reranker's `flat_depth`), `top_cap` (0), `own_project` (0: the priors stand), `touched` (`touched_seeds` 10, `touched_max` 10, `touched_weight` 1, `touched_cross` 1); at its defaults the fingerprint is the one from before the section; see "Across projects" |
 | `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both`; `pushdown` (true: kind, project, corpus and `--under`'s projects filtered inside pg_search's query; see "Filters inside the BM25 query") |
 | `[llm.summaries]` | `agent index summarize`: `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature` (0.2), `max_tokens` (500), `timeout_ms`, `seed`, `concurrency` (48), `retries` and `backoff_ms`, `max_connection_errors` (8), the clip (`clip_tokens` 6,000; a doc's `doc_head_tokens` 4,500 and `doc_tail_tokens` 1,500; `max_input_tokens` 9,000; `preclip_chars`; `symbols_chars` 2,500), the floors (`min_chars` 200, `min_lines` 5, `json_max_bytes`), `pause_file`, `scrub_words`, and the served `dtype` and `quantization`; every key is in each summary's fingerprint |
 | `[llm.query_rewrite]` | `endpoint`, `model`, `temperature`, `max_tokens`, `timeout_ms`, for a later iteration |
