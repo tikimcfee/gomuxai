@@ -706,11 +706,17 @@ What the dev set showed (only it was looked into):
   mass; on explicit signs only (a name, a comparing word, parts) it lifts
   it to 3 (4 with touched) for 2 of 50 and 1 of 60.
 
-So the final configuration is `[cross] touched = true`, the rest off by
-default and there to be switched on: `own_project` with explicit signs
-for an agent that searches from inside a project, and parts (`--query`,
-` | `) for a caller that can split its own question (not measured here:
-no set has split questions).
+The configuration sent to the held-out run was `[cross] touched = true`
+(build 39f09f6, fingerprint a6ca93811d2b), run once as pre-registered:
+
+- held-out 20: touched 8 vs 8, not shown.
+
+So `[cross]` stays off by default, every switch of it, and the code stays
+to be switched on and measured again: `touched` as sessions across
+projects grow, `own_project` with explicit signs for an agent that
+searches from inside a project, and parts (`--query`, ` | `) for a caller
+that can split its own question (not measured here: no set has split
+questions).
 
 ## Iterations
 
