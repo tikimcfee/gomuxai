@@ -1,0 +1,29 @@
+Config prints the configuration the pg store's commands run with, every
+key resolved (a key the file leaves out has its default), as TOML, with
+where it came from and its fingerprint (a hash of the values: search
+--json reports it, and syncs, embeds and logged queries record it).
+
+The file is --config FILE, else AGENT_INDEX_CONFIG, else
+~/.config/gomuxai/index.toml ($XDG_CONFIG_HOME/gomuxai/index.toml); with
+no file there, the built-in defaults apply. A file named by --config or
+the environment must exist, and an unknown key is an error. Print the
+defaults into a file to start one: agent index config > index.toml. See
+docs/INDEX-V2.md, "Configuration", for what each section tunes.
+
+Usage:
+  agent index config [flags]
+
+Examples:
+  agent index config
+  agent index config --config tune/rrf30.toml --json
+
+Flags:
+      --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+  -h, --help            help for config
+      --json            Print {"path", "fingerprint", "config"}
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

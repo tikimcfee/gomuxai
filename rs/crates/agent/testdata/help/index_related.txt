@@ -10,9 +10,11 @@ Examples:
   agent index related src/lib.rs --json
 
 Flags:
-      --budget int   Fit to this many tokens (0: no limit) (default 1500)
-  -h, --help         help for related
-      --json         Print the neighbors as JSON
+      --budget int      Fit to this many tokens (0: no limit) (default 1500)
+      --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+  -h, --help            help for related
+      --json            Print the neighbors as JSON
+      --store string    sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

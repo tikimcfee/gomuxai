@@ -32,12 +32,18 @@ Examples:
 
 Flags:
       --budget int       Fit the text to this many tokens (0: no limit) (default 1500)
+      --cold             pg store: search in this process even when agent index serve is up
+      --config string    The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+      --corpus string    pg store: only these corpora, comma-separated: code, prose, memory, friction (default: all of them, grouped; code and prose for a --kind)
       --explain          Say which list found each result, and the priors applied
   -h, --help             help for search
       --json             Print the results as JSON
       --kind string      Only this kind: project, dir, symbol, section; or file, or a file kind (source, test, fixture, doc, config, build, data, asset, submodule), one row per file, a symbol or section counting for its file
-      --limit int        At most this many results (default 10)
+      --lexical string   pg store: bm25 (pg_search), fts (native full text), both, or auto (default: AGENT_INDEX_LEXICAL, else [search].lexical, else auto: bm25 where the schema has its indexes)
+      --limit int        At most this many results (default 10; the pg store's search.limit)
       --project string   Only this project
+      --rerank           pg store: rerank the top candidates with the cross-encoder ([reranker] in the configuration), even when it is off there
+      --store string     sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)
       --under string     Only entities at or under this path
 
 Global Flags:

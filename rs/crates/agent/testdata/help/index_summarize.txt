@@ -1,0 +1,65 @@
+Summarize asks a local OpenAI-compatible model server ([llm.summaries]
+endpoint in the index configuration; agent never starts one) for a summary,
+a why and three to five plain asks for each file of the full-depth projects
+that gets one, checks each answer in code, and keeps it in Postgres keyed
+by the file's content key and the run's fingerprint (the model and its
+snapshot, the server, the prompt, sampling, clipping, filters, checks and
+this build). A sync then shows a summary over the file's seed while the
+file is unchanged and queues the changed cards for agent index embed.
+
+Skipped, before any read: sensitive names, files with no content, fixture,
+data and asset kinds, vendored code, program output directories (outputs,
+results, snapshots, runs, logs), directories of 50+ numbered files, lock and
+checksum files, licenses and ignore files, JSON that isn't a manifest or a
+small hand-written file; after reading: trivial files and generated ones.
+--coverage prints what would be summarized and what is skipped and why, by
+project and kind, and the 20 directories with the most skipped, without
+calling the model.
+
+A run resumes: files already summarized (or failed) under the same
+fingerprint are skipped; files the server didn't answer in time (5xx,
+timeouts, past --file-timeout) get no row, so a resume asks again. It
+stops cleanly and exits 1 when the server stops answering (8 connection
+errors in a row, or /health failing), when no file finished for --stall,
+after --max-time, or when over --max-error-rate of the last --error-window
+files failed; its stats (done, remaining, skipped, errors, rate, ETA) are
+saved in its runs row and --stats FILE as it goes. --skip-project leaves a
+project out; --own-files PROJECT=FILE keeps only a fork's own files.
+
+Usage:
+  agent index summarize [flags]
+
+Examples:
+  agent index summarize --coverage --project gomuxai
+  agent index summarize --project gomuxai --limit 100 --stats run.json
+  agent index summarize --prefix 'lab:research/' --limit 50
+  agent index summarize --skip-project vendor-fork --max-time 4h --stats status.json
+
+Flags:
+      --config string              The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+      --corpus stringArray         Files of this corpus (code, prose; repeatable); default code
+      --coverage                   Print what would be summarized and what is skipped, and why; call no model
+      --dirs                       The bottom-up pass: summarize the directories holding the selected files, deepest first, then their projects, from their README, listing and children's summaries (run it after the files); --limit N samples N of them
+      --error-window int           Stop the run when over --max-error-rate of this many latest files failed (0: never) (default 200)
+      --file-timeout duration      One file's deadline, all its requests and retries together; past it the file fails and is kept as failed (default 10m)
+  -h, --help                       help for summarize
+      --json                       Print the coverage report or the run's stats as JSON
+      --limit int                  At most this many files per project (or prefix), sampled evenly; 0 is all
+      --max-error-rate string      The failed share of --error-window files that stops the run (default "0.2")
+      --max-time duration          Stop the run cleanly after this long (0: no cap)
+      --no-sync                    Don't sync afterwards (the summaries show after the next sync)
+      --out string                 Write the coverage report (or the run's stats) as JSON here
+      --own-files stringArray      PROJECT=FILE: summarize only the files FILE lists (paths in the project, one a line) of that fork; its others count as upstream (repeatable)
+      --prefix stringArray         Only files whose id starts so, as project:dir/ (repeatable)
+      --project stringArray        Only this project (repeatable); default every full-depth project
+      --retry-failed               Ask again for files that failed under this fingerprint
+      --skip-prefix stringArray    Leave files whose id starts so out, as project:dir/ (repeatable); they count as skipped
+      --skip-project stringArray   Leave this project out (repeatable); its files count as skipped
+      --stall duration             Stop the run when no file finished for this long (0: never) (default 10m)
+      --stats string               Rewrite the run's stats here as it goes
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

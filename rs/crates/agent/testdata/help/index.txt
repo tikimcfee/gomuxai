@@ -38,6 +38,10 @@ Available Commands:
   root        Add, remove and list the trees the index covers
   project     Make a deeper directory a project, or change a project's depth
   crawl       Bring the index up to date with the files on disk
+  sync        Mirror the crawl's index.db into Postgres (the pg store)
+  summarize   Write file summaries and asks with a local model (the pg store)
+  config      Print the index configuration in effect, and its fingerprint
+  serve       Keep the pg store's search warm: a process on a Unix socket
   embed       Embed the index's entities, so search ranks by meaning as well as words
   search      Search the index: ranked entities with their paths and summaries
   show        Show one entity: where it sits, its summary, children, edges and symbols

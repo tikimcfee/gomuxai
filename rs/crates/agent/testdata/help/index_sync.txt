@@ -1,0 +1,29 @@
+Sync writes what the last crawl found into the Postgres store
+(AGENT_INDEX_PG; schema AGENT_INDEX_PG_SCHEMA, default idx): every entity
+whose row changed, its labels, the chunks of files whose content changed
+(read from disk again), edges and projects, in one transaction. Entities
+whose card text changed are queued for agent index embed. crawl --store pg
+runs it after crawling; run it alone after a crawl with the sqlite store.
+
+--rebuild empties the schema's tables and writes everything again (card
+vectors whose text is unchanged are kept); the rows are the same an
+incremental sync reaches.
+
+Usage:
+  agent index sync [flags]
+
+Examples:
+  AGENT_INDEX_PG='postgresql:///devindex?host=/run/pg' agent index sync
+  agent index sync --rebuild --json
+
+Flags:
+      --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+  -h, --help            help for sync
+      --json            Print the sync's report as JSON
+      --rebuild         Empty the Postgres tables and write everything again
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

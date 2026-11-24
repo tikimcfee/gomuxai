@@ -136,6 +136,10 @@ index root list
 index project
 index project add
 index crawl
+index sync
+index summarize
+index config
+index serve
 index embed
 index search
 index show

@@ -1,0 +1,26 @@
+Serve answers agent index search for the pg store from a warm process:
+it holds [serve].workers database connections, the query embedder (its
+model loaded once) and the reranker's client, on a Unix socket
+([serve].socket, else index.sock beside index.db). A search uses it when
+it answers and runs cold otherwise, through the same code, so the answer
+is the same; it runs cold too when the server is another build of agent
+or runs another configuration (its fingerprint), and says why. search
+--cold skips it. Serve runs until it is stopped (Ctrl-C); run it in a
+session of its own.
+
+Usage:
+  agent index serve [flags]
+
+Examples:
+  agent index serve
+  agent index serve --config tune/rerank50.toml
+
+Flags:
+      --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+  -h, --help            help for serve
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
