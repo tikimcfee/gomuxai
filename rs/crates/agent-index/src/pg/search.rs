@@ -38,7 +38,7 @@ use crate::config::{CORPORA, Config};
 use crate::files;
 use crate::model::{self, Summary};
 use crate::names;
-use crate::query::{FILE_KINDS, Hit, Mapping, RerankInfo, SearchOptions, SearchResult};
+use crate::query::{CrossInfo, FILE_KINDS, Hit, Mapping, RerankInfo, SearchOptions, SearchResult};
 
 // Every number a search tunes on is in crate::config (the runtime TOML):
 // the lists' depth, the rarest-term budgets (ranking a chunk detoasts its
@@ -586,6 +586,8 @@ struct Context {
     vectors: bool,
     max_imp: f64,
     projects: Vec<(String, String)>,
+    /// The projects crawled at full depth (the others hold no files).
+    full: HashSet<String>,
 }
 
 fn context(pg: &Pg, caller: &str) -> Result<Context> {
@@ -597,7 +599,8 @@ fn context(pg: &Pg, caller: &str) -> Result<Context> {
                           AND $1 <> '' AND (src = $1 OR (src >= $2 AND src < $3))),
                     EXISTS (SELECT 1 FROM meta WHERE key = 'vectors' AND value <> '0'),
                     (SELECT coalesce(max(importance), 0) FROM entities),
-                    ARRAY(SELECT name FROM projects), ARRAY(SELECT path FROM projects)",
+                    ARRAY(SELECT name FROM projects), ARRAY(SELECT path FROM projects),
+                    ARRAY(SELECT name FROM projects WHERE depth <> 'shallow')",
             &[&caller, &lo, &hi],
         )?
         .into_iter()
@@ -621,6 +624,7 @@ fn context(pg: &Pg, caller: &str) -> Result<Context> {
         vectors: r.get(1),
         max_imp: r.get(2),
         projects: names.into_iter().zip(paths).collect(),
+        full: r.get::<_, Vec<String>>(5).into_iter().collect(),
     })
 }
 
@@ -964,6 +968,7 @@ fn search_files(
     };
     let mut r = search_entities(pg, &inner, embed, lexical, rerank)?;
     let t0 = Instant::now();
+    let capped = pg.cfg.cross.top_cap > 0 && r.cross.as_ref().is_some_and(|c| c.spans.len() >= 2);
     let file_ids: Vec<String> = r
         .hits
         .iter()
@@ -1018,9 +1023,27 @@ fn search_files(
             rank: hits.len() + 1,
             ..hit
         });
-        if hits.len() >= limit {
+        if hits.len() >= limit && !capped {
             break;
         }
+    }
+    // [cross] top_cap: one project's share of the first `limit`.
+    if capped {
+        let projects: Vec<String> = hits.iter().map(|h| h.project.clone()).collect();
+        let spans = &r.cross.as_ref().expect("capped").spans;
+        let new = super::cross::cap_top(&projects, spans, limit, pg.cfg.cross.top_cap);
+        let mut old: Vec<Option<Hit>> = hits.into_iter().map(Some).collect();
+        hits = new
+            .into_iter()
+            .filter_map(|i| old[i].take())
+            .take(limit)
+            .enumerate()
+            .map(|(i, h)| {
+                let mut h = h;
+                h.rank = i + 1;
+                h
+            })
+            .collect();
     }
     r.hits = hits;
     *r.ms.entry("files".into()).or_insert(0.0) += round1(t0.elapsed().as_secs_f64() * 1000.0);
@@ -1029,6 +1052,220 @@ fn search_files(
 
 fn round1(x: f64) -> f64 {
     (x * 10.0).round() / 10.0
+}
+
+/// A query's content words: its terms less stop words (all of them when
+/// nothing else is left).
+fn content_of(terms: &[String]) -> Vec<String> {
+    let c: Vec<String> = terms
+        .iter()
+        .filter(|t| !names::is_stop(t))
+        .cloned()
+        .collect();
+    if c.is_empty() { terms.to_vec() } else { c }
+}
+
+/// What one fused statement is asked: the query as its lists read it.
+struct Ask<'a> {
+    content: &'a [String],
+    tri: &'a [String],
+    exact_name: &'a str,
+    ident: bool,
+    partial: &'a [String],
+    pinned: &'a [String],
+    check: &'a [String],
+    qvec: Option<&'a String>,
+}
+
+impl<'a> Ask<'a> {
+    /// A sub-query's ask: the lists only, no pins, labels or absent terms.
+    fn lists_only(content: &'a [String], tri: &'a [String], qvec: Option<&'a String>) -> Ask<'a> {
+        Ask {
+            content,
+            tri,
+            exact_name: "",
+            ident: false,
+            partial: &[],
+            pinned: &[],
+            check: &[],
+            qvec,
+        }
+    }
+}
+
+/// The fused statement's answer: the candidates, the pins it found and the
+/// terms nothing mentions.
+struct Fused {
+    cands: HashMap<String, Cand>,
+    exact: Vec<String>,
+    rare_here: Vec<String>,
+    rare_all: Vec<String>,
+    absent: Vec<String>,
+}
+
+/// Runs the fused statement for `o`'s filters and `a`'s query.
+fn run_fused(
+    pg: &Pg,
+    o: &SearchOptions,
+    a: &Ask,
+    lexical: Lexical,
+    local: bool,
+    near_names: &[String],
+    ctx: &Context,
+) -> Result<Fused> {
+    let cfg = &pg.cfg;
+    let filtered = !(o.kind.is_empty() && o.project.is_empty() && o.under.is_empty());
+    let push = if lexical != Lexical::Fts && cfg.bm25.pushdown && super::schema::bm25_fields(pg)? {
+        Some(Push {
+            kind: !o.kind.is_empty(),
+            project: !o.project.is_empty(),
+            under: !o.under.is_empty(),
+            under_projects: projects_under(&o.under, &ctx.projects),
+        })
+    } else {
+        None
+    };
+    let sql = fused_sql(
+        a.content.len() > 1,
+        local,
+        a.qvec.is_some(),
+        lexical,
+        filtered,
+        push.as_ref(),
+        cfg,
+    )?;
+    let lim = cfg.search.list_depth;
+    let corpora = corpora_of(o);
+    let near_names = near_names.to_vec();
+    let (content, tri, partial, pinned, check) = (
+        a.content.to_vec(),
+        a.tri.to_vec(),
+        a.partial.to_vec(),
+        a.pinned.to_vec(),
+        a.check.to_vec(),
+    );
+    let exact_name = a.exact_name.to_string();
+    let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
+        &content,
+        &o.kind,
+        &o.project,
+        &o.under,
+        &near_names,
+        &tri,
+        &exact_name,
+        &a.ident,
+        &partial,
+        &pinned,
+        &check,
+        &lim,
+        &corpora,
+    ];
+    if let Some(v) = &a.qvec {
+        params.push(*v);
+    }
+    // AGENT_INDEX_EXPLAIN=1 prints the fused statement's plan, run, on
+    // stderr (for tuning; the search then runs as usual).
+    if std::env::var_os("AGENT_INDEX_EXPLAIN").is_some_and(|v| !v.is_empty() && v != "0") {
+        for r in pg.query(&format!("EXPLAIN (ANALYZE, BUFFERS) {sql}"), &params)? {
+            eprintln!("{}", r.get::<_, String>(0));
+        }
+    }
+    let row = pg
+        .query(&sql, &params)?
+        .into_iter()
+        .next()
+        .expect("one row");
+    let cands_v: Value = row.get(0);
+    let mut cands: HashMap<String, Cand> = HashMap::new();
+    for c in cands_v.as_array().into_iter().flatten() {
+        let a = c.as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let s = |i: usize| a.get(i).and_then(Value::as_str).unwrap_or("").to_string();
+        let lists = a
+            .get(7)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|l| {
+                let l = l.as_array()?;
+                Some((
+                    l.first()?.as_str()?.to_string(),
+                    l.get(1)?.as_i64()?,
+                    l.get(2).and_then(Value::as_f64).unwrap_or(0.0),
+                ))
+            })
+            .collect();
+        cands.insert(
+            s(0),
+            Cand {
+                corpus: s(8),
+                kind: s(1),
+                project: s(3),
+                rel: s(4),
+                importance: a.get(5).and_then(Value::as_f64).unwrap_or(0.0),
+                rrf: a.get(6).and_then(Value::as_f64).unwrap_or(0.0),
+                lists,
+            },
+        );
+    }
+    Ok(Fused {
+        cands,
+        exact: serde_json::from_value(row.get(1))?,
+        rare_here: serde_json::from_value(row.get(2))?,
+        rare_all: serde_json::from_value(row.get(3))?,
+        absent: serde_json::from_value(row.get(4))?,
+    })
+}
+
+/// A sub-query's candidates pooled into `cands` (`[cross]`): its best
+/// `take` by fusion score; each scores the better of its two fusion scores,
+/// its lists named after `label` (`in alpha: bm25`). `origin` keeps,
+/// for each candidate, the sub-query that scored it best and that score.
+fn pool_sub(
+    cands: &mut HashMap<String, Cand>,
+    sub: Fused,
+    take: usize,
+    label: &str,
+    key: &str,
+    origin: &mut HashMap<String, (String, f64)>,
+) -> Vec<String> {
+    let mut ranked: Vec<(String, Cand)> = sub
+        .cands
+        .into_iter()
+        .filter(|(_, c)| !c.lists.is_empty())
+        .collect();
+    ranked.sort_by(|a, b| b.1.rrf.total_cmp(&a.1.rrf).then_with(|| a.0.cmp(&b.0)));
+    // Its best `take` files' candidates, in its order.
+    let mut files: HashSet<String> = HashSet::new();
+    let ranked: Vec<(String, Cand)> = ranked
+        .into_iter()
+        .take_while(|(id, _)| {
+            files.insert(model::file_of(id).to_string());
+            files.len() <= take
+        })
+        .collect();
+    let own: Vec<String> = ranked.iter().map(|(id, _)| id.clone()).collect();
+    for (id, mut c) in ranked {
+        let lists: Vec<(String, i64, f64)> = c
+            .lists
+            .iter()
+            .map(|(n, r, s)| (format!("{label}: {n}"), *r, *s))
+            .collect();
+        let better = origin.get(&id).is_none_or(|(_, s)| c.rrf > *s);
+        if better {
+            origin.insert(id.clone(), (key.to_string(), c.rrf));
+        }
+        match cands.get_mut(&id) {
+            Some(e) => {
+                e.rrf = e.rrf.max(c.rrf);
+                e.lists.extend(lists);
+            }
+            None => {
+                c.lists = lists;
+                cands.insert(id, c);
+            }
+        }
+    }
+    own
 }
 
 fn search_entities(
@@ -1047,19 +1284,13 @@ fn search_entities(
     }
     let cfg = &pg.cfg;
     let pri = &cfg.priors;
+    let x = &cfg.cross;
     let limit = if o.limit == 0 {
         cfg.search.limit
     } else {
         o.limit
     };
-    let content: Vec<String> = {
-        let c: Vec<String> = terms
-            .iter()
-            .filter(|t| !names::is_stop(t))
-            .cloned()
-            .collect();
-        if c.is_empty() { terms.clone() } else { c }
-    };
+    let content = content_of(&terms);
     let mut ms: BTreeMap<String, f64> = BTreeMap::new();
     let mut t0 = Instant::now();
     let mut lap = |ms: &mut BTreeMap<String, f64>, name: &str| {
@@ -1067,9 +1298,61 @@ fn search_entities(
         t0 = Instant::now();
     };
     let ctx = context(pg, &o.caller_project)?;
-    let near = &ctx.near;
-    let local =
-        cfg.search.local_lists && !near.is_empty() && o.project.is_empty() && o.scope.is_empty();
+    let corpora = corpora_of(o);
+    // [cross]: a search over the whole tree, of the crawled corpora, may
+    // span projects; the caller's parts of a query (`o.queries`) are
+    // searched each on their own.
+    let spans_tree = o.project.is_empty()
+        && o.under.is_empty()
+        && o.scope.is_empty()
+        && corpora.iter().all(|c| CRAWLED.contains(&c.as_str()));
+    let parts: Vec<String> = if o.queries.len() >= 2 && spans_tree {
+        o.queries.clone()
+    } else {
+        Vec::new()
+    };
+    let crossing = spans_tree && (x.any() || !parts.is_empty());
+    let mut info = CrossInfo::default();
+    let mut near = ctx.near.clone();
+    let full_names: Vec<String> = {
+        let mut v: Vec<String> = ctx.full.iter().cloned().collect();
+        v.sort();
+        v
+    };
+    let named = if crossing {
+        super::cross::named_projects(&o.query, &full_names, &o.caller_project)
+    } else {
+        Vec::new()
+    };
+    // Why the query reads as spanning projects, known before any list: it
+    // comes in parts, compares, or names another project (with routing on,
+    // a name counts once the route agrees).
+    if crossing {
+        info.reason = if !parts.is_empty() {
+            Some("queries".into())
+        } else if super::cross::compares(&terms) {
+            Some("compares".into())
+        } else if !named.is_empty() && !x.route {
+            Some(format!("names {}", named.join(", ")))
+        } else {
+            None
+        };
+    }
+    let soften = |near: &mut HashMap<String, f64>| {
+        for f in near.values_mut() {
+            *f = f.min(x.own_project);
+        }
+    };
+    let can_soften = crossing && x.own_project > 0.0 && !o.caller_project.is_empty();
+    if can_soften && info.reason.is_some() {
+        soften(&mut near);
+        info.softened = true;
+    }
+    let mut local = cfg.search.local_lists
+        && !near.is_empty()
+        && o.project.is_empty()
+        && o.scope.is_empty()
+        && !info.softened;
     let mut near_names: Vec<String> = near.keys().cloned().collect();
     near_names.sort();
     lap(&mut ms, "context");
@@ -1121,96 +1404,162 @@ fn search_entities(
         // BM25 indexes now, or the search says what's missing.
         super::schema::ensure_bm25(pg)?;
     }
-    let filtered = !(o.kind.is_empty() && o.project.is_empty() && o.under.is_empty());
-    let push = if lexical != Lexical::Fts && cfg.bm25.pushdown && super::schema::bm25_fields(pg)? {
-        Some(Push {
-            kind: !o.kind.is_empty(),
-            project: !o.project.is_empty(),
-            under: !o.under.is_empty(),
-            under_projects: projects_under(&o.under, &ctx.projects),
-        })
-    } else {
-        None
+    let ask = Ask {
+        content: &content,
+        tri: &tri,
+        exact_name,
+        ident,
+        partial: &partial,
+        pinned: &pinned,
+        check: &check,
+        qvec: qvec.as_ref(),
     };
-    let sql = fused_sql(
-        content.len() > 1,
-        local,
-        qvec.is_some(),
-        lexical,
-        filtered,
-        push.as_ref(),
-        cfg,
-    )?;
-    let lim = cfg.search.list_depth;
-    let corpora = corpora_of(o);
-    let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> = vec![
-        &content,
-        &o.kind,
-        &o.project,
-        &o.under,
-        &near_names,
-        &tri,
-        &exact_name,
-        &ident,
-        &partial,
-        &pinned,
-        &check,
-        &lim,
-        &corpora,
-    ];
-    if let Some(v) = &qvec {
-        params.push(v);
+    let mut fused = run_fused(pg, o, &ask, lexical, local, &near_names, &ctx)?;
+    lap(&mut ms, "fused statement");
+
+    // [cross] routing: the projects the query is about.
+    let mut spans: Vec<String> = Vec::new();
+    let mass = |cands: &HashMap<String, Cand>| -> Vec<(String, f64)> {
+        let mut m: Vec<(&String, &Cand)> =
+            cands.iter().filter(|(_, c)| !c.lists.is_empty()).collect();
+        m.sort_by(|a, b| b.1.rrf.total_cmp(&a.1.rrf).then_with(|| a.0.cmp(b.0)));
+        m.into_iter()
+            .map(|(_, c)| (c.project.clone(), c.rrf))
+            .collect()
+    };
+    if crossing && x.route {
+        let scores = super::cross::route(
+            pg,
+            &content,
+            qvec.as_ref(),
+            &mass(&fused.cands),
+            &named,
+            &ctx.full,
+            lexical,
+        )?;
+        let routed = super::cross::routed(&scores, x.route_projects, x.route_ratio);
+        let top: Vec<&String> = scores.iter().take(x.route_projects).map(|s| &s.0).collect();
+        let confirmed: Vec<String> = named.iter().filter(|n| top.contains(n)).cloned().collect();
+        if info.reason.is_none() {
+            if !confirmed.is_empty() {
+                info.reason = Some(format!("names {}", confirmed.join(", ")));
+            } else if routed.len() >= 2 && (o.caller_project.is_empty() || x.route_caller) {
+                // From inside a project the route alone doesn't say the
+                // query spans projects (unless `route_caller`): almost any
+                // query has a second project with some mass.
+                info.reason = Some("routed".into());
+            }
+        }
+        if parts.is_empty() && info.reason.is_some() {
+            // The routed projects, the confirmed names, and for a
+            // comparison routed to one project, the next one too.
+            spans = routed.clone();
+            for n in &confirmed {
+                if !spans.contains(n) {
+                    spans.push(n.clone());
+                }
+            }
+            if spans.len() < 2
+                && let Some(next) = scores.iter().map(|s| &s.0).find(|p| !spans.contains(p))
+            {
+                spans.push(next.clone());
+            }
+        }
+        info.routed = scores
+            .iter()
+            .take(8)
+            .map(|(p, s)| (p.clone(), (s * 1000.0).round() / 1000.0))
+            .collect();
+        lap(&mut ms, "route");
+    } else if crossing && parts.is_empty() && info.reason.is_some() && !named.is_empty() {
+        spans = named.clone();
     }
-    // AGENT_INDEX_EXPLAIN=1 prints the fused statement's plan, run, on
-    // stderr (for tuning; the search then runs as usual).
-    if std::env::var_os("AGENT_INDEX_EXPLAIN").is_some_and(|v| !v.is_empty() && v != "0") {
-        for r in pg.query(&format!("EXPLAIN (ANALYZE, BUFFERS) {sql}"), &params)? {
-            eprintln!("{}", r.get::<_, String>(0));
+    // Softened late (the route said so): the lists scoped to the caller's
+    // project ran, so the statement runs again without them.
+    if can_soften && !info.softened && info.reason.is_some() {
+        soften(&mut near);
+        info.softened = true;
+        if local {
+            local = false;
+            near_names = near.keys().cloned().collect();
+            near_names.sort();
+            fused = run_fused(pg, o, &ask, lexical, local, &near_names, &ctx)?;
+            lap(&mut ms, "fused statement");
         }
     }
-    let row = pg
-        .query(&sql, &params)?
-        .into_iter()
-        .next()
-        .expect("one row");
-    lap(&mut ms, "fused statement");
-    let cands_v: Value = row.get(0);
-    let exact: Vec<String> = serde_json::from_value(row.get(1))?;
-    let rare_here: Vec<String> = serde_json::from_value(row.get(2))?;
-    let rare_all: Vec<String> = serde_json::from_value(row.get(3))?;
-    let absent: Vec<String> = serde_json::from_value(row.get(4))?;
-    let mut cands: HashMap<String, Cand> = HashMap::new();
-    for c in cands_v.as_array().into_iter().flatten() {
-        let a = c.as_array().map(Vec::as_slice).unwrap_or(&[]);
-        let s = |i: usize| a.get(i).and_then(Value::as_str).unwrap_or("").to_string();
-        let lists = a
-            .get(7)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|l| {
-                let l = l.as_array()?;
-                Some((
-                    l.first()?.as_str()?.to_string(),
-                    l.get(1)?.as_i64()?,
-                    l.get(2).and_then(Value::as_f64).unwrap_or(0.0),
-                ))
-            })
-            .collect();
-        cands.insert(
-            s(0),
-            Cand {
-                corpus: s(8),
-                kind: s(1),
-                project: s(3),
-                rel: s(4),
-                importance: a.get(5).and_then(Value::as_f64).unwrap_or(0.0),
-                rrf: a.get(6).and_then(Value::as_f64).unwrap_or(0.0),
-                lists,
-            },
-        );
+    let _ = local;
+    let Fused {
+        mut cands,
+        exact,
+        rare_here,
+        rare_all,
+        absent,
+    } = fused;
+    // [cross] sub-queries: each spanned project searched on its own, and
+    // each of the caller's parts; pooled into the candidates.
+    let mut origin: HashMap<String, (String, f64)> = HashMap::new();
+    // Each key's own ranking (a spanned project's sub-query, a part's), for
+    // its places in the pool.
+    let mut own: HashMap<String, Vec<String>> = HashMap::new();
+    if crossing && x.split && spans.len() >= 2 {
+        for p in &spans {
+            let sub_o = SearchOptions {
+                project: p.clone(),
+                ..o.clone()
+            };
+            // The whole ask (labels and pins too), inside the project.
+            let mut sub = run_fused(pg, &sub_o, &ask, lexical, false, &[], &ctx)?;
+            for c in sub.cands.values_mut() {
+                c.rrf *= x.split_raise;
+            }
+            let ids = pool_sub(
+                &mut cands,
+                sub,
+                x.split_depth,
+                &format!("in {p}"),
+                p,
+                &mut origin,
+            );
+            own.insert(p.clone(), ids);
+            info.sub.push(format!("project:{p}"));
+        }
+        lap(&mut ms, "split");
     }
-    let _ = &rare_all;
+    let mut part_text: HashMap<String, String> = HashMap::new();
+    for (i, part) in parts.iter().enumerate() {
+        let pt = names::query_terms(part);
+        if pt.is_empty() {
+            continue;
+        }
+        let pc = content_of(&pt);
+        let ptri: Vec<String> = pc
+            .iter()
+            .filter(|t| t.chars().count() >= 3)
+            .cloned()
+            .collect();
+        let pv = match (embed, ctx.vectors) {
+            (Some(f), true) => Some(super::vec_text(&f(part)?)),
+            _ => None,
+        };
+        let key = format!("query:{}", i + 1);
+        let a = Ask::lists_only(&pc, &ptri, pv.as_ref());
+        let sub = run_fused(pg, o, &a, lexical, local, &near_names, &ctx)?;
+        let ids = pool_sub(
+            &mut cands,
+            sub,
+            cfg.search.list_depth as usize,
+            &format!("query {}", i + 1),
+            &key,
+            &mut origin,
+        );
+        own.insert(key.clone(), ids);
+        part_text.insert(key.clone(), part.clone());
+        info.sub.push(key);
+    }
+    if !parts.is_empty() {
+        lap(&mut ms, "parts");
+    }
+    info.spans = spans.clone();
     // The rare identifier's files: nearby ones first (v1).
     let rare: Vec<String> = if exact.is_empty() && ident {
         let mut f = if local { rare_here.clone() } else { Vec::new() };
@@ -1376,9 +1725,160 @@ fn search_entities(
         }
         score.insert(id, s);
     }
-    let mut order: Vec<(String, f64)> = score.into_iter().collect();
-    order.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let by_score = |score: &HashMap<String, f64>| {
+        let mut order: Vec<(String, f64)> = score.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        order.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        order
+    };
+    let pool_depth = if x.pool_depth > 0 {
+        x.pool_depth
+    } else {
+        cfg.reranker.flat_depth
+    };
     lap(&mut ms, "fuse and priors");
+    // [cross] touched: files sessions touched along with the top files.
+    if crossing && x.touched && o.kind.is_empty() {
+        let order = by_score(&score);
+        let mut seeds: Vec<String> = Vec::new();
+        for (id, _) in &order {
+            let f = model::file_of(id).to_string();
+            if !seeds.contains(&f) {
+                seeds.push(f);
+            }
+            if seeds.len() >= x.touched_seeds {
+                break;
+            }
+        }
+        let nbrs = super::cross::touched(pg, &seeds)?;
+        let cutoff = order
+            .get(pool_depth.saturating_sub(1))
+            .or(order.last())
+            .map(|s| s.1.max(0.0))
+            .unwrap_or(0.0);
+        let strongest = nbrs.first().map(|n| n.strength).unwrap_or(0.0);
+        let missing: Vec<String> = nbrs
+            .iter()
+            .filter(|n| !cands.contains_key(&n.id))
+            .map(|n| n.id.clone())
+            .collect();
+        if !missing.is_empty() {
+            for r in pg.query(
+                "SELECT id, kind, project, rel, importance, corpus FROM entities \
+                 WHERE id = ANY($1) AND corpus = ANY($2)",
+                &[&missing, &corpora],
+            )? {
+                cands.insert(
+                    r.get(0),
+                    Cand {
+                        kind: r.get(1),
+                        project: r.get(2),
+                        rel: r.get(3),
+                        importance: r.get(4),
+                        corpus: r.get(5),
+                        rrf: 0.0,
+                        lists: Vec::new(),
+                    },
+                );
+            }
+        }
+        for n in &nbrs {
+            if !cands.contains_key(&n.id) || strongest <= 0.0 {
+                continue;
+            }
+            let bonus = x.touched_weight * n.strength / strongest * cutoff;
+            *score.entry(n.id.clone()).or_insert(0.0) += bonus;
+            explain.entry(n.id.clone()).or_default().push(format!(
+                "touched in {} session{} with {} +{bonus:.4}",
+                n.sessions,
+                if n.sessions == 1 { "" } else { "s" },
+                n.via
+            ));
+            info.touched += 1;
+        }
+        lap(&mut ms, "touched");
+    }
+    let mut order = by_score(&score);
+    // Each key's own candidates by their scores after the priors (a
+    // project's tests and fixtures down, as in its own search).
+    for ids in own.values_mut() {
+        ids.sort_by(|a, b| {
+            let (sa, sb) = (score.get(a).copied(), score.get(b).copied());
+            sb.unwrap_or(f64::MIN)
+                .total_cmp(&sa.unwrap_or(f64::MIN))
+                .then_with(|| a.cmp(b))
+        });
+    }
+    // [cross] slots: each of the query's projects (or parts) gets places in
+    // the reranker's pool, and none takes more than its cap.
+    let mut flat_pool = cfg.reranker.flat_depth;
+    let keys: Vec<String> = if rerank.is_none() {
+        // No reranker, no pool.
+        Vec::new()
+    } else if !parts.is_empty() {
+        info.sub.clone()
+    } else if crossing && x.slots && spans.len() >= 2 {
+        spans.clone()
+    } else if crossing && x.slots && !x.route {
+        // No route: the projects with the most fused mass.
+        let mut m: Vec<(String, f64)> = Vec::new();
+        for (id, s) in &order {
+            let Some(c) = cands.get(id) else { continue };
+            match m.iter_mut().find(|(p, _)| *p == c.project) {
+                Some(e) => e.1 += s.max(0.0),
+                None => m.push((c.project.clone(), s.max(0.0))),
+            }
+            if m.len() > 4 * x.slot_projects.max(1) {
+                break;
+            }
+        }
+        m.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        super::cross::routed(&m, x.slot_projects, x.route_ratio)
+    } else {
+        Vec::new()
+    };
+    if keys.len() >= 2 {
+        let cap = x
+            .slot_min
+            .max((x.slot_cap * pool_depth as f64).ceil() as usize);
+        let key_of = |id: &str| -> String {
+            if parts.is_empty() {
+                cands.get(id).map(|c| c.project.clone()).unwrap_or_default()
+            } else {
+                origin.get(id).map(|o| o.0.clone()).unwrap_or_default()
+            }
+        };
+        let file_of = |id: &str| model::file_of(id).to_string();
+        let chosen = super::cross::pool(
+            &order,
+            &keys,
+            &own,
+            super::cross::Slots {
+                depth: pool_depth,
+                min: x.slot_min,
+                cap,
+                per_file: cfg.search.per_file,
+            },
+            &key_of,
+            &file_of,
+        );
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for &i in &chosen {
+            let k = key_of(&order[i].0);
+            match counts.iter_mut().find(|(p, _)| *p == k) {
+                Some(e) => e.1 += 1,
+                None => counts.push((k, 1)),
+            }
+        }
+        info.pool = counts;
+        order = super::cross::pool_first(&order, &chosen);
+        flat_pool = pool_depth;
+        lap(&mut ms, "slots");
+    }
+    // Each part's candidates are reranked against that part.
+    let query_of: HashMap<String, String> = origin
+        .iter()
+        .filter_map(|(id, (k, _))| part_text.get(k).map(|t| (id.clone(), t.clone())))
+        .collect();
     // The reranker, on each corpus's top candidates.
     let rerank_info = rerank.map(|rc| {
         let pins: HashSet<&String> = if cfg.reranker.keep_pins {
@@ -1395,6 +1895,7 @@ fn search_entities(
             pg,
             rc,
             &o.query,
+            &query_of,
             &content,
             &mut order,
             &cands,
@@ -1405,7 +1906,7 @@ fn search_entities(
             corpora
                 .iter()
                 .all(|c| CRAWLED.contains(&c.as_str()))
-                .then_some(cfg.reranker.flat_depth),
+                .then_some(flat_pool),
         );
         lap(&mut ms, "rerank");
         info
@@ -1469,6 +1970,7 @@ fn search_entities(
         rerank: rerank_info,
         groups: None,
         lexical: None,
+        cross: crossing.then_some(info),
     })
 }
 
@@ -1481,6 +1983,7 @@ fn apply_rerank(
     pg: &Pg,
     rc: &super::rerank::Client,
     query: &str,
+    query_of: &HashMap<String, String>,
     terms: &[String],
     order: &mut [(String, f64)],
     cands: &HashMap<String, Cand>,
@@ -1517,12 +2020,26 @@ fn apply_rerank(
         None => cfg.depth.clone(),
     };
     let t0 = Instant::now();
+    // Each slot scored against its own query (a caller's part, else the
+    // whole query): one call per query.
     let result = (|| -> Result<Vec<(Vec<usize>, Vec<f64>)>> {
         let mut out = Vec::new();
         for slots in by_corpus.values() {
-            let ids: Vec<String> = slots.iter().map(|&i| order[i].0.clone()).collect();
-            let docs = super::rerank::texts(pg, &ids, terms)?;
-            out.push((slots.clone(), rc.score(query, &docs)?));
+            let mut by_query: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+            for &i in slots {
+                let q = query_of.get(&order[i].0).map_or(query, String::as_str);
+                by_query.entry(q).or_default().push(i);
+            }
+            let mut scores: HashMap<usize, f64> = HashMap::new();
+            for (q, qs) in &by_query {
+                let ids: Vec<String> = qs.iter().map(|&i| order[i].0.clone()).collect();
+                let docs = super::rerank::texts(pg, &ids, terms)?;
+                for (&i, s) in qs.iter().zip(rc.score(q, &docs)?) {
+                    scores.insert(i, s);
+                }
+            }
+            let s: Vec<f64> = slots.iter().map(|i| scores[i]).collect();
+            out.push((slots.clone(), s));
         }
         Ok(out)
     })();

@@ -18,6 +18,7 @@ use postgres::{Client, NoTls};
 
 use crate::config::Config;
 
+pub mod cross;
 pub mod dirsum;
 #[cfg(feature = "embed")]
 pub mod embed_pg;

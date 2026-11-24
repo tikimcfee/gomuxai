@@ -57,6 +57,10 @@ pub struct Config {
     pub ledger: Ledger,
     /// The query log.
     pub log: Log,
+    /// `[cross]`: answers that span projects (docs/INDEX-V2.md, "Across
+    /// projects"). Every switch off by default; with all of it at its
+    /// defaults the fingerprint is what it was before the section existed.
+    pub cross: Cross,
 }
 
 /// The store the commands use when neither `--store` nor
@@ -102,6 +106,135 @@ impl Default for Log {
             enabled: true,
             path: String::new(),
         }
+    }
+}
+
+/// Answers that span projects: a search with no `--project` or `--under`
+/// (docs/INDEX-V2.md, "Across projects"). Each part has its own switch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Cross {
+    /// Rank the projects for the query before the slots and sub-queries:
+    /// project and folder summaries by BM25 (`route_cards` of them, each
+    /// project's best `route_summary_best` summed), the query's vector
+    /// against the projects' cards, the fused candidates' mass by project
+    /// (its best `route_per_project` fusion scores summed), and the
+    /// projects the query names. Each list's scores are scaled to its best
+    /// (the vector's from its worst to its best), and a project's route
+    /// score is their mean weighted by `route_summary`, `route_dense`,
+    /// `route_fused` and `route_names`.
+    pub route: bool,
+    pub route_cards: i64,
+    pub route_per_project: usize,
+    pub route_summary: f64,
+    pub route_dense: f64,
+    pub route_fused: f64,
+    /// A fourth list: the projects the query names (a word equal to the
+    /// name), each scoring 1.
+    pub route_names: f64,
+    /// How many of a project's summary cards count (its best).
+    pub route_summary_best: usize,
+    /// The fused candidates read for their projects' mass.
+    pub route_fused_depth: usize,
+    /// At most this many projects are routed...
+    pub route_projects: usize,
+    /// ...each with a route score at least this share of the first's. Two
+    /// or more routed projects make the query read as spanning projects
+    /// when the caller is in no project, or with `route_caller`; from
+    /// inside a project it takes a name, a comparison or parts.
+    pub route_ratio: f64,
+    pub route_caller: bool,
+    /// Retrieve again inside each spanned project (the fused statement with
+    /// that project as its filter): its candidates join, and its own
+    /// ranking picks the project's places in the pool (`slots`). A
+    /// candidate scores the better of the whole tree's fusion score and its
+    /// project's times `split_raise` (0: a project's candidates reach the
+    /// pool only through its places).
+    pub split: bool,
+    /// How many of each project's own files join.
+    pub split_depth: usize,
+    pub split_raise: f64,
+    /// The reranker's pool across projects: each of the top projects (the
+    /// spanned ones, else the `slot_projects` with the most fused mass that
+    /// clear `route_ratio`) gets its best `slot_min` files in (by its own
+    /// sub-query's ranking with `split`), and no project takes more than
+    /// `slot_cap` of the pool. Two or more projects, or nothing changes.
+    pub slots: bool,
+    pub slot_min: usize,
+    pub slot_cap: f64,
+    pub slot_projects: usize,
+    /// The pool's size when slots apply (0: `[reranker].flat_depth`).
+    pub pool_depth: usize,
+    /// A `--kind file` answer's first `limit` hold at most this many files
+    /// from one project while another of the query's projects has files
+    /// further down (0: no cap).
+    pub top_cap: usize,
+    /// When the query names another project, reads as a comparison, or is
+    /// routed to two or more projects, the caller's own project counts
+    /// this much (and a dependency at most this), and the lists scoped to
+    /// it are left out. 0: the priors stand.
+    pub own_project: f64,
+    /// Files that sessions touched along with the top hits join the
+    /// candidates: from the best `touched_seeds` files, each neighbor
+    /// scores by the sessions it shares with them, each session weighted
+    /// by its IDF (ln of the touched files over its own) and the neighbor
+    /// by its own (ln of the sessions over those that touched it), a
+    /// neighbor in another project than its seed by `touched_cross`. The best
+    /// `touched_max` neighbors gain `touched_weight` times the pool's last
+    /// score, scaled by their share of the strongest.
+    pub touched: bool,
+    pub touched_seeds: usize,
+    pub touched_max: usize,
+    pub touched_weight: f64,
+    pub touched_cross: f64,
+}
+
+impl Default for Cross {
+    fn default() -> Self {
+        Cross {
+            route: false,
+            route_cards: 60,
+            route_per_project: 3,
+            // Tuned on the cross dev set (docs/INDEX-V2.md, "Across
+            // projects"): the summaries and the projects' vectors routed
+            // worse than the candidates' mass and the names.
+            route_summary: 0.0,
+            route_dense: 0.0,
+            route_fused: 1.0,
+            route_names: 1.0,
+            route_summary_best: 3,
+            route_fused_depth: 100,
+            route_projects: 2,
+            route_ratio: 0.5,
+            route_caller: false,
+            split: false,
+            split_depth: 30,
+            split_raise: 1.0,
+            slots: false,
+            slot_min: 5,
+            slot_cap: 0.6,
+            slot_projects: 2,
+            pool_depth: 0,
+            top_cap: 0,
+            own_project: 0.0,
+            touched: false,
+            touched_seeds: 10,
+            touched_max: 10,
+            touched_weight: 1.0,
+            touched_cross: 1.0,
+        }
+    }
+}
+
+impl Cross {
+    /// Whether any part is on.
+    pub fn any(&self) -> bool {
+        self.route
+            || self.split
+            || self.slots
+            || self.top_cap > 0
+            || self.own_project > 0.0
+            || self.touched
     }
 }
 
@@ -682,6 +815,29 @@ impl Config {
         if !["", "sqlite", "pg", "postgres"].contains(&self.store.kind.as_str()) {
             bail!("store.kind takes sqlite or pg, not {:?}", self.store.kind);
         }
+        let x = &self.cross;
+        if !(0.0..=1.0).contains(&x.route_ratio) || !(0.0..=1.0).contains(&x.slot_cap) {
+            bail!("cross: route_ratio and slot_cap must be between 0 and 1");
+        }
+        if x.route_cards < 1
+            || x.route_per_project < 1
+            || [
+                x.route_summary,
+                x.route_dense,
+                x.route_fused,
+                x.route_names,
+                x.split_raise,
+                x.own_project,
+                x.touched_weight,
+                x.touched_cross,
+            ]
+            .iter()
+            .any(|w| !w.is_finite() || *w < 0.0)
+        {
+            bail!(
+                "cross: the weights must be numbers of 0 or more, route_cards and route_per_project at least 1"
+            );
+        }
         Ok(())
     }
 
@@ -779,12 +935,16 @@ impl Config {
     /// A short hash of the resolved values: equal configurations have equal
     /// fingerprints, however their files are written. `[store]`, `[ledger]`
     /// and `[log]` are left out: they change no answer (and a configuration
-    /// from before them keeps its fingerprint).
+    /// from before them keeps its fingerprint); so is `[cross]` while it is
+    /// at its defaults.
     pub fn fingerprint(&self) -> String {
         let mut v = serde_json::to_value(self).unwrap_or_default();
         if let Some(m) = v.as_object_mut() {
             for k in NOT_FINGERPRINTED {
                 m.remove(*k);
+            }
+            if self.cross == Cross::default() {
+                m.remove("cross");
             }
         }
         let v = serde_json::to_vec(&v).unwrap_or_default();
@@ -848,6 +1008,12 @@ mod tests {
         assert_eq!(c.search.rrf_k, 30.0);
         assert_ne!(c.fingerprint(), d.fingerprint());
         assert!(Config::parse("[search]\nrrf = 30\n").is_err());
+        // [cross] at its defaults keeps the fingerprint the defaults had
+        // before it existed; a value in it is a new one.
+        assert_eq!(d.fingerprint(), "1f3078a48f47");
+        let c = Config::parse("[cross]\nslots = true\n").unwrap();
+        assert_ne!(c.fingerprint(), d.fingerprint());
+        assert!(Config::parse("[cross]\nslot_cap = 2\n").is_err());
         assert!(Config::parse("[search]\ntrigram_threshold = 2\n").is_err());
         let c = Config::parse("[lists]\ntrigram = 0.5\n[corpora.code]\nboost = 2\n").unwrap();
         assert_eq!(c.list_weight("trigram here"), 0.5);
