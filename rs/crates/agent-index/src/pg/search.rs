@@ -123,6 +123,55 @@ impl Lexical {
     }
 }
 
+/// What a BM25 card scan filters inside pg_search's query (`[bm25]
+/// pushdown`, on an index with the filter fields, `schema::bm25_fields`):
+/// which filters were asked for, since one not asked for is left out of
+/// the query rather than matched against ''.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Push {
+    pub kind: bool,
+    pub project: bool,
+    pub under: bool,
+    /// With `under`: the projects an entity at or under that path can be
+    /// in (the one holding it, those above it, those inside it), pushed as
+    /// a term set before the path is checked on the rows kept. Empty: the
+    /// path alone (it is in no project).
+    pub under_projects: Vec<String>,
+}
+
+/// The projects an entity at or under `under` can belong to: a project's
+/// entities lie under its directory, so only one whose directory holds
+/// `under`, or lies inside it.
+pub fn projects_under(under: &str, projects: &[(String, String)]) -> Vec<String> {
+    let under = under.trim_end_matches('/');
+    if under.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = projects
+        .iter()
+        .filter(|(_, p)| {
+            let p = p.trim_end_matches('/');
+            !p.is_empty()
+                && (under == p
+                    || under.starts_with(&format!("{p}/"))
+                    || p.starts_with(&format!("{under}/")))
+        })
+        .map(|(n, _)| n.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Text as a SQL array literal (each element quoted, `'` doubled).
+fn text_array(v: &[String]) -> String {
+    let items: Vec<String> = v
+        .iter()
+        .map(|s| format!("'{}'", s.replace('\'', "''")))
+        .collect();
+    format!("ARRAY[{}]::text[]", items.join(", "))
+}
+
 /// THE BM25 HOOK. The A/B's lists over the same card text and chunks, by
 /// `pg_search`'s BM25: (CTEs, lists as `name:cte`). The indexes are
 /// migration 2 in schema.rs, built only where the database has `pg_search`:
@@ -133,8 +182,14 @@ impl Lexical {
 /// lowercased), the whole query is `$7` when it is one word. Name the lists
 /// `bm25` / `bm25 here` (cards) and `bm25 full text` / `bm25 full text here`
 /// (chunks, an entity ranked by its best chunk), so `--explain` tells them
-/// from the native ones.
-pub fn bm25_ctes(local: bool, cfg: &Config) -> Option<(Vec<String>, Vec<String>)> {
+/// from the native ones. With `push`, the cards' kind, project and corpus
+/// filters (and `--under` as the projects it can hold) are terms of the
+/// query itself; the local scope is read off the scan's rows.
+pub fn bm25_ctes(
+    local: bool,
+    push: Option<&Push>,
+    cfg: &Config,
+) -> Option<(Vec<String>, Vec<String>)> {
     let f = FILTER;
     let here = format!(" AND {HERE}");
     // Any term in any card field, each field boosted (`[bm25]` in the
@@ -158,31 +213,87 @@ pub fn bm25_ctes(local: bool, cfg: &Config) -> Option<(Vec<String>, Vec<String>)
         .map(|(col, boost)| format!("{col} ||| {BM25_QUERY}::pdb.boost({})", num(*boost)))
         .collect::<Vec<_>>()
         .join(" OR ");
-    // One unfiltered scan, then the filters on its rows: given in the same
-    // WHERE, pg_search checks them against every row of the table (690 ms
-    // with --under or --kind, against 17 ms this way; same ranking).
-    let mut ctes = vec![format!(
-        "bm25_hits AS MATERIALIZED (SELECT e.id, pdb.score(e.id)::float8 AS s, e.project, e.kind, e.file_kind, e.path, e.corpus \
-         FROM entities e WHERE ({matches}))"
-    )];
-    let card = |name: &str, scope: &str| {
-        format!(
-            "{name} AS (SELECT e.id, e.s FROM bm25_hits e WHERE {f}{scope} ORDER BY e.s DESC, e.id LIMIT $12)"
-        )
-    };
+    let mut ctes = Vec::new();
+    let mut lists = Vec::new();
+    if let Some(p) = push {
+        // The filters as terms on the index's literal fields, each
+        // `pdb.const(0)`: a term query would add its own score, and a plain
+        // `=` here is pushed down as one too (it adds about 2.4). Under (a
+        // path prefix) stays a filter on the rows kept, and so does the
+        // local scope: a second scan limited to the caller's projects cost
+        // more (24 ms median against 16) than reading `project` off the
+        // one scan's rows.
+        let mut w = String::from(" AND e.corpus === $13::text[]::pdb.const(0)");
+        if p.kind {
+            w.push_str(
+                " AND (e.kind === $2::text::pdb.const(0) OR e.file_kind === $2::text::pdb.const(0))",
+            );
+        }
+        if p.project {
+            w.push_str(" AND e.project === $3::text::pdb.const(0)");
+        }
+        if p.under && !p.under_projects.is_empty() {
+            w.push_str(&format!(
+                " AND e.project === {}::pdb.const(0)",
+                text_array(&p.under_projects)
+            ));
+        }
+        let mut cols = String::new();
+        if p.under {
+            cols.push_str(", e.path");
+        }
+        if local {
+            cols.push_str(", e.project");
+        }
+        ctes.push(format!(
+            "bm25_hits AS MATERIALIZED (SELECT e.id, pdb.score(e.id)::float8 AS s{cols} \
+             FROM entities e WHERE ({matches}){w})"
+        ));
+        let under = if p.under {
+            "($4 = '' OR e.path = $4 OR starts_with(e.path, $4 || '/'))"
+        } else {
+            "true"
+        };
+        let card = |name: &str, scope: &str| {
+            format!(
+                "{name} AS (SELECT e.id, e.s FROM bm25_hits e WHERE {under}{scope} ORDER BY e.s DESC, e.id LIMIT $12)"
+            )
+        };
+        ctes.push(card("bm25_cards", ""));
+        lists.push("bm25:bm25_cards".to_string());
+        if local {
+            ctes.push(card("bm25_cards_here", &here));
+            lists.push("bm25 here:bm25_cards_here".into());
+        }
+    } else {
+        // One unfiltered scan, then the filters on its rows: given in the
+        // same WHERE as plain conditions, pg_search checks them against
+        // every row of the table (690 ms with --under or --kind, against
+        // 17 ms this way; same ranking).
+        ctes.push(format!(
+            "bm25_hits AS MATERIALIZED (SELECT e.id, pdb.score(e.id)::float8 AS s, e.project, e.kind, e.file_kind, e.path, e.corpus \
+             FROM entities e WHERE ({matches}))"
+        ));
+        let card = |name: &str, scope: &str| {
+            format!(
+                "{name} AS (SELECT e.id, e.s FROM bm25_hits e WHERE {f}{scope} ORDER BY e.s DESC, e.id LIMIT $12)"
+            )
+        };
+        ctes.push(card("bm25_cards", ""));
+        lists.push("bm25:bm25_cards".to_string());
+        if local {
+            ctes.push(card("bm25_cards_here", &here));
+            lists.push("bm25 here:bm25_cards_here".into());
+        }
+    }
+    // An entity by its best chunk; the chunks' filters stay on their
+    // entities' rows (a chunk holds no project of its own).
     let full = |name: &str, scope: &str| {
         format!(
             "{name} AS (SELECT bch.id, bch.s FROM bch JOIN entities e ON e.id = bch.id \
              WHERE {f}{scope} ORDER BY bch.s DESC, bch.id LIMIT $12)"
         )
     };
-    ctes.push(card("bm25_cards", ""));
-    let mut lists = vec!["bm25:bm25_cards".to_string()];
-    if local {
-        ctes.push(card("bm25_cards_here", &here));
-        lists.push("bm25 here:bm25_cards_here".into());
-    }
-    // An entity by its best chunk.
     ctes.push(format!(
         "bch AS (SELECT c.entity_id AS id, max(pdb.score(c.entity_id))::float8 AS s FROM chunks c \
          WHERE c.text ||| {BM25_QUERY} GROUP BY c.entity_id)"
@@ -213,6 +324,7 @@ pub fn fused_sql(
     dense: bool,
     lexical: Lexical,
     filtered: bool,
+    push: Option<&Push>,
     cfg: &Config,
 ) -> Result<String> {
     let f = FILTER;
@@ -334,7 +446,7 @@ pub fn fused_sql(
         }
     }
     if lexical != Lexical::Fts {
-        let Some((c, l)) = bm25_ctes(local, cfg) else {
+        let Some((c, l)) = bm25_ctes(local, push, cfg) else {
             bail!(
                 "--lexical {}: this schema has no BM25 index yet (pg_search); --lexical fts uses native full text",
                 if lexical == Lexical::Bm25 {
@@ -1010,12 +1122,23 @@ fn search_entities(
         super::schema::ensure_bm25(pg)?;
     }
     let filtered = !(o.kind.is_empty() && o.project.is_empty() && o.under.is_empty());
+    let push = if lexical != Lexical::Fts && cfg.bm25.pushdown && super::schema::bm25_fields(pg)? {
+        Some(Push {
+            kind: !o.kind.is_empty(),
+            project: !o.project.is_empty(),
+            under: !o.under.is_empty(),
+            under_projects: projects_under(&o.under, &ctx.projects),
+        })
+    } else {
+        None
+    };
     let sql = fused_sql(
         content.len() > 1,
         local,
         qvec.is_some(),
         lexical,
         filtered,
+        push.as_ref(),
         cfg,
     )?;
     let lim = cfg.search.list_depth;

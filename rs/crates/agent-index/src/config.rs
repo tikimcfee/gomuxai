@@ -121,6 +121,13 @@ pub struct Bm25 {
     pub seed: f64,
     pub why: f64,
     pub symbols: f64,
+    /// The card list's kind, project and corpus filters (and `--under`, as
+    /// the projects it can hold) go inside pg_search's query, as terms on the
+    /// index's filter fields that add nothing to the score, so it scores
+    /// only the rows they keep; off, it scores every match and filters
+    /// after (the same ranking, slower when the terms are common). Only
+    /// where the index has the fields (`schema::bm25_fields`).
+    pub pushdown: bool,
 }
 
 impl Default for Bm25 {
@@ -134,6 +141,7 @@ impl Default for Bm25 {
             seed: 2.0,
             why: 2.0,
             symbols: 1.0,
+            pushdown: true,
         }
     }
 }

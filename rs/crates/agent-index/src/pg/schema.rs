@@ -244,6 +244,27 @@ CREATE TABLE queries (
 );
 "#;
 
+/// The card index's fields: what the card list matches (`terms` and the
+/// card's text) and, since the filters went inside the query (`[bm25]
+/// pushdown`), the filter fields, one term per value (`pdb.literal`).
+macro_rules! entities_bm25_fields {
+    () => {
+        "id,
+        (terms::pdb.source_code),
+        (labels_text::pdb.source_code),
+        (title::pdb.source_code('stemmer=english')),
+        (summary::pdb.source_code('stemmer=english')),
+        ((words_of(asks))::pdb.source_code('stemmer=english', 'alias=asks')),
+        (seed::pdb.source_code('stemmer=english')),
+        (why::pdb.source_code('stemmer=english')),
+        (symbols::pdb.source_code),
+        (project::pdb.literal),
+        (kind::pdb.literal),
+        (file_kind::pdb.literal),
+        (corpus::pdb.literal)"
+    };
+}
+
 /// 2: the BM25 indexes of the A/B (docs/INDEX-V2.md, "ParadeDB pg_search: an
 /// A/B"), over the same card text and chunks as the native lists. Only where
 /// the database has the `pg_search` extension: elsewhere this does nothing,
@@ -252,31 +273,61 @@ CREATE TABLE queries (
 /// and lowercases, so `terms`' split words come from the text itself; prose
 /// fields are stemmed too, as `to_tsvector('english', ...)` stems them.
 /// Chunks index `text` alone: `chunks.terms` holds what the tokenizer
-/// already yields. Filter columns aren't indexed: [`super::search::bm25_ctes`]
-/// filters on the heap, as the native lists do.
-const BM25_INDEXES: &str = r#"
+/// already yields, and their filters stay on the heap (a chunk holds no
+/// project of its own). A schema whose card index predates the filter
+/// fields gets them at connect ([`BM25_FIELDS`]).
+const BM25_INDEXES: &str = concat!(
+    r#"
 DO $do$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_search') THEN
         RETURN;
     END IF;
     CREATE INDEX IF NOT EXISTS entities_bm25 ON entities USING paradedb (
-        id,
-        (terms::pdb.source_code),
-        (labels_text::pdb.source_code),
-        (title::pdb.source_code('stemmer=english')),
-        (summary::pdb.source_code('stemmer=english')),
-        ((words_of(asks))::pdb.source_code('stemmer=english', 'alias=asks')),
-        (seed::pdb.source_code('stemmer=english')),
-        (why::pdb.source_code('stemmer=english')),
-        (symbols::pdb.source_code));
+        "#,
+    entities_bm25_fields!(),
+    r#");
     CREATE INDEX IF NOT EXISTS chunks_bm25 ON chunks USING paradedb (
         entity_id,
         ord,
         (text::pdb.source_code('stemmer=english')));
 END
 $do$;
-"#;
+"#
+);
+
+/// The card index built again with the filter fields, for a schema whose
+/// index predates them (a table takes one ParadeDB index, so it is dropped
+/// first: searches wait for the build, about 2 s for 460,000 cards). Not a
+/// migration: an older agent still reads the schema, and its queries never
+/// touch the new fields.
+const BM25_FIELDS: &str = concat!(
+    "DROP INDEX entities_bm25;
+     CREATE INDEX entities_bm25 ON entities USING paradedb (",
+    entities_bm25_fields!(),
+    ");"
+);
+
+/// The card index's definition in this schema, if it has one. Found by
+/// name in `pg_class` first and only then read: `pg_get_indexdef` opens
+/// the table, and a filter on `pg_indexes.indexdef` may read every
+/// schema's indexes, failing on one another process is dropping.
+const CARD_INDEX_DEF: &str = "SELECT pg_get_indexdef(c.oid) FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = $1 AND c.relname = 'entities_bm25' AND c.relkind = 'i'";
+
+/// Whether a card index definition has the filter fields.
+fn has_fields(def: &str) -> bool {
+    def.contains("(project)::pdb.literal")
+}
+
+/// Whether the card index has the filter fields, so a search may filter
+/// inside the query ([`super::search::bm25_ctes`]).
+pub fn bm25_fields(pg: &Pg) -> Result<bool> {
+    Ok(pg
+        .query_opt(CARD_INDEX_DEF, &[&pg.schema])?
+        .is_some_and(|r| has_fields(&r.get::<_, String>(0))))
+}
 
 /// Whether this schema has both BM25 indexes.
 pub fn has_bm25(pg: &Pg) -> Result<bool> {
@@ -340,6 +391,19 @@ pub fn migrate(pg: &Pg) -> Result<()> {
         tx.batch_execute(sql)
             .with_context(|| format!("migrating schema {} to version {v}", pg.schema))?;
         tx.execute("INSERT INTO migrations (version) VALUES ($1)", &[&v])?;
+    }
+    // A card index from before the filter fields gets them, once, under
+    // the same lock.
+    let stale = tx
+        .query_opt(CARD_INDEX_DEF, &[&pg.schema])?
+        .is_some_and(|r| !has_fields(&r.get::<_, String>(0)));
+    if stale {
+        tx.batch_execute(BM25_FIELDS).with_context(|| {
+            format!(
+                "adding the filter fields to schema {}'s card index",
+                pg.schema
+            )
+        })?;
     }
     tx.commit()?;
     drop(c);

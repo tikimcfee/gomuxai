@@ -528,6 +528,107 @@ fn search_bm25_lists() {
     }
 }
 
+/// `--under` as the projects that can hold its entities: the one holding
+/// the path, those above it, those inside it; not a sibling sharing a
+/// prefix.
+#[test]
+fn projects_under_a_path() {
+    let p = |n: &str, d: &str| (n.to_string(), d.to_string());
+    let projects = vec![
+        p("a", "/dev/a"),
+        p("ab", "/dev/ab"),
+        p("inner", "/dev/a/vendor/inner"),
+        p("b", "/dev/b"),
+    ];
+    let under = |u: &str| super::search::projects_under(u, &projects);
+    assert_eq!(under("/dev/a"), vec!["a", "inner"]);
+    assert_eq!(under("/dev/a/"), vec!["a", "inner"]);
+    assert_eq!(under("/dev/a/src"), vec!["a"]);
+    assert_eq!(under("/dev/a/vendor/inner/x"), vec!["a", "inner"]);
+    assert_eq!(under("/dev"), vec!["a", "ab", "b", "inner"]);
+    assert!(under("/elsewhere").is_empty());
+    assert!(under("").is_empty());
+}
+
+/// The filters inside pg_search's query (`[bm25] pushdown`) rank exactly
+/// as the scan filtered after, scores included; a card index built before
+/// the filter fields gets them at connect.
+#[test]
+fn bm25_pushdown_same_ranking() {
+    use super::search::Lexical;
+    let Some(t) = throwaway("bmpush") else { return };
+    let pg = &t.0;
+    if !super::schema::has_bm25(pg).unwrap() {
+        return;
+    }
+    assert!(super::schema::bm25_fields(pg).unwrap());
+    let (_dir, ix) = fixture();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let (url, _) = Pg::from_env().unwrap();
+    let off = crate::config::Config::parse("[bm25]\npushdown = false\n").unwrap();
+    let pg_off = Pg::connect_with(&url, &pg.schema, off).unwrap();
+    let alpha: String = pg
+        .query("SELECT path FROM projects WHERE name = 'alpha'", &[])
+        .unwrap()[0]
+        .get(0);
+    let mut cases = Vec::new();
+    for q in [
+        "deliver held",
+        "parse config",
+        "render glyphs",
+        "zebraword",
+        "lib",
+    ] {
+        cases.push(opts(q));
+        for under in [alpha.clone(), format!("{alpha}/src")] {
+            let mut o = opts(q);
+            o.under = under;
+            cases.push(o);
+        }
+        let mut o = opts(q);
+        o.project = "alpha".into();
+        cases.push(o);
+        let mut o = opts(q);
+        o.kind = "file".into();
+        cases.push(o);
+        let mut o = opts(q);
+        o.kind = "rust".into();
+        o.under = format!("{alpha}/src");
+        cases.push(o);
+        let mut o = opts(q);
+        o.caller_project = "alpha".into();
+        cases.push(o);
+        let mut o = opts(q);
+        o.corpora = vec!["prose".into()];
+        cases.push(o);
+    }
+    let hits = |pg: &Pg, o: &crate::query::SearchOptions| -> Vec<(String, String)> {
+        super::search::search(pg, o, None, Lexical::Bm25, None)
+            .unwrap()
+            .hits
+            .into_iter()
+            .map(|h| (h.id, format!("{:.9}", h.score)))
+            .collect()
+    };
+    let mut nonempty = 0;
+    for o in &cases {
+        let (on, off) = (hits(pg, o), hits(&pg_off, o));
+        assert_eq!(on, off, "{o:?}");
+        nonempty += usize::from(!on.is_empty());
+    }
+    assert!(nonempty > cases.len() / 2, "{nonempty} of {}", cases.len());
+    // An index from before the fields: rebuilt with them at connect.
+    pg.batch(
+        "DROP INDEX entities_bm25;
+         CREATE INDEX entities_bm25 ON entities USING paradedb (id, (terms::pdb.source_code))",
+    )
+    .unwrap();
+    assert!(!super::schema::bm25_fields(pg).unwrap());
+    let again = Pg::connect_with(&url, &pg.schema, crate::config::Config::default()).unwrap();
+    assert!(super::schema::bm25_fields(&again).unwrap());
+    assert_eq!(hits(&again, &cases[1]), hits(&pg_off, &cases[1]));
+}
+
 /// A stand-in reranker: answers `/score` with each document's index as its
 /// score, so the last candidate sent comes first. Its address.
 fn fake_reranker() -> String {
