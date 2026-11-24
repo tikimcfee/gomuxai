@@ -36,6 +36,9 @@ const HEALTH_EVERY_MS: u64 = 2_000;
 pub struct Options {
     /// Projects; empty is every full-depth project.
     pub projects: Vec<String>,
+    /// The corpora whose files are candidates (`code`, `prose`); empty is
+    /// code.
+    pub corpora: Vec<String>,
     /// `project:dir/` prefixes the files must be under; empty is all.
     pub prefixes: Vec<String>,
     /// At most this many files per project (or prefix), sampled evenly; 0
@@ -49,6 +52,11 @@ pub struct Options {
     pub stats_path: Option<PathBuf>,
     /// Projects left out (their files counted as skipped).
     pub skip_projects: Vec<String>,
+    /// `project:dir/` prefixes left out (their files counted as skipped).
+    pub skip_prefixes: Vec<String>,
+    /// The bottom-up pass: the units are directories, projects and parts
+    /// (`pg::dirsum`), under the directory prompt's fingerprint.
+    pub dirs: bool,
     /// For a fork of an upstream tree: the only files of that project to
     /// summarize (the fork's own commits'), by path in the project; its
     /// other files are skipped as upstream.
@@ -91,22 +99,139 @@ pub struct Coverage {
     pub top_skipped_dirs: Vec<(String, usize, String)>,
     /// After `limit`'s sampling.
     pub selected: usize,
+    /// What a bottom-up pass over the selection would summarize after the
+    /// files: the directories holding a selected file at any depth, and
+    /// the projects.
+    pub bottom_up_dirs: usize,
+    pub bottom_up_projects: usize,
+    /// Kept files in a crate copied from elsewhere: its nearest Cargo or
+    /// npm manifest names a repository that isn't the project's (a
+    /// heuristic, marked, never a skip). By the crate's directory.
+    pub copied_files: usize,
+    pub copied: BTreeMap<String, Copied>,
+    /// The selected files' ids (only in the `--out` file).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
     pub filter_version: &'static str,
+}
+
+/// A crate copied into a project from elsewhere.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Copied {
+    pub files: usize,
+    pub repository: String,
+}
+
+/// A manifest's `repository` (Cargo.toml's key, package.json's string or
+/// `url`); empty when it names none.
+pub fn manifest_repository(name: &str, text: &str) -> String {
+    static TOML: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?m)^\s*repository\s*=\s*"([^"]*)""#).unwrap()
+    });
+    if name == "Cargo.toml" {
+        return TOML
+            .captures(text)
+            .map(|c| c[1].trim().to_string())
+            .unwrap_or_default();
+    }
+    if name == "package.json" {
+        let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+        return match v.get("repository") {
+            Some(serde_json::Value::String(s)) => s.trim().to_string(),
+            Some(r) => r
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            None => String::new(),
+        };
+    }
+    String::new()
+}
+
+/// Whether a repository URL is another's than `project`'s (its name, any
+/// case, `-` and `_` aside, isn't in it).
+pub fn foreign_repository(repo: &str, project: &str) -> bool {
+    let norm = |s: &str| {
+        s.to_lowercase()
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+    };
+    !repo.is_empty() && !norm(repo).contains(&norm(project))
+}
+
+/// The kept files in copied crates, by crate directory (`project:dir`):
+/// each file goes to its nearest manifest among the candidates.
+fn copied_crates(cands: &[Candidate], keep: &[Candidate]) -> BTreeMap<String, Copied> {
+    let mut repos: HashMap<String, String> = HashMap::new();
+    for c in cands {
+        let (dir, name) = c.rel.rsplit_once('/').unwrap_or(("", &c.rel));
+        if name != "Cargo.toml" && name != "package.json" {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&c.path) else {
+            continue;
+        };
+        repos.insert(
+            format!("{}:{dir}", c.project),
+            manifest_repository(name, &text),
+        );
+    }
+    let mut out: BTreeMap<String, Copied> = BTreeMap::new();
+    for c in keep {
+        let mut d = c.rel.as_str();
+        while let Some((up, _)) = d.rsplit_once('/') {
+            d = up;
+            let key = format!("{}:{up}", c.project);
+            if let Some(r) = repos.get(&key) {
+                if foreign_repository(r, &c.project) {
+                    let e = out.entry(key).or_default();
+                    e.files += 1;
+                    e.repository = r.clone();
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// The directories holding one of `files` at any depth (`project:dir`),
+/// and the projects: what a bottom-up pass would summarize after them.
+pub fn bottom_up(files: &[Candidate]) -> (usize, usize) {
+    let mut dirs = HashSet::new();
+    let mut projects = HashSet::new();
+    for c in files {
+        projects.insert(c.project.as_str());
+        let mut d = c.rel.as_str();
+        while let Some((up, _)) = d.rsplit_once('/') {
+            dirs.insert(format!("{}:{up}", c.project));
+            d = up;
+        }
+    }
+    (dirs.len(), projects.len())
 }
 
 /// Files of full-depth projects as candidates, in id order.
 pub fn candidates(pg: &Pg, o: &Options) -> Result<Vec<Candidate>> {
+    let corpora = if o.corpora.is_empty() {
+        vec!["code".to_string()]
+    } else {
+        o.corpora.clone()
+    };
     let rows = pg.query(
         "WITH f AS (
              SELECT e.id, e.project, e.rel, e.path, e.file_kind, e.size, e.content_key, e.seed, e.no_content
              FROM entities e JOIN projects p ON p.name = e.project
-             WHERE e.kind = 'file' AND e.corpus = 'code' AND p.crawled_depth = 'full'
+             WHERE e.kind = 'file' AND e.corpus = ANY($2::text[]) AND p.crawled_depth = 'full'
                AND (cardinality($1::text[]) = 0 OR e.project = ANY($1)))
          SELECT f.*, coalesce(s.names, '{}') FROM f LEFT JOIN (
              SELECT parent, array_agg(name ORDER BY line, name) AS names FROM entities
              WHERE kind = 'symbol' AND parent IN (SELECT id FROM f) GROUP BY parent) s ON s.parent = f.id
          ORDER BY f.id",
-        &[&o.projects],
+        &[&o.projects, &corpora],
     )?;
     let mut out: Vec<Candidate> = rows
         .iter()
@@ -121,6 +246,7 @@ pub fn candidates(pg: &Pg, o: &Options) -> Result<Vec<Candidate>> {
             seed: r.get(7),
             no_content: r.get(8),
             symbols: r.get(9),
+            ..Default::default()
         })
         .collect();
     if !o.prefixes.is_empty() {
@@ -168,6 +294,12 @@ pub fn select_with(
             .skip_projects
             .contains(&c.project)
             .then_some("project left out")
+            .or_else(|| {
+                o.skip_prefixes
+                    .iter()
+                    .any(|p| c.id.starts_with(p.as_str()))
+                    .then_some("prefix left out")
+            })
             .or_else(|| {
                 o.own_files
                     .get(&c.project)
@@ -221,6 +353,8 @@ pub fn select_with(
     top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     top.truncate(20);
     cov.top_skipped_dirs = top;
+    cov.copied = copied_crates(cands, &keep);
+    cov.copied_files = cov.copied.values().map(|c| c.files).sum();
     (keep, cov)
 }
 
@@ -445,11 +579,18 @@ fn one(sh: &Shared, c: Candidate) -> Outcome {
     let t0 = Instant::now();
     let deadline = t0 + sh.file_timeout;
     let cfg = &sh.cfg;
-    let text = match read(&c) {
-        Ok(t) => t,
-        Err(r) => return Outcome::Skipped(r),
+    // A directory unit's input is composed (README, listing, children's
+    // entries), not read; the content filters are a file's.
+    let text = match &c.composed {
+        Some(t) => t.clone(),
+        None => match read(&c) {
+            Ok(t) => t,
+            Err(r) => return Outcome::Skipped(r),
+        },
     };
-    if let Some(r) = sm::skip_by_content(&c, &text, cfg) {
+    if c.composed.is_none()
+        && let Some(r) = sm::skip_by_content(&c, &text, cfg)
+    {
         return Outcome::Skipped(r);
     }
     let mut w = Work::default();
@@ -490,24 +631,45 @@ fn one(sh: &Shared, c: Candidate) -> Outcome {
             },
         }
     };
-    let mut clip = match sm::clip_file(&clean, &c.file_kind, cfg, &mut count) {
-        Ok(x) => x,
-        Err(e) => return fail(c, w, e),
+    let mut clip = if c.composed.is_some() {
+        // Composed to fit (`dirsum` groups a large directory's entries);
+        // the loop below still cuts it if the server counts more.
+        sm::Clipped {
+            content: clean.clone(),
+            clipped: false,
+            note: String::new(),
+        }
+    } else {
+        match sm::clip_file(&clean, &c.file_kind, cfg, &mut count) {
+            Ok(x) => x,
+            Err(e) => return fail(c, w, e),
+        }
     };
     // The whole prompt within its bound: shrink the text while it isn't.
     let mut user = String::new();
     for _ in 0..4 {
-        let (syms, sampled) = sm::symbol_list(&c.symbols, cfg.symbols_chars, clip.clipped);
-        user = sm::render(&Input {
-            project: &c.project,
-            rel: &c.rel,
-            kind: &c.file_kind,
-            seed: &seed,
-            symbols: &syms,
-            sampled,
-            clip_note: &clip.note,
-            content: &clip.content,
-        });
+        user = if c.composed.is_some() {
+            sm::render_dir(&sm::DirInput {
+                project: &c.project,
+                rel: &c.rel,
+                kind: &c.file_kind,
+                part: &c.part,
+                seed: &seed,
+                content: &clip.content,
+            })
+        } else {
+            let (syms, sampled) = sm::symbol_list(&c.symbols, cfg.symbols_chars, clip.clipped);
+            sm::render(&Input {
+                project: &c.project,
+                rel: &c.rel,
+                kind: &c.file_kind,
+                seed: &seed,
+                symbols: &syms,
+                sampled,
+                clip_note: &clip.note,
+                content: &clip.content,
+            })
+        };
         let total = match count(&user) {
             Ok(n) => n + 120,
             Err(e) => return fail(c, w, e),
@@ -546,7 +708,11 @@ fn one(sh: &Shared, c: Candidate) -> Outcome {
     let mut reason = String::new();
     for attempt in 1..=2u32 {
         w.attempt = attempt;
-        let body = sm::body(cfg, &served, &user, attempt);
+        let body = if c.composed.is_some() {
+            sm::body_dir(cfg, &served, &user, attempt)
+        } else {
+            sm::body(cfg, &served, &user, attempt)
+        };
         let ans = match sh.call(&retries, deadline, || sh.client.chat(&body)) {
             Ok(a) => a,
             Err(e) => return fail(c, w, e),
@@ -555,7 +721,14 @@ fn one(sh: &Shared, c: Candidate) -> Outcome {
         w.out_tokens += ans.completion_tokens;
         let (obj, salvaged) = sm::salvage(&sm::strip_reasoning(&ans.content));
         let res = match obj {
-            Some(v) if v.is_object() => sm::check(&v, &facts).map_err(String::from),
+            Some(mut v) if v.is_object() => {
+                if c.composed.is_some()
+                    && let Some(t) = v.get("summary").and_then(|x| x.as_str())
+                {
+                    v["summary"] = json!(sm::strip_dir_lead(t));
+                }
+                sm::check(&v, &facts).map_err(String::from)
+            }
             _ => Err("no usable JSON".to_string()),
         };
         match res {
@@ -620,7 +793,10 @@ pub fn run(
     progress: &mut dyn FnMut(&Stats),
 ) -> Result<Stats> {
     let cfg = &pg.cfg.llm.summaries;
-    let (client, info, fp) = fingerprint(cfg, &o.code)?;
+    let (client, info, mut fp) = fingerprint(cfg, &o.code)?;
+    if o.dirs {
+        fp = sm::Fingerprint::new_dirs(cfg, &info, &o.code);
+    }
     let key = fp.key();
     let writer = fp.writer();
     let run_id: i64 = pg
@@ -629,7 +805,8 @@ pub fn run(
             &[
                 &json!({"fingerprint": fp, "server": info, "options": {
                     "projects": o.projects, "prefixes": o.prefixes, "limit": o.limit,
-                    "retry_failed": o.retry_failed}, "coverage": coverage,
+                    "retry_failed": o.retry_failed, "dirs": o.dirs,
+                    "skip_prefixes": o.skip_prefixes}, "coverage": coverage,
                     "index_config": pg.cfg.fingerprint()}),
                 &key,
             ],
@@ -648,9 +825,9 @@ pub fn run(
 
     // Done under this fingerprint: by content key, never by id alone.
     let statuses: &[&str] = if o.retry_failed {
-        &["live", "superseded"]
+        &["live", "superseded", "part"]
     } else {
-        &["live", "superseded", "failed"]
+        &["live", "superseded", "failed", "part"]
     };
     let statuses: Vec<String> = statuses.iter().map(|s| s.to_string()).collect();
     let done: HashSet<String> = pg
@@ -914,6 +1091,9 @@ fn record(
             }
             return Ok(());
         }
+        // A part of a large directory is kept for its directory's answer
+        // (and a resume), never shown.
+        Outcome::Done { c, e, w } if c.file_kind == "part" => (c, w, "part", String::new(), e),
         Outcome::Done { c, e, w } => (c, w, "live", String::new(), e),
         Outcome::Failed { c, reason, w } => (c, w, "failed", reason, Entry::default()),
     };
@@ -929,7 +1109,7 @@ fn record(
     if let Some(r) = &w.first_fail {
         *stats.first_attempt_failed.entry(r.clone()).or_default() += 1;
     }
-    if status == "live" {
+    if status == "live" || status == "part" {
         stats.written += 1;
         stats.trimmed += e.trimmed as usize;
         stats.asks_stripped += e.stripped.len();
@@ -969,7 +1149,7 @@ fn record(
             &tout,
             &ms,
             &json!({"salvaged": w.salvaged, "trimmed": e.trimmed, "redactions_in": w.redactions,
-                    "first_attempt_failed": w.first_fail}),
+                    "first_attempt_failed": w.first_fail, "unit": c.file_kind, "part": c.part}),
         ],
     )?;
     tx.commit()?;

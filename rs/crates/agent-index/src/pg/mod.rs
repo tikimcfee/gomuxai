@@ -19,6 +19,7 @@ use postgres::{Client, NoTls};
 use crate::config::Config;
 
 #[cfg(feature = "embed")]
+pub mod dirsum;
 pub mod embed_pg;
 pub mod rerank;
 pub mod schema;

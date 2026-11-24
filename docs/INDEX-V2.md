@@ -366,9 +366,34 @@ writes them").
   stop the run within seconds; it saves its stats, a sync shows what was
   written, and it exits 1. A file the server didn't answer in time (5xx,
   timeouts, past `--file-timeout`) gets no row, so a resume does it; a
-  file the model answered badly is kept as failed. `--skip-project` and
-  `--own-files PROJECT=FILE` (a fork's own files) narrow the selection,
-  and the coverage report counts what they leave out.
+  file the model answered badly is kept as failed. `--skip-project`,
+  `--skip-prefix project:dir/` and `--own-files PROJECT=FILE` (a fork's
+  own files) narrow the selection, and the coverage report counts what
+  they leave out. `--corpus code|prose` picks the corpora (default code;
+  prose files are kind doc and take the doc clip). Coverage also counts
+  the directories and projects a bottom-up pass would summarize, and marks
+  files in crates copied from elsewhere (the nearest Cargo or npm
+  manifest names a repository that isn't the project's): summarized,
+  but known.
+- **The bottom-up pass** (`summarize --dirs`, `pg/dirsum.rs`), after the
+  files: every directory holding a selected file, deepest first, then
+  each project. A unit's input is composed: its README's start (4,000
+  characters), its listing (every child's name, summarized or not, up to
+  3,000 characters) and an entry per child, its live summary or else its
+  seed (marked "its first line"). A directory whose entries don't fit the
+  prompt's bound is cut into parts; each part is summarized from some of
+  its entries and kept as status `part` (never shown, reused by a
+  resume), and the directory from its README, listing and parts. Units
+  go through the same run as files (one run per depth, and one for a
+  depth's parts): the same request bound, stops, stats and resume, under
+  their own fingerprint (prompt `dirs-1`, checks `dir-checks-1`: the file
+  checks, a "This directory" lead cut first, a child's name allowed as an
+  identifier), so file summaries keep theirs. A unit's content key is its
+  directory's, a hash of everything under it: its summary shows while
+  nothing under it changed, so run the pass after the files (a child
+  summarized again later doesn't stale its directory). `--coverage`
+  reports units by depth, how many are cut into parts and how many hold
+  no summarized child yet; `--limit N` samples N units (a preflight).
 
 ## Reranker
 
@@ -619,7 +644,7 @@ The sections:
 | `[embedder]` | `model` (this build runs `bge-small-en-v1.5` only and refuses another), `model_dir` (the Hugging Face cache's when empty; `embed --model-dir` wins), `batch` (512) |
 | `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10), `doc_chars` (1,500), `max_tokens_per_doc` (512), `keep_pins` (true), `flat_depth` (50, a flat search's one pool); see "Reranker" |
 | `[serve]` | `workers` (4) and `socket` ("" for `index.sock` beside `index.db`) of `agent index serve` |
-| `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both` |
+| `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both`; `pushdown` (true: kind, project, corpus and `--under`'s projects filtered inside pg_search's query; see "Filters inside the BM25 query") |
 | `[llm.summaries]` | `agent index summarize`: `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature` (0.2), `max_tokens` (500), `timeout_ms`, `seed`, `concurrency` (48), `retries` and `backoff_ms`, `max_connection_errors` (8), the clip (`clip_tokens` 6,000; a doc's `doc_head_tokens` 4,500 and `doc_tail_tokens` 1,500; `max_input_tokens` 9,000; `preclip_chars`; `symbols_chars` 2,500), the floors (`min_chars` 200, `min_lines` 5, `json_max_bytes`), `pause_file`, `scrub_words`, and the served `dtype` and `quantization`; every key is in each summary's fingerprint |
 | `[llm.query_rewrite]` | `endpoint`, `model`, `temperature`, `max_tokens`, `timeout_ms`, for a later iteration |
 
@@ -715,6 +740,44 @@ installed), fts otherwise; `fts`, `bm25` and `both` pick one, and
 `--lexical` or `AGENT_INDEX_LEXICAL` override it for one search, whose
 `--json` says which ran (`lexical`). Older snapshots keep fts unless
 asked. What follows is the reasoning before the A/B.
+
+**Filters inside the BM25 query** (built, `[bm25] pushdown`, on by
+default). The card index has the filter fields as `pdb.literal` (one
+term per value): project, kind, file kind, corpus. The card scan puts
+kind, project and corpus in pg_search's query as terms, each
+`pdb.const(0)`, so they add nothing to the score (a bare term adds about
+2.4, and a plain `e.kind = 'file'` in the same WHERE is pushed down as
+one too: a filter there must be `const`). `--under` goes in as the
+projects that can hold its entities (the one holding the path, those
+above it, those inside it) and the path is checked on the rows kept; the
+local lists read `project` off the one scan's rows (a second scan for the
+caller's projects cost 24 ms against 16). A schema whose card index
+predates the fields gets them at connect, once, under the migration lock
+(not a migration: older agents still read it; searches wait for the
+build, about 2 s for 460,000 cards; a table takes one ParadeDB index, so
+it is dropped first). Chunks keep their filters on the heap: a chunk
+holds no project of its own.
+
+The old scan had no cut to lose hits past: it scored every match and
+filtered after, so the pushdown can only change speed. Measured
+(2026-11-23, a copy of the live schema, the frozen embedder, reranker
+off): 1,640 of 1,640 searches identical, ids and scores (held-out 40,
+blind set 2's 60, the 64 dev questions; words and sentence; in the
+project with `--under`, in the caller's directory, at the dev root,
+`--project`, and with no `--kind`); the card scans and the fused
+statement, median of each question's best of 3:
+
+| scope | card scans, off → on | fused statement, off → on |
+|---|---|---|
+| `--project` | 15.3 → 4.0 ms | 78.7 → 66.8 ms |
+| in the project (`--under`) | 15.4 → 4.4 ms | 313.5 → 301.6 ms |
+| at the dev root | 15.4 → 14.9 ms | 97.9 → 95.8 ms |
+| in the caller's directory (local lists) | 15.6 → 15.2 ms | 124.3 → 125.4 ms |
+
+The lookup of the index's fields reads the one index by name in
+`pg_class` first: a filter on `pg_indexes.indexdef` calls
+`pg_get_indexdef` on every schema's indexes and fails on one another
+process is dropping (tests' throwaway schemas share the database).
 
 `pg_search` 0.27 (AGPL-3.0; used locally, not distributed) embeds
 Tantivy: true BM25 with corpus IDF, and a `source_code` tokenizer that

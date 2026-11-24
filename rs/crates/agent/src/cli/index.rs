@@ -91,7 +91,11 @@ fn open(ctx: &Ctx) -> anyhow::Result<Index> {
 /// none there means the defaults).
 fn pg_store(store: &str, config: &str) -> anyhow::Result<Option<Pg>> {
     let env = std::env::var("AGENT_INDEX_STORE").unwrap_or_default();
-    let which = if store.is_empty() { env.as_str() } else { store };
+    let which = if store.is_empty() {
+        env.as_str()
+    } else {
+        store
+    };
     match which {
         "" | "sqlite" => Ok(None),
         "pg" | "postgres" => {
@@ -124,7 +128,12 @@ fn resync(ctx: &Ctx, ix: &Index) -> anyhow::Result<()> {
 
 /// Mirrors the ledger into Postgres, with the memory and friction corpora,
 /// saying so on stderr.
-fn sync_pg(ctx: &Ctx, ix: &Index, pg: &Pg, rebuild: bool) -> anyhow::Result<agent_index::pg::sync::SyncReport> {
+fn sync_pg(
+    ctx: &Ctx,
+    ix: &Index,
+    pg: &Pg,
+    rebuild: bool,
+) -> anyhow::Result<agent_index::pg::sync::SyncReport> {
     let t0 = std::time::Instant::now();
     let (side, sessions) = side_notes(ctx, ix, pg)?;
     let read_ms = t0.elapsed().as_millis();
@@ -248,7 +257,11 @@ fn cwd() -> anyhow::Result<PathBuf> {
 /// A path argument against the current directory, canonical.
 fn abs_dir(arg: &str) -> anyhow::Result<PathBuf> {
     let p = Path::new(arg);
-    let p = if p.is_absolute() { p.to_path_buf() } else { cwd()?.join(p) };
+    let p = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd()?.join(p)
+    };
     std::fs::canonicalize(&p).with_context(|| p.display().to_string())
 }
 
@@ -269,9 +282,11 @@ fn caller_project(ix: &Index) -> String {
 
 /// Refuses to read an index nothing has been added to, saying how to start.
 fn require_projects(ix: &Index) -> anyhow::Result<()> {
-    let n: i64 = ix
-        .conn
-        .query_row("SELECT count(*) FROM entities WHERE kind = 'project'", [], |r| r.get(0))?;
+    let n: i64 = ix.conn.query_row(
+        "SELECT count(*) FROM entities WHERE kind = 'project'",
+        [],
+        |r| r.get(0),
+    )?;
     if n == 0 {
         anyhow::bail!(
             "nothing is indexed yet: agent index root add DIR adds a tree, then agent index crawl reads it"
@@ -310,7 +325,10 @@ name."#,
 };
 
 fn root_def() -> Def {
-    Def::group(&ROOT, vec![root_add_def(), root_remove_def(), root_list_def()])
+    Def::group(
+        &ROOT,
+        vec![root_add_def(), root_remove_def(), root_list_def()],
+    )
 }
 
 pub const ROOT_ADD: Doc = Doc {
@@ -329,7 +347,12 @@ project's depth."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct RootAddArgs {
-    #[arg(long = "depth", value_name = "string", default_value = "full", help = "How deep its projects go: full, files or shallow")]
+    #[arg(
+        long = "depth",
+        value_name = "string",
+        default_value = "full",
+        help = "How deep its projects go: full, files or shallow"
+    )]
     pub depth: String,
     #[arg(long = "json", help = "Print the root as JSON")]
     pub json: bool,
@@ -380,7 +403,11 @@ fn run_root_remove(ctx: &Ctx, a: &RootRemoveArgs) -> anyhow::Result<()> {
     let ix = open(ctx)?;
     let (r, removed) = agent_index::roots::remove_root(&ix, &a.args[0])?;
     resync(ctx, &ix)?;
-    let list = if removed.is_empty() { "none".to_string() } else { removed.join(", ") };
+    let list = if removed.is_empty() {
+        "none".to_string()
+    } else {
+        removed.join(", ")
+    };
     ctx.write_out(&format!(
         "Removed root {} ({}) and {} projects found under it: {list}.\n",
         r.id,
@@ -437,13 +464,35 @@ fn run_root_list(ctx: &Ctx, a: &RootListArgs) -> anyhow::Result<()> {
     }
     let _ = writeln!(o, "Index {}:", ix.path.display());
     for r in &roots {
-        let _ = writeln!(o, "root {}  {}  depth {}, {} projects", r.id, r.path, r.depth, r.projects);
+        let _ = writeln!(
+            o,
+            "root {}  {}  depth {}, {} projects",
+            r.id, r.path, r.depth, r.projects
+        );
     }
     for p in &projects {
-        let crawled = if p.last_crawled_at.is_empty() { "never crawled".to_string() } else { format!("crawled {}", p.last_crawled_at) };
-        let kind = if p.last_crawled_at.is_empty() { "" } else if p.is_git { "git, " } else { "not git, " };
-        let added = if p.explicit { ", added by project add" } else { "" };
-        let _ = writeln!(o, "  {}  {}  {}{}, {crawled}{added}", p.name, p.path, kind, p.depth);
+        let crawled = if p.last_crawled_at.is_empty() {
+            "never crawled".to_string()
+        } else {
+            format!("crawled {}", p.last_crawled_at)
+        };
+        let kind = if p.last_crawled_at.is_empty() {
+            ""
+        } else if p.is_git {
+            "git, "
+        } else {
+            "not git, "
+        };
+        let added = if p.explicit {
+            ", added by project add"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            o,
+            "  {}  {}  {}{}, {crawled}{added}",
+            p.name, p.path, kind, p.depth
+        );
     }
     ctx.write_out(&o)
 }
@@ -480,9 +529,19 @@ project inside another is left out of the outer one's crawl."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct ProjectAddArgs {
-    #[arg(long = "depth", value_name = "string", default_value = "full", help = "full, files or shallow")]
+    #[arg(
+        long = "depth",
+        value_name = "string",
+        default_value = "full",
+        help = "full, files or shallow"
+    )]
     pub depth: String,
-    #[arg(long = "name", value_name = "string", default_value = "", help = "The project's name (default: the directory's)")]
+    #[arg(
+        long = "name",
+        value_name = "string",
+        default_value = "",
+        help = "The project's name (default: the directory's)"
+    )]
     pub name: String,
     #[arg(long = "json", help = "Print what was done as JSON")]
     pub json: bool,
@@ -542,13 +601,33 @@ it, search ranks by words alone."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct EmbedArgs {
-    #[arg(long = "limit", value_name = "int", default_value_t = 0, help = "Stop after this many entities (0: all)")]
+    #[arg(
+        long = "limit",
+        value_name = "int",
+        default_value_t = 0,
+        help = "Stop after this many entities (0: all)"
+    )]
     pub limit: i64,
-    #[arg(long = "model-dir", value_name = "string", default_value = "", help = "The model's directory (default: the Hugging Face cache's bge-small-en-v1.5)")]
+    #[arg(
+        long = "model-dir",
+        value_name = "string",
+        default_value = "",
+        help = "The model's directory (default: the Hugging Face cache's bge-small-en-v1.5)"
+    )]
     pub model_dir: String,
-    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    #[arg(
+        long = "store",
+        value_name = "string",
+        default_value = "",
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+    )]
     pub store: String,
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
     #[arg(long = "json", help = "Print the report as JSON")]
     pub json: bool,
@@ -572,7 +651,9 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
     match &pg {
         Some(pg) => {
             if agent_index::pg::view::project_count(pg)? == 0 {
-                anyhow::bail!("nothing is in the pg store yet: agent index crawl --store pg fills it");
+                anyhow::bail!(
+                    "nothing is in the pg store yet: agent index crawl --store pg fills it"
+                );
             }
         }
         None => require_projects(&ix)?,
@@ -595,7 +676,9 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
         }
     };
     let r = match &pg {
-        Some(pg) => agent_index::pg::embed_pg::drain(pg, &emb, int_flag(a.limit, "limit")?, progress)?,
+        Some(pg) => {
+            agent_index::pg::embed_pg::drain(pg, &emb, int_flag(a.limit, "limit")?, progress)?
+        }
         None => embed::drain(&mut ix.conn, &emb, int_flag(a.limit, "limit")?, progress)?,
     };
     if a.json {
@@ -619,14 +702,20 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
     }
     o.push_str(".\n");
     if r.remaining > 0 {
-        let _ = writeln!(o, "{} left: agent index embed goes on from there.", r.remaining);
+        let _ = writeln!(
+            o,
+            "{} left: agent index embed goes on from there.",
+            r.remaining
+        );
     }
     ctx.write_out(&o)
 }
 
 #[cfg(not(feature = "embed"))]
 fn run_embed(_: &Ctx, _: &EmbedArgs) -> anyhow::Result<()> {
-    anyhow::bail!("this agent was built without the embedder: build it with the cargo feature embed (cargo build --features embed)")
+    anyhow::bail!(
+        "this agent was built without the embedder: build it with the cargo feature embed (cargo build --features embed)"
+    )
 }
 
 /// The semantic list, when this agent has the embedder and the index has
@@ -643,7 +732,9 @@ fn semantic(ctx: &Ctx, ix: &Index) -> Option<Box<dyn agent_index::Semantic>> {
                 .query_row("SELECT EXISTS (SELECT 1 FROM vectors)", [], |r| r.get(0))
                 .unwrap_or(false);
             if has {
-                ctx.hint(format!("searching by words only: the embedding model isn't here ({e:#})"));
+                ctx.hint(format!(
+                    "searching by words only: the embedding model isn't here ({e:#})"
+                ));
             }
             return None;
         }
@@ -652,7 +743,9 @@ fn semantic(ctx: &Ctx, ix: &Index) -> Option<Box<dyn agent_index::Semantic>> {
         Ok(Some(s)) => Some(Box::new(s)),
         Ok(None) => None,
         Err(e) => {
-            ctx.hint(format!("searching by words only: the vectors couldn't be used ({e:#})"));
+            ctx.hint(format!(
+                "searching by words only: the vectors couldn't be used ({e:#})"
+            ));
             None
         }
     }
@@ -694,15 +787,36 @@ nothing."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct CrawlArgs {
-    #[arg(long = "project", value_name = "string", default_value = "", help = "Only this project")]
+    #[arg(
+        long = "project",
+        value_name = "string",
+        default_value = "",
+        help = "Only this project"
+    )]
     pub project: String,
-    #[arg(long = "rebuild", help = "Read every file again, not only what changed")]
+    #[arg(
+        long = "rebuild",
+        help = "Read every file again, not only what changed"
+    )]
     pub rebuild: bool,
-    #[arg(long = "dry-run", help = "Work out what would change, and write nothing")]
+    #[arg(
+        long = "dry-run",
+        help = "Work out what would change, and write nothing"
+    )]
     pub dry_run: bool,
-    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite); pg syncs the crawl into Postgres")]
+    #[arg(
+        long = "store",
+        value_name = "string",
+        default_value = "",
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite); pg syncs the crawl into Postgres"
+    )]
     pub store: String,
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
     #[arg(long = "json", help = "Print the crawl's report as JSON")]
     pub json: bool,
@@ -738,7 +852,12 @@ docs/INDEX-V2.md, "Configuration", for what each section tunes."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct ConfigArgs {
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
     #[arg(long = "json", help = "Print {\"path\", \"fingerprint\", \"config\"}")]
     pub json: bool,
@@ -794,9 +913,17 @@ incremental sync reaches."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct SyncArgs {
-    #[arg(long = "rebuild", help = "Empty the Postgres tables and write everything again")]
+    #[arg(
+        long = "rebuild",
+        help = "Empty the Postgres tables and write everything again"
+    )]
     pub rebuild: bool,
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
     #[arg(long = "json", help = "Print the sync's report as JSON")]
     pub json: bool,
@@ -810,12 +937,18 @@ fn sync_def() -> Def {
 
 fn run_sync(ctx: &Ctx, a: &SyncArgs) -> anyhow::Result<()> {
     let ix = open(ctx)?;
-    let Some(pg) = pg_store("pg", &a.config)? else { unreachable!("pg asked") };
+    let Some(pg) = pg_store("pg", &a.config)? else {
+        unreachable!("pg asked")
+    };
     let r = sync_pg(ctx, &ix, &pg, a.rebuild)?;
     if a.json {
         return ctx.print_json(&r);
     }
-    let phases: Vec<String> = r.phases.iter().map(|(k, v)| format!("{k} {}", secs(*v))).collect();
+    let phases: Vec<String> = r
+        .phases
+        .iter()
+        .map(|(k, v)| format!("{k} {}", secs(*v)))
+        .collect();
     ctx.write_out(&format!(
         "Synced {} entities into {} (schema {}) in {}: {} written, {} removed, {} labels, {} files cut into {} chunks, {} queued for embedding{}{}.\nPhases: {}.\n",
         r.entities,
@@ -876,39 +1009,129 @@ project out; --own-files PROJECT=FILE keeps only a fork's own files."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct SummarizeArgs {
-    #[arg(long = "project", value_name = "stringArray", help = "Only this project (repeatable); default every full-depth project")]
+    #[arg(
+        long = "project",
+        value_name = "stringArray",
+        help = "Only this project (repeatable); default every full-depth project"
+    )]
     pub project: Vec<String>,
-    #[arg(long = "prefix", value_name = "stringArray", help = "Only files whose id starts so, as project:dir/ (repeatable)")]
+    #[arg(
+        long = "corpus",
+        value_name = "stringArray",
+        help = "Files of this corpus (code, prose; repeatable); default code"
+    )]
+    pub corpus: Vec<String>,
+    #[arg(
+        long = "prefix",
+        value_name = "stringArray",
+        help = "Only files whose id starts so, as project:dir/ (repeatable)"
+    )]
     pub prefix: Vec<String>,
-    #[arg(long = "limit", value_name = "int", default_value_t = 0, help = "At most this many files per project (or prefix), sampled evenly; 0 is all")]
+    #[arg(
+        long = "limit",
+        value_name = "int",
+        default_value_t = 0,
+        help = "At most this many files per project (or prefix), sampled evenly; 0 is all"
+    )]
     pub limit: i64,
-    #[arg(long = "coverage", help = "Print what would be summarized and what is skipped, and why; call no model")]
+    #[arg(
+        long = "coverage",
+        help = "Print what would be summarized and what is skipped, and why; call no model"
+    )]
     pub coverage: bool,
-    #[arg(long = "out", value_name = "string", default_value = "", help = "Write the coverage report (or the run's stats) as JSON here")]
+    #[arg(
+        long = "dirs",
+        help = "The bottom-up pass: summarize the directories holding the selected files, deepest first, then their projects, from their README, listing and children's summaries (run it after the files); --limit N samples N of them"
+    )]
+    pub dirs: bool,
+    #[arg(
+        long = "out",
+        value_name = "string",
+        default_value = "",
+        help = "Write the coverage report (or the run's stats) as JSON here"
+    )]
     pub out: String,
-    #[arg(long = "stats", value_name = "string", default_value = "", help = "Rewrite the run's stats here as it goes")]
+    #[arg(
+        long = "stats",
+        value_name = "string",
+        default_value = "",
+        help = "Rewrite the run's stats here as it goes"
+    )]
     pub stats: String,
-    #[arg(long = "skip-project", value_name = "stringArray", help = "Leave this project out (repeatable); its files count as skipped")]
+    #[arg(
+        long = "skip-project",
+        value_name = "stringArray",
+        help = "Leave this project out (repeatable); its files count as skipped"
+    )]
     pub skip_project: Vec<String>,
-    #[arg(long = "own-files", value_name = "stringArray", help = "PROJECT=FILE: summarize only the files FILE lists (paths in the project, one a line) of that fork; its others count as upstream (repeatable)")]
+    #[arg(
+        long = "skip-prefix",
+        value_name = "stringArray",
+        help = "Leave files whose id starts so out, as project:dir/ (repeatable); they count as skipped"
+    )]
+    pub skip_prefix: Vec<String>,
+    #[arg(
+        long = "own-files",
+        value_name = "stringArray",
+        help = "PROJECT=FILE: summarize only the files FILE lists (paths in the project, one a line) of that fork; its others count as upstream (repeatable)"
+    )]
     pub own_files: Vec<String>,
-    #[arg(long = "file-timeout", value_name = "duration", default_value = "10m", help = "One file's deadline, all its requests and retries together; past it the file fails and is kept as failed")]
+    #[arg(
+        long = "file-timeout",
+        value_name = "duration",
+        default_value = "10m",
+        help = "One file's deadline, all its requests and retries together; past it the file fails and is kept as failed"
+    )]
     pub file_timeout: String,
-    #[arg(long = "stall", value_name = "duration", default_value = "10m", help = "Stop the run when no file finished for this long (0: never)")]
+    #[arg(
+        long = "stall",
+        value_name = "duration",
+        default_value = "10m",
+        help = "Stop the run when no file finished for this long (0: never)"
+    )]
     pub stall: String,
-    #[arg(long = "max-time", value_name = "duration", default_value = "0", help = "Stop the run cleanly after this long (0: no cap)")]
+    #[arg(
+        long = "max-time",
+        value_name = "duration",
+        default_value = "0",
+        help = "Stop the run cleanly after this long (0: no cap)"
+    )]
     pub max_time: String,
-    #[arg(long = "error-window", value_name = "int", default_value_t = 200, help = "Stop the run when over --max-error-rate of this many latest files failed (0: never)")]
+    #[arg(
+        long = "error-window",
+        value_name = "int",
+        default_value_t = 200,
+        help = "Stop the run when over --max-error-rate of this many latest files failed (0: never)"
+    )]
     pub error_window: i64,
-    #[arg(long = "max-error-rate", value_name = "string", default_value = "0.2", help = "The failed share of --error-window files that stops the run")]
+    #[arg(
+        long = "max-error-rate",
+        value_name = "string",
+        default_value = "0.2",
+        help = "The failed share of --error-window files that stops the run"
+    )]
     pub max_error_rate: String,
-    #[arg(long = "retry-failed", help = "Ask again for files that failed under this fingerprint")]
+    #[arg(
+        long = "retry-failed",
+        help = "Ask again for files that failed under this fingerprint"
+    )]
     pub retry_failed: bool,
-    #[arg(long = "no-sync", help = "Don't sync afterwards (the summaries show after the next sync)")]
+    #[arg(
+        long = "no-sync",
+        help = "Don't sync afterwards (the summaries show after the next sync)"
+    )]
     pub no_sync: bool,
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
-    #[arg(long = "json", help = "Print the coverage report or the run's stats as JSON")]
+    #[arg(
+        long = "json",
+        help = "Print the coverage report or the run's stats as JSON"
+    )]
     pub json: bool,
     #[arg(hide = true)]
     pub args: Vec<String>,
@@ -924,6 +1147,11 @@ fn coverage_text(c: &agent_index::pg::summ::Coverage) -> String {
         s,
         "{} files in full-depth projects: {} to summarize, {} skipped ({} selected after --limit).",
         c.files, c.summarize, c.skipped, c.selected
+    );
+    let _ = writeln!(
+        s,
+        "A bottom-up pass over them: {} directories, {} projects.",
+        c.bottom_up_dirs, c.bottom_up_projects
     );
     let mut reasons: Vec<_> = c.by_reason.iter().collect();
     reasons.sort_by(|a, b| b.1.cmp(a.1));
@@ -944,6 +1172,19 @@ fn coverage_text(c: &agent_index::pg::summ::Coverage) -> String {
                 g.skipped.values().sum::<usize>(),
                 top.join(", ")
             );
+        }
+    }
+    if c.copied_files > 0 {
+        let _ = writeln!(
+            s,
+            "\nIn crates copied from elsewhere (their manifest names another repository; summarized, marked): {} files in {} crates:",
+            c.copied_files,
+            c.copied.len()
+        );
+        let mut cs: Vec<_> = c.copied.iter().collect();
+        cs.sort_by(|a, b| b.1.files.cmp(&a.1.files).then(a.0.cmp(b.0)));
+        for (d, x) in cs.iter().take(25) {
+            let _ = writeln!(s, "  {:>6}  {d}  ({})", x.files, x.repository);
         }
     }
     let _ = writeln!(s, "\nDirectories with the most skipped files:");
@@ -983,16 +1224,122 @@ fn dur(s: &str, name: &str) -> anyhow::Result<Option<std::time::Duration>> {
     Ok((!d.is_zero()).then_some(d))
 }
 
+/// `summarize --dirs`: the bottom-up pass over the directories holding
+/// `files` (the selection after the filters), or its coverage.
+fn run_dirs(
+    ctx: &Ctx,
+    a: &SummarizeArgs,
+    pg: &agent_index::pg::Pg,
+    o: &agent_index::pg::summ::Options,
+    files: Vec<agent_index::summarize::Candidate>,
+) -> anyhow::Result<()> {
+    use agent_index::pg::dirsum;
+    let units = dirsum::sample(dirsum::units(pg, &files)?, o.limit);
+    if units.is_empty() {
+        anyhow::bail!(
+            "no directories hold a selected file (check --project, --prefix and --skip-prefix)"
+        );
+    }
+    if a.coverage {
+        let cov = dirsum::coverage(pg, &units, o)?;
+        if !a.out.is_empty() {
+            let v = serde_json::json!({"coverage": cov, "units": units});
+            std::fs::write(&a.out, serde_json::to_string_pretty(&v)?)
+                .with_context(|| format!("writing {}", a.out))?;
+        }
+        if a.json {
+            return ctx.print_json(&cov);
+        }
+        let depths: Vec<String> = cov
+            .by_depth
+            .iter()
+            .rev()
+            .map(|(d, n)| format!("{d}: {n}"))
+            .collect();
+        return ctx.write_out(&format!(
+            "{} units ({} projects) over {} selected files; by depth (0: projects) {}.\n{} large enough to be cut into parts ({} parts); {} with no child summarized yet (seeds only); composed input {:.1}M characters.\n",
+            cov.units,
+            cov.projects,
+            files.len(),
+            depths.join(", "),
+            cov.large,
+            cov.parts,
+            cov.seeds_only,
+            cov.chars as f64 / 1e6
+        ));
+    }
+    let cfg = &pg.cfg.llm.summaries;
+    ctx.notice(format!(
+        "Summarizing {} directories and projects, deepest first, with {} at {}, {} at a time.",
+        units.len(),
+        if cfg.model.is_empty() {
+            "the server's model"
+        } else {
+            cfg.model.as_str()
+        },
+        cfg.endpoint,
+        cfg.concurrency
+    ));
+    let res = dirsum::run(pg, units, o, &mut |label, s| {
+        let failed: usize = s.failed.values().sum();
+        ctx.notice(format!(
+            "  {label}: {} written, {} failed, {} not answered of {} in {:.0}s: {:.2} units/s, {:.0} prefill tok/s",
+            s.written, failed, s.not_answered, s.todo, s.wall_s, s.files_per_s, s.prefill_tok_s
+        ));
+    });
+    if !a.no_sync {
+        let ix = open(ctx)?;
+        sync_pg(ctx, &ix, pg, false)?;
+    }
+    let runs = res?;
+    if !a.out.is_empty() {
+        let v: Vec<_> = runs
+            .iter()
+            .map(|(l, s)| serde_json::json!({"wave": l, "stats": s}))
+            .collect();
+        std::fs::write(&a.out, serde_json::to_string_pretty(&v)?)
+            .with_context(|| format!("writing {}", a.out))?;
+    }
+    if a.json {
+        let v: Vec<_> = runs
+            .iter()
+            .map(|(l, s)| serde_json::json!({"wave": l, "stats": s}))
+            .collect();
+        return ctx.print_json(&v);
+    }
+    let mut out = String::new();
+    let (mut w, mut f, mut d) = (0, 0, 0);
+    for (l, s) in &runs {
+        let failed: usize = s.failed.values().sum();
+        w += s.written;
+        f += failed;
+        d += s.done_before;
+        out.push_str(&format!(
+            "  {l}: run {}, {} selected, {} done before, {} written, {} failed, {:.0}s\n",
+            s.run_id, s.selected, s.done_before, s.written, failed, s.wall_s
+        ));
+    }
+    ctx.write_out(&format!(
+        "Bottom-up pass: {} runs, {w} written, {f} failed, {d} done before.\n{out}",
+        runs.len()
+    ))
+}
+
 fn run_summarize(ctx: &Ctx, a: &SummarizeArgs) -> anyhow::Result<()> {
-    let Some(pg) = pg_store("pg", &a.config)? else { unreachable!("pg asked") };
+    let Some(pg) = pg_store("pg", &a.config)? else {
+        unreachable!("pg asked")
+    };
     let o = agent_index::pg::summ::Options {
         projects: a.project.clone(),
+        corpora: a.corpus.clone(),
         prefixes: a.prefix.clone(),
         limit: int_flag(a.limit, "limit")?,
         retry_failed: a.retry_failed,
         code: agent_base::buildinfo::id(),
         stats_path: (!a.stats.is_empty()).then(|| PathBuf::from(&a.stats)),
         skip_projects: a.skip_project.clone(),
+        skip_prefixes: a.skip_prefix.clone(),
+        dirs: false,
         own_files: own_files(&a.own_files)?,
         file_timeout: dur(&a.file_timeout, "file-timeout")?,
         stall: dur(&a.stall, "stall")?,
@@ -1008,13 +1355,21 @@ fn run_summarize(ctx: &Ctx, a: &SummarizeArgs) -> anyhow::Result<()> {
     let cfg = pg.cfg.llm.summaries.clone();
     let cands = agent_index::pg::summ::candidates(&pg, &o)?;
     if cands.is_empty() {
-        anyhow::bail!("no files of a full-depth project match (check --project and --prefix, and that a crawl and sync ran)");
+        anyhow::bail!(
+            "no files of a full-depth project match (check --project and --prefix, and that a crawl and sync ran)"
+        );
     }
     let (files, mut cov) = agent_index::pg::summ::select_with(&cands, &cfg, &o);
+    if a.dirs {
+        return run_dirs(ctx, a, &pg, &o, files);
+    }
     let files = agent_index::pg::summ::sample(files, &o);
     cov.selected = files.len();
+    (cov.bottom_up_dirs, cov.bottom_up_projects) = agent_index::pg::summ::bottom_up(&files);
     if a.coverage {
         if !a.out.is_empty() {
+            let mut cov = cov.clone();
+            cov.kept = files.iter().map(|c| c.id.clone()).collect();
             std::fs::write(&a.out, serde_json::to_string_pretty(&cov)?)
                 .with_context(|| format!("writing {}", a.out))?;
         }
@@ -1027,7 +1382,11 @@ fn run_summarize(ctx: &Ctx, a: &SummarizeArgs) -> anyhow::Result<()> {
         "Summarizing {} files ({} skipped by the filters) with {} at {}, {} at a time.",
         files.len(),
         cov.skipped,
-        if cfg.model.is_empty() { "the server's model" } else { cfg.model.as_str() },
+        if cfg.model.is_empty() {
+            "the server's model"
+        } else {
+            cfg.model.as_str()
+        },
         cfg.endpoint,
         cfg.concurrency
     ));
@@ -1051,7 +1410,11 @@ fn run_summarize(ctx: &Ctx, a: &SummarizeArgs) -> anyhow::Result<()> {
     if a.json {
         return ctx.print_json(&stats);
     }
-    let failed: Vec<String> = stats.failed.iter().map(|(r, n)| format!("{r} {n}")).collect();
+    let failed: Vec<String> = stats
+        .failed
+        .iter()
+        .map(|(r, n)| format!("{r} {n}"))
+        .collect();
     ctx.write_out(&format!(
         "Run {} (fingerprint {}, {}): {} selected, {} done before, {} copied, {} written, {} failed{}; {} clipped, {} salvaged, {} second attempts, {} asks stripped, {} repeated asks dropped; {:.0}s, {:.2} files/s, {:.0} prefill tok/s.\n",
         stats.run_id,
@@ -1109,7 +1472,11 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
         "Crawled {} projects in {}{}",
         r.projects.len(),
         secs(r.ms),
-        if r.dry_run { " (dry run: nothing written)" } else { "" }
+        if r.dry_run {
+            " (dry run: nothing written)"
+        } else {
+            ""
+        }
     );
     for p in &r.projects {
         let git = if p.git { "git" } else { "not git" };
@@ -1118,7 +1485,10 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
             p.added, p.changed, p.removed, p.renamed
         );
         if p.commits_since > 0 {
-            changes = format!("{changes}; {} commits since the last crawl", p.commits_since);
+            changes = format!(
+                "{changes}; {} commits since the last crawl",
+                p.commits_since
+            );
         }
         let _ = writeln!(
             o,
@@ -1133,7 +1503,10 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
         );
         let mut notes = Vec::new();
         if p.secret_skipped > 0 {
-            notes.push(format!("{} secret-looking files never indexed", p.secret_skipped));
+            notes.push(format!(
+                "{} secret-looking files never indexed",
+                p.secret_skipped
+            ));
         }
         if p.truncated {
             notes.push(format!(
@@ -1149,7 +1522,10 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
             ));
         }
         if p.no_content > 0 {
-            notes.push(format!("{} files without content read (large, binary or symlinks)", p.no_content));
+            notes.push(format!(
+                "{} files without content read (large, binary or symlinks)",
+                p.no_content
+            ));
         }
         if p.cochange {
             notes.push("co-change recomputed".to_string());
@@ -1221,29 +1597,73 @@ and it says how many were left out. --json prints every result, unfitted:
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct SearchArgs {
-    #[arg(long = "kind", value_name = "string", default_value = "", help = "Only this kind: project, dir, symbol, section; or file, or a file kind (source, test, fixture, doc, config, build, data, asset, submodule), one row per file, a symbol or section counting for its file")]
+    #[arg(
+        long = "kind",
+        value_name = "string",
+        default_value = "",
+        help = "Only this kind: project, dir, symbol, section; or file, or a file kind (source, test, fixture, doc, config, build, data, asset, submodule), one row per file, a symbol or section counting for its file"
+    )]
     pub kind: String,
-    #[arg(long = "project", value_name = "string", default_value = "", help = "Only this project")]
+    #[arg(
+        long = "project",
+        value_name = "string",
+        default_value = "",
+        help = "Only this project"
+    )]
     pub project: String,
-    #[arg(long = "under", value_name = "string", default_value = "", help = "Only entities at or under this path")]
+    #[arg(
+        long = "under",
+        value_name = "string",
+        default_value = "",
+        help = "Only entities at or under this path"
+    )]
     pub under: String,
     #[arg(long = "limit", value_name = "int", default_value = "0", value_parser = flags::parse_int, help = "At most this many results (default 10; the pg store's search.limit)")]
     pub limit: i64,
     #[arg(long = "budget", value_name = "int", default_value = "1500", value_parser = flags::parse_int, help = "Fit the text to this many tokens (0: no limit)")]
     pub budget: i64,
-    #[arg(long = "explain", help = "Say which list found each result, and the priors applied")]
+    #[arg(
+        long = "explain",
+        help = "Say which list found each result, and the priors applied"
+    )]
     pub explain: bool,
-    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    #[arg(
+        long = "store",
+        value_name = "string",
+        default_value = "",
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+    )]
     pub store: String,
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
-    #[arg(long = "lexical", value_name = "string", default_value = "", help = "pg store: bm25 (pg_search), fts (native full text), both, or auto (default: AGENT_INDEX_LEXICAL, else [search].lexical, else auto: bm25 where the schema has its indexes)")]
+    #[arg(
+        long = "lexical",
+        value_name = "string",
+        default_value = "",
+        help = "pg store: bm25 (pg_search), fts (native full text), both, or auto (default: AGENT_INDEX_LEXICAL, else [search].lexical, else auto: bm25 where the schema has its indexes)"
+    )]
     pub lexical: String,
-    #[arg(long = "corpus", value_name = "string", default_value = "", help = "pg store: only these corpora, comma-separated: code, prose, memory, friction (default: all of them, grouped; code and prose for a --kind)")]
+    #[arg(
+        long = "corpus",
+        value_name = "string",
+        default_value = "",
+        help = "pg store: only these corpora, comma-separated: code, prose, memory, friction (default: all of them, grouped; code and prose for a --kind)"
+    )]
     pub corpus: String,
-    #[arg(long = "rerank", help = "pg store: rerank the top candidates with the cross-encoder ([reranker] in the configuration), even when it is off there")]
+    #[arg(
+        long = "rerank",
+        help = "pg store: rerank the top candidates with the cross-encoder ([reranker] in the configuration), even when it is off there"
+    )]
     pub rerank: bool,
-    #[arg(long = "cold", help = "pg store: search in this process even when agent index serve is up")]
+    #[arg(
+        long = "cold",
+        help = "pg store: search in this process even when agent index serve is up"
+    )]
     pub cold: bool,
     #[arg(long = "json", help = "Print the results as JSON")]
     pub json: bool,
@@ -1268,11 +1688,14 @@ fn query_embedder(ctx: &Ctx, cfg: &agent_index::config::Config) -> Option<QueryE
         ctx.hint(format!("searching without the semantic list: {e:#}"));
         return None;
     }
-    let given = (!cfg.embedder.model_dir.is_empty()).then(|| PathBuf::from(&cfg.embedder.model_dir));
+    let given =
+        (!cfg.embedder.model_dir.is_empty()).then(|| PathBuf::from(&cfg.embedder.model_dir));
     let dir = match embed::model_dir(given.as_deref()) {
         Ok(d) => d,
         Err(e) => {
-            ctx.hint(format!("searching without the semantic list: the embedding model isn't here ({e:#})"));
+            ctx.hint(format!(
+                "searching without the semantic list: the embedding model isn't here ({e:#})"
+            ));
             return None;
         }
     };
@@ -1308,14 +1731,21 @@ fn check_embedder(cfg: &agent_index::config::Config) -> anyhow::Result<()> {
 /// The current directory, canonical, as a string.
 fn cwd_string() -> String {
     let Ok(cwd) = cwd() else { return String::new() };
-    std::fs::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned()
+    std::fs::canonicalize(&cwd)
+        .unwrap_or(cwd)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Whether a command runs on the pg store (`--store`, else
 /// AGENT_INDEX_STORE), without connecting.
 fn wants_pg(store: &str) -> anyhow::Result<bool> {
     let env = std::env::var("AGENT_INDEX_STORE").unwrap_or_default();
-    match if store.is_empty() { env.as_str() } else { store } {
+    match if store.is_empty() {
+        env.as_str()
+    } else {
+        store
+    } {
         "" | "sqlite" => Ok(false),
         "pg" | "postgres" => Ok(true),
         other => anyhow::bail!("--store takes sqlite or pg, not {other:?}"),
@@ -1382,7 +1812,11 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
     }
     ctx.write_out(&out)?;
     // The project searched, else the one you are in.
-    let project = if a.project.is_empty() { &caller } else { &a.project };
+    let project = if a.project.is_empty() {
+        &caller
+    } else {
+        &a.project
+    };
     behind_hint(ctx, &ix, project);
     Ok(())
 }
@@ -1425,7 +1859,9 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
         Some(Ok(r)) => r,
         other => {
             if let Some(Err(e)) = other {
-                ctx.hint(format!("searched cold: the index server didn't answer ({e:#})"));
+                ctx.hint(format!(
+                    "searched cold: the index server didn't answer ({e:#})"
+                ));
             }
             let Some((url, schema)) = Pg::from_env() else {
                 anyhow::bail!(
@@ -1434,7 +1870,9 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
             };
             let pg = Pg::connect_with(&url, &schema, loaded.config.clone())?;
             if agent_index::pg::view::project_count(&pg)? == 0 {
-                anyhow::bail!("nothing is in the pg store yet: agent index root add DIR, then agent index crawl --store pg");
+                anyhow::bail!(
+                    "nothing is in the pg store yet: agent index root add DIR, then agent index crawl --store pg"
+                );
             }
             let emb = query_embedder(ctx, &pg.cfg);
             serve::answer(&pg, &req, emb.as_ref(), None)?
@@ -1459,10 +1897,17 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
     if let Some(ri) = &r.rerank {
         match &ri.error {
             Some(e) => {
-                let _ = writeln!(out, "The reranker didn't answer ({e}): this is the fused order.");
+                let _ = writeln!(
+                    out,
+                    "The reranker didn't answer ({e}): this is the fused order."
+                );
             }
             None if a.explain => {
-                let _ = writeln!(out, "Reranked {} candidates with {} in {:.0} ms.", ri.scored, ri.model, ri.ms);
+                let _ = writeln!(
+                    out,
+                    "Reranked {} candidates with {} in {:.0} ms.",
+                    ri.scored, ri.model, ri.ms
+                );
             }
             None => {}
         }
@@ -1474,7 +1919,11 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
             a.budget
         );
     } else if r.hits.len() == resp.limit && r.candidates > resp.limit {
-        let _ = writeln!(out, "{} more matched: --limit N shows more.", r.candidates - resp.limit);
+        let _ = writeln!(
+            out,
+            "{} more matched: --limit N shows more.",
+            r.candidates - resp.limit
+        );
     }
     ctx.write_out(&out)?;
     if let Some(h) = resp.hint {
@@ -1498,7 +1947,9 @@ fn render_groups(
     for (i, g) in groups.iter().enumerate() {
         let name = {
             let mut c = g.corpus.chars();
-            c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                .unwrap_or_default()
         };
         if g.hits.is_empty() {
             let _ = writeln!(
@@ -1512,22 +1963,37 @@ fn render_groups(
         let sub = agent_index::SearchResult {
             hits: g.hits.clone(),
             // Labels and absent terms once, above the first group.
-            mapping: if i == 0 { r.mapping.clone() } else { Vec::new() },
+            mapping: if i == 0 {
+                r.mapping.clone()
+            } else {
+                Vec::new()
+            },
             absent: if i == 0 { r.absent.clone() } else { Vec::new() },
             groups: None,
             ..r.clone()
         };
-        let share = if budget == 0 { 0 } else { (budget * g.budget / total).max(1) };
+        let share = if budget == 0 {
+            0
+        } else {
+            (budget * g.budget / total).max(1)
+        };
         let (text, left) = view::render_search(&sub, share, explain);
         out.push_str(&text);
         if left > 0 {
-            let _ = writeln!(out, "   ({left} more {} left out to fit the budget.)", g.corpus);
+            let _ = writeln!(
+                out,
+                "   ({left} more {} left out to fit the budget.)",
+                g.corpus
+            );
         }
     }
     if let Some(ri) = &r.rerank
         && let Some(e) = &ri.error
     {
-        let _ = writeln!(out, "The reranker didn't answer ({e}): this is the fused order.");
+        let _ = writeln!(
+            out,
+            "The reranker didn't answer ({e}): this is the fused order."
+        );
     }
     out
 }
@@ -1554,7 +2020,12 @@ session of its own."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct ServeArgs {
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
     #[arg(hide = true)]
     pub args: Vec<String>,
@@ -1568,7 +2039,9 @@ fn run_serve(ctx: &Ctx, a: &ServeArgs) -> anyhow::Result<()> {
     use agent_index::pg::serve;
     let loaded = load_config(&a.config)?;
     let Some((url, schema)) = Pg::from_env() else {
-        anyhow::bail!("the pg store needs AGENT_INDEX_PG set to its database URL (postgresql:///DB?host=SOCKET_DIR)");
+        anyhow::bail!(
+            "the pg store needs AGENT_INDEX_PG set to its database URL (postgresql:///DB?host=SOCKET_DIR)"
+        );
     };
     let socket = serve_socket(ctx, &loaded.config);
     // The embedder loaded now, not at the first search.
@@ -1598,7 +2071,9 @@ fn behind_hint(ctx: &Ctx, ix: &Index, project: &str) {
     if project.is_empty() {
         return;
     }
-    let Ok(Some(p)) = agent_index::roots::get_project(&ix.conn, project) else { return };
+    let Ok(Some(p)) = agent_index::roots::get_project(&ix.conn, project) else {
+        return;
+    };
     if !p.is_git || p.last_commit.is_empty() {
         return;
     }
@@ -1632,9 +2107,19 @@ indexed project (a symlink, say) is refused."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct ShowArgs {
-    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    #[arg(
+        long = "store",
+        value_name = "string",
+        default_value = "",
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+    )]
     pub store: String,
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
     #[arg(long = "json", help = "Print the entity and its neighborhood as JSON")]
     pub json: bool,
@@ -1648,9 +2133,13 @@ fn show_def() -> Def {
 
 /// The pg store with something in it, or None for the sqlite store.
 fn pg_read(store: &str, config: &str) -> anyhow::Result<Option<Pg>> {
-    let Some(pg) = pg_store(store, config)? else { return Ok(None) };
+    let Some(pg) = pg_store(store, config)? else {
+        return Ok(None);
+    };
     if agent_index::pg::view::project_count(&pg)? == 0 {
-        anyhow::bail!("nothing is in the pg store yet: agent index root add DIR, then agent index crawl --store pg");
+        anyhow::bail!(
+            "nothing is in the pg store yet: agent index root add DIR, then agent index crawl --store pg"
+        );
     }
     Ok(Some(pg))
 }
@@ -1658,7 +2147,8 @@ fn pg_read(store: &str, config: &str) -> anyhow::Result<Option<Pg>> {
 fn run_show(ctx: &Ctx, a: &ShowArgs) -> anyhow::Result<()> {
     let arg = a.args.first().map(String::as_str).unwrap_or(".");
     if let Some(pg) = pg_read(&a.store, &a.config)? {
-        let s = agent_index::pg::view::show(&pg, agent_index::pg::view::resolve(&pg, arg, &cwd()?)?)?;
+        let s =
+            agent_index::pg::view::show(&pg, agent_index::pg::view::resolve(&pg, arg, &cwd()?)?)?;
         if a.json {
             return ctx.print_json(&s);
         }
@@ -1696,9 +2186,19 @@ pub struct TreeArgs {
     pub depth: i64,
     #[arg(long = "budget", value_name = "int", default_value = "1500", value_parser = flags::parse_int, help = "Fit to this many tokens (0: no limit)")]
     pub budget: i64,
-    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    #[arg(
+        long = "store",
+        value_name = "string",
+        default_value = "",
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+    )]
     pub store: String,
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
     #[arg(long = "json", help = "Print the tree as JSON")]
     pub json: bool,
@@ -1719,7 +2219,11 @@ fn run_tree(ctx: &Ctx, a: &TreeArgs) -> anyhow::Result<()> {
             None => pgview::project_at(&pg, &cwd_string())?,
         };
         let t = pgview::tree(&pg, &id, depth, budget)?;
-        let head = if id.is_empty() { None } else { pgview::get(&pg, &id)? };
+        let head = if id.is_empty() {
+            None
+        } else {
+            pgview::get(&pg, &id)?
+        };
         (t, head)
     } else {
         let ix = open(ctx)?;
@@ -1775,9 +2279,19 @@ changes with), each group by weight, with each neighbor's summary."#,
 pub struct RelatedArgs {
     #[arg(long = "budget", value_name = "int", default_value = "1500", value_parser = flags::parse_int, help = "Fit to this many tokens (0: no limit)")]
     pub budget: i64,
-    #[arg(long = "store", value_name = "string", default_value = "", help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)")]
+    #[arg(
+        long = "store",
+        value_name = "string",
+        default_value = "",
+        help = "sqlite or pg (default: AGENT_INDEX_STORE, else sqlite)"
+    )]
     pub store: String,
-    #[arg(long = "config", value_name = "string", default_value = "", help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)")]
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
     pub config: String,
     #[arg(long = "json", help = "Print the neighbors as JSON")]
     pub json: bool,
@@ -1805,7 +2319,9 @@ fn run_related(ctx: &Ctx, a: &RelatedArgs) -> anyhow::Result<()> {
     let (text, left) = view::render_related(&r, int_flag(a.budget, "budget")?);
     let mut o = format!("Related to {}:\n", r.id);
     if r.groups.is_empty() {
-        o.push_str("No edges yet: nothing depends on it, documents it, tests it or changes with it.\n");
+        o.push_str(
+            "No edges yet: nothing depends on it, documents it, tests it or changes with it.\n",
+        );
     }
     o.push_str(&text);
     if left > 0 {
@@ -1832,7 +2348,12 @@ drift)."#,
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct StaleArgs {
-    #[arg(long = "project", value_name = "string", default_value = "", help = "Only this project")]
+    #[arg(
+        long = "project",
+        value_name = "string",
+        default_value = "",
+        help = "Only this project"
+    )]
     pub project: String,
     #[arg(long = "limit", value_name = "int", default_value = "50", value_parser = flags::parse_int, help = "At most this many of each list")]
     pub limit: i64,
@@ -1855,8 +2376,16 @@ fn run_stale(ctx: &Ctx, a: &StaleArgs) -> anyhow::Result<()> {
     }
     let mut o = String::new();
     let counts: Vec<String> = s.counts.iter().map(|(k, n)| format!("{k} {n}")).collect();
-    let scope = if a.project.is_empty() { "the index".to_string() } else { a.project.clone() };
-    let _ = writeln!(o, "Freshness in {scope} (projects, dirs and files): {}.", counts.join(", "));
+    let scope = if a.project.is_empty() {
+        "the index".to_string()
+    } else {
+        a.project.clone()
+    };
+    let _ = writeln!(
+        o,
+        "Freshness in {scope} (projects, dirs and files): {}.",
+        counts.join(", ")
+    );
     if s.entities.is_empty() {
         let _ = writeln!(o, "Nothing is stale or without a summary.");
     } else {
@@ -1976,7 +2505,11 @@ fn run_lexicon_import(ctx: &Ctx, a: &LexiconImportArgs) -> anyhow::Result<()> {
     require_projects(&ix)?;
     let file = {
         let p = Path::new(&a.args[0]);
-        if p.is_absolute() { p.to_path_buf() } else { cwd()?.join(p) }
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd()?.join(p)
+        }
     };
     let r = agent_index::labels::lexicon_import(&ix.conn, &file)?;
     resync(ctx, &ix)?;
@@ -1993,11 +2526,19 @@ fn run_lexicon_import(ctx: &Ctx, a: &LexiconImportArgs) -> anyhow::Result<()> {
             o,
             "Skipped {} rows that resolve to no entity (their provenance names no indexed path): {}.",
             r.unresolved,
-            terms.into_iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ")
+            terms
+                .into_iter()
+                .map(|t| format!("{t:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     if r.unreadable > 0 {
-        let _ = writeln!(o, "Skipped {} lines that aren't JSON objects.", r.unreadable);
+        let _ = writeln!(
+            o,
+            "Skipped {} lines that aren't JSON objects.",
+            r.unreadable
+        );
     }
     ctx.write_out(&o)
 }

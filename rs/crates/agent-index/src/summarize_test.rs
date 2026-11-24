@@ -558,3 +558,20 @@ fn leads_that_say_what_kind_of_file_it_is() {
         assert_eq!(strip_lead(a), b, "{a}");
     }
 }
+
+#[test]
+fn dir_lead_keeps_the_verb() {
+    assert_eq!(
+        strip_dir_lead("This directory holds the parser."),
+        "Holds the parser."
+    );
+    assert_eq!(
+        strip_dir_lead("The project is a tool for maps."),
+        "A tool for maps."
+    );
+    assert_eq!(
+        strip_dir_lead("This Rust crate contains the parser."),
+        "Contains the parser."
+    );
+    assert_eq!(strip_dir_lead("Parses the maps."), "Parses the maps.");
+}

@@ -385,3 +385,206 @@ fn error_rate_deadline_and_left_out_projects() {
     assert_eq!((st.done, st.remaining, st.errors), (0, 0, 6), "{st:?}");
     assert_eq!(st.pending_ids.len(), 6);
 }
+
+/// What a directory prompt answers in the bottom-up test: its path's last
+/// word, plain; and every prompt kept, to read.
+fn dir_answers(seen: Arc<std::sync::Mutex<Vec<String>>>) -> impl Fn(&Value) -> (u16, String) {
+    move |v: &Value| {
+        let user = v["messages"][1]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let system = v["messages"][0]["content"].as_str().unwrap_or("");
+        if !system.contains("directory or project") {
+            return answers(v);
+        }
+        seen.lock().unwrap().push(user.clone());
+        let p = path_of(v);
+        let word = p
+            .rsplit('/')
+            .next()
+            .unwrap_or("top")
+            .replace(['(', ')'], "");
+        let a = json!({
+            "summary": format!("This directory holds the {word} code of the alpha tool."),
+            "why": "Groups that code in one place.",
+            "asks": [format!("where the {word} code lives"), "the alpha tool's layout",
+                     format!("{word} code in alpha")],
+        });
+        (200, completion(&a.to_string()))
+    }
+}
+
+/// The bottom-up pass: directories deepest first, then the project, each
+/// from its README, listing and children's summaries; a directory too
+/// large for one request cut into parts kept as `part`; a resume that
+/// skips what is done; the sync showing a directory's summary.
+#[test]
+fn bottom_up_directories_parts_and_resume() {
+    use super::dirsum;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let url = fake_server(vllm(dir_answers(seen.clone())));
+    let mut cfg = Config::default();
+    cfg.llm.summaries.endpoint = url;
+    cfg.llm.summaries.backoff_ms = 1;
+    cfg.llm.summaries.concurrency = 4;
+    // A small prompt bound (an 800-character budget for entries), so
+    // `wide/` (24 entries, about 1,400 characters) is cut into parts.
+    cfg.llm.summaries.max_input_tokens = 4_000;
+    let Some(t) = throwaway(cfg.clone()) else {
+        return;
+    };
+    let pg = &t.0;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("dev");
+    let body = |name: &str| {
+        format!(
+            "//! The {name} module.\n{}",
+            format!("pub fn {name}_step() {{ let x = 1; }}\n").repeat(12)
+        )
+    };
+    for n in ["parse", "render"] {
+        write(&root, &format!("alpha/src/core/{n}.rs"), &body(n));
+    }
+    write(&root, "alpha/src/lib.rs", &body("lib"));
+    write(
+        &root,
+        "alpha/README.md",
+        "# Alpha\n\nAlpha turns plain text into pictures.\n",
+    );
+    for i in 0..24 {
+        write(
+            &root,
+            &format!("alpha/wide/w{i:02}.rs"),
+            &body(&format!("w{i:02}")),
+        );
+    }
+    let mut ix = Index::open(&dir.path().join("index.db")).unwrap();
+    crate::roots::add_root(&ix, &root, "full").unwrap();
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let o = Options {
+        code: "test".into(),
+        ..Default::default()
+    };
+    let cands = summ::candidates(pg, &o).unwrap();
+    let (files, cov) = summ::select(&cands, &cfg.llm.summaries);
+    summ::run(pg, files.clone(), &o, &cov, &mut |_| {}).unwrap();
+
+    let units = dirsum::units(pg, &files).unwrap();
+    let ids: Vec<&str> = units.iter().map(|u| u.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["alpha:src/core", "alpha:src", "alpha:wide", "alpha"]
+    );
+    let dc = dirsum::coverage(pg, &units, &o).unwrap();
+    assert_eq!((dc.units, dc.projects, dc.large), (4, 1, 1), "{dc:?}");
+    assert!(dc.parts >= 2, "{dc:?}");
+
+    let runs = dirsum::run(pg, units.clone(), &o, &mut |_, _| {}).unwrap();
+    let labels: Vec<&str> = runs.iter().map(|(l, _)| l.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "depth 2",
+            "depth 1, parts of 1 large directories",
+            "depth 1",
+            "projects"
+        ],
+        "{runs:?}"
+    );
+    let rows = pg
+        .query(
+            "SELECT entity_id, status, summary FROM summaries
+             WHERE meta->>'unit' IN ('dir', 'project', 'part') ORDER BY entity_id, id",
+            &[],
+        )
+        .unwrap();
+    let live: Vec<(String, String)> = rows
+        .iter()
+        .filter(|r| r.get::<_, String>(1) == "live")
+        .map(|r| (r.get(0), r.get(2)))
+        .collect();
+    assert_eq!(live.len(), 4, "{live:?}");
+    assert!(
+        live.iter()
+            .any(|(id, s)| id == "alpha:src" && s.starts_with("Holds the src code")),
+        "{live:?}"
+    );
+    let parts = rows
+        .iter()
+        .filter(|r| r.get::<_, String>(1) == "part")
+        .count();
+    assert_eq!(parts, dc.parts);
+    // A directory reads its children's summaries; the large one its parts';
+    // the project its README.
+    let prompts = seen.lock().unwrap().clone();
+    let src = prompts.iter().find(|p| p.contains("Path: src\n")).unwrap();
+    assert!(src.contains("Holds the core code"), "{src}");
+    assert!(src.contains("Handles the lib part"), "{src}");
+    let wide = prompts
+        .iter()
+        .rfind(|p| p.contains("Path: wide\n"))
+        .unwrap();
+    assert!(wide.contains("Parts (each summarized"), "{wide}");
+    let top = prompts
+        .iter()
+        .find(|p| p.contains("Path: (the project's top)"))
+        .unwrap();
+    assert!(
+        top.contains("Alpha turns plain text into pictures"),
+        "{top}"
+    );
+    assert!(top.contains("Holds the wide code"), "{top}");
+
+    // A resume: nothing to do.
+    let n = seen.lock().unwrap().len();
+    let runs = dirsum::run(pg, units, &o, &mut |_, _| {}).unwrap();
+    let written: usize = runs.iter().map(|(_, s)| s.written).sum();
+    assert_eq!(written, 0, "{runs:?}");
+    assert_eq!(seen.lock().unwrap().len(), n);
+
+    // The sync shows a directory's summary over its seed.
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let s: String = pg
+        .query("SELECT summary FROM entities WHERE id = 'alpha:src'", &[])
+        .unwrap()[0]
+        .get(0);
+    assert!(s.starts_with("Holds the src code"), "{s}");
+}
+
+/// A crate is marked copied when its manifest names a repository that
+/// isn't the project's.
+#[test]
+fn copied_crates_by_manifest_repository() {
+    let cargo =
+        "[package]\nname = \"bitflags\"\nrepository = \"https://github.com/bitflags/bitflags\"\n";
+    assert_eq!(
+        summ::manifest_repository("Cargo.toml", cargo),
+        "https://github.com/bitflags/bitflags"
+    );
+    assert_eq!(
+        summ::manifest_repository(
+            "package.json",
+            r#"{"repository": {"url": "git+https://github.com/a/b.git"}}"#
+        ),
+        "git+https://github.com/a/b.git"
+    );
+    assert_eq!(
+        summ::manifest_repository("Cargo.toml", "[package]\nname = \"x\"\n"),
+        ""
+    );
+    assert!(summ::foreign_repository(
+        "https://github.com/bitflags/bitflags",
+        "makepad"
+    ));
+    assert!(!summ::foreign_repository(
+        "https://github.com/makepad/makepad/",
+        "makepad"
+    ));
+    assert!(!summ::foreign_repository(
+        "https://github.com/me/glyph3d-rs",
+        "glyph3d_rs"
+    ));
+    assert!(!summ::foreign_repository("", "makepad"));
+}
