@@ -258,6 +258,11 @@ static SECRETS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+/// What the scrubbers put in place of what they take out (lowercase); an
+/// answer holding one fails its check. [`scrub`] writes `[redacted]`; the
+/// dreams' scrubber drops lines and writes nothing.
+pub const SCRUB_PLACEHOLDERS: &[&str] = &["[redacted]"];
+
 /// `text` with keys, tokens, sign-in URLs, emails and the configured words
 /// replaced by `[redacted]`, and how many were.
 pub fn scrub(text: &str, words: &[String]) -> (String, usize) {
@@ -1230,6 +1235,14 @@ pub fn check(v: &Value, f: &Facts) -> Result<Entry, &'static str> {
     let all = format!("{summary}\n{why}\n{}", asks.join("\n"));
     if scrub_hit(&all, f.scrub_words) {
         return Err("scrub");
+    }
+    // The scrub's placeholder echoed back: the model wrote about what was
+    // taken out of its input, not about the file.
+    if SCRUB_PLACEHOLDERS
+        .iter()
+        .any(|p| all.to_lowercase().contains(p))
+    {
+        return Err("placeholder echo");
     }
     Ok(Entry {
         summary,

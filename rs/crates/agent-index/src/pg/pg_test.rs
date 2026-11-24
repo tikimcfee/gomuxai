@@ -835,3 +835,54 @@ fn side_corpora_and_groups() {
         .get(0);
     assert_eq!(n, 0);
 }
+
+/// A model's asks go in the card, the vector's text and the text search,
+/// or (`[cards].asks` off) in none; `[summaries].withhold` keeps the seed.
+#[test]
+fn asks_switch_and_withhold() {
+    let Some(t) = throwaway("asks") else { return };
+    let pg = &t.0;
+    let (_dir, ix) = fixture();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let key: String = pg
+        .query(
+            "SELECT content_key FROM entities WHERE id = 'alpha:src/lib.rs'",
+            &[],
+        )
+        .unwrap()[0]
+        .get(0);
+    pg.execute(
+        "INSERT INTO summaries (entity_id, content_key, fingerprint, status, summary, why, asks, writer)
+         VALUES ('alpha:src/lib.rs', $1, 'f', 'live', 'Holds the alpha library.', 'The core.',
+                 ARRAY['where is the numbat counter', 'how do held messages wake'], 'model:test')",
+        &[&key],
+    )
+    .unwrap();
+    let row = |pg: &Pg| -> (String, Vec<String>, String, bool) {
+        let r = &pg
+            .query(
+                "SELECT summary_writer, asks, text_key, tsv @@ plainto_tsquery('simple', 'numbat')
+                 FROM entities WHERE id = 'alpha:src/lib.rs'",
+                &[],
+            )
+            .unwrap()[0];
+        (r.get(0), r.get(1), r.get(2), r.get(3))
+    };
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let (w, asks, with_key, found) = row(pg);
+    assert_eq!((w.as_str(), asks.len(), found), ("model:test", 2, true));
+    let (url, _) = Pg::from_env().unwrap();
+    let off = crate::config::Config::parse("[cards]\nasks = false\n").unwrap();
+    let pg_off = Pg::connect_with(&url, &pg.schema, off).unwrap();
+    super::sync::sync(&ix.conn, &pg_off, false).unwrap();
+    let (w, asks, without_key, found) = row(&pg_off);
+    assert_eq!((w.as_str(), asks.len(), found), ("model:test", 0, false));
+    assert_ne!(
+        with_key, without_key,
+        "the card (and so the vector) changes"
+    );
+    let hold = crate::config::Config::parse("[summaries]\nwithhold = [\"alpha:src/\"]\n").unwrap();
+    let pg_hold = Pg::connect_with(&url, &pg.schema, hold).unwrap();
+    super::sync::sync(&ix.conn, &pg_hold, false).unwrap();
+    assert_eq!(row(&pg_hold).0, "seed");
+}

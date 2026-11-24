@@ -97,7 +97,8 @@ pub fn texts(pg: &Pg, ids: &[String], terms: &[String]) -> Result<Vec<String>> {
                  WHERE c.entity_id = split_part(e.id, '#', 1)
                    AND (e.kind = 'file' OR (e.line BETWEEN c.line_start AND c.line_end))
                  ORDER BY greatest(ts_rank_cd(c.tsv_simple, q.s), ts_rank_cd(c.tsv_en, q.e)) DESC, c.ord
-                 LIMIT 1)
+                 LIMIT 1),
+                e.asks
          FROM entities e, q WHERE e.id = ANY($1)",
         &[&ids, &terms],
     )?;
@@ -115,6 +116,7 @@ pub fn texts(pg: &Pg, ids: &[String], terms: &[String]) -> Result<Vec<String>> {
             &shown,
             &r.get::<_, String>(7),
             &r.get::<_, String>(8),
+            &r.get::<_, Vec<String>>(12),
             &cfg.cards,
         );
         if kind == "symbol" {

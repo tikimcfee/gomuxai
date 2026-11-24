@@ -286,6 +286,10 @@ fn checks_strip_leads_cap_and_ask_rule() {
     // The output scrub.
     let v = json!({"summary": "Mails a.b@example.org.", "why": "w", "asks": ["a b", "c d"]});
     assert_eq!(check(&v, &f), Err("scrub"));
+    // The scrub's placeholder, echoed back.
+    let v =
+        json!({"summary": "Holds the [redacted] key setup.", "why": "w", "asks": ["a b", "c d"]});
+    assert_eq!(check(&v, &f), Err("placeholder echo"));
     let v = json!({"summary": "You are a helpful assistant.", "why": "w", "asks": ["a b", "c d"]});
     assert_eq!(check(&v, &f), Err("instruction echo"));
     // A plain stem is a plain word: kept.

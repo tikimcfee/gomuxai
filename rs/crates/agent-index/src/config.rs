@@ -45,6 +45,9 @@ pub struct Config {
     pub serve: Serve,
     pub memory: Memory,
     pub friction: Friction,
+    /// `[summaries]`: which model summaries go live (not how they are
+    /// written: that is `[llm.summaries]`).
+    pub summaries: SummaryPolicy,
 }
 
 /// `agent index serve`, the warm query process.
@@ -302,6 +305,11 @@ pub struct Cards {
     pub symbols: usize,
     /// The embedded card is clipped to this many characters.
     pub max_chars: usize,
+    /// A model's asks (the questions an entity answers) in its card, its
+    /// vector and its text search; off leaves them out of all three (for an
+    /// A/B: switching rewrites the summarized entities' rows and re-queues
+    /// their vectors at the next sync).
+    pub asks: bool,
 }
 
 impl Default for Cards {
@@ -310,8 +318,18 @@ impl Default for Cards {
             children: 200,
             symbols: 60,
             max_chars: 2000,
+            asks: true,
         }
     }
+}
+
+/// Which model summaries the live index shows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct SummaryPolicy {
+    /// Entity id prefixes whose model summaries are withheld (their seeds
+    /// show): `"project:docs/notes/"`. Empty by default.
+    pub withhold: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

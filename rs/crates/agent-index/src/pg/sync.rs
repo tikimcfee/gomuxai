@@ -61,7 +61,10 @@ pub struct SyncReport {
 const COPY_BATCH: usize = 20_000;
 
 /// The text an entity's vector is made from: v1's card (its project and
-/// path, title, summary or seed, why, and the names it defines).
+/// path, title, summary or seed, why, and the names it defines), and a
+/// model's asks when `[cards].asks` (they go after the names, so a card
+/// without asks is as before asks existed).
+#[allow(clippy::too_many_arguments)]
 pub fn card(
     project: &str,
     rel: &str,
@@ -69,6 +72,7 @@ pub fn card(
     summary: &str,
     why: &str,
     symbols: &str,
+    asks: &[String],
     cards: &Cards,
 ) -> String {
     // (A note outside any project starts with its name alone.)
@@ -98,6 +102,10 @@ pub fn card(
     if !syms.is_empty() {
         s.push_str("\ndefines: ");
         s.push_str(&syms.join(", "));
+    }
+    if cards.asks && !asks.is_empty() {
+        s.push_str("\nasks: ");
+        s.push_str(&asks.join("; "));
     }
     s.chars().take(cards.max_chars).collect()
 }
@@ -487,14 +495,25 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
         let (mut stext, mut why, mut writer, mut skey, mut sat) =
             shown.remove(&e.id).unwrap_or_default();
         let mut asks = Vec::new();
+        // A model's summary where it is fresh, unless [summaries].withhold
+        // names the entity (its seed shows).
+        let withheld = cfg
+            .summaries
+            .withhold
+            .iter()
+            .any(|p| !p.is_empty() && e.id.starts_with(p.as_str()));
         if (writer.is_empty() || writer == "seed")
+            && !withheld
             && let Some((key, s, w, a, wr, at)) = overlay.get(&e.id)
             && !e.content_key.is_empty()
             && *key == e.content_key
         {
             (stext, why, writer, skey, sat) =
                 (s.clone(), w.clone(), wr.clone(), key.clone(), at.clone());
-            asks = a.clone();
+            // [cards].asks off: no asks in the row (its tsv), card or vector.
+            if cfg.cards.asks {
+                asks = a.clone();
+            }
         }
         let seed = seeds.remove(&e.id).unwrap_or_default();
         let summary = if writer == "seed" {
@@ -523,7 +542,7 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
         };
         let terms = format!("{} {}", name_terms_of(&e), path_terms(rel_or_project));
         let card_text = card(
-            &e.project, &e.rel, &e.title, &stext, &why, &symbols, &cfg.cards,
+            &e.project, &e.rel, &e.title, &stext, &why, &symbols, &asks, &cfg.cards,
         );
         let text_key = hash(&[card_text.as_bytes()]);
         let embed =
@@ -642,7 +661,16 @@ fn side_rows(
         };
         // As the embedder makes it again from the row (project, rel, title,
         // the seed it shows), so the keys agree.
-        let card_text = card(&e.project, &e.rel, &e.title, &n.seed, "", "", &cfg.cards);
+        let card_text = card(
+            &e.project,
+            &e.rel,
+            &e.title,
+            &n.seed,
+            "",
+            "",
+            &[],
+            &cfg.cards,
+        );
         let chunk_key = if n.body.trim().is_empty() {
             String::new()
         } else {

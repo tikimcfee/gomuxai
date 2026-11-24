@@ -50,7 +50,7 @@ pub fn drain<E: Encode>(
         .get(0);
     let todo: Vec<(String, String, String)> = pg
         .query(
-            "SELECT id, text_key, project, rel, title, seed, summary, why, symbols FROM entities
+            "SELECT id, text_key, project, rel, title, seed, summary, why, symbols, asks FROM entities
              WHERE embed AND vec_key <> text_key ORDER BY importance DESC, id",
             &[],
         )?
@@ -65,6 +65,7 @@ pub fn drain<E: Encode>(
                 &shown,
                 &r.get::<_, String>(7),
                 &r.get::<_, String>(8),
+                &r.get::<_, Vec<String>>(9),
                 &cfg.cards,
             );
             (r.get(0), r.get(1), card)
