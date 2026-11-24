@@ -22,7 +22,7 @@ use std::io::Write as _;
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 use serde::Serialize;
 
@@ -48,6 +48,8 @@ pub struct SyncReport {
     pub chunked_files: usize,
     pub chunks: usize,
     pub labels: usize,
+    /// Files whose recorded mtime moved (the stale check reads it).
+    pub mtimes: usize,
     pub edges_replaced: bool,
     pub edges: usize,
     pub tables_replaced: Vec<String>,
@@ -293,7 +295,7 @@ struct Out {
 
 const STAGE_COLS: &str = "id, kind, project, parent, rel, name, path, file_kind, lang, size, lines, line, \
      content_key, title, signature, untracked, no_content, importance, seed, summary, why, summary_key, \
-     summary_writer, summary_at, asks, terms, labels_text, symbols, embed, text_key, chunk_key, sync_key, corpus";
+     summary_writer, summary_at, asks, terms, labels_text, symbols, embed, text_key, chunk_key, sync_key, corpus, mtime";
 
 /// The corpus a crawled entity belongs to (docs/INDEX-V2.md, "Corpora,
 /// composed"): a document (Markdown, text, reStructuredText: file kind
@@ -311,7 +313,14 @@ pub fn corpus_of(kind: &str, file_kind: &str) -> &'static str {
 const CHUNK_META_VERSION: &str = "m1";
 
 impl Out {
+    /// The row as the sync key hashes it.
     fn copy(&self, buf: &mut String) {
+        self.copy_with(buf, None);
+    }
+
+    /// The row as it is staged: with `mtime` after it (not part of the sync
+    /// key: a touched file isn't a changed one).
+    fn copy_with(&self, buf: &mut String, mtime: Option<&str>) {
         let e = &self.e;
         let asks = pg_array(&self.asks);
         let (size, lines, line, imp) = (
@@ -320,44 +329,43 @@ impl Out {
             e.line.to_string(),
             e.importance.to_string(),
         );
-        copy_row(
-            buf,
-            &[
-                &e.id,
-                &e.kind,
-                &e.project,
-                &e.parent,
-                &e.rel,
-                &e.name,
-                &e.path,
-                &e.file_kind,
-                &e.lang,
-                &size,
-                &lines,
-                &line,
-                &e.content_key,
-                &e.title,
-                &e.signature,
-                if e.untracked { "t" } else { "f" },
-                &e.no_content,
-                &imp,
-                &self.seed,
-                &self.summary,
-                &self.why,
-                &self.summary_key,
-                &self.summary_writer,
-                &self.summary_at,
-                &asks,
-                &self.terms,
-                &self.labels_text,
-                &self.symbols,
-                if self.embed { "t" } else { "f" },
-                &self.text_key,
-                &self.chunk_key,
-                &self.sync_key,
-                &self.corpus,
-            ],
-        );
+        let mut fields: Vec<&str> = vec![
+            &e.id,
+            &e.kind,
+            &e.project,
+            &e.parent,
+            &e.rel,
+            &e.name,
+            &e.path,
+            &e.file_kind,
+            &e.lang,
+            &size,
+            &lines,
+            &line,
+            &e.content_key,
+            &e.title,
+            &e.signature,
+            if e.untracked { "t" } else { "f" },
+            &e.no_content,
+            &imp,
+            &self.seed,
+            &self.summary,
+            &self.why,
+            &self.summary_key,
+            &self.summary_writer,
+            &self.summary_at,
+            &asks,
+            &self.terms,
+            &self.labels_text,
+            &self.symbols,
+            if self.embed { "t" } else { "f" },
+            &self.text_key,
+            &self.chunk_key,
+            &self.sync_key,
+            &self.corpus,
+        ];
+        fields.extend(mtime);
+        copy_row(buf, &fields);
     }
 }
 
@@ -389,18 +397,35 @@ fn pg_array(items: &[String]) -> String {
 
 /// A model's summary from Postgres's `summaries` (pg::summ): the content
 /// key it was written against, summary, why, asks, writer, when.
-pub type Overlay = HashMap<String, (String, String, String, Vec<String>, String, String)>;
+pub type Overlay = HashMap<String, OverlayRow>;
+
+/// One entity's model summary: key, summary, why, asks, writer, when.
+pub type OverlayRow = (String, String, String, Vec<String>, String, String);
 
 /// The latest live model summary of each entity (`summaries`, written by
 /// `agent index summarize`). The ledger knows nothing of them; the sync
 /// shows one over a seed while its content key is the entity's, so a file
 /// that changed falls back to its seed until it is summarized again.
 pub fn read_overlay(pg: &Pg) -> Result<Overlay> {
+    read_overlay_in(pg, None, &[])
+}
+
+/// [`read_overlay`], of these projects' entities only (None: all).
+/// With a scope, `keys` are its entities' content keys: every entity with a
+/// live summary of one of them comes too (whatever its project), so a
+/// summary shown by its content (see read_ledger) is the one a full sync
+/// shows.
+fn read_overlay_in(pg: &Pg, scope: Option<&[String]>, keys: &[String]) -> Result<Overlay> {
+    let scope: Option<Vec<String>> = scope.map(<[String]>::to_vec);
     let rows = pg.query(
         "SELECT DISTINCT ON (entity_id) entity_id, content_key, summary, why, asks, writer,
                 to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
-         FROM summaries WHERE status = 'live' ORDER BY entity_id, id DESC",
-        &[],
+         FROM summaries WHERE status = 'live'
+             AND ($1::text[] IS NULL OR split_part(entity_id, ':', 1) = ANY($1)
+                  OR entity_id IN (SELECT entity_id FROM summaries
+                                   WHERE status = 'live' AND content_key = ANY($2)))
+         ORDER BY entity_id, id DESC",
+        &[&scope, &keys],
     )?;
     Ok(rows
         .into_iter()
@@ -413,9 +438,27 @@ pub fn read_overlay(pg: &Pg) -> Result<Overlay> {
         .collect())
 }
 
-/// Reads the ledger: every entity as the sync writes it, with its labels,
-/// and a model's summary from `overlay` where it is fresh.
-fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<Out>, Labels)> {
+/// A ledger filter on `project` for these projects (None: every row), and
+/// its one parameter (a JSON array).
+fn scope_sql(scope: Option<&[String]>) -> (&'static str, Vec<String>) {
+    match scope {
+        Some(ps) => (
+            "project IN (SELECT value FROM json_each(?1))",
+            vec![serde_json::to_string(ps).unwrap_or_default()],
+        ),
+        None => ("1", Vec::new()),
+    }
+}
+
+/// Reads the ledger: every entity as the sync writes it (or only these
+/// projects'), with its labels, and a model's summary from `overlay` where
+/// it is fresh.
+fn read_ledger(
+    sq: &Connection,
+    cfg: &Config,
+    overlay: &Overlay,
+    scope: Option<&[String]>,
+) -> Result<(Vec<Out>, Labels)> {
     // A cut other than the default one is part of each file's chunk key, so
     // changing it cuts every file again.
     let cut = if cfg.default_chunking() {
@@ -423,9 +466,21 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
     } else {
         format!("@{}x{}", cfg.chunks.max_lines, cfg.chunks.max_bytes)
     };
+    let (inscope, arg) = scope_sql(scope);
+    let arg = rusqlite::params_from_iter(arg.iter());
+    // Another table's rows of the entities in scope.
+    let of_entities = |col: &str| {
+        if scope.is_some() {
+            format!("{col} IN (SELECT id FROM entities WHERE {inscope})")
+        } else {
+            "1".to_string()
+        }
+    };
     let ents: Vec<Entity> = {
-        let mut st = sq.prepare(&format!("SELECT {ENTITY_COLS} FROM entities ORDER BY id"))?;
-        st.query_map([], Entity::from_row)?
+        let mut st = sq.prepare(&format!(
+            "SELECT {ENTITY_COLS} FROM entities WHERE {inscope} ORDER BY id"
+        ))?;
+        st.query_map(arg.clone(), Entity::from_row)?
             .collect::<rusqlite::Result<_>>()?
     };
     // The summary each entity shows (a model's or person's over a seed, the
@@ -433,11 +488,13 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
     let mut shown: HashMap<String, (String, String, String, String, String)> = HashMap::new();
     let mut seeds: HashMap<String, String> = HashMap::new();
     {
-        let mut st = sq.prepare(
+        let mut st = sq.prepare(&format!(
             "SELECT entity, text, why, writer, content_key, written_at FROM summaries
-             WHERE status = 'live' AND text != '' ORDER BY entity, (writer = 'seed'), seq DESC",
-        )?;
-        let mut rows = st.query([])?;
+             WHERE status = 'live' AND text != '' AND {}
+             ORDER BY entity, (writer = 'seed'), seq DESC",
+            of_entities("entity")
+        ))?;
+        let mut rows = st.query(arg.clone())?;
         while let Some(r) = rows.next()? {
             let id: String = r.get(0)?;
             let text: String = r.get(1)?;
@@ -458,10 +515,12 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
     }
     let mut labels: HashMap<String, Vec<Label>> = HashMap::new();
     {
-        let mut st = sq.prepare(
-            "SELECT entity, label, norm, compact, kind, origin, weight, evidence FROM labels ORDER BY entity, label, kind",
-        )?;
-        let mut rows = st.query([])?;
+        let mut st = sq.prepare(&format!(
+            "SELECT entity, label, norm, compact, kind, origin, weight, evidence FROM labels
+             WHERE {} ORDER BY entity, label, kind",
+            of_entities("entity")
+        ))?;
+        let mut rows = st.query(arg.clone())?;
         while let Some(r) = rows.next()? {
             labels.entry(r.get(0)?).or_default().push((
                 r.get(1)?,
@@ -476,11 +535,13 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
     }
     let mut kids: HashMap<String, Vec<String>> = HashMap::new();
     {
-        let mut st = sq.prepare(
-            "SELECT parent, name FROM entities WHERE kind IN ('symbol', 'file', 'dir')
-             ORDER BY parent, importance DESC, name",
-        )?;
-        let mut rows = st.query([])?;
+        // A child is in its parent's project (a project's own parent, the
+        // root, is never in a scope).
+        let mut st = sq.prepare(&format!(
+            "SELECT parent, name FROM entities WHERE kind IN ('symbol', 'file', 'dir') AND {inscope}
+             ORDER BY parent, importance DESC, name"
+        ))?;
+        let mut rows = st.query(arg.clone())?;
         while let Some(r) = rows.next()? {
             let v = kids.entry(r.get(0)?).or_default();
             if v.len() < cfg.cards.children {
@@ -495,6 +556,19 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
         .collect();
     let ids: HashSet<&str> = ents.iter().map(|e| e.id.as_str()).collect();
     labels.retain(|k, _| ids.contains(k.as_str()));
+    // Summaries by the content they describe: of several, the first entity's
+    // by id, so the choice (and the row's sync key) is the same every sync.
+    let mut by_key: HashMap<&str, &OverlayRow> = HashMap::new();
+    {
+        let mut owners: Vec<&String> = overlay.keys().collect();
+        owners.sort();
+        for id in owners {
+            let row = &overlay[id];
+            if !row.0.is_empty() {
+                by_key.entry(row.0.as_str()).or_insert(row);
+            }
+        }
+    }
     let mut out = Vec::with_capacity(ents.len());
     for e in ents {
         let (mut stext, mut why, mut writer, mut skey, mut sat) =
@@ -507,9 +581,16 @@ fn read_ledger(sq: &Connection, cfg: &Config, overlay: &Overlay) -> Result<(Vec<
             .withhold
             .iter()
             .any(|p| !p.is_empty() && e.id.starts_with(p.as_str()));
+        // Its own, else one written for the same content under another id: a
+        // file renamed or copied since the summaries were written keeps the
+        // summary of its content, as the summarizer would copy it.
+        let mine = overlay
+            .get(&e.id)
+            .filter(|o| o.0 == e.content_key)
+            .or_else(|| by_key.get(e.content_key.as_str()).copied());
         if (writer.is_empty() || writer == "seed")
             && !withheld
-            && let Some((key, s, w, a, wr, at)) = overlay.get(&e.id)
+            && let Some((key, s, w, a, wr, at)) = mine
             && !e.content_key.is_empty()
             && *key == e.content_key
         {
@@ -918,6 +999,59 @@ pub fn sync_with(
     rebuild: bool,
     side: Option<&[SideNote]>,
 ) -> Result<SyncReport> {
+    sync_inner(sq, pg, rebuild, side, None)
+}
+
+/// The watcher's flush: mirrors only these projects' entities (their rows,
+/// labels, chunks and file mtimes; edges and the small tables by digest as
+/// always), leaving every other row as it is. The words' document counts
+/// wait for the next full sync, which recounts them.
+pub fn sync_projects(sq: &Connection, pg: &Pg, projects: &[String]) -> Result<SyncReport> {
+    sync_inner(sq, pg, false, None, Some(projects))
+}
+
+/// The meta key that names the ledger a schema is synced from.
+const LEDGER_KEY: &str = "ledger";
+
+/// The ledger's file, canonical ("" for one in memory).
+fn ledger_of(sq: &Connection) -> String {
+    sq.path()
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            std::fs::canonicalize(p)
+                .map(|c| c.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| p.to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// The ledger a schema was last synced from ("" when none is recorded).
+pub fn synced_ledger(pg: &Pg) -> Result<String> {
+    Ok(pg
+        .query_opt("SELECT value FROM meta WHERE key = $1", &[&LEDGER_KEY])?
+        .map(|r| r.get(0))
+        .unwrap_or_default())
+}
+
+/// Makes `sq`'s file the ledger this schema is synced from: for a ledger
+/// moved on purpose (a copy at a fixed path), since a sync from any other
+/// ledger is refused.
+pub fn adopt_ledger(sq: &Connection, pg: &Pg) -> Result<String> {
+    let mine = ledger_of(sq);
+    pg.execute(
+        "INSERT INTO meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        &[&LEDGER_KEY, &mine],
+    )?;
+    Ok(mine)
+}
+
+fn sync_inner(
+    sq: &Connection,
+    pg: &Pg,
+    rebuild: bool,
+    side: Option<&[SideNote]>,
+    scope: Option<&[String]>,
+) -> Result<SyncReport> {
     let start = Instant::now();
     let mut rep = SyncReport {
         rebuild,
@@ -930,8 +1064,21 @@ pub fn sync_with(
         lap = Instant::now();
     };
     let cfg = &pg.cfg;
-    let overlay = read_overlay(pg)?;
-    let (mut rows, labels) = read_ledger(sq, cfg, &overlay)?;
+    // A scope's content keys (what a summary can be shown by).
+    let keys: Vec<String> = match scope {
+        Some(_) => {
+            let (inscope, arg) = scope_sql(scope);
+            let mut st = sq.prepare(&format!(
+                "SELECT DISTINCT content_key FROM entities
+                 WHERE kind IN ('project', 'dir', 'file') AND content_key <> '' AND {inscope}"
+            ))?;
+            st.query_map(rusqlite::params_from_iter(arg.iter()), |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        }
+        None => Vec::new(),
+    };
+    let overlay = read_overlay_in(pg, scope, &keys)?;
+    let (mut rows, labels) = read_ledger(sq, cfg, &overlay, scope)?;
     let projects: HashMap<String, String> = crate::roots::list_projects(sq)?
         .into_iter()
         .map(|p| (p.name, p.path))
@@ -956,6 +1103,17 @@ pub fn sync_with(
         side_edges = edges;
     }
     rep.entities = rows.len() + kept.len();
+    // Files' mtimes in the ledger (the stale check compares with them).
+    let mtimes: HashMap<String, i64> = {
+        let (inscope, arg) = scope_sql(scope);
+        let mut st = sq.prepare(&format!(
+            "SELECT id, mtime FROM entities WHERE kind = 'file' AND {inscope}"
+        ))?;
+        st.query_map(rusqlite::params_from_iter(arg.iter()), |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
     phase(&mut rep, "read ledger");
 
     let mut c = pg.client();
@@ -966,11 +1124,26 @@ pub fn sync_with(
         "SELECT pg_advisory_xact_lock(hashtext('agent-index sync ' || $1))",
         &[&pg.schema],
     )?;
+    // One ledger per schema: the summaries' content keys, the renames and
+    // the aliases hang on it, and another ledger's crawl would re-key and
+    // remove rows. A schema remembers the ledger its first sync came from
+    // and refuses any other (adopt_ledger moves it on purpose).
+    let mine = ledger_of(sq);
+    let theirs: String = tx
+        .query_opt("SELECT value FROM meta WHERE key = $1", &[&LEDGER_KEY])?
+        .map(|r| r.get(0))
+        .unwrap_or_default();
+    if !mine.is_empty() && !theirs.is_empty() && mine != theirs {
+        bail!(
+            "schema {} is synced from the ledger {theirs}, not {mine}: set [ledger].path to it in the index configuration (or, to move the schema to this ledger on purpose, agent index sync --adopt-ledger)",
+            pg.schema
+        );
+    }
     let run_id: i64 = tx
         .query_one(
             "INSERT INTO runs (kind, config, fingerprint, started) VALUES ('sync', $1, $2, now()) RETURNING id",
             &[
-                &serde_json::json!({"rebuild": rebuild, "config": cfg}),
+                &serde_json::json!({"rebuild": rebuild, "config": cfg, "scope": scope, "ledger": mine}),
                 &cfg.fingerprint(),
             ],
         )?
@@ -983,17 +1156,25 @@ pub fn sync_with(
              DELETE FROM meta;",
         )?;
     }
-    // Without side notes, their rows aren't this sync's to change.
-    let have_sql = if side.is_some() {
-        "SELECT id, sync_key FROM entities"
-    } else {
-        "SELECT id, sync_key FROM entities WHERE corpus <> ALL($1::text[])"
-    };
+    if !mine.is_empty() && mine != theirs {
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            &[&LEDGER_KEY, &mine],
+        )?;
+    }
+    // Without side notes, their rows aren't this sync's to change; with a
+    // scope, only its projects' rows are.
     let side_corpora: Vec<String> = SIDE_CORPORA.iter().map(|s| s.to_string()).collect();
-    let have_rows = if side.is_some() {
-        tx.query(have_sql, &[])?
-    } else {
-        tx.query(have_sql, &[&side_corpora])?
+    let have_rows = match (side.is_some(), scope) {
+        (_, Some(ps)) => tx.query(
+            "SELECT id, sync_key FROM entities WHERE project = ANY($1) AND corpus <> ALL($2::text[])",
+            &[&ps.to_vec(), &side_corpora],
+        )?,
+        (true, None) => tx.query("SELECT id, sync_key FROM entities", &[])?,
+        (false, None) => tx.query(
+            "SELECT id, sync_key FROM entities WHERE corpus <> ALL($1::text[])",
+            &[&side_corpora],
+        )?,
     };
     let have: HashMap<String, String> = have_rows
         .into_iter()
@@ -1033,7 +1214,8 @@ pub fn sync_with(
         for part in changed.chunks(COPY_BATCH) {
             let mut buf = String::new();
             for o in part {
-                o.copy(&mut buf);
+                let m = mtimes.get(&o.e.id).copied().unwrap_or(0).to_string();
+                o.copy_with(&mut buf, Some(&m));
             }
             copy_in(&mut tx, "stage_entities", STAGE_COLS, &buf)?;
         }
@@ -1106,6 +1288,24 @@ pub fn sync_with(
             "entity_id, label, norm, compact, kind, origin, weight, evidence",
             &buf,
         )?;
+    }
+    // Files' mtimes, for the search's stale check (fresh::check): a written
+    // row took its own; the rest (a file touched, not changed: its sync key
+    // holds) are set apart, only where they moved.
+    {
+        let mut buf = String::new();
+        for (id, m) in &mtimes {
+            copy_row(&mut buf, &[id, &m.to_string()]);
+        }
+        tx.batch_execute(
+            "CREATE TEMP TABLE stage_mtime (id text PRIMARY KEY, mtime bigint) ON COMMIT DROP",
+        )?;
+        copy_in(&mut tx, "stage_mtime", "id, mtime", &buf)?;
+        rep.mtimes = tx.execute(
+            "UPDATE entities e SET mtime = s.mtime FROM stage_mtime s
+             WHERE e.id = s.id AND e.mtime IS DISTINCT FROM s.mtime",
+            &[],
+        )? as usize;
     }
     phase(&mut rep, "entities");
 
@@ -1201,7 +1401,13 @@ pub fn sync_with(
             &[&how],
         )?
         .get(0);
-    if !rechunk.is_empty() || rebuild || !counted {
+    if scope.is_some() {
+        // The watcher's flush leaves the count (a scan of every chunk) to
+        // the next full sync: a few files' words barely move it.
+        if !rechunk.is_empty() {
+            tx.execute("DELETE FROM meta WHERE key = 'lexeme_floor'", &[])?;
+        }
+    } else if !rechunk.is_empty() || rebuild || !counted {
         let crawled = "WHERE coalesce(meta->>''corpus'', ''code'') IN (''code'', ''prose'')";
         tx.batch_execute(&format!(
             "DELETE FROM lexemes;

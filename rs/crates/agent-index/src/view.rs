@@ -842,6 +842,16 @@ pub fn stale(conn: &Connection, project: &str, limit: usize) -> Result<Stale> {
 /// Search results as text, fitted to `budget` tokens (0: no limit): each
 /// result's id, kind, freshness, path, summary and why it matched.
 /// Returns the text and how many results were left out.
+/// What the stale check found, after a hit's path: its file changed or was
+/// deleted since it was indexed (the summary and lines are the old file's).
+pub fn stale_note(h: &crate::query::Hit) -> &'static str {
+    match h.stale.as_str() {
+        "changed" => "  (changed since indexed: read the file)",
+        "gone" => "  (deleted since indexed)",
+        _ => "",
+    }
+}
+
 pub fn render_search(r: &SearchResult, budget: usize, explain: bool) -> (String, usize) {
     let mut head = String::new();
     if !r.mapping.is_empty() {
@@ -891,8 +901,9 @@ pub fn render_search(r: &SearchResult, budget: usize, explain: bool) -> (String,
         };
         let _ = writeln!(
             b,
-            "   {path}{}",
-            if h.untracked { "  (untracked)" } else { "" }
+            "   {path}{}{}",
+            if h.untracked { "  (untracked)" } else { "" },
+            stale_note(h)
         );
         let text = if h.summary.is_empty() {
             if h.title != h.id && !h.id.ends_with(&h.title) {

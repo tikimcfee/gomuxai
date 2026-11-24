@@ -481,6 +481,101 @@ and the connection). The reranker's time is about 14 ms a candidate (texts
 of up to 1,500 characters), so depth sets the cost: 20 keeps a search
 under half a second, 100 costs a second and a half. None fell back.
 
+## Freshness: a watcher and a stale check
+
+Staleness is the main reason people drop an index, and 3 of blind 3's 10
+cross-project misses were stale files. Two parts: a watcher keeps the
+store current within seconds of a save, and a search never serves a
+changed file silently.
+
+**The watcher** (`agent index watch`, `watch.rs`; Linux, inotify), its own
+process and unit, not part of `serve`: serve stays the read-only query
+path (restarted with each build or configuration), and the watcher is
+the one writer.
+- **What it watches**: every indexed directory of the full-depth projects
+  (what the crawl recorded), and a new one as it appears, unless the crawl
+  skips it (`target/`, `node_modules/`, `.git/`, `build/`, git-ignored).
+  Build output is never watched, so a cargo or npm build makes no events.
+  Editors' swap and backup files are dropped. The crawl, too, now leaves
+  out an untracked file under such a directory even when git doesn't
+  ignore it (an old commit checked out, from before its `.gitignore`).
+- **When it flushes**: once a project has been quiet for
+  `[watch].settle_ms` (1 s), or `max_wait_ms` (10 s) after its first
+  change, however busy it stays. It waits while git holds
+  `.git/index.lock` (a checkout or rebase under way), up to `git_lock_ms`
+  more. A burst is one flush. A project whose changed paths git all
+  ignores isn't flushed.
+- **A flush**: a quick crawl of those projects into the ledger (the
+  crawl's own rename, carry and delete logic; no new projects from the
+  roots, no cross-project edges or importance), then `sync_projects`: one
+  transaction that reads only their rows (theirs from the ledger, from
+  Postgres, and their model summaries), writes the changed rows by COPY
+  and one upsert, cuts the changed files' chunks again, and updates
+  files' mtimes. Then the embed of the cards it queued (bge-small, loaded
+  once). The words' document counts wait for the next full sync, which
+  recounts them.
+- **The tidy**: a full crawl (edges across projects, importance, new
+  projects) and a full sync (memory, friction, sessions, word counts).
+  It runs once all has been quiet for `tidy_quiet_s` (10 min), at most
+  every `tidy_every_s` (1 h), and at start, which catches up on what
+  changed while nothing watched. Importance moves many rows a little,
+  which is why it waits for the tidy: pg_search rewrites every row
+  written.
+- **Summaries**: the watcher never summarizes and never uses the GPU. A
+  changed file shows its seed (its summary was written against another
+  content key) until the next summary batch, and `stale` lists it. A
+  file renamed or copied keeps the summary of its content: the sync
+  shows a live summary written for the same content key under another
+  id, as the summarizer would copy it.
+- **The ledger**: `[ledger].path` names it, so the watcher, `crawl` and
+  `sync` all use the one the schema was built from. A schema records the
+  ledger its first sync came from and refuses a sync, a flush or a
+  watcher from any other; `sync --adopt-ledger` moves it on purpose.
+- **Its socket** (`[watch].socket`, else `index-watch.sock` beside the
+  ledger) takes one JSON line: changed paths, or a status request.
+  `agent index touch PATH...` is the entry point for edit hooks (it
+  succeeds, with a hint, when no watcher runs), and `agent index watch
+  --status` reads the counts.
+
+**The stale check** (`pg/fresh.rs`, in `serve::answer`, so warm and cold
+alike): for the files behind the returned hits (a symbol's or section's
+file too), one query reads their indexed size, mtime and content key,
+then each file is statted. A different size is a change. The same mtime
+is no change. A different mtime means hashing the file as the crawl
+keyed it (a git blob id; `git hash-object` before calling a git file
+changed, for filters; the crawl's content hash outside git). A missing
+file is gone. The hit is marked, not cut again: `stale: changed` or
+`gone` in the JSON, and `(changed since indexed: read the file)` or
+`(deleted since indexed)` after its path in the text. Its paths go to the
+watcher's socket, so the next search is current. It isn't cut again
+inline because search only reads, and many agents search at once: a
+re-cut would write Postgres and the ledger from the read path, racing
+the one writer. Nor would a re-cut fix the ranking, since the hit was
+found on the old text. The watcher re-cuts within seconds anyway.
+`entities.mtime` is added when missing, outside the versioned
+migrations, so older agents still read the schema.
+
+**Measured** (2026-11-24). The bench was a scratch schema holding idx's
+content: 483k entities, plus three clones (about 2,250 files) added as
+projects to edit. The watcher ran as a transient unit, watching 17,847
+directories of 32 projects.
+
+| what | result |
+|---|---|
+| save to searchable (a new word in a chunk, committed), 36 edits across 3 projects, one every 3 s | p50 1,288 ms, p90 1,396 ms, max 1,407 ms; each word's search found the edited file first |
+| one flush (one file) | median 380 ms: crawl 161, sync 159, embed 59 (p90 752) |
+| start: catch-up (a full crawl, sync and embed with nothing new) | 14 s, 11 s of CPU, peak 2.8 GB |
+| idle | 0 ms of CPU in 300 s; 175 MB resident after the catch-up, 465 MB after the checkouts' big flushes (the heap is trimmed after each flush and tidy) |
+| a 64-commit checkout (969 files changed) | about 1,150 events, one flush: rows committed about 7 s after (crawl 0.9 s, sync 5.8 s), vectors 20 s more (987 cards on 4 threads) |
+| and back | 546 events, one flush; the project then matched git exactly (718 files, every content key its blob id) |
+| cargo build in a watched tree (223 MB of `target/`) | no flush: `target/` isn't watched, and the few other events were git-ignored |
+| the stale check, 40 searches (26 hits each, all current) | median 0.67 ms, p90 0.95 ms, against about 270 ms for the rest of the search; 1.3 to 1.6 ms with a changed file to hash |
+
+Every embed thread a background process takes is a core an agent's build
+doesn't get, so the watcher embeds on 4 (`[watch].embed_workers`). A big
+checkout's cards take longer (731 cards: 23 s on 16 threads, 39 s on
+4), but its text is searchable first: the sync commits before the embed.
+
 ## Eval: a tuning and regression loop at full scale
 
 Every change runs the eval over all of the dev tree:
@@ -734,6 +829,7 @@ The sections:
 | `[store]` | the store a command uses when neither `--store` nor `AGENT_INDEX_STORE` says: `kind` ("" is sqlite, or `pg`), and the pg store's `url` and `schema` when `AGENT_INDEX_PG` and `AGENT_INDEX_PG_SCHEMA` aren't set ("" is `idx`); not in the fingerprint |
 | `[ledger]` | `path`: the crawl's ledger ("" is `index.db` beside the binary's `gomuxai.db`, which ties it to one copy of the binary); every sync of a schema should use the ledger the schema was built from; not in the fingerprint |
 | `[log]` | the query log: `enabled` (true) and `path` ("" is `$XDG_DATA_HOME/gomuxai/index-queries.jsonl`); not in the fingerprint |
+| `[watch]` | `agent index watch`: `socket` ("" is `index-watch.sock` beside the ledger), `settle_ms` (1,000), `max_wait_ms` (10,000), `git_lock_ms` (60,000), `tidy_quiet_s` (600), `tidy_every_s` (3,600), `embed_workers` (4: the embedder's threads in the watcher; a bulk `agent index embed` takes half the logical CPUs); not in the fingerprint |
 | `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both`; `pushdown` (true: kind, project, corpus and `--under`'s projects filtered inside pg_search's query; see "Filters inside the BM25 query") |
 | `[llm.summaries]` | `agent index summarize`: `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature` (0.2), `max_tokens` (500), `timeout_ms`, `seed`, `concurrency` (48), `retries` and `backoff_ms`, `max_connection_errors` (8), the clip (`clip_tokens` 6,000; a doc's `doc_head_tokens` 4,500 and `doc_tail_tokens` 1,500; `max_input_tokens` 9,000; `preclip_chars`; `symbols_chars` 2,500), the floors (`min_chars` 200, `min_lines` 5, `json_max_bytes`), `pause_file`, `scrub_words`, and the served `dtype` and `quantization`; every key is in each summary's fingerprint |
 | `[llm.query_rewrite]` | `endpoint`, `model`, `temperature`, `max_tokens`, `timeout_ms`, for a later iteration |

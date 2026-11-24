@@ -39,6 +39,25 @@ pub struct CrawlOptions {
     /// The file count past which a root-found project is crawled shallow;
     /// 0 means [`LARGE_PROJECT`].
     pub large_project: usize,
+    /// Only these projects (with `project`, that one too); empty is all.
+    pub projects: Vec<String>,
+    /// The watcher's flush: no new projects from the roots, and the
+    /// cross-project steps (edges resolved across projects, importance)
+    /// left for the next full crawl, which `force_edges` makes run them.
+    pub quick: bool,
+    /// Resolve edges and importance even when nothing changed (the full
+    /// crawl after quick ones).
+    pub force_edges: bool,
+}
+
+impl CrawlOptions {
+    /// Whether the crawl covers this project.
+    fn covers(&self, name: &str) -> bool {
+        if self.project.is_none() && self.projects.is_empty() {
+            return true;
+        }
+        self.project.as_deref() == Some(name) || self.projects.iter().any(|p| p == name)
+    }
 }
 
 /// What one project's crawl did.
@@ -176,19 +195,21 @@ pub fn crawl(ix: &mut Index, opts: &CrawlOptions) -> Result<CrawlReport> {
         ..Default::default()
     };
     let tx = ix.conn.transaction()?;
-    report.sync = roots::sync_roots(&tx)?;
+    if !opts.quick {
+        report.sync = roots::sync_roots(&tx)?;
+    }
     let all = roots::list_projects(&tx)?;
-    if let Some(p) = &opts.project
-        && !all.iter().any(|x| &x.name == p)
-    {
-        anyhow::bail!(
-            "no project {p}: agent index root list shows the roots, and agent index project add DIR adds one"
-        );
+    for p in opts.project.iter().chain(&opts.projects) {
+        if !all.iter().any(|x| &x.name == p) {
+            anyhow::bail!(
+                "no project {p}: agent index root list shows the roots, and agent index project add DIR adds one"
+            );
+        }
     }
     let mut dirty: BTreeSet<String> = BTreeSet::new();
     let mut moved = false;
     for p in &all {
-        if opts.project.as_ref().is_some_and(|x| x != &p.name) {
+        if !opts.covers(&p.name) {
             continue;
         }
         let nested: Vec<String> = all
@@ -217,11 +238,12 @@ pub fn crawl(ix: &mut Index, opts: &CrawlOptions) -> Result<CrawlReport> {
     // in another, a manifest depends on a sibling repo), but only when
     // something changed.
     let changed = opts.rebuild
+        || opts.force_edges
         || moved
         || !dirty.is_empty()
         || !report.sync.added.is_empty()
         || !report.sync.removed.is_empty();
-    if changed {
+    if changed && !opts.quick {
         report.dangling = edges::resolve_edges(&tx)?;
         edges::importance(&tx)?;
     } else {
@@ -329,6 +351,11 @@ fn list(project: &Project, nested: &[String]) -> Result<(Vec<Listed>, bool, bool
         let mut out = Vec::new();
         for f in git::list_files(dir)? {
             if in_nested(&f.rel) {
+                continue;
+            }
+            // Build output git doesn't ignore (an old commit's .gitignore,
+            // or none): never what a person wrote, as a plain walk skips it.
+            if f.untracked && f.rel.split('/').any(|c| files::SKIP_DIRS.contains(&c)) {
                 continue;
             }
             let submodule = f.mode == "160000";

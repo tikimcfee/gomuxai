@@ -44,6 +44,9 @@ pub struct Embedder {
     tokenizer: Tokenizer,
     device: Device,
     pub dim: usize,
+    /// At most this many worker threads (0: half the logical CPUs, for a
+    /// bulk run; a background process such as the watcher takes fewer).
+    pub max_workers: usize,
 }
 
 /// Where the model's files are: `config.json`, `tokenizer.json` and
@@ -133,6 +136,7 @@ impl Embedder {
             tokenizer,
             device,
             dim: config.hidden_size,
+            max_workers: 0,
         })
     }
 
@@ -147,8 +151,13 @@ impl Embedder {
         let mut order: Vec<usize> = (0..texts.len()).collect();
         order.sort_by_key(|&i| texts[i].len());
         let chunks: Vec<&[usize]> = order.chunks(BATCH).collect();
-        let workers = (std::thread::available_parallelism().map_or(4, |n| n.get()) / 2)
-            .clamp(1, chunks.len().max(1));
+        let half = std::thread::available_parallelism().map_or(4, |n| n.get()) / 2;
+        let cap = if self.max_workers > 0 {
+            self.max_workers.min(half.max(1))
+        } else {
+            half
+        };
+        let workers = cap.clamp(1, chunks.len().max(1));
         let next = std::sync::atomic::AtomicUsize::new(0);
         let done: Vec<Vec<(usize, Vec<f32>)>> = std::thread::scope(|sc| {
             let hs: Vec<_> = (0..workers)

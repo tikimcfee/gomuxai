@@ -147,8 +147,10 @@ fn fixture() -> Fixture {
         write(&alpha, "crates/core/src/lib.rs", &format!("{lib}// {i}\n"));
         commit(&alpha, &format!("change {i}"));
     }
-    // After the commits: untracked, and a symlink out of the project.
+    // After the commits: untracked, and a symlink out of the project; and
+    // build output no .gitignore covers.
     write(&alpha, "scratch.md", "# Scratch\n\nNot committed yet.\n");
+    write(&alpha, "rs/target/debug/build.json", "{}\n");
     std::os::unix::fs::symlink("/etc/hostname", alpha.join("outside-link")).unwrap();
 
     let beta = root.join("beta");
@@ -441,6 +443,14 @@ fn crawl_makes_entities_keys_and_skips_secrets() {
         "symlink outside the project"
     );
     assert!(get("alpha:scratch.md").untracked);
+    let build: i64 = c
+        .query_row(
+            "SELECT count(*) FROM entities WHERE id LIKE 'alpha:rs/target%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(build, 0, "build output git doesn't ignore isn't indexed");
     // The top dir has untracked content: a listing hash, not HEAD's tree.
     let top = crate::git::run(&f.root.join("alpha"), &["rev-parse", "HEAD^{tree}"]).unwrap();
     assert_ne!(get("alpha").content_key, top.trim());

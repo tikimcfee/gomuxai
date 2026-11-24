@@ -407,7 +407,38 @@ pub fn migrate(pg: &Pg) -> Result<()> {
     }
     tx.commit()?;
     drop(c);
-    ensure_support_indexes(pg)
+    ensure_support_indexes(pg)?;
+    ensure_support_columns(pg)
+}
+
+/// Columns added when missing, outside the versioned migrations for the
+/// same reason as [`SUPPORT_INDEXES`]: an older agent still reads the
+/// schema (its syncs name their columns, and leave these at their default).
+const SUPPORT_COLUMNS: &[(&str, &str, &str)] = &[
+    // A file's mtime (ns) when it was crawled, for the search's stale check;
+    // 0 is unknown (the check hashes the file).
+    (
+        "entities",
+        "mtime",
+        "ALTER TABLE entities ADD COLUMN IF NOT EXISTS mtime bigint NOT NULL DEFAULT 0",
+    ),
+];
+
+fn ensure_support_columns(pg: &Pg) -> Result<()> {
+    for (table, column, sql) in SUPPORT_COLUMNS {
+        let have = !pg
+            .query(
+                "SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+                &[&pg.schema, table, column],
+            )?
+            .is_empty();
+        if !have {
+            pg.batch(sql)
+                .with_context(|| format!("adding {table}.{column} to schema {}", pg.schema))?;
+        }
+    }
+    Ok(())
 }
 
 /// Indexes that only make queries faster, created when missing: unlike a

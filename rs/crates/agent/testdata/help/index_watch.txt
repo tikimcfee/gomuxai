@@ -1,0 +1,37 @@
+Watch keeps the pg store current with no one running a crawl. It first
+catches up (a full crawl, sync and embed), then watches every indexed
+directory of the full-depth projects with inotify (never target/,
+node_modules/, .git/ or the other build output the crawl skips, so a build
+makes no events). A changed project is flushed once its files have been
+quiet for [watch].settle_ms (1 s), or [watch].max_wait_ms (10 s) after its
+first change however busy it stays, and held while git holds
+.git/index.lock: a crawl of that project, a sync of its rows in one
+transaction, and the embed of the cards that changed. A changed file shows
+its seed until the next summary batch (agent index stale lists it). The
+tidy (a full crawl and sync: edges across projects, importance, word
+counts, new projects, memory, friction and sessions) runs once all has been
+quiet for [watch].tidy_quiet_s, at most every [watch].tidy_every_s.
+
+Its socket ([watch].socket, else index-watch.sock beside the ledger) takes
+changed paths from agent index touch (an edit hook) and from search's stale
+check. It never summarizes and never uses the GPU. One line per flush goes
+to stderr. --status asks a running watcher what it has done.
+
+Usage:
+  agent index watch [flags]
+
+Examples:
+  agent index watch
+  agent index watch --status
+
+Flags:
+      --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+  -h, --help            help for watch
+      --json            Print the status as JSON
+      --status          Ask the running watcher what it has done
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

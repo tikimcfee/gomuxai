@@ -49,6 +49,8 @@ Available Commands:
   related     List an entity's neighbors by edge: dependencies, docs, tests, co-changes
   stale       List what needs a summary, by importance, and doc references that resolve nowhere
   usage       Count the logged searches, shows, trees and relateds, by agent and by day
+  watch       Keep the pg store current as files change (a file watcher)
+  touch       Tell the index watcher that files changed (for edit hooks)
   alias       Add a person's label to an entity
   lexicon     Import an existing glossary as labels
 

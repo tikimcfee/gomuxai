@@ -57,6 +57,49 @@ pub struct Config {
     pub ledger: Ledger,
     /// The query log.
     pub log: Log,
+    /// `agent index watch` (not in the fingerprint either: it changes when
+    /// an answer is current, not what it is).
+    pub watch: Watch,
+}
+
+/// The file watcher (docs/INDEX-V2.md, "Freshness").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Watch {
+    /// Its Unix socket, where `agent index touch` (an edit hook) and the
+    /// search's stale check name changed paths; "" is `index-watch.sock`
+    /// beside the ledger.
+    pub socket: String,
+    /// A project is flushed once its files have been quiet this long...
+    pub settle_ms: u64,
+    /// ...or this long after its first change, however busy it stays.
+    pub max_wait_ms: u64,
+    /// While git holds `.git/index.lock` (a checkout, a rebase), a flush
+    /// waits, up to this long.
+    pub git_lock_ms: u64,
+    /// The tidy (a full crawl and sync: cross-project edges, importance,
+    /// word counts, new projects, sessions) runs once everything has been
+    /// quiet this long after a flush...
+    pub tidy_quiet_s: u64,
+    /// ...and at most this often.
+    pub tidy_every_s: u64,
+    /// The embedder's worker threads in the watcher (a bulk `agent index
+    /// embed` takes half the logical CPUs; a background process, fewer).
+    pub embed_workers: usize,
+}
+
+impl Default for Watch {
+    fn default() -> Self {
+        Watch {
+            socket: String::new(),
+            settle_ms: 1000,
+            max_wait_ms: 10_000,
+            git_lock_ms: 60_000,
+            tidy_quiet_s: 600,
+            tidy_every_s: 3600,
+            embed_workers: 4,
+        }
+    }
 }
 
 /// The store the commands use when neither `--store` nor
@@ -636,7 +679,7 @@ pub struct Loaded {
 }
 
 /// The sections [`Config::fingerprint`] leaves out.
-const NOT_FINGERPRINTED: &[&str] = &["store", "ledger", "log"];
+const NOT_FINGERPRINTED: &[&str] = &["store", "ledger", "log", "watch"];
 
 /// The default file: `$XDG_CONFIG_HOME/gomuxai/index.toml`, else
 /// `~/.config/gomuxai/index.toml`.
@@ -720,6 +763,19 @@ impl Config {
             beside
         } else {
             home_path(&self.ledger.path)
+        }
+    }
+
+    /// The watcher's socket: `[watch].socket`, else `index-watch.sock`
+    /// beside the ledger.
+    pub fn watch_socket(&self, ledger: &Path) -> PathBuf {
+        if self.watch.socket.is_empty() {
+            ledger
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join("index-watch.sock")
+        } else {
+            home_path(&self.watch.socket)
         }
     }
 
