@@ -1,4 +1,6 @@
-Run serves the bus until interrupted. "agent bus start" runs it in a background session.
+Run serves the bus until interrupted. "agent bus start" runs it in a
+background session, and "agent bus service install" from boot, as
+"agent bus run --saved": the settings agent bus start and restart save.
 
 Usage:
   agent bus run [flags]
@@ -11,6 +13,7 @@ Flags:
   -h, --help                 help for run
       --listen string        Accept peer links on this address (makes this host the hub), e.g. 0.0.0.0:7422
       --remote-ops strings   Ops peers may call on this host (default [list,status,capture,send,respond,friction,logs,fleet,template,manage,roster])
+      --saved                For the flags not given, use the settings agent bus start saved (what the systemd unit runs)
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

@@ -127,6 +127,7 @@ fn bus_run_serves_until_stopped() {
         client_port: -1,
         listen: String::new(),
         remote_ops: vec!["list".into(), "status".into()],
+        saved: false,
         args: Vec::new(),
     };
     let stop = AtomicBool::new(false);

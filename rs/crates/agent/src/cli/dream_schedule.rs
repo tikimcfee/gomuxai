@@ -59,7 +59,7 @@ pub fn def() -> Def {
 }
 
 /// Where systemd looks for a user's units.
-fn unit_dir() -> anyhow::Result<PathBuf> {
+pub(super) fn unit_dir() -> anyhow::Result<PathBuf> {
     let config = getenv("XDG_CONFIG_HOME");
     let base = if config.starts_with('/') {
         PathBuf::from(config)
@@ -89,7 +89,7 @@ pub struct Plan {
     pub commands: Vec<Vec<String>>,
 }
 
-fn systemctl(args: &[&str]) -> Vec<String> {
+pub(super) fn systemctl(args: &[&str]) -> Vec<String> {
     std::iter::once("systemctl")
         .chain(std::iter::once("--user"))
         .chain(args.iter().copied())
@@ -99,7 +99,7 @@ fn systemctl(args: &[&str]) -> Vec<String> {
 
 /// A value going into a unit file: systemd would split it at whitespace,
 /// expand % specifiers, and read quotes and backslashes.
-fn unit_value(what: &str, v: &str) -> anyhow::Result<()> {
+pub(super) fn unit_value(what: &str, v: &str) -> anyhow::Result<()> {
     if v.is_empty() {
         bail!("{what} is empty");
     }

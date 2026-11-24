@@ -88,6 +88,10 @@ Changing trust:
   agent bus trust <new>.pub.json --renames <old>
   agent bus restart              # apply a trust, with the same settings
 
+Coming back after a reboot (Linux):
+
+  agent bus service install      # a systemd user unit runs the bus from boot
+
 nats-server can't reload trust, so a change applies when the bus restarts.
 
 Only reaching other hosts needs a bus: everything on one host works without."#,
@@ -114,6 +118,7 @@ pub fn def() -> Def {
             super::bus_identity::bus_rename_def(),
             super::bus_identity::bus_restart_def(),
             super::ssh::bus_ssh_def(),
+            super::bus_service::def(),
         ],
     )
 }
@@ -253,7 +258,9 @@ pub fn bus_trust_def() -> Def {
 pub const BUS_RUN: Doc = Doc {
     use_line: "run",
     short: "Run the bus in the foreground",
-    long: r#"Run serves the bus until interrupted. "agent bus start" runs it in a background session."#,
+    long: r#"Run serves the bus until interrupted. "agent bus start" runs it in a
+background session, and "agent bus service install" from boot, as
+"agent bus run --saved": the settings agent bus start and restart save."#,
     example: "  agent bus run --listen 0.0.0.0:7422",
     args: ArgRule::None,
     ..Doc::DEFAULT
@@ -286,6 +293,11 @@ pub struct BusRunArgs {
         help = "Ops peers may call on this host",
     )]
     pub remote_ops: Vec<String>,
+    #[arg(
+        long = "saved",
+        help = "For the flags not given, use the settings agent bus start saved (what the systemd unit runs)"
+    )]
+    pub saved: bool,
     /// The positional arguments, checked against BUS_RUN.args.
     #[arg(hide = true)]
     pub args: Vec<String>,
@@ -365,7 +377,37 @@ fn notify_stop_signals() {
 
 pub fn run_bus_run(ctx: &Ctx, args: &BusRunArgs) -> anyhow::Result<()> {
     notify_stop_signals();
-    serve_bus(ctx, args, None, &|| STOP_SIGNALED.load(Ordering::SeqCst))
+    let args = run_settings(ctx, args, &|f| ctx.changed(f))?;
+    serve_bus(ctx, &args, None, &|| STOP_SIGNALED.load(Ordering::SeqCst))
+}
+
+/// What bus run runs with: its flags, and with --saved the saved settings
+/// for the flags not given (changed says which were).
+pub fn run_settings(
+    ctx: &Ctx,
+    args: &BusRunArgs,
+    changed: &dyn Fn(&str) -> bool,
+) -> anyhow::Result<BusRunArgs> {
+    let mut args = args.clone();
+    if args.saved
+        && let Some(s) = load_bus_settings(ctx)?
+    {
+        if !changed("listen") {
+            args.listen = s.listen;
+        }
+        if !changed("client-port") {
+            args.client_port = s.client_port;
+        }
+        if !changed("remote-ops") {
+            args.remote_ops = s.remote_ops;
+        }
+        check_bus_settings(&BusSettings {
+            listen: args.listen.clone(),
+            client_port: args.client_port,
+            remote_ops: args.remote_ops.clone(),
+        })?;
+    }
+    Ok(args)
 }
 
 /// Serves the bus as bus run does, with agent-busd at busd (None: beside
@@ -534,6 +576,19 @@ pub fn run_bus_start(ctx: &Ctx, args: &BusStartArgs) -> anyhow::Result<()> {
         );
     }
     let (s, from) = start_settings(ctx, args, &|f| ctx.changed(f))?;
+    // With the bus service installed, the unit runs it, not a session.
+    if let Some(unit) = super::bus_service::own_unit(ctx) {
+        if query_bus(ctx, Duration::from_secs(1)).is_ok() {
+            anyhow::bail!(
+                "the bus is already running (agent bus status shows it; agent bus restart restarts it)"
+            );
+        }
+        let host = ctx.cfg().host.clone();
+        bus_run_command(ctx, &host, &s)?;
+        super::bus_service::start(ctx, &unit, &host, &s)?;
+        ctx.write_out(&format!("Bus started under systemd unit {unit} ({s}{from})\n"))?;
+        return bus_status(ctx, false);
+    }
     start_bus_session(ctx, &s)?;
     if let Err(e) = save_bus_settings(ctx, &s) {
         return Err(e.context(format!("the bus started ({s}), but saving its settings failed")));
@@ -617,7 +672,7 @@ pub fn bus_run_command(ctx: &Ctx, host: &str, s: &BusSettings) -> anyhow::Result
 
 /// A connection to this host's bus as host (this host's name, or the one
 /// rename just gave it).
-fn connect_as(ctx: &Ctx, host: &str) -> anyhow::Result<Conn> {
+pub(super) fn connect_as(ctx: &Ctx, host: &str) -> anyhow::Result<Conn> {
     if host == ctx.cfg().host {
         return ctx.bus_connect();
     }
@@ -929,6 +984,12 @@ pub fn bus_stop_def() -> Def {
 pub fn run_bus_stop(ctx: &Ctx, _args: &BusStopArgs) -> anyhow::Result<()> {
     let session = bus_session();
     if !ctx.termd()?.session_exists(&session)? {
+        if let Some(unit) = super::bus_service::running_unit(ctx) {
+            super::bus_service::stop(&unit)?;
+            return ctx.write_out(&format!(
+                "Bus stopped (systemd unit {unit}: it starts again at boot, or with agent bus start)\n"
+            ));
+        }
         if query_bus(ctx, Duration::from_secs(1)).is_ok() {
             anyhow::bail!(
                 "the bus is running, but not in session {session} (started with agent bus run?): stop it with Ctrl-C where it runs"
@@ -1062,6 +1123,9 @@ struct BusStatusOut {
     /// reach it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     formerly: Vec<String>,
+    /// The systemd user unit that runs it (agent bus service), if one does.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    unit: String,
 }
 
 /// Each trusted peer's ssh destination, for bus status.
@@ -1104,6 +1168,7 @@ pub fn bus_status(ctx: &Ctx, json: bool) -> anyhow::Result<()> {
         out.linked_peers = info.linked_peers;
         out.trusted = info.trusted;
         out.remote_ops = info.remote_ops;
+        out.unit = super::bus_service::running_unit(ctx).unwrap_or_default();
         return ctx.print_json(&out);
     }
     if no_bus {
@@ -1118,6 +1183,10 @@ pub fn bus_status(ctx: &Ctx, json: bool) -> anyhow::Result<()> {
             ctx.hint(format_args!(
                 "session {session} exists, but runs no bus of this data dir ({}): likely another agent binary's bus",
                 cfg.bus_dir()
+            ));
+        } else if let Some(unit) = super::bus_service::own_unit(ctx) {
+            ctx.hint(format_args!(
+                "start it: agent bus start (systemd unit {unit} runs it; journalctl --user -u {unit} shows why it stopped)"
             ));
         } else if bus_set_up(ctx) {
             ctx.hint("start it: agent bus start (add --listen 0.0.0.0:7422 on the hub)");
@@ -1141,6 +1210,9 @@ pub fn bus_status(ctx: &Ctx, json: bool) -> anyhow::Result<()> {
         info.trusted.join(", ")
     );
     out += &format!("  remote ops allowed: {}\n", info.remote_ops.join(", "));
+    if let Some(unit) = super::bus_service::running_unit(ctx) {
+        out += &format!("  run by systemd unit {unit} (agent bus service)\n");
+    }
     let ssh = ssh_by_peer(ctx);
     if !ssh.is_empty() {
         let dests: Vec<String> = ssh.iter().map(|(h, d)| format!("{h} → {d}")).collect();

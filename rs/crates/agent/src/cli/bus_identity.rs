@@ -278,18 +278,29 @@ pub fn running_bus_settings(ctx: &Ctx) -> anyhow::Result<Option<BusSettings>> {
 /// session, which never closes (see pause_bus_session). A bus that runs
 /// elsewhere (agent bus run) isn't this command's to stop.
 pub fn restart_bus(ctx: &Ctx, s: &BusSettings) -> anyhow::Result<()> {
+    let host = ctx.cfg().host.clone();
+    // Under its systemd unit (agent bus service), the unit restarts it.
+    if let Some(unit) = super::bus_service::running_unit(ctx) {
+        bus_run_command(ctx, &host, s)?;
+        return super::bus_service::restart(ctx, &unit, &host, s);
+    }
     check_bus_in_session(ctx)?;
     // Check it can start before stopping it.
-    let host = ctx.cfg().host.clone();
     bus_run_command(ctx, &host, s)?;
     pause_bus_session(ctx)?;
     start_bus_with(ctx, &host, s)
 }
 
 /// Starts the bus as host with s in its session, which pause_bus_session
-/// left with a fresh shell.
+/// left with a fresh shell; or, with no session and the bus service
+/// installed, under its unit (which stop_running_bus stopped).
 fn start_bus_with(ctx: &Ctx, host: &str, s: &BusSettings) -> anyhow::Result<()> {
     let run = bus_run_command(ctx, host, s)?;
+    if let Some(unit) = super::bus_service::own_unit(ctx)
+        && !ctx.termd()?.session_exists(&bus_session()).unwrap_or(false)
+    {
+        return super::bus_service::start(ctx, &unit, host, s);
+    }
     run_bus_in(ctx, host, &run)
 }
 
@@ -303,6 +314,24 @@ fn check_bus_in_session(ctx: &Ctx) -> anyhow::Result<()> {
         );
     }
     check_own_bus_session(ctx)
+}
+
+/// Stops the running bus where it runs, for start_bus_with to start it
+/// again (rename): its systemd unit, or its session.
+fn stop_running_bus(ctx: &Ctx) -> anyhow::Result<()> {
+    if let Some(unit) = super::bus_service::running_unit(ctx) {
+        return super::bus_service::stop(&unit);
+    }
+    check_bus_in_session(ctx)?;
+    pause_bus_session(ctx)
+}
+
+/// Where the running bus runs, for restart's output.
+fn bus_home(ctx: &Ctx) -> String {
+    match super::bus_service::running_unit(ctx) {
+        Some(unit) => format!("under systemd unit {unit}"),
+        None => format!("in session {}", quote(&bus_session())),
+    }
 }
 
 /// A test's stand-in for restart_bus.
@@ -362,8 +391,8 @@ pub fn bus_restart(
         )));
     }
     ctx.write_out(&format!(
-        "Bus restarted in session {} ({s}); settings saved for agent bus start\n",
-        quote(&bus_session())
+        "Bus restarted {} ({s}); settings saved for agent bus start\n",
+        bus_home(ctx)
     ))?;
     bus_status(ctx, false)
 }
@@ -585,8 +614,7 @@ pub fn run_bus_rename(ctx: &Ctx, args: &BusRenameArgs) -> anyhow::Result<()> {
 
     let running = running_bus_settings(ctx)?;
     if running.is_some() {
-        check_bus_in_session(ctx).map_err(|e| e.context("rename stops and starts the bus"))?;
-        pause_bus_session(ctx)?;
+        stop_running_bus(ctx).map_err(|e| e.context("rename stops and starts the bus"))?;
     }
 
     let id = match agent_bus::rename_identity(&dir, &old, &new_name) {
