@@ -83,7 +83,8 @@ fn main() -> Result<()> {
     };
     let cpu: Shared = load_model(&cfg, &model, 0)?;
     let mut h = Http::new(endpoint.trim_end_matches('/'), &served, &model, "", 0)?;
-    h.max_tokens = max_tokens;
+    // As load_model: never past what the model reads (bge: 512).
+    h.max_tokens = max_tokens.min(agent_index::embed_models::spec(&model)?.max_tokens);
     let docs = windows(std::path::Path::new(&dir), 3500, n);
     let qs: Vec<String> = QUERIES.iter().map(|q| q.to_string()).collect();
     let t = std::time::Instant::now();
