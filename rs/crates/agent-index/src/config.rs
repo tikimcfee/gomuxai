@@ -939,6 +939,33 @@ impl Config {
         if self.chunks.max_lines < 1 || self.chunks.max_bytes < 256 {
             bail!("chunks: max_lines must be at least 1 and max_bytes at least 256");
         }
+        let ec = &self.embedder.chunks;
+        if !["none", "path", "full"].contains(&ec.header.as_str()) {
+            bail!(
+                "embedder.chunks.header must be none, path or full, not {:?}",
+                ec.header
+            );
+        }
+        if ec.window_chars < 200 {
+            bail!("embedder.chunks.window_chars must be at least 200");
+        }
+        if !["candle", "http"].contains(&self.embedder.backend.as_str()) {
+            bail!(
+                "embedder.backend must be candle or http, not {:?}",
+                self.embedder.backend
+            );
+        }
+        if let Some(c) = self
+            .embedder
+            .corpus
+            .keys()
+            .find(|c| !CORPORA.contains(&c.as_str()))
+        {
+            bail!(
+                "embedder.corpus: {c:?} isn't a corpus ({})",
+                CORPORA.join(", ")
+            );
+        }
         if self.lists.values().any(|w| !w.is_finite() || *w < 0.0) {
             bail!("lists: a list's weight must be a number of 0 or more");
         }

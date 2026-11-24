@@ -466,7 +466,7 @@ pub fn drain_model<E: Encode + ?Sized>(
                 for w in vecs::windows(
                     &text,
                     a.max(1) as usize,
-                    cc.window_chars,
+                    m.window_chars,
                     &cc.header,
                     &parts,
                     &defines,

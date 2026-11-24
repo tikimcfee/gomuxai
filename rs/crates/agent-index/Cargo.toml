@@ -50,3 +50,11 @@ required-features = ["embed"]
 [[example]]
 name = "embed_timing"
 required-features = ["embed"]
+
+[[example]]
+name = "dense_recall"
+required-features = ["embed"]
+
+[[example]]
+name = "embed_check"
+required-features = ["embed"]

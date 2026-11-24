@@ -364,7 +364,13 @@ impl Encode for Http {
         // Up to 4 requests at once, so the server batches across them.
         let parts: Vec<&[String]> = texts.chunks(self.batch.max(1)).collect();
         let mut out = Vec::with_capacity(texts.len());
+        // A batch's pause file (AGENT_INDEX_EMBED_PAUSE): while it exists, no
+        // new request goes out (the GPU's other users come first).
+        let pause = std::env::var_os("AGENT_INDEX_EMBED_PAUSE").filter(|v| !v.is_empty());
         for group in parts.chunks(4) {
+            while pause.as_ref().is_some_and(|p| Path::new(p).exists()) {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
             let got: Vec<Result<Vec<Vec<f32>>>> = std::thread::scope(|sc| {
                 let hs: Vec<_> = group
                     .iter()
@@ -463,7 +469,7 @@ pub fn load_model(
             &cfg.query_instruction,
             cfg.dims,
         )?;
-        h.max_tokens = cfg.max_tokens.max(16);
+        h.max_tokens = cfg.max_tokens.clamp(16, s.max_tokens);
         return Ok(Arc::new(h));
     }
     let given = (!cfg.model_dir.is_empty()).then(|| PathBuf::from(&cfg.model_dir));

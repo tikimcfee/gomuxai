@@ -98,6 +98,12 @@ pub struct Model {
     pub key: String,
     /// Card vectors in `entities.card_vec` (bge-small at full width).
     pub legacy_cards: bool,
+    /// The chunk table's suffix past the key: the header, when not `full`
+    /// (so an ablation's windows sit beside the others').
+    pub chunk_suffix: String,
+    /// Its windows' most characters: `[embedder.chunks].window_chars`, cut
+    /// to what the model reads (about 3 characters a token).
+    pub window_chars: usize,
 }
 
 impl Model {
@@ -113,11 +119,18 @@ impl Model {
         } else {
             format!("{}_{dims}", s.slug)
         };
+        let h = &cfg.chunks.header;
         Ok(Model {
             name: name.to_string(),
             dims,
             key,
             legacy_cards: s.slug == "bge",
+            chunk_suffix: if h == "full" {
+                String::new()
+            } else {
+                format!("_h{h}")
+            },
+            window_chars: cfg.chunks.window_chars.min(s.max_tokens * 3),
         })
     }
 
@@ -126,7 +139,7 @@ impl Model {
     }
 
     pub fn chunks_table(&self) -> String {
-        format!("vec_chunks_{}", self.key)
+        format!("vec_chunks_{}{}", self.key, self.chunk_suffix)
     }
 }
 
@@ -348,6 +361,19 @@ mod tests {
         let q = Model::of(&e, "qwen3-embedding-0.6b").unwrap();
         assert_eq!((q.key.as_str(), q.dims), ("qwen3_512", 512));
         assert_eq!(Model::of(&e, "bge-small-en-v1.5").unwrap().dims, 384);
+        assert_eq!(
+            Model::of(&e, "bge-small-en-v1.5").unwrap().window_chars,
+            1536
+        );
+        assert_eq!(q.window_chars, 3500);
+        assert_eq!(q.chunks_table(), "vec_chunks_qwen3_512");
+        e.chunks.header = "none".into();
+        assert_eq!(
+            Model::of(&e, "qwen3-embedding-0.6b")
+                .unwrap()
+                .chunks_table(),
+            "vec_chunks_qwen3_512_hnone"
+        );
         assert!(Model::of(&e, "nope").is_err());
         let s = spec("qwen3-embedding-0.6b").unwrap();
         assert_eq!(
