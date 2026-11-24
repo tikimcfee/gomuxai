@@ -29,6 +29,8 @@ pub mod roots;
 pub mod summarize;
 pub mod view;
 pub mod walk;
+#[cfg(target_os = "linux")]
+pub mod watch;
 
 #[cfg(test)]
 mod followup_test;

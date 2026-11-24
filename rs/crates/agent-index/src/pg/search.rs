@@ -1012,6 +1012,7 @@ fn search_files(
                 matched,
                 score: h.score,
                 explain,
+                stale: String::new(),
             }
         };
         hits.push(Hit {
@@ -1454,6 +1455,7 @@ fn search_entities(
             matched,
             score: (s * 10000.0).round() / 10000.0,
             explain: explain.remove(&id).unwrap_or_default(),
+            stale: String::new(),
         });
     }
     lap(&mut ms, "results");

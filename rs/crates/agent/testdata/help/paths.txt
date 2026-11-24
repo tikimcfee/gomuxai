@@ -148,6 +148,8 @@ index tree
 index related
 index stale
 index usage
+index watch
+index touch
 index alias
 index alias add
 index lexicon

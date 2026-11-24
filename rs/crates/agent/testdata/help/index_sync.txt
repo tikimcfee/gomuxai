@@ -9,6 +9,12 @@ runs it after crawling; run it alone after a crawl with the sqlite store.
 vectors whose text is unchanged are kept); the rows are the same an
 incremental sync reaches.
 
+A schema is synced from one ledger (the index.db [ledger].path names,
+else the one beside this binary): its first sync records it, and a sync
+from any other is refused, since another ledger's crawl would re-key and
+remove rows. --adopt-ledger moves the schema to this ledger on purpose
+(a copy put at a fixed path).
+
 Usage:
   agent index sync [flags]
 
@@ -17,6 +23,7 @@ Examples:
   agent index sync --rebuild --json
 
 Flags:
+      --adopt-ledger    Make this ledger the one the schema is synced from (a schema refuses a sync from any other ledger than its own)
       --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
   -h, --help            help for sync
       --json            Print the sync's report as JSON

@@ -48,13 +48,84 @@ pub fn drain<E: Encode>(
         ],
     )?[0]
         .get(0);
-    let todo: Vec<(String, String, String)> = pg
-        .query(
+    let todo = cards(
+        pg,
+        pg.query(
             "SELECT id, text_key, project, rel, title, seed, summary, why, symbols, asks FROM entities
              WHERE embed AND vec_key <> text_key ORDER BY importance DESC, id",
             &[],
-        )?
-        .into_iter()
+        )?,
+    );
+    let total = if limit > 0 {
+        todo.len().min(limit)
+    } else {
+        todo.len()
+    };
+    let rebuild_index = total > REBUILD_INDEX_PAST;
+    if rebuild_index {
+        pg.batch("DROP INDEX IF EXISTS entities_card_vec")?;
+    }
+    let result = embed_cards(pg, emb, &todo[..total], &mut rep, &mut progress);
+    if rebuild_index {
+        pg.batch(CREATE_INDEX)?;
+    }
+    result?;
+    rep.remaining = todo.len() - total;
+    let n: i64 = pg.query(
+        "SELECT count(*) FROM entities WHERE card_vec IS NOT NULL",
+        &[],
+    )?[0]
+        .get(0);
+    pg.execute(
+        "INSERT INTO meta (key, value) VALUES ('vectors', $1) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        &[&n.to_string()],
+    )?;
+    rep.secs = start.elapsed().as_secs_f64();
+    pg.execute(
+        "UPDATE runs SET finished = now(), coverage = $2 WHERE id = $1",
+        &[
+            &run_id,
+            &serde_json::json!({"embedded": rep.embedded, "removed": rep.removed, "settled": rep.settled,
+                                "remaining": rep.remaining, "secs": rep.secs, "vectors": n}),
+        ],
+    )?;
+    Ok(rep)
+}
+
+/// The watcher's drain: only the cards the sync queued, with no scan of
+/// every entity and no run row (a flush's sync recorded one); the full
+/// [`drain`] (agent index embed, the tidy) does the rest, and takes over
+/// when the queue is long enough to want the index built again.
+pub fn drain_queued<E: Encode>(pg: &Pg, emb: &E) -> Result<DrainReport> {
+    let start = Instant::now();
+    let todo = cards(
+        pg,
+        pg.query(
+            "SELECT e.id, e.text_key, e.project, e.rel, e.title, e.seed, e.summary, e.why, e.symbols, e.asks
+             FROM embed_queue q JOIN entities e ON e.id = q.entity_id
+             WHERE e.embed AND e.vec_key <> e.text_key ORDER BY e.importance DESC, e.id",
+            &[],
+        )?,
+    );
+    if todo.len() > REBUILD_INDEX_PAST {
+        return drain(pg, emb, 0, |_, _| {});
+    }
+    let mut rep = DrainReport::default();
+    embed_cards(pg, emb, &todo, &mut rep, &mut |_, _| {})?;
+    // Queue rows whose entity wants no vector, or has its vector already.
+    rep.settled += pg.execute(
+        "DELETE FROM embed_queue q USING entities e
+         WHERE e.id = q.entity_id AND (NOT e.embed OR e.vec_key = e.text_key)",
+        &[],
+    )? as usize;
+    rep.secs = start.elapsed().as_secs_f64();
+    Ok(rep)
+}
+
+/// Cards from rows of (id, text_key, project, rel, title, seed, summary,
+/// why, symbols, asks): (id, text_key, card text).
+fn cards(pg: &Pg, rows: Vec<postgres::Row>) -> Vec<(String, String, String)> {
+    rows.into_iter()
         .map(|r| {
             let (seed, summary): (String, String) = (r.get(5), r.get(6));
             let shown = if summary.is_empty() { seed } else { summary };
@@ -66,22 +137,25 @@ pub fn drain<E: Encode>(
                 &r.get::<_, String>(7),
                 &r.get::<_, String>(8),
                 &r.get::<_, Vec<String>>(9),
-                &cfg.cards,
+                &pg.cfg.cards,
             );
             (r.get(0), r.get(1), card)
         })
-        .collect();
-    let total = if limit > 0 {
-        todo.len().min(limit)
-    } else {
-        todo.len()
-    };
-    let rebuild_index = total > REBUILD_INDEX_PAST;
-    if rebuild_index {
-        pg.batch("DROP INDEX IF EXISTS entities_card_vec")?;
-    }
-    let result = (|| -> Result<()> {
-        for batch in todo[..total].chunks(cfg.embedder.batch.max(1)) {
+        .collect()
+}
+
+/// Embeds these cards in batches, storing each vector under its key and
+/// settling its queue row.
+fn embed_cards<E: Encode>(
+    pg: &Pg,
+    emb: &E,
+    todo: &[(String, String, String)],
+    rep: &mut DrainReport,
+    progress: &mut impl FnMut(usize, usize),
+) -> Result<()> {
+    let total = todo.len();
+    {
+        for batch in todo.chunks(pg.cfg.embedder.batch.max(1)) {
             // A card whose text isn't what its key says (the sync wrote it
             // from other text) is skipped rather than stored under a key
             // that would never settle.
@@ -111,30 +185,6 @@ pub fn drain<E: Encode>(
             rep.embedded += keep.len();
             progress(rep.embedded, total);
         }
-        Ok(())
-    })();
-    if rebuild_index {
-        pg.batch(CREATE_INDEX)?;
     }
-    result?;
-    rep.remaining = todo.len() - total;
-    let n: i64 = pg.query(
-        "SELECT count(*) FROM entities WHERE card_vec IS NOT NULL",
-        &[],
-    )?[0]
-        .get(0);
-    pg.execute(
-        "INSERT INTO meta (key, value) VALUES ('vectors', $1) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        &[&n.to_string()],
-    )?;
-    rep.secs = start.elapsed().as_secs_f64();
-    pg.execute(
-        "UPDATE runs SET finished = now(), coverage = $2 WHERE id = $1",
-        &[
-            &run_id,
-            &serde_json::json!({"embedded": rep.embedded, "removed": rep.removed, "settled": rep.settled,
-                                "remaining": rep.remaining, "secs": rep.secs, "vectors": n}),
-        ],
-    )?;
-    Ok(rep)
+    Ok(())
 }

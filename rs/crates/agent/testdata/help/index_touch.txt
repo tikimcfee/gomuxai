@@ -1,0 +1,21 @@
+Touch names changed files to the running index watcher (agent index
+watch), which flushes them as it does what inotify reports: an editor's or
+agent's hook can call it after each write. With no watcher it says so and
+succeeds, so a hook never fails an edit.
+
+Usage:
+  agent index touch PATH... [flags]
+
+Examples:
+  agent index touch src/lib.rs
+  agent index touch /abs/path/one.rs /abs/path/two.md
+
+Flags:
+      --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+  -h, --help            help for touch
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

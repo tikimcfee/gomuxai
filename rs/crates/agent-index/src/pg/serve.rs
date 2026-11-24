@@ -63,6 +63,10 @@ pub struct Response {
     /// A note for the person (the caller's project is ahead of its crawl).
     pub hint: Option<String>,
     pub error: Option<String>,
+    /// The files behind hits that changed or went since they were indexed
+    /// (the caller tells the watcher).
+    #[serde(default)]
+    pub stale: Vec<String>,
 }
 
 /// This binary's identity: its path, size and modification time. A server
@@ -145,6 +149,9 @@ pub fn answer(
         search::search(pg, &o, f, lexical, rerank)?
     };
     r.lexical = Some(lexical.name().to_string());
+    // A hit whose file changed since it was indexed says so; the check
+    // failing doesn't fail the search.
+    let stale = super::fresh::check(pg, &mut r).unwrap_or_default();
     // A failed log doesn't fail the search.
     let _ = search::log_query(pg, &req.who, &r);
     let project = if req.project.is_empty() {
@@ -171,6 +178,7 @@ pub fn answer(
         limit,
         hint,
         error: None,
+        stale,
     })
 }
 

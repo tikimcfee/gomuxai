@@ -1103,3 +1103,306 @@ fn sessions_corpus() {
         .get(0);
     assert_eq!(n, 1);
 }
+
+/// A project's rows and chunks, to see that a sync left them alone.
+fn project_rows(pg: &Pg, project: &str) -> Vec<String> {
+    let mut out: Vec<String> = pg
+        .query(
+            "SELECT id || ' ' || sync_key || ' ' || mtime FROM entities WHERE project = $1 ORDER BY id",
+            &[&project],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    out.extend(
+        pg.query(
+            "SELECT c.entity_id || ' ' || c.ord || ' ' || c.text FROM chunks c
+             JOIN entities e ON e.id = c.entity_id WHERE e.project = $1 ORDER BY 1",
+            &[&project],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| r.get::<_, String>(0)),
+    );
+    out
+}
+
+/// The watcher's flush: a quick crawl of one project and a sync of its rows
+/// alone. A deleted file's entities go; a renamed one keeps its model
+/// summary (by its content, as the summarizer would copy it); a changed one
+/// falls back to its seed with its chunks cut again; another project's rows
+/// stay as they were though its files changed, until a full sync.
+#[test]
+fn flush_one_project_delete_rename_change() {
+    let Some(t) = throwaway("flush") else { return };
+    let pg = &t.0;
+    let (dir, mut ix) = fixture();
+    let root = dir.path().join("dev");
+    // A file in alpha with the same content as one in beta.
+    let beta_lib = std::fs::read_to_string(root.join("beta/src/lib.rs")).unwrap();
+    write(&root, "alpha/src/twin.rs", &beta_lib);
+    crawl(&mut ix, &CrawlOptions::default()).unwrap();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    for (id, text) in [
+        ("alpha:src/deliver.rs", "Wakes held messages."),
+        ("alpha:src/lib.rs", "Holds the alpha library."),
+        ("beta:src/lib.rs", "Parses configs."),
+    ] {
+        let key: String = pg
+            .query("SELECT content_key FROM entities WHERE id = $1", &[&id])
+            .unwrap()[0]
+            .get(0);
+        pg.execute(
+            "INSERT INTO summaries (entity_id, content_key, fingerprint, status, summary, why, writer)
+             VALUES ($1, $2, 'f', 'live', $3, 'Why.', 'model:test')",
+            &[&id, &key, &text],
+        )
+        .unwrap();
+    }
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    let row = |id: &str| -> Option<(String, String)> {
+        pg.query_opt(
+            "SELECT summary_writer, summary FROM entities WHERE id = $1",
+            &[&id],
+        )
+        .unwrap()
+        .map(|r| (r.get(0), r.get(1)))
+    };
+    assert_eq!(row("alpha:src/lib.rs").unwrap().0, "model:test");
+    // The twin shows beta's summary (its content's), and a flush of alpha
+    // agrees with the full sync: nothing to write.
+    assert_eq!(row("alpha:src/twin.rs").unwrap().1, "Parses configs.");
+    let r = super::sync::sync_projects(&ix.conn, pg, &["alpha".to_string()]).unwrap();
+    assert_eq!((r.written, r.deleted, r.mtimes), (0, 0, 0), "{r:?}");
+
+    std::fs::rename(
+        root.join("alpha/src/deliver.rs"),
+        root.join("alpha/src/wake.rs"),
+    )
+    .unwrap();
+    std::fs::remove_file(root.join("alpha/README.md")).unwrap();
+    write(
+        &root,
+        "alpha/src/lib.rs",
+        "//! The alpha library, changed.\npub fn deliver_held() {}\npub fn numbat_count() {}\n",
+    );
+    write(
+        &root,
+        "beta/src/lib.rs",
+        "//! Beta.\npub fn parse_config() {}\npub fn wombat_word() {}\n",
+    );
+    let beta = project_rows(pg, "beta");
+    let alpha = vec!["alpha".to_string()];
+    let c = crawl(
+        &mut ix,
+        &CrawlOptions {
+            projects: alpha.clone(),
+            quick: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(c.projects.len(), 1);
+    let p = &c.projects[0];
+    assert_eq!((p.renamed, p.removed, p.changed), (1, 1, 1), "{p:?}");
+    let r = super::sync::sync_projects(&ix.conn, pg, &alpha).unwrap();
+    assert!(r.deleted >= 2, "{r:?}");
+    assert!(row("alpha:src/deliver.rs").is_none());
+    assert!(row("alpha:README.md").is_none());
+    assert!(row("alpha:README.md#word-wall").is_none());
+    assert_eq!(
+        row("alpha:src/wake.rs").unwrap(),
+        ("model:test".to_string(), "Wakes held messages.".to_string())
+    );
+    assert_eq!(row("alpha:src/lib.rs").unwrap().0, "seed");
+    let n: i64 = pg
+        .query(
+            "SELECT count(*) FROM chunks WHERE entity_id = 'alpha:src/lib.rs' AND text LIKE '%numbat_count%'",
+            &[],
+        )
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(n, 1);
+    assert_eq!(project_rows(pg, "beta"), beta, "beta wasn't flushed");
+    // The flush's embed takes the queue alone, and empties it.
+    #[cfg(feature = "embed")]
+    {
+        struct Unit;
+        impl crate::embed::Encode for Unit {
+            fn dim(&self) -> usize {
+                super::DIM
+            }
+            fn embed(&self, texts: &[String], _: bool) -> anyhow::Result<Vec<Vec<f32>>> {
+                Ok(texts
+                    .iter()
+                    .map(|_| vec![1.0 / (super::DIM as f32).sqrt(); super::DIM])
+                    .collect())
+            }
+        }
+        let queued: i64 = pg.query("SELECT count(*) FROM embed_queue", &[]).unwrap()[0].get(0);
+        let r = super::embed_pg::drain_queued(pg, &Unit).unwrap();
+        assert!(r.embedded > 0 && r.embedded as i64 <= queued, "{r:?}");
+        let (left, stale): (i64, i64) = {
+            let row = &pg
+                .query(
+                    "SELECT (SELECT count(*) FROM embed_queue),
+                            (SELECT count(*) FROM entities WHERE id = 'alpha:src/lib.rs' AND vec_key <> text_key)",
+                    &[],
+                )
+                .unwrap()[0];
+            (row.get(0), row.get(1))
+        };
+        assert_eq!((left, stale), (0, 0));
+    }
+    // Nothing more to do for alpha.
+    let r = super::sync::sync_projects(&ix.conn, pg, &alpha).unwrap();
+    assert_eq!((r.written, r.deleted), (0, 0), "{r:?}");
+    // The full crawl and sync after (the tidy) bring beta.
+    crawl(
+        &mut ix,
+        &CrawlOptions {
+            force_edges: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    super::sync::sync(&ix.conn, pg, false).unwrap();
+    assert_ne!(project_rows(pg, "beta"), beta);
+    let n: i64 = pg
+        .query(
+            "SELECT count(*) FROM chunks WHERE text LIKE '%wombat_word%'",
+            &[],
+        )
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(n, 1);
+}
+
+/// A hit on a file as search returns it, for the stale check.
+fn hit(id: &str, kind: &str, path: &Path) -> crate::query::Hit {
+    crate::query::Hit {
+        rank: 1,
+        id: id.to_string(),
+        corpus: "code".into(),
+        kind: kind.to_string(),
+        file_kind: String::new(),
+        project: id.split(':').next().unwrap_or("").to_string(),
+        freshness: String::new(),
+        path: path.to_string_lossy().into_owned(),
+        line: 0,
+        title: String::new(),
+        summary: String::new(),
+        why: String::new(),
+        untracked: false,
+        matched: Vec::new(),
+        score: 0.0,
+        explain: Vec::new(),
+        stale: String::new(),
+    }
+}
+
+/// The stale check marks a hit whose file changed (by size, or by content
+/// when only the mtime says so) or went, and leaves a file only touched.
+#[test]
+fn stale_mark() {
+    let Some(t) = throwaway("stale") else { return };
+    let pg = &t.0;
+    let (dir, ix) = fixture();
+    let root = dir.path().join("dev");
+    let r = super::sync::sync(&ix.conn, pg, false).unwrap();
+    // Written rows took their mtimes with them: none was set apart.
+    assert_eq!(r.mtimes, 0, "{r:?}");
+    let unknown: i64 = pg
+        .query(
+            "SELECT count(*) FROM entities WHERE kind = 'file' AND mtime = 0",
+            &[],
+        )
+        .unwrap()[0]
+        .get(0);
+    assert_eq!(unknown, 0);
+    let p = |rel: &str| root.join(rel);
+    // Same size, other content: only a hash can tell.
+    let deliver = std::fs::read_to_string(p("alpha/src/deliver.rs")).unwrap();
+    std::fs::write(p("alpha/src/deliver.rs"), deliver.replace("wake", "weke")).unwrap();
+    // Touched: a new mtime, the same bytes.
+    let f = std::fs::File::options()
+        .write(true)
+        .open(p("beta/src/lib.rs"))
+        .unwrap();
+    f.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+        .unwrap();
+    drop(f);
+    std::fs::remove_file(p("beta/docs/GUIDE.md")).unwrap();
+    write(
+        &root,
+        "alpha/Cargo.toml",
+        "[package]\nname = \"alpha\"\n# grown\n",
+    );
+    let mut res = crate::query::SearchResult {
+        query: "q".into(),
+        terms: Vec::new(),
+        hits: vec![
+            hit("alpha:src/lib.rs", "file", &p("alpha/src/lib.rs")),
+            hit(
+                "alpha:src/deliver.rs#wake",
+                "symbol",
+                &p("alpha/src/deliver.rs"),
+            ),
+            hit("beta:src/lib.rs", "file", &p("beta/src/lib.rs")),
+            hit(
+                "beta:docs/GUIDE.md#guide",
+                "section",
+                &p("beta/docs/GUIDE.md"),
+            ),
+            hit("alpha:Cargo.toml", "file", &p("alpha/Cargo.toml")),
+            hit("alpha", "project", &root.join("alpha")),
+        ],
+        mapping: Vec::new(),
+        absent: Vec::new(),
+        candidates: 6,
+        ms: Default::default(),
+        config: None,
+        rerank: None,
+        groups: None,
+        lexical: None,
+    };
+    let stale = super::fresh::check(pg, &mut res).unwrap();
+    let marks: Vec<&str> = res.hits.iter().map(|h| h.stale.as_str()).collect();
+    assert_eq!(marks, ["", "changed", "", "gone", "changed", ""]);
+    assert_eq!(stale.len(), 3, "{stale:?}");
+    assert!(res.ms.contains_key("stale check"));
+    // In the JSON only when there is something to say.
+    let j = serde_json::to_value(&res.hits).unwrap();
+    assert_eq!(j[1]["stale"], "changed");
+    assert!(j[0].get("stale").is_none());
+    // And in the text, after the path.
+    let (text, _) = crate::view::render_search(&res, 0, false);
+    assert!(
+        text.contains("(changed since indexed: read the file)"),
+        "{text}"
+    );
+    assert!(text.contains("(deleted since indexed)"), "{text}");
+}
+
+/// A schema is synced from one ledger; another's sync (full or a flush) is
+/// refused until it is adopted on purpose.
+#[test]
+fn one_ledger_per_schema() {
+    let Some(t) = throwaway("ledger") else { return };
+    let pg = &t.0;
+    let (_d1, ix1) = fixture();
+    let (_d2, ix2) = fixture();
+    super::sync::sync(&ix1.conn, pg, false).unwrap();
+    let e = super::sync::sync(&ix2.conn, pg, false).unwrap_err();
+    assert!(
+        format!("{e:#}").contains("is synced from the ledger"),
+        "{e:#}"
+    );
+    let e = super::sync::sync_projects(&ix2.conn, pg, &["alpha".to_string()]).unwrap_err();
+    assert!(format!("{e:#}").contains("--adopt-ledger"), "{e:#}");
+    let now = super::sync::adopt_ledger(&ix2.conn, pg).unwrap();
+    assert_eq!(super::sync::synced_ledger(pg).unwrap(), now);
+    super::sync::sync(&ix2.conn, pg, false).unwrap();
+    assert!(super::sync::sync(&ix1.conn, pg, false).is_err());
+}

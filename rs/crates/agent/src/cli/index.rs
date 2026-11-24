@@ -71,10 +71,380 @@ pub fn def() -> Def {
             related_def(),
             stale_def(),
             usage_def(),
+            watch_def(),
+            touch_def(),
             alias_def(),
             lexicon_def(),
         ],
     )
+}
+
+// `agent index watch`
+
+pub const WATCH: Doc = Doc {
+    use_line: "watch",
+    short: "Keep the pg store current as files change (a file watcher)",
+    long: r#"Watch keeps the pg store current with no one running a crawl. It first
+catches up (a full crawl, sync and embed), then watches every indexed
+directory of the full-depth projects with inotify (never target/,
+node_modules/, .git/ or the other build output the crawl skips, so a build
+makes no events). A changed project is flushed once its files have been
+quiet for [watch].settle_ms (1 s), or [watch].max_wait_ms (10 s) after its
+first change however busy it stays, and held while git holds
+.git/index.lock: a crawl of that project, a sync of its rows in one
+transaction, and the embed of the cards that changed. A changed file shows
+its seed until the next summary batch (agent index stale lists it). The
+tidy (a full crawl and sync: edges across projects, importance, word
+counts, new projects, memory, friction and sessions) runs once all has been
+quiet for [watch].tidy_quiet_s, at most every [watch].tidy_every_s.
+
+Its socket ([watch].socket, else index-watch.sock beside the ledger) takes
+changed paths from agent index touch (an edit hook) and from search's stale
+check. It never summarizes and never uses the GPU. One line per flush goes
+to stderr. --status asks a running watcher what it has done."#,
+    example: r#"  agent index watch
+  agent index watch --status"#,
+    args: ArgRule::None,
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct WatchArgs {
+    #[arg(long = "status", help = "Ask the running watcher what it has done")]
+    pub status: bool,
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
+    pub config: String,
+    #[arg(long = "json", help = "Print the status as JSON")]
+    pub json: bool,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+fn watch_def() -> Def {
+    leaf!(WATCH, WatchArgs, run_watch)
+}
+
+/// The watcher's side of the index: the ledger, the store and the embedder.
+#[cfg(target_os = "linux")]
+struct Keep<'a> {
+    ctx: &'a Ctx,
+    ix: Index,
+    pg: Pg,
+    #[cfg(feature = "embed")]
+    emb: Option<agent_index::embed::Embedder>,
+}
+
+/// Gives freed heap back to the system: a tidy's full sync holds the whole
+/// ledger (gigabytes at a dev tree's size), a big checkout's flush
+/// thousands of rows, and the watcher should idle small between them.
+#[cfg(target_os = "linux")]
+fn trim() {
+    #[cfg(target_env = "gnu")]
+    // SAFETY: malloc_trim only releases free heap pages.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Keep<'_> {
+    /// Embeds what the sync queued (a flush: the queue alone; the tidy:
+    /// everything a vector is missing for); how many.
+    fn embed(&mut self, full: bool) -> anyhow::Result<usize> {
+        #[cfg(feature = "embed")]
+        if let Some(emb) = &self.emb {
+            use agent_index::pg::embed_pg;
+            let r = if full {
+                embed_pg::drain(&self.pg, emb, 0, |_, _| {})?
+            } else {
+                embed_pg::drain_queued(&self.pg, emb)?
+            };
+            return Ok(r.embedded);
+        }
+        let _ = full;
+        Ok(0)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl agent_index::watch::Keeper for Keep<'_> {
+    fn projects(&mut self) -> anyhow::Result<Vec<agent_index::watch::Project>> {
+        let mut out = Vec::new();
+        let mut st = self.ix.conn.prepare(
+            "SELECT path FROM entities WHERE project = ?1 AND kind IN ('project', 'dir')",
+        )?;
+        for p in agent_index::roots::list_projects(&self.ix.conn)? {
+            if !matches!(p.crawled_depth.as_str(), "full" | "files") {
+                continue;
+            }
+            let dirs: Vec<PathBuf> = st
+                .query_map([&p.name], |r| r.get::<_, String>(0))?
+                .filter_map(Result::ok)
+                .map(PathBuf::from)
+                .collect();
+            out.push(agent_index::watch::Project {
+                path: PathBuf::from(&p.path),
+                git: p.is_git,
+                name: p.name,
+                dirs,
+            });
+        }
+        Ok(out)
+    }
+
+    fn flush(&mut self, projects: &[String]) -> anyhow::Result<String> {
+        let c = agent_index::crawl(
+            &mut self.ix,
+            &CrawlOptions {
+                projects: projects.to_vec(),
+                quick: true,
+                ..Default::default()
+            },
+        )?;
+        let t = std::time::Instant::now();
+        let s = agent_index::pg::sync::sync_projects(&self.ix.conn, &self.pg, projects)?;
+        let sync_ms = t.elapsed().as_millis();
+        let t = std::time::Instant::now();
+        let e = self.embed(false)?;
+        let embed_ms = t.elapsed().as_millis();
+        trim();
+        let sum = |f: fn(&agent_index::ProjectReport) -> usize| -> usize {
+            c.projects.iter().map(f).sum()
+        };
+        Ok(format!(
+            "files {} added, {} changed, {} removed, {} renamed; {} rows written, {} removed, {} files cut into {} chunks; {} embedded (crawl {} ms, sync {sync_ms} ms, embed {embed_ms} ms)",
+            sum(|p| p.added),
+            sum(|p| p.changed),
+            sum(|p| p.removed),
+            sum(|p| p.renamed),
+            s.written,
+            s.deleted,
+            s.chunked_files,
+            s.chunks,
+            e,
+            c.ms
+        ))
+    }
+
+    fn tidy(&mut self) -> anyhow::Result<String> {
+        let c = agent_index::crawl(
+            &mut self.ix,
+            &CrawlOptions {
+                force_edges: true,
+                ..Default::default()
+            },
+        )?;
+        let s = sync_pg(self.ctx, &self.ix, &self.pg, false)?;
+        let e = self.embed(true)?;
+        trim();
+        let changed: usize = c
+            .projects
+            .iter()
+            .map(|p| p.added + p.changed + p.removed + p.renamed)
+            .sum();
+        Ok(format!(
+            "{changed} files changed in {} projects; {} rows written, {} removed; {e} embedded",
+            c.projects.len(),
+            s.written,
+            s.deleted
+        ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
+    use agent_index::watch;
+    #[cfg(feature = "embed")]
+    // SAFETY: first thing in the command, before anything starts a thread
+    // (see run_embed).
+    unsafe {
+        agent_index::embed::single_threaded_products()
+    };
+    let cfg = load_config(&a.config)?.config;
+    let ledger = cfg.ledger_path(agent_index::path_beside(&ctx.cfg().database_path));
+    let socket = cfg.watch_socket(&ledger);
+    if a.status {
+        let st = watch::ask(&socket, &watch::Request { status: true, ..Default::default() }, std::time::Duration::from_secs(5))?;
+        if a.json {
+            return ctx.print_json(&st);
+        }
+        return ctx.write_out(&format!(
+            "Watching {} directories of {} projects since {}{}; {} events, {} paths named on the socket ({} outside every project), {} flushes, {} tidies, {} projects waiting.\nLast flush ({}): {}\nLast tidy: {}\n{}",
+            st.watched_dirs,
+            st.projects,
+            st.started,
+            if st.over_limit > 0 {
+                format!(" ({} more past the inotify watch limit)", st.over_limit)
+            } else {
+                String::new()
+            },
+            st.events,
+            st.touched,
+            st.outside,
+            st.flushes,
+            st.tidies,
+            st.pending,
+            if st.last_flush_at.is_empty() { "none" } else { &st.last_flush_at },
+            st.last_flush,
+            if st.last_tidy.is_empty() { "none" } else { &st.last_tidy },
+            if st.last_error.is_empty() {
+                String::new()
+            } else {
+                format!("Last error: {}\n", st.last_error)
+            }
+        ));
+    }
+    if !cfg.wants_pg("pg")? {
+        unreachable!("pg asked");
+    }
+    let (url, schema) = pg_target(&cfg)?;
+    let pg = Pg::connect_with(&url, &schema, cfg.clone())?;
+    let ix = Index::open(&ledger)?;
+    // Fail now, not at the first flush, when the schema is another
+    // ledger's.
+    let theirs = agent_index::pg::sync::synced_ledger(&pg)?;
+    let mine = std::fs::canonicalize(&ledger)
+        .unwrap_or_else(|_| ledger.clone())
+        .to_string_lossy()
+        .into_owned();
+    if !theirs.is_empty() && theirs != mine {
+        anyhow::bail!(
+            "schema {schema} is synced from the ledger {theirs}, not {mine}: set [ledger].path to it (or move the schema with agent index sync --adopt-ledger)"
+        );
+    }
+    #[cfg(feature = "embed")]
+    let emb = {
+        use agent_index::embed;
+        let given = (!cfg.embedder.model_dir.is_empty()).then(|| PathBuf::from(&cfg.embedder.model_dir));
+        match check_embedder(&cfg)
+            .and_then(|_| embed::model_dir(given.as_deref()))
+            .and_then(|d| embed::Embedder::load(&d))
+        {
+            Ok(mut e) => {
+                e.max_workers = cfg.watch.embed_workers;
+                Some(e)
+            }
+            Err(e) => {
+                ctx.hint(format!("watching without the embedder: changed cards keep their old vectors until agent index embed ({e:#})"));
+                None
+            }
+        }
+    };
+    #[cfg(not(feature = "embed"))]
+    ctx.hint("watching without the embedder (this agent was built without it): changed cards keep their old vectors until agent index embed");
+    ctx.notice(format!(
+        "Watching for schema {schema} (ledger {}), socket {}; catching up first.",
+        ledger.display(),
+        socket.display()
+    ));
+    let mut keep = Keep {
+        ctx,
+        ix,
+        pg,
+        #[cfg(feature = "embed")]
+        emb,
+    };
+    watch::run(&mut keep, &cfg.watch, &socket, |line| {
+        eprintln!(
+            "{} {line}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
+        );
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_watch(_: &Ctx, _: &WatchArgs) -> anyhow::Result<()> {
+    anyhow::bail!("agent index watch runs on Linux only (inotify)")
+}
+
+// `agent index touch`
+
+pub const TOUCH: Doc = Doc {
+    use_line: "touch PATH...",
+    short: "Tell the index watcher that files changed (for edit hooks)",
+    long: r#"Touch names changed files to the running index watcher (agent index
+watch), which flushes them as it does what inotify reports: an editor's or
+agent's hook can call it after each write. With no watcher it says so and
+succeeds, so a hook never fails an edit."#,
+    example: r#"  agent index touch src/lib.rs
+  agent index touch /abs/path/one.rs /abs/path/two.md"#,
+    args: ArgRule::Min(1),
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct TouchArgs {
+    #[arg(
+        long = "config",
+        value_name = "string",
+        default_value = "",
+        help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
+    )]
+    pub config: String,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+fn touch_def() -> Def {
+    leaf!(TOUCH, TouchArgs, run_touch)
+}
+
+/// The paths, absolute (not resolved: a deleted file has none).
+fn absolute(args: &[String]) -> anyhow::Result<Vec<String>> {
+    let here = cwd()?;
+    Ok(args
+        .iter()
+        .map(|a| here.join(a).to_string_lossy().into_owned())
+        .collect())
+}
+
+#[cfg(target_os = "linux")]
+fn run_touch(ctx: &Ctx, a: &TouchArgs) -> anyhow::Result<()> {
+    let cfg = load_config(&a.config)?.config;
+    let socket =
+        cfg.watch_socket(&cfg.ledger_path(agent_index::path_beside(&ctx.cfg().database_path)));
+    let req = agent_index::watch::Request {
+        paths: absolute(&a.args)?,
+        status: false,
+    };
+    match agent_index::watch::ask(&socket, &req, std::time::Duration::from_secs(2)) {
+        Ok(st) => ctx.write_out(&format!(
+            "Queued {} paths for the index watcher.\n",
+            st.queued
+        )),
+        Err(e) => {
+            ctx.hint(format!("no index watcher took them: {e:#}"));
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_touch(ctx: &Ctx, _: &TouchArgs) -> anyhow::Result<()> {
+    ctx.hint("the index watcher runs on Linux only");
+    Ok(())
+}
+
+/// Tells the watcher (if one runs) about files a search found changed;
+/// quietly, since the answer already said so.
+fn nudge_watcher(ctx: &Ctx, cfg: &agent_index::config::Config, paths: &[String]) {
+    #[cfg(target_os = "linux")]
+    if !paths.is_empty() {
+        let socket =
+            cfg.watch_socket(&cfg.ledger_path(agent_index::path_beside(&ctx.cfg().database_path)));
+        let req = agent_index::watch::Request {
+            paths: paths.to_vec(),
+            status: false,
+        };
+        let _ = agent_index::watch::ask(&socket, &req, std::time::Duration::from_millis(200));
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (ctx, cfg, paths);
 }
 
 // `agent index usage`
@@ -1020,7 +1390,13 @@ runs it after crawling; run it alone after a crawl with the sqlite store.
 
 --rebuild empties the schema's tables and writes everything again (card
 vectors whose text is unchanged are kept); the rows are the same an
-incremental sync reaches."#,
+incremental sync reaches.
+
+A schema is synced from one ledger (the index.db [ledger].path names,
+else the one beside this binary): its first sync records it, and a sync
+from any other is refused, since another ledger's crawl would re-key and
+remove rows. --adopt-ledger moves the schema to this ledger on purpose
+(a copy put at a fixed path)."#,
     example: r#"  AGENT_INDEX_PG='postgresql:///devindex?host=/run/pg' agent index sync
   agent index sync --rebuild --json"#,
     args: ArgRule::None,
@@ -1034,6 +1410,11 @@ pub struct SyncArgs {
         help = "Empty the Postgres tables and write everything again"
     )]
     pub rebuild: bool,
+    #[arg(
+        long = "adopt-ledger",
+        help = "Make this ledger the one the schema is synced from (a schema refuses a sync from any other ledger than its own)"
+    )]
+    pub adopt_ledger: bool,
     #[arg(
         long = "config",
         value_name = "string",
@@ -1056,6 +1437,19 @@ fn run_sync(ctx: &Ctx, a: &SyncArgs) -> anyhow::Result<()> {
     let Some(pg) = pg_store("pg", &a.config)? else {
         unreachable!("pg asked")
     };
+    if a.adopt_ledger {
+        let was = agent_index::pg::sync::synced_ledger(&pg)?;
+        let now = agent_index::pg::sync::adopt_ledger(&ix.conn, &pg)?;
+        ctx.notice(format!(
+            "Schema {} is synced from the ledger {now} now{}.",
+            pg.schema,
+            if was.is_empty() || was == now {
+                String::new()
+            } else {
+                format!(" (it was {was})")
+            }
+        ));
+    }
     let r = sync_pg(ctx, &ix, &pg, a.rebuild)?;
     if a.json {
         return ctx.print_json(&r);
@@ -1566,7 +1960,7 @@ fn run_crawl(ctx: &Ctx, a: &CrawlArgs) -> anyhow::Result<()> {
         project: (!a.project.is_empty()).then(|| a.project.clone()),
         rebuild: a.rebuild,
         dry_run: a.dry_run,
-        large_project: 0,
+        ..Default::default()
     };
     let pg = pg_store(&a.store, &a.config)?;
     let r = agent_index::crawl(&mut ix, &opts)?;
@@ -2048,6 +2442,7 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<Vec<String>> {
             serve::answer(&pg, &req, emb.as_ref(), None)?
         }
     };
+    nudge_watcher(ctx, &loaded.config, &resp.stale);
     let Some(r) = resp.result else {
         anyhow::bail!("the search gave no result");
     };

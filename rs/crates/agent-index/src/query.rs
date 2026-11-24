@@ -99,6 +99,10 @@ pub struct Hit {
     /// Which lists found it and at what rank, and the priors applied
     /// (`--explain`).
     pub explain: Vec<String>,
+    /// The pg store's stale check: `changed` (its file differs from what was
+    /// indexed) or `gone` (its file was deleted); absent when current.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stale: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -544,6 +548,7 @@ fn search_files(
                 matched,
                 score: h.score,
                 explain,
+                stale: String::new(),
             }
         };
         hits.push(Hit {
@@ -966,6 +971,7 @@ fn search_entities(
             matched,
             score: (s * 10000.0).round() / 10000.0,
             explain: explain.remove(&id).unwrap_or_default(),
+            stale: String::new(),
         });
         if hits.len() >= limit {
             break;

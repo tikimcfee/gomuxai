@@ -21,6 +21,7 @@ use crate::config::Config;
 pub mod dirsum;
 #[cfg(feature = "embed")]
 pub mod embed_pg;
+pub mod fresh;
 pub mod rerank;
 pub mod schema;
 pub mod search;
