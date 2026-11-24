@@ -834,10 +834,26 @@ Each lands on its own, measured, and said plainly when it does:
    giving 3,237 folders and all 27 projects in 4 min (0.5% failed).
    After a 50-unit preflight in a scratch schema and a skeptic's review,
    the sessions sync added 439 sessions in 14,759 scrubbed chunks. The
-   snapshot binary has no ledger beside it, so any later sync of `idx`
-   must run with the ledger the summaries were written against, or it
-   starts from an empty one.
+   ledger the summaries were written against is now `[ledger].path`, and
+   `idx` refuses a sync from any other (see "Freshness"). Run 17, with the
+   installed agent beside the watcher, summarized what came or changed
+   since and retried the failures: 145 of 277 files written, then 61
+   folders.
 6. Query expansion and learned labels, from the eval's misses.
+
+**For the next change of the summaries' fingerprint** (each of these
+changes it, and with it every done file is asked again, so they wait to
+go together):
+- The checks still fail a file whose answer has fewer than two asks left
+  (most of the failures that remain). Asks are off in the pipeline now
+  (`[cards].asks`), so a check or prompt that stops failing a file on
+  asks alone would let those summaries in.
+- Real code that the filters skip: a `license.rs` of logic and a
+  `Notice.tsx` (the boilerplate names match their stems whatever the
+  extension), and a test whose doc comment says "generated from" (the
+  generated-header pattern). Name rules could apply to non-code
+  extensions only, and the pattern could need a generator's words, not
+  the phrase alone.
 
 ## Iteration 1, as built
 
