@@ -319,6 +319,7 @@ pub fn drain_model<E: Encode + ?Sized>(
     let corpora_v: Vec<String> = p.corpora.clone();
     let only_v: Option<Vec<String>> = only.map(<[String]>::to_vec);
     let (cards_t, chunks_t, d) = (m.cards_table(), m.chunks_table(), m.dims);
+    let slug = vecs::spec(&m.name)?.slug;
     // The tables compared with: this schema's, or (a dry run) another's.
     let (have_cards, have_chunks) = match p.have_from {
         Some(s) if dry => (format!("{s}.{cards_t}"), format!("{s}.{chunks_t}")),
@@ -526,8 +527,12 @@ pub fn drain_model<E: Encode + ?Sized>(
                     &parts,
                     &defines,
                 ) {
+                    // The model's slug, not its key: a Matryoshka cut is
+                    // the same text's vector made shorter (its own table
+                    // says the width), so a cut copied from the full
+                    // vectors keeps their keys.
                     let key = hash(&[
-                        m.key.as_bytes(),
+                        slug.as_bytes(),
                         vecs::HEADER_VERSION.as_bytes(),
                         cc.header.as_bytes(),
                         w.text.as_bytes(),
