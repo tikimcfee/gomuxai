@@ -1537,7 +1537,7 @@ fn model_tables_and_chunk_lists() {
     let (dir, mut ix) = fixture();
     super::sync::sync(&ix.conn, &t.0, false).unwrap();
     let cfg = crate::config::Config::parse(
-        "[embedder]\ndims = 8\n[embedder.chunks]\nenabled = true\nwindow_chars = 400\n[embedder.corpus]\ncode = \"qwen3-embedding-0.6b\"\n[watch]\ncpu_windows = 1\n",
+        "[embedder]\ndims = 8\n[embedder.chunks]\nenabled = true\nwindow_chars = 400\n[embedder.corpus]\ncode = \"qwen3-embedding-0.6b\"\n[watch]\ncpu_texts = 1\n",
     )
     .unwrap();
     let pg = &Pg::connect_with(&url, &t.0.schema, cfg.clone()).unwrap();
@@ -1625,8 +1625,9 @@ fn model_tables_and_chunk_lists() {
     )
     .unwrap();
     assert_eq!(k.embedded, 0);
-    // The server down ([watch].cpu_windows = 1): one window on the CPU, the
-    // rest wait; with it back, the next flush (nothing new) takes them.
+    // The server down ([watch].cpu_texts = 1): one window on the CPU (no
+    // card changed), the rest wait; with it back, the next flush (nothing
+    // new) takes them.
     let all = count("SELECT count(*) FROM vec_chunks_qwen3_8");
     assert!(all > 1);
     let with_chunks: Vec<String> = pg
@@ -1646,7 +1647,7 @@ fn model_tables_and_chunk_lists() {
     )
     .unwrap();
     assert_eq!(count("SELECT count(*) FROM vec_chunks_qwen3_8"), 1, "{k:?}");
-    assert_eq!(waiting.windows as i64, all - 1);
+    assert_eq!((waiting.cards, waiting.windows as i64), (0, all - 1));
     assert!(
         k.parts[0].contains("on the CPU") && k.parts[0].contains("left for the server"),
         "{k:?}"

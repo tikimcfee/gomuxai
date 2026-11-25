@@ -141,7 +141,8 @@ struct Keep<'a> {
     /// CPU.
     #[cfg(feature = "embed")]
     models: Vec<(agent_index::pg::vecs::Live, agent_index::embed_models::Shared)>,
-    /// Windows a flush left for the embedder's server ([watch].cpu_windows).
+    /// Cards and windows a flush left for the embedder's server
+    /// ([watch].cpu_texts).
     #[cfg(feature = "embed")]
     waiting: agent_index::pg::embed_pg::Waiting,
 }
@@ -270,15 +271,15 @@ impl agent_index::watch::Keeper for Keep<'_> {
         ))
     }
 
-    fn windows_waiting(&self) -> usize {
+    fn texts_waiting(&self) -> usize {
         #[cfg(feature = "embed")]
-        return self.waiting.windows;
+        return self.waiting.texts();
         #[cfg(not(feature = "embed"))]
         0
     }
 
     fn catch_up(&mut self) -> anyhow::Result<Option<String>> {
-        if self.windows_waiting() == 0 {
+        if self.texts_waiting() == 0 {
             return Ok(None);
         }
         let (e, by_model) = self.embed(false, &[])?;
@@ -289,13 +290,21 @@ impl agent_index::watch::Keeper for Keep<'_> {
 #[cfg(target_os = "linux")]
 fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
     use agent_index::watch;
-    #[cfg(feature = "embed")]
-    // SAFETY: first thing in the command, before anything starts a thread
-    // (see run_embed).
-    unsafe {
-        agent_index::embed::single_threaded_products()
-    };
     let cfg = load_config(&a.config)?.config;
+    // bge's cards go on [watch].embed_workers threads, each product on one
+    // (light beside the person's work). A larger model on the CPU (Qwen3,
+    // when its server is down) goes a text at a time on every core instead:
+    // about 3.5 s a window, against 28 on one thread.
+    #[cfg(feature = "embed")]
+    let small_models = agent_index::pg::vecs::live(&cfg)
+        .map(|v| v.iter().all(|l| l.model.legacy_cards))
+        .unwrap_or(true);
+    #[cfg(feature = "embed")]
+    if small_models {
+        // SAFETY: before anything starts a thread (loading the
+        // configuration starts none; see run_embed).
+        unsafe { agent_index::embed::single_threaded_products() };
+    }
     let ledger = cfg.ledger_path(agent_index::path_beside(&ctx.cfg().database_path));
     let socket = cfg.watch_socket(&ledger);
     if a.status {
@@ -322,10 +331,10 @@ fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
             if st.last_flush_at.is_empty() { "none" } else { &st.last_flush_at },
             st.last_flush,
             if st.last_tidy.is_empty() { "none" } else { &st.last_tidy },
-            if st.windows_waiting > 0 {
+            if st.texts_waiting > 0 {
                 format!(
-                    "{} chunk windows wait for the embedder's server (the CPU took [watch].cpu_windows a flush).\n",
-                    st.windows_waiting
+                    "{} cards and chunk windows wait for the embedder's server (the CPU takes [watch].cpu_texts a flush).\n",
+                    st.texts_waiting
                 )
             } else {
                 String::new()
@@ -363,7 +372,8 @@ fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
             vecs::live(&cfg)?
                 .into_iter()
                 .map(|l| {
-                    let e = embed_models::load_model(&cfg.embedder, &l.model.name, cfg.watch.embed_workers)?;
+                    let workers = if small_models { cfg.watch.embed_workers } else { 1 };
+                    let e = embed_models::load_model(&cfg.embedder, &l.model.name, workers)?;
                     Ok((l, e))
                 })
                 .collect()

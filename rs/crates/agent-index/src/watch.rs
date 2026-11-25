@@ -56,9 +56,9 @@ pub trait Keeper {
     fn flush(&mut self, projects: &[String]) -> Result<String>;
     /// The full crawl and sync; one line saying what it did.
     fn tidy(&mut self) -> Result<String>;
-    /// Chunk windows waiting for the embedder's server (a flush with it
-    /// down embeds only a few on the CPU).
-    fn windows_waiting(&self) -> usize {
+    /// Cards and chunk windows waiting for the embedder's server (a flush
+    /// with it down embeds only a few on the CPU).
+    fn texts_waiting(&self) -> usize {
         0
     }
     /// Embeds the waiting windows if the server answers again (no crawl, no
@@ -328,9 +328,10 @@ pub struct Status {
     /// Paths queued by this request.
     #[serde(default)]
     pub queued: usize,
-    /// Chunk windows waiting for the embedder's server ([watch].cpu_windows).
+    /// Cards and chunk windows waiting for the embedder's server
+    /// ([watch].cpu_texts).
     #[serde(default)]
-    pub windows_waiting: usize,
+    pub texts_waiting: usize,
 }
 
 /// Names changed paths to the watcher at `socket` (or asks its status);
@@ -497,7 +498,7 @@ pub fn run(
         let mut wait = q.next(now, s).unwrap_or(Duration::from_secs(60));
         // Windows waiting for the embedder's server: asked again now and
         // then, with nothing else due.
-        if keeper.windows_waiting() > 0 {
+        if keeper.texts_waiting() > 0 {
             if q.is_empty() && now.duration_since(last_catch_up) >= CATCH_UP_EVERY {
                 last_catch_up = now;
                 match keeper.catch_up() {
@@ -505,7 +506,7 @@ pub fn run(
                     Ok(None) => {}
                     Err(e) => log(&format!("catching up on waiting windows failed: {e:#}")),
                 }
-                status.lock().unwrap().windows_waiting = keeper.windows_waiting();
+                status.lock().unwrap().texts_waiting = keeper.texts_waiting();
             }
             wait = wait.min(CATCH_UP_EVERY);
         }
@@ -626,7 +627,7 @@ pub fn run(
             match &res {
                 Ok(line) => {
                     st.flushes += 1;
-                    st.windows_waiting = keeper.windows_waiting();
+                    st.texts_waiting = keeper.texts_waiting();
                     st.last_flush = format!("{} ({events} events): {line}", names.join(", "));
                     st.last_flush_at = now_rfc3339();
                     st.last_commit_ms = chrono::Utc::now().timestamp_millis();
@@ -675,7 +676,7 @@ pub fn run(
                     let mut st = status.lock().unwrap();
                     st.tidies += 1;
                     st.last_tidy = now_rfc3339();
-                    st.windows_waiting = keeper.windows_waiting();
+                    st.texts_waiting = keeper.texts_waiting();
                 }
                 Err(e) => log(&format!("the tidy failed: {e:#}")),
             }

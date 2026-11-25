@@ -219,7 +219,9 @@ pub struct ModelReport {
     /// Counted, not done.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub dry_run: bool,
-    /// Windows left for later (`Pass::cpu_cap`), and their entities.
+    /// Cards and windows left for later (`Pass::cpu_cap`), and their
+    /// entities.
+    pub deferred_cards: usize,
     pub deferred_windows: usize,
     #[serde(skip)]
     pub deferred: Vec<String>,
@@ -399,9 +401,35 @@ pub fn drain_model<E: Encode + ?Sized>(
         rep.cards = todo.len();
         todo.clear();
     }
-    for part in todo.chunks(batch) {
+    // Texts (cards, then windows) embedded on the CPU while the encoder was
+    // degraded (Pass::cpu_cap), and whether it is: one budget for both.
+    let mut cpu_texts = 0usize;
+    let mut down = false;
+    let step = p.cpu_cap.map_or(batch, |n| n.clamp(1, batch));
+    let mut at = 0;
+    while at < todo.len() {
+        let mut take = step.min(todo.len() - at);
+        if let Some(n) = p.cpu_cap
+            && (down || emb.degraded())
+        {
+            take = take.min(n.saturating_sub(cpu_texts));
+            if take == 0 {
+                let left = &todo[at..];
+                rep.deferred_cards += left.len();
+                rep.deferred.extend(left.iter().map(|t| t.0[0].clone()));
+                break;
+            }
+        }
+        let part = &todo[at..at + take];
+        at += take;
         let texts: Vec<String> = part.iter().map(|t| t.1.clone()).collect();
         let vs = emb.embed(&texts, false)?;
+        if p.cpu_cap.is_some() {
+            down = emb.degraded();
+            if down {
+                cpu_texts += take;
+            }
+        }
         let rows: Vec<(Vec<String>, Vec<i32>, Vec<f32>)> = part
             .iter()
             .zip(vs)
@@ -441,8 +469,6 @@ pub fn drain_model<E: Encode + ?Sized>(
             .collect();
         progress(&format!("{}: chunks of {} entities", m.name, ids.len()));
         let mut done = 0usize;
-        // Windows embedded while the encoder was degraded (Pass::cpu_cap).
-        let mut cpu_windows = 0usize;
         for group in ids.chunks(200) {
             let g: Vec<String> = group.to_vec();
             let ents: HashMap<String, EntCols> = pg
@@ -609,15 +635,16 @@ pub fn drain_model<E: Encode + ?Sized>(
             // that fails mid-pass costs the CPU one small batch, and once
             // the encoder is degraded the cap's worth are embedded and the
             // rest left.
-            let step = p.cpu_cap.map_or(batch, |n| n.clamp(1, batch));
             let mut at = 0;
             while at < todo.len() {
                 let mut take = step.min(todo.len() - at);
-                let was = p.cpu_cap.is_some() && emb.degraded();
+                // Once the CPU took a batch, the rest of the pass counts as
+                // degraded, whatever the server's back-off says by then.
+                let was = p.cpu_cap.is_some() && (down || emb.degraded());
                 if let Some(n) = p.cpu_cap
                     && was
                 {
-                    take = take.min(n.saturating_sub(cpu_windows));
+                    take = take.min(n.saturating_sub(cpu_texts));
                     if take == 0 {
                         let left = &todo[at..];
                         rep.deferred_windows += left.len();
@@ -629,10 +656,13 @@ pub fn drain_model<E: Encode + ?Sized>(
                 at += take;
                 let texts: Vec<String> = part.iter().map(|t| t.2.clone()).collect();
                 let vs = emb.embed(&texts, false)?;
-                // Embedded on the CPU: degraded before, or the server failed
-                // on this batch.
-                if p.cpu_cap.is_some() && (was || emb.degraded()) {
-                    cpu_windows += take;
+                // Whether the CPU embedded this batch (the encoder says so
+                // after the call: a server that answered clears it).
+                if p.cpu_cap.is_some() {
+                    down = emb.degraded();
+                    if down {
+                        cpu_texts += take;
+                    }
                 }
                 let rows: Vec<(Vec<String>, Vec<i32>, Vec<f32>)> = part
                     .iter()
@@ -696,12 +726,21 @@ pub fn drain_model<E: Encode + ?Sized>(
     Ok(rep)
 }
 
-/// The windows a flush left for the server (its server down, the CPU
-/// embedded only `[watch].cpu_windows`): their entities, and how many.
+/// The cards and windows a flush left for the server (its server down, the
+/// CPU embedded only `[watch].cpu_texts` texts): their entities, and how
+/// many.
 #[derive(Debug, Clone, Default)]
 pub struct Waiting {
     pub entities: std::collections::BTreeSet<String>,
+    pub cards: usize,
     pub windows: usize,
+}
+
+impl Waiting {
+    /// Cards and windows waiting.
+    pub fn texts(&self) -> usize {
+        self.cards + self.windows
+    }
 }
 
 /// What [`keep_up`] did, all models together and by model.
@@ -726,10 +765,10 @@ pub fn keep_up(
     waiting: &mut Waiting,
 ) -> Result<KeepReport> {
     let mut rep = KeepReport::default();
-    // A flush with its server down embeds `[watch].cpu_windows` windows on
-    // the CPU and leaves the rest waiting; a later flush (the server back)
-    // takes them up first; the tidy does them all.
-    let cap = (!full).then_some(pg.cfg.watch.cpu_windows);
+    // A flush with its server down embeds `[watch].cpu_texts` texts (cards,
+    // then windows) on the CPU and leaves the rest waiting; a later flush
+    // (the server back) takes them up first; the tidy does them all.
+    let cap = (!full).then_some(pg.cfg.watch.cpu_texts);
     let ids: Option<Vec<String>> = if full {
         None
     } else {
@@ -752,6 +791,8 @@ pub fn keep_up(
     for (l, enc) in models {
         let t = Instant::now();
         let (mut cards, mut windows) = (0, 0);
+        // This model's cards and windows left for the server.
+        let mut mine = (0usize, 0usize);
         if l.model.legacy_cards {
             let r = if full {
                 drain(pg, *enc, 0, |_, _| {})?
@@ -776,14 +817,19 @@ pub fn keep_up(
             )?;
             cards += r.cards;
             windows += r.windows;
+            left.cards += r.deferred_cards;
             left.windows += r.deferred_windows;
-            left.entities.extend(r.deferred);
+            left.entities.extend(r.deferred.iter().cloned());
+            mine = (r.deferred_cards, r.deferred_windows);
         }
         rep.embedded += cards + windows;
-        if cards + windows > 0 || left.windows > 0 {
+        if cards + windows > 0 || mine != (0, 0) {
             let on = if enc.degraded() { " on the CPU" } else { "" };
-            let wait = if left.windows > 0 {
-                format!(", {} windows left for the server", left.windows)
+            let wait = if mine != (0, 0) {
+                format!(
+                    ", {} cards and {} windows left for the server",
+                    mine.0, mine.1
+                )
             } else {
                 String::new()
             };

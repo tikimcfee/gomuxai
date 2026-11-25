@@ -88,13 +88,17 @@ pub struct Watch {
     /// ...and at most this often.
     pub tidy_every_s: u64,
     /// The embedder's worker threads in the watcher (a bulk `agent index
-    /// embed` takes half the logical CPUs; a background process, fewer).
+    /// embed` takes half the logical CPUs; a background process, fewer),
+    /// each product on one thread, when bge is the only model. With a
+    /// larger model the watcher embeds a text at a time on every core.
     pub embed_workers: usize,
-    /// With the embedder's server down ([embedder].endpoint), the chunk
-    /// windows a flush embeds on the CPU, at most: the rest wait for the
-    /// server (the next flush once it answers) or the tidy, and the
-    /// watcher's status counts them. Sized so such a flush stays near 10 s.
-    pub cpu_windows: usize,
+    /// With the embedder's server down ([embedder].endpoint), the texts
+    /// (cards, then chunk windows) a flush embeds on the CPU, at most: the
+    /// rest wait for the server (the next flush once it answers, or a
+    /// catch-up every 30 s) or the tidy, and the watcher's status counts
+    /// them. Sized so such a flush stays near 10 s: Qwen3-0.6B takes about
+    /// 3.5 s a text on 32 cores.
+    pub cpu_texts: usize,
 }
 
 impl Default for Watch {
@@ -107,7 +111,7 @@ impl Default for Watch {
             tidy_quiet_s: 600,
             tidy_every_s: 3600,
             embed_workers: 4,
-            cpu_windows: 8,
+            cpu_texts: 2,
         }
     }
 }

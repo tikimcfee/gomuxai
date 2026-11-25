@@ -542,6 +542,8 @@ pub struct Served {
     model: String,
     recheck: std::time::Duration,
     down_until: std::sync::Mutex<Option<std::time::Instant>>,
+    /// The last call went to the CPU.
+    fell_back: std::sync::atomic::AtomicBool,
 }
 
 impl Served {
@@ -561,6 +563,7 @@ impl Served {
             model: model.to_string(),
             recheck,
             down_until: std::sync::Mutex::new(None),
+            fell_back: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -583,8 +586,10 @@ impl Encode for Served {
     fn dim(&self) -> usize {
         self.query.dim()
     }
+    /// The server is being left alone, or the last call went to the CPU (a
+    /// CPU batch can outlast the back-off: the caller still learns of it).
     fn degraded(&self) -> bool {
-        self.backing_off().is_some()
+        self.backing_off().is_some() || self.fell_back.load(std::sync::atomic::Ordering::Relaxed)
     }
     fn embed(&self, texts: &[String], query: bool) -> Result<Vec<Vec<f32>>> {
         use crate::pg::vecs::{EmbedOn, note_embed_on, note_server};
@@ -605,6 +610,8 @@ impl Encode for Served {
                 match got {
                     Ok(v) => {
                         *self.down_until.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        self.fell_back
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
                         note_server(
                             |s| {
                                 s.up = true;
@@ -645,7 +652,17 @@ impl Encode for Served {
                 }
             }
         };
+        self.fell_back
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let v = self.local()?.embed(texts, query)?;
+        // The back-off runs from the end of the CPU's work, so a long CPU
+        // batch doesn't send the next one straight back to a dead server.
+        {
+            let mut d = self.down_until.lock().unwrap_or_else(|e| e.into_inner());
+            if d.is_some() {
+                *d = Some(std::time::Instant::now() + self.recheck);
+            }
+        }
         note_server(|s| s.fell_back += texts.len() as u64, &ep, &self.model);
         if query {
             note_embed_on(EmbedOn {
