@@ -86,6 +86,25 @@ pub fn fit<'a>(tok: &Tokenizer, text: &'a str, limit: usize) -> &'a str {
     }
 }
 
+/// Whether a text is longer than the model reads (`[embedder].max_tokens`,
+/// less the pooled end token), by its tokenizer: the windows a bulk pass
+/// left to the server's own cut, which `agent index embed --refit-long`
+/// embeds again with [`fit`]'s.
+pub fn over_cut(cfg: &crate::config::Embedder, model: &str) -> Result<impl Fn(&str) -> bool> {
+    let s = spec(model)?;
+    let given =
+        (model == cfg.model && !cfg.model_dir.is_empty()).then(|| PathBuf::from(&cfg.model_dir));
+    let dir = model_dir(s.repo, given.as_deref())?;
+    let tok = Tokenizer::from_file(dir.join("tokenizer.json"))
+        .map_err(|e| anyhow!("tokenizer.json: {e}"))?;
+    let limit = cfg.max_tokens.min(s.max_tokens).saturating_sub(1).max(1);
+    Ok(move |t: &str| {
+        tok.encode(t, false)
+            .map(|e| e.len() > limit)
+            .unwrap_or(false)
+    })
+}
+
 /// Cuts a vector to its first `dims` (Matryoshka) and renormalizes it.
 pub fn cut(mut v: Vec<f32>, dims: usize) -> Vec<f32> {
     if dims > 0 && dims < v.len() {
@@ -563,6 +582,9 @@ impl Served {
 impl Encode for Served {
     fn dim(&self) -> usize {
         self.query.dim()
+    }
+    fn degraded(&self) -> bool {
+        self.backing_off().is_some()
     }
     fn embed(&self, texts: &[String], query: bool) -> Result<Vec<Vec<f32>>> {
         use crate::pg::vecs::{EmbedOn, note_embed_on, note_server};

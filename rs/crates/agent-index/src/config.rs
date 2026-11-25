@@ -90,6 +90,11 @@ pub struct Watch {
     /// The embedder's worker threads in the watcher (a bulk `agent index
     /// embed` takes half the logical CPUs; a background process, fewer).
     pub embed_workers: usize,
+    /// With the embedder's server down ([embedder].endpoint), the chunk
+    /// windows a flush embeds on the CPU, at most: the rest wait for the
+    /// server (the next flush once it answers) or the tidy, and the
+    /// watcher's status counts them. Sized so such a flush stays near 10 s.
+    pub cpu_windows: usize,
 }
 
 impl Default for Watch {
@@ -102,6 +107,7 @@ impl Default for Watch {
             tidy_quiet_s: 600,
             tidy_every_s: 3600,
             embed_workers: 4,
+            cpu_windows: 8,
         }
     }
 }

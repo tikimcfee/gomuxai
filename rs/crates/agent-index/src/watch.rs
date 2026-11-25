@@ -56,7 +56,21 @@ pub trait Keeper {
     fn flush(&mut self, projects: &[String]) -> Result<String>;
     /// The full crawl and sync; one line saying what it did.
     fn tidy(&mut self) -> Result<String>;
+    /// Chunk windows waiting for the embedder's server (a flush with it
+    /// down embeds only a few on the CPU).
+    fn windows_waiting(&self) -> usize {
+        0
+    }
+    /// Embeds the waiting windows if the server answers again (no crawl, no
+    /// sync); one line when it did something. Asked every
+    /// [`CATCH_UP_EVERY`] while windows wait and nothing is due.
+    fn catch_up(&mut self) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
+
+/// How often the watcher asks the keeper to catch up on waiting windows.
+pub const CATCH_UP_EVERY: Duration = Duration::from_secs(30);
 
 /// Changed projects waiting to be flushed.
 #[derive(Debug, Default)]
@@ -314,6 +328,9 @@ pub struct Status {
     /// Paths queued by this request.
     #[serde(default)]
     pub queued: usize,
+    /// Chunk windows waiting for the embedder's server ([watch].cpu_windows).
+    #[serde(default)]
+    pub windows_waiting: usize,
 }
 
 /// Names changed paths to the watcher at `socket` (or asks its status);
@@ -474,9 +491,24 @@ pub fn run(
     let mut last_activity = Instant::now();
     let tidy_quiet = Duration::from_secs(s.tidy_quiet_s);
     let tidy_every = Duration::from_secs(s.tidy_every_s);
+    let mut last_catch_up = Instant::now();
     loop {
         let now = Instant::now();
         let mut wait = q.next(now, s).unwrap_or(Duration::from_secs(60));
+        // Windows waiting for the embedder's server: asked again now and
+        // then, with nothing else due.
+        if keeper.windows_waiting() > 0 {
+            if q.is_empty() && now.duration_since(last_catch_up) >= CATCH_UP_EVERY {
+                last_catch_up = now;
+                match keeper.catch_up() {
+                    Ok(Some(line)) => log(&format!("caught up on waiting windows: {line}")),
+                    Ok(None) => {}
+                    Err(e) => log(&format!("catching up on waiting windows failed: {e:#}")),
+                }
+                status.lock().unwrap().windows_waiting = keeper.windows_waiting();
+            }
+            wait = wait.min(CATCH_UP_EVERY);
+        }
         if activity {
             let t = (last_activity + tidy_quiet)
                 .max(last_tidy + tidy_every)
@@ -594,6 +626,7 @@ pub fn run(
             match &res {
                 Ok(line) => {
                     st.flushes += 1;
+                    st.windows_waiting = keeper.windows_waiting();
                     st.last_flush = format!("{} ({events} events): {line}", names.join(", "));
                     st.last_flush_at = now_rfc3339();
                     st.last_commit_ms = chrono::Utc::now().timestamp_millis();
@@ -642,6 +675,7 @@ pub fn run(
                     let mut st = status.lock().unwrap();
                     st.tidies += 1;
                     st.last_tidy = now_rfc3339();
+                    st.windows_waiting = keeper.windows_waiting();
                 }
                 Err(e) => log(&format!("the tidy failed: {e:#}")),
             }

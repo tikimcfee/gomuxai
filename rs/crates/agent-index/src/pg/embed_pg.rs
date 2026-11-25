@@ -219,6 +219,12 @@ pub struct ModelReport {
     /// Counted, not done.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub dry_run: bool,
+    /// Windows left for later (`Pass::cpu_cap`), and their entities.
+    pub deferred_windows: usize,
+    #[serde(skip)]
+    pub deferred: Vec<String>,
+    /// Windows embedded again for `Pass::refit`.
+    pub refit: usize,
 }
 
 /// A batch of rows into a model's table, by `unnest`, replacing a row with
@@ -287,6 +293,13 @@ pub struct Pass<'a> {
     pub have_from: Option<&'a str>,
     /// Called with each window's text (a dry run's token count).
     pub on_window: Option<&'a dyn Fn(&str)>,
+    /// While the encoder is degraded (its server failed: the CPU embeds),
+    /// at most this many windows are embedded, in batches of this many;
+    /// the rest are left (`ModelReport::deferred`) for when it's back.
+    pub cpu_cap: Option<usize>,
+    /// Windows embedded again although their key holds: those this marks
+    /// (the bulk pass's over-long windows, cut by the server's own rule).
+    pub refit: Option<&'a dyn Fn(&str) -> bool>,
 }
 
 /// Brings a model's vectors (docs/INDEX-V2.md, "A code-trained embedder")
@@ -428,6 +441,8 @@ pub fn drain_model<E: Encode + ?Sized>(
             .collect();
         progress(&format!("{}: chunks of {} entities", m.name, ids.len()));
         let mut done = 0usize;
+        // Windows embedded while the encoder was degraded (Pass::cpu_cap).
+        let mut cpu_windows = 0usize;
         for group in ids.chunks(200) {
             let g: Vec<String> = group.to_vec();
             let ents: HashMap<String, EntCols> = pg
@@ -545,10 +560,14 @@ pub fn drain_model<E: Encode + ?Sized>(
                     want.push(k.clone());
                     let (a, b) = (w.line_start as i32, w.line_end as i32);
                     if let Some(h) = have.get(&k).filter(|h| h.0 == key) {
-                        if (h.1, h.2) != (a, b) {
-                            moved.push((id.clone(), ord, w.part as i32, a, b));
+                        if p.refit.is_some_and(|f| f(&w.text)) {
+                            rep.refit += 1;
+                        } else {
+                            if (h.1, h.2) != (a, b) {
+                                moved.push((id.clone(), ord, w.part as i32, a, b));
+                            }
+                            continue;
                         }
-                        continue;
                     }
                     let cols = vec![
                         id.clone(),
@@ -586,9 +605,35 @@ pub fn drain_model<E: Encode + ?Sized>(
                     &[&col_s(|m| m.0.clone()), &col_i(|m| m.1), &col_i(|m| m.2), &col_i(|m| m.3), &col_i(|m| m.4)],
                 )?;
             }
-            for part in todo.chunks(batch) {
+            // With a CPU cap, windows go in batches of the cap, so a server
+            // that fails mid-pass costs the CPU one small batch, and once
+            // the encoder is degraded the cap's worth are embedded and the
+            // rest left.
+            let step = p.cpu_cap.map_or(batch, |n| n.clamp(1, batch));
+            let mut at = 0;
+            while at < todo.len() {
+                let mut take = step.min(todo.len() - at);
+                let was = p.cpu_cap.is_some() && emb.degraded();
+                if let Some(n) = p.cpu_cap
+                    && was
+                {
+                    take = take.min(n.saturating_sub(cpu_windows));
+                    if take == 0 {
+                        let left = &todo[at..];
+                        rep.deferred_windows += left.len();
+                        rep.deferred.extend(left.iter().map(|t| t.0[0].clone()));
+                        break;
+                    }
+                }
+                let part = &todo[at..at + take];
+                at += take;
                 let texts: Vec<String> = part.iter().map(|t| t.2.clone()).collect();
                 let vs = emb.embed(&texts, false)?;
+                // Embedded on the CPU: degraded before, or the server failed
+                // on this batch.
+                if p.cpu_cap.is_some() && (was || emb.degraded()) {
+                    cpu_windows += take;
+                }
                 let rows: Vec<(Vec<String>, Vec<i32>, Vec<f32>)> = part
                     .iter()
                     .zip(vs)
@@ -651,6 +696,14 @@ pub fn drain_model<E: Encode + ?Sized>(
     Ok(rep)
 }
 
+/// The windows a flush left for the server (its server down, the CPU
+/// embedded only `[watch].cpu_windows`): their entities, and how many.
+#[derive(Debug, Clone, Default)]
+pub struct Waiting {
+    pub entities: std::collections::BTreeSet<String>,
+    pub windows: usize,
+}
+
 /// What [`keep_up`] did, all models together and by model.
 #[derive(Debug, Clone, Default)]
 pub struct KeepReport {
@@ -670,8 +723,13 @@ pub fn keep_up(
     models: &[(&super::vecs::Live, &(dyn Encode + Sync))],
     full: bool,
     rechunked: &[String],
+    waiting: &mut Waiting,
 ) -> Result<KeepReport> {
     let mut rep = KeepReport::default();
+    // A flush with its server down embeds `[watch].cpu_windows` windows on
+    // the CPU and leaves the rest waiting; a later flush (the server back)
+    // takes them up first; the tidy does them all.
+    let cap = (!full).then_some(pg.cfg.watch.cpu_windows);
     let ids: Option<Vec<String>> = if full {
         None
     } else {
@@ -681,6 +739,7 @@ pub fn keep_up(
             .map(|r| r.get(0))
             .collect();
         v.extend(rechunked.iter().cloned());
+        v.extend(waiting.entities.iter().cloned());
         v.sort();
         v.dedup();
         if v.is_empty() {
@@ -689,6 +748,7 @@ pub fn keep_up(
         Some(v)
     };
     let chunk_cfg = pg.cfg.embedder.chunks.clone();
+    let mut left = Waiting::default();
     for (l, enc) in models {
         let t = Instant::now();
         let (mut cards, mut windows) = (0, 0);
@@ -709,22 +769,33 @@ pub fn keep_up(
                     corpora: l.corpora.clone(),
                     chunks: l.chunks.then_some(&chunk_cfg),
                     only: ids.as_deref(),
+                    cpu_cap: cap,
                     ..Default::default()
                 },
                 &mut |_| {},
             )?;
             cards += r.cards;
             windows += r.windows;
+            left.windows += r.deferred_windows;
+            left.entities.extend(r.deferred);
         }
         rep.embedded += cards + windows;
-        if cards + windows > 0 {
+        if cards + windows > 0 || left.windows > 0 {
+            let on = if enc.degraded() { " on the CPU" } else { "" };
+            let wait = if left.windows > 0 {
+                format!(", {} windows left for the server", left.windows)
+            } else {
+                String::new()
+            };
             rep.parts.push(format!(
-                "{}: {cards} cards, {windows} windows in {} ms",
+                "{}: {cards} cards, {windows} windows{on} in {} ms{wait}",
                 l.model.name,
                 t.elapsed().as_millis()
             ));
         }
     }
+    // What this pass left is what waits now (the waiting ones were in it).
+    *waiting = left;
     if !models.iter().any(|(l, _)| l.model.legacy_cards) {
         match &ids {
             Some(v) => pg.execute("DELETE FROM embed_queue WHERE entity_id = ANY($1)", &[v])?,

@@ -93,6 +93,12 @@ pub trait Encode {
     /// One L2-normalized vector per text, in order. `query` marks search
     /// queries (bge gives them an instruction; documents get none).
     fn embed(&self, texts: &[String], query: bool) -> Result<Vec<Vec<f32>>>;
+    /// Whether it embeds on the CPU now because its server failed
+    /// (embed_models::Served): the watcher then embeds only a few windows a
+    /// flush and leaves the rest for when the server is back.
+    fn degraded(&self) -> bool {
+        false
+    }
 }
 
 impl Encode for Embedder {

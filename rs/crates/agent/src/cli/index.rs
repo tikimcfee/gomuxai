@@ -141,6 +141,9 @@ struct Keep<'a> {
     /// CPU.
     #[cfg(feature = "embed")]
     models: Vec<(agent_index::pg::vecs::Live, agent_index::embed_models::Shared)>,
+    /// Windows a flush left for the embedder's server ([watch].cpu_windows).
+    #[cfg(feature = "embed")]
+    waiting: agent_index::pg::embed_pg::Waiting,
 }
 
 /// Gives freed heap back to the system: a tidy's full sync holds the whole
@@ -170,7 +173,7 @@ impl Keep<'_> {
                 .iter()
                 .map(|(l, e)| (l, e.as_ref() as &(dyn Encode + Sync)))
                 .collect();
-            let r = embed_pg::keep_up(&self.pg, &models, full, rechunked)?;
+            let r = embed_pg::keep_up(&self.pg, &models, full, rechunked, &mut self.waiting)?;
             return Ok((r.embedded, r.parts.join("; ")));
         }
         let _ = (full, rechunked);
@@ -266,6 +269,21 @@ impl agent_index::watch::Keeper for Keep<'_> {
             s.deleted
         ))
     }
+
+    fn windows_waiting(&self) -> usize {
+        #[cfg(feature = "embed")]
+        return self.waiting.windows;
+        #[cfg(not(feature = "embed"))]
+        0
+    }
+
+    fn catch_up(&mut self) -> anyhow::Result<Option<String>> {
+        if self.windows_waiting() == 0 {
+            return Ok(None);
+        }
+        let (e, by_model) = self.embed(false, &[])?;
+        Ok((e > 0).then_some(by_model))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -286,7 +304,7 @@ fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
             return ctx.print_json(&st);
         }
         return ctx.write_out(&format!(
-            "Watching {} directories of {} projects since {}{}; {} events, {} paths named on the socket ({} outside every project), {} flushes, {} tidies, {} projects waiting.\nLast flush ({}): {}\nLast tidy: {}\n{}",
+            "Watching {} directories of {} projects since {}{}; {} events, {} paths named on the socket ({} outside every project), {} flushes, {} tidies, {} projects waiting.\nLast flush ({}): {}\nLast tidy: {}\n{}{}",
             st.watched_dirs,
             st.projects,
             st.started,
@@ -304,6 +322,14 @@ fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
             if st.last_flush_at.is_empty() { "none" } else { &st.last_flush_at },
             st.last_flush,
             if st.last_tidy.is_empty() { "none" } else { &st.last_tidy },
+            if st.windows_waiting > 0 {
+                format!(
+                    "{} chunk windows wait for the embedder's server (the CPU took [watch].cpu_windows a flush).\n",
+                    st.windows_waiting
+                )
+            } else {
+                String::new()
+            },
             if st.last_error.is_empty() {
                 String::new()
             } else {
@@ -363,6 +389,8 @@ fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
         pg,
         #[cfg(feature = "embed")]
         models,
+        #[cfg(feature = "embed")]
+        waiting: Default::default(),
     };
     watch::run(&mut keep, &cfg.watch, &socket, |line| {
         eprintln!(
@@ -1184,6 +1212,11 @@ pub struct EmbedArgs {
         help = "Count what would be copied, embedded and removed; write nothing (pg store)"
     )]
     pub dry_run: bool,
+    #[arg(
+        long = "refit-long",
+        help = "Embed again the windows longer than the model reads, whose vectors a server cut by its own rule (pg store)"
+    )]
+    pub refit_long: bool,
     #[arg(long = "json", help = "Print the report as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -1382,6 +1415,12 @@ fn embed_models_pg(
                 continue;
             }
         }
+        let over = if a.refit_long && l.chunks {
+            Some(embed_models::over_cut(&ecfg, &m.name)?)
+        } else {
+            None
+        };
+        let refit = over.as_ref().map(|f| f as &dyn Fn(&str) -> bool);
         let r = embed_pg::drain_model(
             pg,
             enc.as_ref(),
@@ -1392,19 +1431,25 @@ fn embed_models_pg(
                 bulk: a.bulk || !a.copy_from.is_empty(),
                 dry_run: dry,
                 have_from: (dry && !a.copy_from.is_empty()).then_some(a.copy_from.as_str()),
+                refit,
                 ..Default::default()
             },
             &mut |line| eprintln!("{line}"),
         )?;
         let _ = writeln!(
             o,
-            "{} ({}): {} card vectors, {} window vectors of {} windows{}, {} lines moved, {} dropped, in {:.1}s",
+            "{} ({}): {} card vectors, {} window vectors of {} windows{}{}, {} lines moved, {} dropped, in {:.1}s",
             m.name,
             served.join(", "),
             r.cards,
             r.windows,
             r.windows_seen,
             if dry { " to embed (dry run)" } else { "" },
+            if a.refit_long {
+                format!(" ({} of them over the token cut, again)", r.refit)
+            } else {
+                String::new()
+            },
             r.moved,
             r.removed,
             r.secs

@@ -1508,6 +1508,23 @@ impl crate::embed::Encode for Toward {
     }
 }
 
+/// [`Toward`] with its server down: embed_pg's CPU cap applies.
+#[cfg(feature = "embed")]
+struct Down(Toward);
+
+#[cfg(feature = "embed")]
+impl crate::embed::Encode for Down {
+    fn dim(&self) -> usize {
+        self.0.dim()
+    }
+    fn embed(&self, texts: &[String], q: bool) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.0.embed(texts, q)
+    }
+    fn degraded(&self) -> bool {
+        true
+    }
+}
+
 /// Another model's vectors (pg::vecs): cards and chunk windows in tables of
 /// their own, one model per corpus, their lists in the search, and the
 /// sync dropping rows of what is gone.
@@ -1520,7 +1537,7 @@ fn model_tables_and_chunk_lists() {
     let (dir, mut ix) = fixture();
     super::sync::sync(&ix.conn, &t.0, false).unwrap();
     let cfg = crate::config::Config::parse(
-        "[embedder]\ndims = 8\n[embedder.chunks]\nenabled = true\nwindow_chars = 400\n[embedder.corpus]\ncode = \"qwen3-embedding-0.6b\"\n",
+        "[embedder]\ndims = 8\n[embedder.chunks]\nenabled = true\nwindow_chars = 400\n[embedder.corpus]\ncode = \"qwen3-embedding-0.6b\"\n[watch]\ncpu_windows = 1\n",
     )
     .unwrap();
     let pg = &Pg::connect_with(&url, &t.0.schema, cfg.clone()).unwrap();
@@ -1584,11 +1601,13 @@ fn model_tables_and_chunk_lists() {
         kept: false,
     };
     let enc = Toward(8);
+    let mut waiting = super::embed_pg::Waiting::default();
     let k = super::embed_pg::keep_up(
         pg,
         &[(&live, &enc as &(dyn crate::embed::Encode + Sync))],
         false,
         &["alpha:src/lib.rs".to_string()],
+        &mut waiting,
     )
     .unwrap();
     assert!(k.embedded > 0 && k.parts.len() == 1, "{k:?}");
@@ -1602,9 +1621,50 @@ fn model_tables_and_chunk_lists() {
         &[(&live, &enc as &(dyn crate::embed::Encode + Sync))],
         false,
         &[],
+        &mut waiting,
     )
     .unwrap();
     assert_eq!(k.embedded, 0);
+    // The server down ([watch].cpu_windows = 1): one window on the CPU, the
+    // rest wait; with it back, the next flush (nothing new) takes them.
+    let all = count("SELECT count(*) FROM vec_chunks_qwen3_8");
+    assert!(all > 1);
+    let with_chunks: Vec<String> = pg
+        .query("SELECT DISTINCT entity_id FROM vec_chunks_qwen3_8", &[])
+        .unwrap()
+        .into_iter()
+        .map(|r| r.get(0))
+        .collect();
+    pg.execute("DELETE FROM vec_chunks_qwen3_8", &[]).unwrap();
+    let down = Down(Toward(8));
+    let k = super::embed_pg::keep_up(
+        pg,
+        &[(&live, &down as &(dyn crate::embed::Encode + Sync))],
+        false,
+        &with_chunks,
+        &mut waiting,
+    )
+    .unwrap();
+    assert_eq!(count("SELECT count(*) FROM vec_chunks_qwen3_8"), 1, "{k:?}");
+    assert_eq!(waiting.windows as i64, all - 1);
+    assert!(
+        k.parts[0].contains("on the CPU") && k.parts[0].contains("left for the server"),
+        "{k:?}"
+    );
+    let k = super::embed_pg::keep_up(
+        pg,
+        &[(&live, &enc as &(dyn crate::embed::Encode + Sync))],
+        false,
+        &[],
+        &mut waiting,
+    )
+    .unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM vec_chunks_qwen3_8"),
+        all,
+        "{k:?}"
+    );
+    assert_eq!(waiting.windows, 0);
     // A dry run against a schema that has none of the vectors counts them
     // all, and writes nothing; a copy from this schema into that one then
     // leaves nothing to embed.
