@@ -136,8 +136,11 @@ struct Keep<'a> {
     ctx: &'a Ctx,
     ix: Index,
     pg: Pg,
+    /// Each live model (vecs::live) with its encoder: the server first when
+    /// [embedder].endpoint names one, else (or when it doesn't answer) the
+    /// CPU.
     #[cfg(feature = "embed")]
-    emb: Option<agent_index::embed::Embedder>,
+    models: Vec<(agent_index::pg::vecs::Live, agent_index::embed_models::Shared)>,
 }
 
 /// Gives freed heap back to the system: a tidy's full sync holds the whole
@@ -154,21 +157,24 @@ fn trim() {
 
 #[cfg(target_os = "linux")]
 impl Keep<'_> {
-    /// Embeds what the sync queued (a flush: the queue alone; the tidy:
-    /// everything a vector is missing for); how many.
-    fn embed(&mut self, full: bool) -> anyhow::Result<usize> {
+    /// Embeds what the sync changed with every live model (a flush: the
+    /// cards it queued and the chunks it cut again; the tidy: everything a
+    /// vector is missing for); how many, and by model.
+    fn embed(&mut self, full: bool, rechunked: &[String]) -> anyhow::Result<(usize, String)> {
         #[cfg(feature = "embed")]
-        if let Some(emb) = &self.emb {
-            use agent_index::pg::embed_pg;
-            let r = if full {
-                embed_pg::drain(&self.pg, emb, 0, |_, _| {})?
-            } else {
-                embed_pg::drain_queued(&self.pg, emb)?
-            };
-            return Ok(r.embedded);
+        if !self.models.is_empty() {
+            use agent_index::embed::Encode;
+            use agent_index::pg::{embed_pg, vecs};
+            let models: Vec<(&vecs::Live, &(dyn Encode + Sync))> = self
+                .models
+                .iter()
+                .map(|(l, e)| (l, e.as_ref() as &(dyn Encode + Sync)))
+                .collect();
+            let r = embed_pg::keep_up(&self.pg, &models, full, rechunked)?;
+            return Ok((r.embedded, r.parts.join("; ")));
         }
-        let _ = full;
-        Ok(0)
+        let _ = (full, rechunked);
+        Ok((0, String::new()))
     }
 }
 
@@ -211,14 +217,19 @@ impl agent_index::watch::Keeper for Keep<'_> {
         let s = agent_index::pg::sync::sync_projects(&self.ix.conn, &self.pg, projects)?;
         let sync_ms = t.elapsed().as_millis();
         let t = std::time::Instant::now();
-        let e = self.embed(false)?;
+        let (e, by_model) = self.embed(false, &s.rechunked)?;
         let embed_ms = t.elapsed().as_millis();
         trim();
         let sum = |f: fn(&agent_index::ProjectReport) -> usize| -> usize {
             c.projects.iter().map(f).sum()
         };
+        let by_model = if by_model.is_empty() {
+            by_model
+        } else {
+            format!(" [{by_model}]")
+        };
         Ok(format!(
-            "files {} added, {} changed, {} removed, {} renamed; {} rows written, {} removed, {} files cut into {} chunks; {} embedded (crawl {} ms, sync {sync_ms} ms, embed {embed_ms} ms)",
+            "files {} added, {} changed, {} removed, {} renamed; {} rows written, {} removed, {} files cut into {} chunks; {} embedded{by_model} (crawl {} ms, sync {sync_ms} ms, embed {embed_ms} ms)",
             sum(|p| p.added),
             sum(|p| p.changed),
             sum(|p| p.removed),
@@ -241,7 +252,7 @@ impl agent_index::watch::Keeper for Keep<'_> {
             },
         )?;
         let s = sync_pg(self.ctx, &self.ix, &self.pg, false)?;
-        let e = self.embed(true)?;
+        let (e, _) = self.embed(true, &[])?;
         trim();
         let changed: usize = c
             .projects
@@ -319,20 +330,23 @@ fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
         );
     }
     #[cfg(feature = "embed")]
-    let emb = {
-        use agent_index::embed;
-        let given = (!cfg.embedder.model_dir.is_empty()).then(|| PathBuf::from(&cfg.embedder.model_dir));
-        match check_embedder(&cfg)
-            .and_then(|_| embed::model_dir(given.as_deref()))
-            .and_then(|d| embed::Embedder::load(&d))
-        {
-            Ok(mut e) => {
-                e.max_workers = cfg.watch.embed_workers;
-                Some(e)
-            }
+    let models = {
+        use agent_index::{embed_models, pg::vecs};
+        let load = || -> anyhow::Result<Vec<(vecs::Live, embed_models::Shared)>> {
+            check_embedder(&cfg)?;
+            vecs::live(&cfg)?
+                .into_iter()
+                .map(|l| {
+                    let e = embed_models::load_model(&cfg.embedder, &l.model.name, cfg.watch.embed_workers)?;
+                    Ok((l, e))
+                })
+                .collect()
+        };
+        match load() {
+            Ok(m) => m,
             Err(e) => {
                 ctx.hint(format!("watching without the embedder: changed cards keep their old vectors until agent index embed ({e:#})"));
-                None
+                Vec::new()
             }
         }
     };
@@ -348,7 +362,7 @@ fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
         ix,
         pg,
         #[cfg(feature = "embed")]
-        emb,
+        models,
     };
     watch::run(&mut keep, &cfg.watch, &socket, |line| {
         eprintln!(
@@ -1158,6 +1172,18 @@ pub struct EmbedArgs {
         help = "The CPU embedder's threads (0: half the logical CPUs)"
     )]
     pub workers: i64,
+    #[arg(
+        long = "copy-from",
+        value_name = "string",
+        default_value = "",
+        help = "First copy the model's vectors from this schema of the same database, where they still match (pg store; with --model)"
+    )]
+    pub copy_from: String,
+    #[arg(
+        long = "dry-run",
+        help = "Count what would be copied, embedded and removed; write nothing (pg store)"
+    )]
+    pub dry_run: bool,
     #[arg(long = "json", help = "Print the report as JSON")]
     pub json: bool,
     #[arg(hide = true)]
@@ -1195,18 +1221,21 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
         if !a.endpoint.is_empty() && a.model.is_empty() {
             anyhow::bail!("--endpoint serves one model: name it with --model");
         }
+        if !a.copy_from.is_empty() && a.model.is_empty() {
+            anyhow::bail!("--copy-from copies one model's vectors: name it with --model");
+        }
         // Only bge's cards, as before: the report as it was.
         let e = &pg.cfg.embedder;
         let bge_only = e.model == "bge-small-en-v1.5"
             && e.corpus.values().all(|m| m == "bge-small-en-v1.5")
             && !e.chunks.enabled
             && e.backend != "http";
-        if !bge_only || !a.model.is_empty() || !a.endpoint.is_empty() {
+        if !bge_only || !e.keep.is_empty() || !a.model.is_empty() || !a.endpoint.is_empty() || a.dry_run {
             let workers = usize::try_from(a.workers.max(0)).unwrap_or(0);
             return embed_models_pg(ctx, a, pg, workers);
         }
-    } else if !a.model.is_empty() || !a.endpoint.is_empty() {
-        anyhow::bail!("--model and --endpoint need the pg store (--store pg)");
+    } else if !a.model.is_empty() || !a.endpoint.is_empty() || !a.copy_from.is_empty() || a.dry_run {
+        anyhow::bail!("--model, --endpoint, --copy-from and --dry-run need the pg store (--store pg)");
     }
     // --model-dir, else the pg store's configured one, else the cache's.
     let mut given = (!a.model_dir.is_empty()).then(|| PathBuf::from(&a.model_dir));
@@ -1261,9 +1290,24 @@ fn run_embed(ctx: &Ctx, a: &EmbedArgs) -> anyhow::Result<()> {
     ctx.write_out(&o)
 }
 
-/// `agent index embed` on the pg store: bge's card vectors (when bge
-/// serves a corpus), then each other model's cards and every model's chunk
-/// windows ([embedder.chunks]), for the corpora each serves.
+/// A dry run's encoder: it is never asked.
+#[cfg(feature = "embed")]
+struct NoEncoder;
+
+#[cfg(feature = "embed")]
+impl agent_index::embed::Encode for NoEncoder {
+    fn dim(&self) -> usize {
+        0
+    }
+    fn embed(&self, _: &[String], _: bool) -> anyhow::Result<Vec<Vec<f32>>> {
+        anyhow::bail!("a dry run embeds nothing")
+    }
+}
+
+/// `agent index embed` on the pg store: every live model (vecs::live):
+/// bge's card vectors (when bge serves a corpus or is kept), then each
+/// other model's cards and chunk windows ([embedder.chunks]), for the
+/// corpora each serves.
 #[cfg(feature = "embed")]
 fn embed_models_pg(
     ctx: &Ctx,
@@ -1273,8 +1317,7 @@ fn embed_models_pg(
 ) -> anyhow::Result<()> {
     use agent_index::pg::{embed_pg, vecs};
     use agent_index::embed_models;
-    let corpora: Vec<String> = agent_index::config::CORPORA.iter().map(|c| c.to_string()).collect();
-    let plan = vecs::plan(&pg.cfg, &corpora)?;
+    let plan = vecs::live(&pg.cfg)?;
     let wanted = |name: &str| a.model.is_empty() || a.model == name;
     let mut reports: Vec<serde_json::Value> = Vec::new();
     let mut o = String::new();
@@ -1287,29 +1330,55 @@ fn embed_models_pg(
         ecfg.endpoint = a.endpoint.trim_end_matches('/').trim_end_matches("/v1").to_string();
         ecfg.served = if a.served.is_empty() { a.model.clone() } else { a.served.clone() };
     }
-    if !a.model.is_empty() && !plan.iter().any(|(m, _)| m.name == a.model) {
+    if !a.model.is_empty() && !plan.iter().any(|l| l.model.name == a.model) {
         anyhow::bail!(
-            "the configuration doesn't embed with {} ([embedder].model or [embedder.corpus])",
+            "the configuration doesn't embed with {} ([embedder].model, [embedder.corpus] or [embedder].keep)",
             a.model
         );
     }
-    for (m, served) in &plan {
+    let dry = a.dry_run;
+    for l in &plan {
+        let (m, served) = (&l.model, &l.corpora);
         if !wanted(&m.name) {
             continue;
         }
-        let enc = embed_models::load_model(&ecfg, &m.name, workers)?;
+        if !a.copy_from.is_empty() {
+            if dry {
+                let _ = writeln!(o, "{}: compared with schema {}'s vectors (a copy from it leaves what follows to do)", m.name, a.copy_from);
+            } else {
+                let c = embed_pg::copy_from(pg, m, &a.copy_from)?;
+                let _ = writeln!(
+                    o,
+                    "{}: copied from {} {} card vectors ({} left there: entity gone or card changed) and {} window vectors ({} left there: entity gone or no chunks now)",
+                    m.name, c.from, c.cards, c.cards_left, c.windows, c.windows_left
+                );
+                reports.push(serde_json::to_value(&c)?);
+            }
+        }
+        // A dry run loads no model.
+        let enc: embed_models::Shared = if dry {
+            std::sync::Arc::new(NoEncoder)
+        } else {
+            embed_models::load_model(&ecfg, &m.name, workers)?
+        };
         if m.legacy_cards {
-            let mut last = 0;
-            let r = embed_pg::drain(pg, enc.as_ref(), int_flag(a.limit, "limit")?, |done, total| {
-                if done >= last + 1000 && done < total {
-                    last = done;
-                    eprintln!("{}: cards {done} of {total}", m.name);
-                }
-            })?;
-            let _ = writeln!(o, "{}: {} card vectors in {:.1}s ({} left)", m.name, r.embedded, r.secs, r.remaining);
-            reports.push(serde_json::json!({"model": m.name, "key": m.key, "cards": r.embedded,
-                "removed": r.removed, "remaining": r.remaining, "secs": r.secs}));
-            if !pg.cfg.embedder.chunks.enabled {
+            if dry {
+                let n: i64 = pg.query("SELECT count(*) FROM entities WHERE embed AND vec_key <> text_key", &[])?[0].get(0);
+                let _ = writeln!(o, "{}: {n} card vectors to embed (dry run)", m.name);
+                reports.push(serde_json::json!({"model": m.name, "key": m.key, "cards": n, "dry_run": true}));
+            } else {
+                let mut last = 0;
+                let r = embed_pg::drain(pg, enc.as_ref(), int_flag(a.limit, "limit")?, |done, total| {
+                    if done >= last + 1000 && done < total {
+                        last = done;
+                        eprintln!("{}: cards {done} of {total}", m.name);
+                    }
+                })?;
+                let _ = writeln!(o, "{}: {} card vectors in {:.1}s ({} left)", m.name, r.embedded, r.secs, r.remaining);
+                reports.push(serde_json::json!({"model": m.name, "key": m.key, "cards": r.embedded,
+                    "removed": r.removed, "remaining": r.remaining, "secs": r.secs}));
+            }
+            if !l.chunks {
                 continue;
             }
         }
@@ -1317,20 +1386,26 @@ fn embed_models_pg(
             pg,
             enc.as_ref(),
             m,
-            served,
-            Some(&pg.cfg.embedder.chunks),
-            None,
-            a.bulk,
+            &embed_pg::Pass {
+                corpora: served.clone(),
+                chunks: l.chunks.then_some(&pg.cfg.embedder.chunks),
+                bulk: a.bulk || !a.copy_from.is_empty(),
+                dry_run: dry,
+                have_from: (dry && !a.copy_from.is_empty()).then_some(a.copy_from.as_str()),
+                ..Default::default()
+            },
             &mut |line| eprintln!("{line}"),
         )?;
         let _ = writeln!(
             o,
-            "{} ({}): {} card vectors, {} window vectors of {} windows, {} dropped, in {:.1}s",
+            "{} ({}): {} card vectors, {} window vectors of {} windows{}, {} lines moved, {} dropped, in {:.1}s",
             m.name,
             served.join(", "),
             r.cards,
             r.windows,
             r.windows_seen,
+            if dry { " to embed (dry run)" } else { "" },
+            r.moved,
             r.removed,
             r.secs
         );
@@ -2486,12 +2561,17 @@ fn run_search(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<()> {
     let t0 = std::time::Instant::now();
     let cfg = load_config(&a.config)?.config;
     let pg = cfg.wants_pg(&a.store)?;
+    let mut embed_on = None;
     let res = if pg {
-        run_search_pg(ctx, a)
+        run_search_pg(ctx, a).map(|(top, on)| {
+            embed_on = on;
+            top
+        })
     } else {
         run_search_sqlite(ctx, a)
     };
     let mut e = agent_index::qlog::Entry::new("search", &a.args.join(" "));
+    e.embed_on = embed_on;
     e.flag("kind", a.kind.as_str(), a.kind.is_empty());
     e.flag("project", a.project.as_str(), a.project.is_empty());
     e.flag("under", a.under.as_str(), a.under.is_empty());
@@ -2577,7 +2657,9 @@ fn run_search_sqlite(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<Vec<String>> {
 /// answers when it is up (and runs this build under this configuration);
 /// otherwise the search runs cold, through the same code. The answer's top
 /// paths.
-fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<Vec<String>> {
+/// Search on the pg store; the answer's top paths, and where its query
+/// vector was made (gpu or cpu) when the embedder has a server.
+fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<(Vec<String>, Option<String>)> {
     use agent_index::pg::serve;
     let loaded = load_config(&a.config)?;
     let lexical = if a.lexical.is_empty() {
@@ -2604,6 +2686,7 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<Vec<String>> {
         who: std::env::var("AGENT_NAME").unwrap_or_default(),
         fingerprint: loaded.config.fingerprint(),
         build: serve::build_id(),
+        status: false,
     };
     let socket = serve_socket(ctx, &loaded.config);
     let resp = match (!a.cold && socket.exists())
@@ -2631,10 +2714,16 @@ fn run_search_pg(ctx: &Ctx, a: &SearchArgs) -> anyhow::Result<Vec<String>> {
     let Some(r) = resp.result else {
         anyhow::bail!("the search gave no result");
     };
-    let top = top_paths(&r);
+    let on = r.embedder.as_ref().map(|e| e.on.clone());
+    let top = (top_paths(&r), on);
     if a.json {
         ctx.print_json(&r)?;
         return Ok(top);
+    }
+    // The query embedded on the CPU because the server didn't answer: one
+    // line on stderr (--json has it in "embedder").
+    if let Some(e) = r.embedder.as_ref().filter(|e| e.on == "cpu") {
+        ctx.notice(format!("Query embedded on the CPU: {}.", e.note));
     }
     let budget = int_flag(a.budget, "budget")?;
     if let Some(groups) = &r.groups {
@@ -2763,9 +2852,16 @@ it answers and runs cold otherwise, through the same code, so the answer
 is the same; it runs cold too when the server is another build of agent
 or runs another configuration (its fingerprint), and says why. search
 --cold skips it. Serve runs until it is stopped (Ctrl-C); run it in a
-session of its own."#,
+session of its own.
+
+With [embedder].endpoint, queries are embedded by that server and on the
+CPU when it doesn't answer (a failed server is asked again after
+[embedder].recheck_s); a search says when the CPU did it. --status asks
+the running server for its health: its configuration and how each
+embedding server has done."#,
     example: r#"  agent index serve
-  agent index serve --config tune/rerank50.toml"#,
+  agent index serve --config tune/rerank50.toml
+  agent index serve --status"#,
     args: ArgRule::None,
     ..Doc::DEFAULT
 };
@@ -2779,6 +2875,10 @@ pub struct ServeArgs {
         help = "The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)"
     )]
     pub config: String,
+    #[arg(long = "status", help = "Ask the running server for its health")]
+    pub status: bool,
+    #[arg(long = "json", help = "Print the status as JSON")]
+    pub json: bool,
     #[arg(hide = true)]
     pub args: Vec<String>,
 }
@@ -2790,8 +2890,11 @@ fn serve_def() -> Def {
 fn run_serve(ctx: &Ctx, a: &ServeArgs) -> anyhow::Result<()> {
     use agent_index::pg::serve;
     let loaded = load_config(&a.config)?;
-    let (url, schema) = pg_target(&loaded.config)?;
     let socket = serve_socket(ctx, &loaded.config);
+    if a.status {
+        return serve_status(ctx, a, &socket);
+    }
+    let (url, schema) = pg_target(&loaded.config)?;
     // The embedder loaded now, not at the first search.
     let embed = query_embedder(ctx, &loaded.config);
     if let Some(e) = &embed {
@@ -2814,6 +2917,44 @@ fn run_serve(ctx: &Ctx, a: &ServeArgs) -> anyhow::Result<()> {
         embed,
     };
     serve::serve(srv, &socket, workers)
+}
+
+/// `agent index serve --status`: the running server's health.
+fn serve_status(ctx: &Ctx, a: &ServeArgs, socket: &Path) -> anyhow::Result<()> {
+    use agent_index::pg::serve;
+    let req = serve::Request {
+        status: true,
+        ..Default::default()
+    };
+    let resp = serve::ask(socket, &req, std::time::Duration::from_secs(5))?;
+    let st = resp
+        .status
+        .ok_or_else(|| anyhow::anyhow!("the index server at {} sent no status", socket.display()))?;
+    if a.json {
+        return ctx.print_json(&st);
+    }
+    let mut out = format!(
+        "The index server on {} serves schema {} (configuration {}).\n",
+        socket.display(),
+        st.schema,
+        st.fingerprint
+    );
+    if st.embedders.is_empty() {
+        out.push_str("Its embedder has no server: queries are embedded on the CPU.\n");
+    }
+    for e in &st.embedders {
+        let state = if e.up {
+            "up".to_string()
+        } else {
+            format!("down since {} ({})", e.down_since, e.error)
+        };
+        let _ = writeln!(
+            out,
+            "Embedding server {} ({}): {state}; {} texts embedded by it, {} on the CPU instead.",
+            e.endpoint, e.model, e.served, e.fell_back
+        );
+    }
+    ctx.write_out(&out)
 }
 
 /// Says when the caller's project moved since its last crawl.

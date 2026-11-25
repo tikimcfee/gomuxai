@@ -47,6 +47,10 @@ pub struct SyncReport {
     pub queued: usize,
     pub chunked_files: usize,
     pub chunks: usize,
+    /// The entities whose chunks were cut again (the watcher embeds their
+    /// windows).
+    #[serde(skip)]
+    pub rechunked: Vec<String>,
     pub labels: usize,
     /// Files whose recorded mtime moved (the stale check reads it).
     pub mtimes: usize,
@@ -1328,6 +1332,7 @@ fn sync_inner(
     if !rechunk.is_empty() {
         let ids: Vec<String> = rechunk.iter().map(|(i, _)| i.clone()).collect();
         tx.execute("DELETE FROM chunks WHERE entity_id = ANY($1)", &[&ids])?;
+        rep.rechunked = ids.clone();
         let by_id: HashMap<&str, &Out> = rows.iter().map(|o| (o.e.id.as_str(), o)).collect();
         let mut buf = String::new();
         for (id, ck) in &rechunk {

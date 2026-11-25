@@ -56,6 +56,21 @@ pub struct Request {
     /// The asker's configuration fingerprint and build, which must match.
     pub fingerprint: String,
     pub build: String,
+    /// Not a search: the server's health (`agent index serve --status`),
+    /// answered whatever the build or configuration.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub status: bool,
+}
+
+/// The server's health, for `agent index serve --status`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Status {
+    pub schema: String,
+    pub fingerprint: String,
+    pub build: String,
+    /// The embedding servers it has asked, and how they did
+    /// (vecs::ServerState); empty when the embedder has none.
+    pub embedders: Vec<super::vecs::ServerState>,
 }
 
 /// The answer.
@@ -69,6 +84,9 @@ pub struct Response {
     /// A note for the person (the caller's project is ahead of its crawl).
     pub hint: Option<String>,
     pub error: Option<String>,
+    /// The answer to a status request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<Status>,
     /// The files behind hits that changed or went since they were indexed
     /// (the caller tells the watcher).
     #[serde(default)]
@@ -219,6 +237,7 @@ pub fn answer(
         hint,
         error: None,
         stale,
+        status: None,
     })
 }
 
@@ -260,6 +279,15 @@ fn handle(pg: &Pg, rr: &super::rerank::Client, embed: Option<&Embed>, build: &st
         Ok(_) => match serde_json::from_str::<Request>(&buf) {
             Err(e) => Response {
                 error: Some(format!("the request isn't one: {e}")),
+                ..Default::default()
+            },
+            Ok(req) if req.status => Response {
+                status: Some(Status {
+                    schema: pg.schema.clone(),
+                    fingerprint: pg.cfg.fingerprint(),
+                    build: build.to_string(),
+                    embedders: super::vecs::servers(),
+                }),
                 ..Default::default()
             },
             Ok(req) if req.build != build => Response {

@@ -54,6 +54,38 @@ pub fn model_dir(repo: &str, given: Option<&Path>) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("no complete snapshot of {repo} under {}", snaps.display()))
 }
 
+/// A text cut at a token boundary to at most `limit` tokens (without the
+/// special tokens): what the model reads of it. The server and candle both
+/// embed the cut text, so an over-long window gives one vector either way
+/// rather than two truncations (vLLM's `truncate_prompt_tokens` keeps a
+/// prompt's last tokens; candle keeps its first).
+pub fn fit<'a>(tok: &Tokenizer, text: &'a str, limit: usize) -> &'a str {
+    let Ok(enc) = tok.encode(text, false) else {
+        return text;
+    };
+    if enc.len() <= limit {
+        return text;
+    }
+    let mut n = limit;
+    loop {
+        // Byte offsets of the token that ends the cut.
+        let mut end = enc
+            .get_offsets()
+            .get(n.saturating_sub(1))
+            .map_or(0, |o| o.1);
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let cut = &text[..end.min(text.len())];
+        // Tokens can merge differently at the new end: cut again until the
+        // cut text itself fits.
+        match tok.encode(cut, false) {
+            Ok(e) if e.len() > limit && n > 1 => n -= 1,
+            _ => return cut,
+        }
+    }
+}
+
 /// Cuts a vector to its first `dims` (Matryoshka) and renormalizes it.
 pub fn cut(mut v: Vec<f32>, dims: usize) -> Vec<f32> {
     if dims > 0 && dims < v.len() {
@@ -154,6 +186,12 @@ impl Qwen3 {
     }
 
     fn one(&self, text: &str) -> Result<Vec<f32>> {
+        // Cut as the server's texts are ([`fit`]), so both read the same.
+        let text = fit(
+            &self.tokenizer,
+            text,
+            self.max_tokens.saturating_sub(1).max(1),
+        );
         let enc = self
             .tokenizer
             .encode(text, false)
@@ -323,8 +361,12 @@ pub struct Http {
     instruction: String,
     pub dims: usize,
     pub batch: usize,
-    /// Texts are cut at this many tokens (by the server).
+    /// Texts are cut at this many tokens: here, with the model's tokenizer
+    /// when it's on this host ([`fit`], as candle cuts), and by the server.
     pub max_tokens: usize,
+    /// The model's tokenizer, for [`fit`] (Qwen3's, whose candle path cuts
+    /// the same way).
+    pub tokenizer: Option<Arc<Tokenizer>>,
     agent: ureq::Agent,
 }
 
@@ -338,18 +380,41 @@ impl Http {
     ) -> Result<Http> {
         Ok(Http {
             endpoint: endpoint.trim_end_matches('/').to_string(),
-            served: served.to_string(),
+            // The name the server knows it by: the model's own, unless given.
+            served: if served.is_empty() { model } else { served }.to_string(),
             spec: spec(model)?,
             instruction: instruction.to_string(),
             dims,
             batch: 64,
             max_tokens: 2048,
-            agent: ureq::Agent::config_builder()
-                .timeout_global(Some(std::time::Duration::from_secs(300)))
-                .build()
-                .into(),
+            tokenizer: None,
+            agent: agent_with(std::time::Duration::from_secs(300)),
         })
     }
+
+    /// Requests give up after `t`.
+    pub fn with_timeout(mut self, t: std::time::Duration) -> Http {
+        self.agent = agent_with(t);
+        self
+    }
+
+    /// Cuts texts with this model's tokenizer from `dir` ([`fit`]); Qwen3's
+    /// only (its candle path cuts the same way).
+    pub fn with_tokenizer(mut self, dir: &Path) -> Result<Http> {
+        if self.spec.slug == "qwen3" {
+            let t = Tokenizer::from_file(dir.join("tokenizer.json"))
+                .map_err(|e| anyhow!("tokenizer.json: {e}"))?;
+            self.tokenizer = Some(Arc::new(t));
+        }
+        Ok(self)
+    }
+}
+
+fn agent_with(t: std::time::Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(t))
+        .build()
+        .into()
 }
 
 impl Encode for Http {
@@ -398,10 +463,15 @@ impl Http {
         let input: Vec<String> = part
             .iter()
             .map(|t| {
-                if query {
+                let t = if query {
                     query_text(self.spec, &self.instruction, t)
                 } else {
                     t.clone()
+                };
+                match &self.tokenizer {
+                    // One token is the pooled end token the server adds.
+                    Some(tok) => fit(tok, &t, self.max_tokens.saturating_sub(1).max(1)).to_string(),
+                    None => t,
                 }
             })
             .collect();
@@ -439,6 +509,133 @@ impl Http {
 /// An encoder threads may share.
 pub type Shared = Arc<dyn Encode + Send + Sync>;
 
+/// The live embedder for a model with a server: the server first (a short
+/// timeout for a query, a longer one for a batch), candle on the CPU when
+/// it doesn't answer. A failed server is left alone for `recheck` (so a
+/// dead one costs one timeout, not one per query), then asked again. Where
+/// each query's vector was made is noted for the search (vecs::EmbedOn),
+/// and the server's health for `agent index serve --status`.
+pub struct Served {
+    query: Http,
+    batch: Http,
+    local: std::sync::OnceLock<std::result::Result<Shared, String>>,
+    loader: Box<dyn Fn() -> Result<Shared> + Send + Sync>,
+    model: String,
+    recheck: std::time::Duration,
+    down_until: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+impl Served {
+    pub fn new(
+        query: Http,
+        batch: Http,
+        model: &str,
+        recheck: std::time::Duration,
+        loader: Box<dyn Fn() -> Result<Shared> + Send + Sync>,
+    ) -> Served {
+        crate::pg::vecs::note_server(|_| {}, &query.endpoint, model);
+        Served {
+            query,
+            batch,
+            local: std::sync::OnceLock::new(),
+            loader,
+            model: model.to_string(),
+            recheck,
+            down_until: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The CPU's encoder, loaded the first time it's needed.
+    fn local(&self) -> Result<&Shared> {
+        self.local
+            .get_or_init(|| (self.loader)().map_err(|e| format!("{e:#}")))
+            .as_ref()
+            .map_err(|e| anyhow!("the CPU embedder for {}: {e}", self.model))
+    }
+
+    /// Whether the server is being left alone, and until when.
+    fn backing_off(&self) -> Option<std::time::Instant> {
+        let d = self.down_until.lock().unwrap_or_else(|e| e.into_inner());
+        d.filter(|t| std::time::Instant::now() < *t)
+    }
+}
+
+impl Encode for Served {
+    fn dim(&self) -> usize {
+        self.query.dim()
+    }
+    fn embed(&self, texts: &[String], query: bool) -> Result<Vec<Vec<f32>>> {
+        use crate::pg::vecs::{EmbedOn, note_embed_on, note_server};
+        let ep = self.query.endpoint.clone();
+        let why = match self.backing_off() {
+            Some(t) => format!(
+                "the embedding server at {ep} failed; asked again in {} s",
+                t.saturating_duration_since(std::time::Instant::now())
+                    .as_secs()
+                    + 1
+            ),
+            None => {
+                let got = if query {
+                    self.query.embed(texts, true)
+                } else {
+                    self.batch.embed(texts, false)
+                };
+                match got {
+                    Ok(v) => {
+                        *self.down_until.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        note_server(
+                            |s| {
+                                s.up = true;
+                                s.down_since.clear();
+                                s.error.clear();
+                                s.served += texts.len() as u64;
+                            },
+                            &ep,
+                            &self.model,
+                        );
+                        if query {
+                            note_embed_on(EmbedOn {
+                                model: self.model.clone(),
+                                on: "gpu".into(),
+                                note: String::new(),
+                            });
+                        }
+                        return Ok(v);
+                    }
+                    Err(e) => {
+                        *self.down_until.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(std::time::Instant::now() + self.recheck);
+                        let err = format!("{e:#}");
+                        note_server(
+                            |s| {
+                                if s.up || s.down_since.is_empty() {
+                                    s.down_since = chrono::Utc::now()
+                                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                                }
+                                s.up = false;
+                                s.error = err.clone();
+                            },
+                            &ep,
+                            &self.model,
+                        );
+                        format!("the embedding server at {ep} isn't answering ({err})")
+                    }
+                }
+            }
+        };
+        let v = self.local()?.embed(texts, query)?;
+        note_server(|s| s.fell_back += texts.len() as u64, &ep, &self.model);
+        if query {
+            note_embed_on(EmbedOn {
+                model: self.model.clone(),
+                on: "cpu".into(),
+                note: why,
+            });
+        }
+        Ok(v)
+    }
+}
+
 /// The configured embedder: `[embedder]`'s model on the CPU (candle), with
 /// at most `max_workers` threads of its own (0: half the logical CPUs), or
 /// its server (`backend = "http"`).
@@ -452,27 +649,58 @@ pub fn load_model(
     model: &str,
     max_workers: usize,
 ) -> Result<Shared> {
+    let main = model == cfg.model;
     let mut cfg = cfg.clone();
-    if model != cfg.model {
-        // `model_dir` and the query instruction are the default model's.
+    if !main {
+        // `model_dir` and the query instruction are the searched model's,
+        // and so is the live server (an `http` backend, a bulk pass's
+        // --endpoint, serves the model it is given).
         cfg.model_dir.clear();
         cfg.query_instruction.clear();
+        if cfg.backend != "http" {
+            cfg.endpoint.clear();
+        }
     }
     cfg.model = model.to_string();
-    let cfg = &cfg;
     let s = spec(&cfg.model)?;
-    if cfg.backend == "http" {
+    let given = (!cfg.model_dir.is_empty()).then(|| PathBuf::from(&cfg.model_dir));
+    let http = |timeout: std::time::Duration| -> Result<Http> {
         let mut h = Http::new(
             &cfg.endpoint,
             &cfg.served,
             &cfg.model,
             &cfg.query_instruction,
             cfg.dims,
-        )?;
+        )?
+        .with_timeout(timeout);
         h.max_tokens = cfg.max_tokens.clamp(16, s.max_tokens);
-        return Ok(Arc::new(h));
+        // Cut as candle does, when the model's files are here.
+        if let Ok(dir) = model_dir(s.repo, given.as_deref()) {
+            h = h.with_tokenizer(&dir)?;
+        }
+        Ok(h)
+    };
+    if cfg.backend == "http" {
+        return Ok(Arc::new(http(std::time::Duration::from_secs(300))?));
     }
-    let given = (!cfg.model_dir.is_empty()).then(|| PathBuf::from(&cfg.model_dir));
+    if !cfg.endpoint.is_empty() {
+        let local_cfg = {
+            let mut c = cfg.clone();
+            c.endpoint.clear();
+            c
+        };
+        let name = cfg.model.clone();
+        let loader: Box<dyn Fn() -> Result<Shared> + Send + Sync> =
+            Box::new(move || load_model(&local_cfg, &name, max_workers));
+        return Ok(Arc::new(Served::new(
+            http(std::time::Duration::from_millis(cfg.timeout_ms))?,
+            http(std::time::Duration::from_secs(cfg.batch_timeout_s))?,
+            &cfg.model,
+            std::time::Duration::from_secs(cfg.recheck_s),
+            loader,
+        )));
+    }
+    let cfg = &cfg;
     let dir = model_dir(s.repo, given.as_deref())?;
     match s.slug {
         "bge" => {
@@ -497,5 +725,136 @@ pub fn load_model(
             Ok(Arc::new(m))
         }
         _ => bail!("no loader for {}", s.name),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pg::vecs::{servers, take_embed_on};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::time::{Duration, Instant};
+
+    /// The CPU's stand-in: every vector [1, 0, ...].
+    struct Cpu;
+    impl Encode for Cpu {
+        fn dim(&self) -> usize {
+            4
+        }
+        fn embed(&self, texts: &[String], _: bool) -> Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|_| vec![1.0, 0.0, 0.0, 0.0]).collect())
+        }
+    }
+
+    fn served(endpoint: &str, recheck: Duration) -> Served {
+        let h = |t| {
+            Http::new(endpoint, "", "qwen3-embedding-0.6b", "", 4)
+                .unwrap()
+                .with_timeout(t)
+        };
+        Served::new(
+            h(Duration::from_millis(300)),
+            h(Duration::from_secs(2)),
+            "qwen3-embedding-0.6b",
+            recheck,
+            Box::new(|| Ok(Arc::new(Cpu) as Shared)),
+        )
+    }
+
+    /// A server that answers /v1/embeddings with [0, 1, 0, 0] per input,
+    /// `n` times; its port.
+    fn fake_server(n: usize) -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for s in l.incoming().take(n) {
+                let mut s = s.unwrap();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut len = 0usize;
+                loop {
+                    let mut line = String::new();
+                    r.read_line(&mut line).unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0u8; len];
+                r.read_exact(&mut body).unwrap();
+                let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let n = req["input"].as_array().unwrap().len();
+                let data: Vec<_> = (0..n)
+                    .map(|_| serde_json::json!({"embedding": [0.0, 1.0, 0.0, 0.0]}))
+                    .collect();
+                let out = serde_json::json!({ "data": data }).to_string();
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
+                    out.len()
+                );
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn served_falls_back_to_the_cpu_and_backs_off() {
+        // Nothing listens on this port.
+        let dead = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let ep = format!("http://127.0.0.1:{dead}");
+        let s = served(&ep, Duration::from_secs(60));
+        let v = s.embed(&["where is it".to_string()], true).unwrap();
+        assert_eq!(v[0][0], 1.0, "the CPU's vector");
+        let on = take_embed_on().expect("noted");
+        assert_eq!(on.on, "cpu");
+        assert!(on.note.contains("isn't answering"), "{}", on.note);
+        let st = servers().into_iter().find(|x| x.endpoint == ep).unwrap();
+        assert!(!st.up && !st.down_since.is_empty(), "{st:?}");
+        assert_eq!(st.fell_back, 1);
+        // Within the back-off the server isn't asked: no timeout paid.
+        let t = Instant::now();
+        s.embed(&["again".to_string()], true).unwrap();
+        assert!(t.elapsed() < Duration::from_millis(100));
+        let on = take_embed_on().unwrap();
+        assert!(on.note.contains("asked again in"), "{}", on.note);
+        // A batch goes to the CPU too.
+        assert_eq!(s.embed(&["a".into(), "b".into()], false).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn served_uses_the_server_when_it_answers() {
+        let port = fake_server(3);
+        let ep = format!("http://127.0.0.1:{port}");
+        let s = served(&ep, Duration::from_millis(1));
+        let v = s.embed(&["q".to_string()], true).unwrap();
+        assert_eq!(v[0][1], 1.0, "the server's vector");
+        assert_eq!(take_embed_on().unwrap().on, "gpu");
+        let v = s
+            .embed(&["one".to_string(), "two".to_string()], false)
+            .unwrap();
+        assert_eq!(v.len(), 2);
+        let st = servers().into_iter().find(|x| x.endpoint == ep).unwrap();
+        assert!(st.up, "{st:?}");
+        assert_eq!(st.served, 3);
+    }
+
+    #[test]
+    fn fit_cuts_at_a_token_boundary() {
+        let Ok(dir) = model_dir("Qwen/Qwen3-Embedding-0.6B", None) else {
+            return;
+        };
+        let tok = Tokenizer::from_file(dir.join("tokenizer.json")).unwrap();
+        let short = "fn main() {}";
+        assert_eq!(fit(&tok, short, 100), short);
+        let long = "let x = deliver_held(agent, msg);\n".repeat(400);
+        let cut = fit(&tok, &long, 512);
+        assert!(long.starts_with(cut) && cut.len() < long.len());
+        let n = tok.encode(cut, false).unwrap().len();
+        assert!(n <= 512 && n > 500, "{n}");
     }
 }

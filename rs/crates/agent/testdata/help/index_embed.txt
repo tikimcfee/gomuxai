@@ -27,6 +27,8 @@ Examples:
 Flags:
       --bulk               Build the vector indexes after the rows instead of into them (a first pass)
       --config string      The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
+      --copy-from string   First copy the model's vectors from this schema of the same database, where they still match (pg store; with --model)
+      --dry-run            Count what would be copied, embedded and removed; write nothing (pg store)
       --endpoint string    Embed with this OpenAI-compatible server (a GPU's /v1/embeddings) instead of the CPU; with --model
   -h, --help               help for embed
       --json               Print the report as JSON

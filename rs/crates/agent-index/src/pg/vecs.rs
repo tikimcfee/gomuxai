@@ -89,6 +89,77 @@ pub fn query_text(s: &Spec, instruction: &str, q: &str) -> String {
     }
 }
 
+/// Where a query's vector was made: by the embedding server, or on the CPU
+/// because the server didn't answer (embed_models::Served). Set on the
+/// thread that embedded it, so a search reads its own.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+pub struct EmbedOn {
+    pub model: String,
+    /// "gpu" (the server) or "cpu".
+    pub on: String,
+    /// Why the CPU did it ("" when the server did).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+/// An embedding server's health as this process last saw it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+pub struct ServerState {
+    pub endpoint: String,
+    pub model: String,
+    pub up: bool,
+    /// When it stopped answering (RFC 3339), while it's down.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub down_since: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub error: String,
+    /// Texts it embedded, and texts the CPU took instead.
+    pub served: u64,
+    pub fell_back: u64,
+}
+
+thread_local! {
+    static LAST_ON: std::cell::RefCell<Option<EmbedOn>> = const { std::cell::RefCell::new(None) };
+}
+
+static SERVERS: std::sync::Mutex<Vec<ServerState>> = std::sync::Mutex::new(Vec::new());
+
+/// Records where this thread's last query vector was made.
+pub fn note_embed_on(on: EmbedOn) {
+    LAST_ON.with(|c| *c.borrow_mut() = Some(on));
+}
+
+/// Where this thread's last query vector was made, cleared.
+pub fn take_embed_on() -> Option<EmbedOn> {
+    LAST_ON.with(|c| c.borrow_mut().take())
+}
+
+/// Updates a server's state (by endpoint and model).
+pub fn note_server(f: impl FnOnce(&mut ServerState), endpoint: &str, model: &str) {
+    let mut v = SERVERS.lock().unwrap_or_else(|e| e.into_inner());
+    let i = match v
+        .iter()
+        .position(|s| s.endpoint == endpoint && s.model == model)
+    {
+        Some(i) => i,
+        None => {
+            v.push(ServerState {
+                endpoint: endpoint.to_string(),
+                model: model.to_string(),
+                up: true,
+                ..Default::default()
+            });
+            v.len() - 1
+        }
+    };
+    f(&mut v[i]);
+}
+
+/// The embedding servers this process has asked, and how they did.
+pub fn servers() -> Vec<ServerState> {
+    SERVERS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// A model's vectors in this configuration: its name, width and tables.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Model {
@@ -154,6 +225,49 @@ pub fn plan(cfg: &Config, corpora: &[String]) -> Result<Vec<(Model, Vec<String>)
             Some((_, cs)) => cs.push(c.clone()),
             None => out.push((m, vec![c.clone()])),
         }
+    }
+    Ok(out)
+}
+
+/// One model's part of keeping the index's vectors: the corpora it embeds,
+/// and whether their chunks' windows too.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Live {
+    pub model: Model,
+    pub corpora: Vec<String>,
+    pub chunks: bool,
+    /// A `keep` model: kept up to date, not searched.
+    pub kept: bool,
+}
+
+/// Every model the index keeps vectors for: [`plan`]'s over every corpus
+/// (cards, and windows with `[embedder.chunks]`), then `[embedder].keep`'s
+/// (cards alone, every corpus).
+pub fn live(cfg: &Config) -> Result<Vec<Live>> {
+    let corpora: Vec<String> = crate::config::CORPORA
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    let mut out: Vec<Live> = plan(cfg, &corpora)?
+        .into_iter()
+        .map(|(model, corpora)| Live {
+            model,
+            corpora,
+            chunks: cfg.embedder.chunks.enabled,
+            kept: false,
+        })
+        .collect();
+    for k in &cfg.embedder.keep {
+        let model = Model::of(&cfg.embedder, k)?;
+        if out.iter().any(|l| l.model.key == model.key) {
+            continue;
+        }
+        out.push(Live {
+            model,
+            corpora: corpora.clone(),
+            chunks: false,
+            kept: true,
+        });
     }
     Ok(out)
 }

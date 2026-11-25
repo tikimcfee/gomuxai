@@ -34,6 +34,10 @@ pub struct Entry {
     /// What failed, when the command did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Where a search's query vector was made, when the embedder has a
+    /// server: "gpu" (the server) or "cpu" (it didn't answer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_on: Option<String>,
 }
 
 impl Entry {

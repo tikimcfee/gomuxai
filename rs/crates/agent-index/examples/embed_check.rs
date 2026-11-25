@@ -2,12 +2,16 @@
 //! windows of about 3.5 K characters of the code and docs under DIR, and
 //! queries with the model's instruction. Prints each pair's cosine, the
 //! least and the median, and whether the queries rank the windows the same.
-//! Exits 1 if a cosine is under 0.99 or a query's nearest window differs.
+//! Exits 1 if a cosine is under --least (0.99) or a query's nearest window
+//! differs. With --long, two windows longer than the model reads (about 5
+//! times --max-tokens of characters) are added: both sides cut them the
+//! same way (embed_models::fit), so they must agree too. --dims cuts both
+//! sides' vectors (Matryoshka) as the configuration's `dims` does.
 //!
-//! `embed_check MODEL ENDPOINT DIR [--served NAME] [--windows N] [--max-tokens N]`
+//! `embed_check MODEL ENDPOINT DIR [--served NAME] [--windows N] [--max-tokens N] [--dims N] [--least X] [--long]`
 use agent_index::config::Embedder;
 use agent_index::embed::Encode;
-use agent_index::embed_models::{Http, Shared, load_model};
+use agent_index::embed_models::{Http, Shared, load_model, model_dir, spec};
 use anyhow::{Context, Result, bail};
 
 const QUERIES: &[&str] = &[
@@ -68,24 +72,40 @@ fn main() -> Result<()> {
     let endpoint = args.next().context("ENDPOINT")?;
     let dir = args.next().context("DIR")?;
     let (mut served, mut n, mut max_tokens) = (model.clone(), 16usize, 2048usize);
+    let (mut dims, mut least_ok, mut long) = (0usize, 0.99f64, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--served" => served = args.next().context("--served NAME")?,
             "--windows" => n = args.next().context("--windows N")?.parse()?,
             "--max-tokens" => max_tokens = args.next().context("--max-tokens N")?.parse()?,
+            "--dims" => dims = args.next().context("--dims N")?.parse()?,
+            "--least" => least_ok = args.next().context("--least X")?.parse()?,
+            "--long" => long = true,
             _ => bail!("unknown argument {a}"),
         }
     }
     let cfg = Embedder {
         model: model.clone(),
         max_tokens,
+        dims,
         ..Embedder::default()
     };
     let cpu: Shared = load_model(&cfg, &model, 0)?;
-    let mut h = Http::new(endpoint.trim_end_matches('/'), &served, &model, "", 0)?;
+    let s = spec(&model)?;
+    let mut h = Http::new(endpoint.trim_end_matches('/'), &served, &model, "", dims)?
+        .with_tokenizer(&model_dir(s.repo, None)?)?;
     // As load_model: never past what the model reads (bge: 512).
-    h.max_tokens = max_tokens.min(agent_index::embed_models::spec(&model)?.max_tokens);
-    let docs = windows(std::path::Path::new(&dir), 3500, n);
+    h.max_tokens = max_tokens.min(s.max_tokens);
+    let mut docs = windows(std::path::Path::new(&dir), 3500, n);
+    if long {
+        // Two windows far past the token cut: both sides must cut them alike.
+        let all = windows(std::path::Path::new(&dir), 3500, n + 8);
+        let size = h.max_tokens * 5;
+        let tail: String = all.iter().skip(n).cloned().collect();
+        docs.push(tail.chars().take(size).collect());
+        let whole: Vec<char> = all.concat().chars().collect();
+        docs.push(whole[whole.len().saturating_sub(size)..].iter().collect());
+    }
     let qs: Vec<String> = QUERIES.iter().map(|q| q.to_string()).collect();
     let t = std::time::Instant::now();
     let (dc, qc) = (cpu.embed(&docs, false)?, cpu.embed(&qs, true)?);
@@ -123,7 +143,7 @@ fn main() -> Result<()> {
         c.len(),
         qs.len()
     );
-    if least < 0.99 || same < qs.len() {
+    if least < least_ok || same < qs.len() {
         println!("MISMATCH");
         std::process::exit(1);
     }

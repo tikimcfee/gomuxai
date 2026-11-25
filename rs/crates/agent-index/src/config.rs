@@ -640,13 +640,34 @@ pub struct Embedder {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub query_instruction: String,
     /// "candle" (on the CPU, in process) or "http" (an OpenAI-compatible
-    /// `/v1/embeddings` server at `endpoint`, serving it as `served`).
+    /// `/v1/embeddings` server at `endpoint`, serving it as `served`, and
+    /// nothing else: the bulk passes). With "candle" and an `endpoint`,
+    /// `model` is embedded by the server first and on the CPU when it
+    /// doesn't answer (embed_models::Served). These keys, the timeouts and
+    /// `keep` are left out of the fingerprint: they change where a vector
+    /// is made, not what it is (embed_check holds the two to cosine 0.999).
     #[serde(skip_serializing_if = "is_candle")]
     pub backend: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub endpoint: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub served: String,
+    /// How long a query waits for the server before the CPU takes it.
+    #[serde(skip_serializing_if = "is_default_timeout_ms")]
+    pub timeout_ms: u64,
+    /// How long a batch of cards or windows (the watcher's, the sync's)
+    /// waits for the server.
+    #[serde(skip_serializing_if = "is_default_batch_timeout")]
+    pub batch_timeout_s: u64,
+    /// After the server fails, how long it's left alone (everything goes to
+    /// the CPU) before it's asked again.
+    #[serde(skip_serializing_if = "is_default_recheck")]
+    pub recheck_s: u64,
+    /// Models kept up to date beside `model` but not searched (bge's card
+    /// vectors, so going back is a configuration change): the sync, the
+    /// watcher and `agent index embed` embed them too, on the CPU.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub keep: Vec<String>,
     /// The longest text embedded, in tokens (cut beyond).
     #[serde(skip_serializing_if = "is_default_max_tokens")]
     pub max_tokens: usize,
@@ -710,6 +731,30 @@ fn is_default_max_tokens(n: &usize) -> bool {
     *n == 2048
 }
 
+fn is_default_timeout_ms(n: &u64) -> bool {
+    *n == 1500
+}
+
+fn is_default_batch_timeout(n: &u64) -> bool {
+    *n == 60
+}
+
+fn is_default_recheck(n: &u64) -> bool {
+    *n == 30
+}
+
+/// `[embedder]`'s keys that say where vectors are made, not what they are:
+/// left out of the fingerprint.
+const EMBEDDER_NOT_FINGERPRINTED: &[&str] = &[
+    "backend",
+    "endpoint",
+    "served",
+    "timeout_ms",
+    "batch_timeout_s",
+    "recheck_s",
+    "keep",
+];
+
 impl Default for Embedder {
     fn default() -> Self {
         Embedder {
@@ -721,6 +766,10 @@ impl Default for Embedder {
             backend: "candle".into(),
             endpoint: String::new(),
             served: String::new(),
+            timeout_ms: 1500,
+            batch_timeout_s: 60,
+            recheck_s: 30,
+            keep: Vec::new(),
             max_tokens: 2048,
             chunks: ChunkVecs::default(),
             corpus: BTreeMap::new(),
@@ -955,6 +1004,21 @@ impl Config {
                 self.embedder.backend
             );
         }
+        let e = &self.embedder;
+        if e.backend == "http" && e.endpoint.is_empty() {
+            bail!("embedder.backend = \"http\" needs embedder.endpoint");
+        }
+        if e.timeout_ms < 10 || e.batch_timeout_s < 1 || e.recheck_s < 1 {
+            bail!(
+                "embedder: timeout_ms must be at least 10, batch_timeout_s and recheck_s at least 1"
+            );
+        }
+        if e.keep.iter().any(|k| k == &e.model) {
+            bail!(
+                "embedder.keep names {:?}, the model searched: keep is for the others",
+                e.model
+            );
+        }
         if let Some(c) = self
             .embedder
             .corpus
@@ -1116,6 +1180,11 @@ impl Config {
             if self.cross == Cross::default() {
                 m.remove("cross");
             }
+            if let Some(e) = m.get_mut("embedder").and_then(|e| e.as_object_mut()) {
+                for k in EMBEDDER_NOT_FINGERPRINTED {
+                    e.remove(*k);
+                }
+            }
         }
         let v = serde_json::to_vec(&v).unwrap_or_default();
         Sha256::digest(&v)
@@ -1268,5 +1337,30 @@ mod tests {
             d.log_path()
                 .is_none_or(|p| p.ends_with("gomuxai/index-queries.jsonl"))
         );
+    }
+
+    #[test]
+    fn embedder_server_keys_are_not_fingerprinted() {
+        let base = "[embedder]\nmodel = \"qwen3-embedding-0.6b\"\ndims = 512\n";
+        let a = Config::parse(base).unwrap();
+        let b = Config::parse(&format!(
+            "{base}endpoint = \"http://127.0.0.1:8201\"\nserved = \"q\"\ntimeout_ms = 900\nrecheck_s = 5\nkeep = [\"bge-small-en-v1.5\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(b.embedder.timeout_ms, 900);
+        assert_eq!(b.embedder.keep, vec!["bge-small-en-v1.5".to_string()]);
+        assert_eq!(a.fingerprint(), b.fingerprint());
+        // The model and its width are.
+        let c = Config::parse("[embedder]\nmodel = \"qwen3-embedding-0.6b\"\n").unwrap();
+        assert_ne!(a.fingerprint(), c.fingerprint());
+        // The defaults' fingerprint is what it was.
+        assert_eq!(Config::default().embedder.timeout_ms, 1500);
+        // ([reranker] has a timeout_ms of its own.)
+        let e = toml::to_string(&Config::default().embedder).unwrap();
+        assert!(!e.contains("timeout_ms") && !e.contains("keep"), "{e}");
+        // keep may not name the searched model; http needs an endpoint.
+        assert!(Config::parse("[embedder]\nkeep = [\"bge-small-en-v1.5\"]\n").is_err());
+        assert!(Config::parse("[embedder]\nbackend = \"http\"\n").is_err());
+        assert!(Config::parse("[embedder]\ntimeout_ms = 1\n").is_err());
     }
 }

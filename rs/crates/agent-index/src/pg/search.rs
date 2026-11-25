@@ -1496,7 +1496,11 @@ fn search_entities(
     lap(&mut ms, "context");
     let mapping = label_matches(pg, &o.query, o)?;
     lap(&mut ms, "labels");
+    super::vecs::take_embed_on();
     let qvecs = query_vecs(embed, &ctx.dense, &o.query)?;
+    // Where the query's vector was made (the embedder's server, or the CPU
+    // when it didn't answer): the search says so.
+    let embedded_on = super::vecs::take_embed_on();
     // [cross] routing compares with bge's card vectors: the query's, when
     // bge serves the cards.
     let qvec: Option<String> = ctx
@@ -2111,6 +2115,7 @@ fn search_entities(
         groups: None,
         lexical: None,
         cross: crossing.then_some(info),
+        embedder: embedded_on,
     })
 }
 

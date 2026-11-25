@@ -8,16 +8,25 @@ or runs another configuration (its fingerprint), and says why. search
 --cold skips it. Serve runs until it is stopped (Ctrl-C); run it in a
 session of its own.
 
+With [embedder].endpoint, queries are embedded by that server and on the
+CPU when it doesn't answer (a failed server is asked again after
+[embedder].recheck_s); a search says when the CPU did it. --status asks
+the running server for its health: its configuration and how each
+embedding server has done.
+
 Usage:
   agent index serve [flags]
 
 Examples:
   agent index serve
   agent index serve --config tune/rerank50.toml
+  agent index serve --status
 
 Flags:
       --config string   The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
   -h, --help            help for serve
+      --json            Print the status as JSON
+      --status          Ask the running server for its health
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

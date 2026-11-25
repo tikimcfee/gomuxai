@@ -1444,6 +1444,7 @@ fn stale_mark() {
         groups: None,
         lexical: None,
         cross: None,
+        embedder: None,
     };
     let stale = super::fresh::check(pg, &mut res).unwrap();
     let marks: Vec<&str> = res.hits.iter().map(|h| h.stale.as_str()).collect();
@@ -1537,16 +1538,15 @@ fn model_tables_and_chunk_lists() {
     let m = Model::of(&cfg.embedder, "qwen3-embedding-0.6b").unwrap();
     let mut lines = Vec::new();
     let code = vec!["code".to_string()];
-    let r = super::embed_pg::drain_model(
-        pg,
-        &Toward(8),
-        &m,
-        &code,
-        Some(&cfg.embedder.chunks),
-        None,
-        true,
-        &mut |l| lines.push(l.to_string()),
-    )
+    let pass = |bulk: bool| super::embed_pg::Pass {
+        corpora: code.clone(),
+        chunks: Some(&cfg.embedder.chunks),
+        bulk,
+        ..Default::default()
+    };
+    let r = super::embed_pg::drain_model(pg, &Toward(8), &m, &pass(true), &mut |l| {
+        lines.push(l.to_string())
+    })
     .unwrap();
     assert!(r.cards > 0 && r.windows > 0, "{r:?}");
     let count = |sql: &str| -> i64 { pg.query(sql, &[]).unwrap()[0].get(0) };
@@ -1558,22 +1558,91 @@ fn model_tables_and_chunk_lists() {
         count("SELECT count(*) FROM vec_chunks_qwen3_8 WHERE entity_id = 'alpha:src/lib.rs'") > 0
     );
     // A second pass embeds nothing: every key is the same.
-    let again = super::embed_pg::drain_model(
-        pg,
-        &Toward(8),
-        &m,
-        &code,
-        Some(&cfg.embedder.chunks),
-        None,
-        false,
-        &mut |_| {},
-    )
-    .unwrap();
+    let again =
+        super::embed_pg::drain_model(pg, &Toward(8), &m, &pass(false), &mut |_| {}).unwrap();
     assert_eq!(
         (again.cards, again.windows, again.removed),
         (0, 0, 0),
         "{again:?}"
     );
+    // The watcher's flush: only the entities the sync cut again (and
+    // queued) are looked at; with no bge model live, their queue rows go.
+    pg.execute(
+        "DELETE FROM vec_chunks_qwen3_8 WHERE entity_id = 'alpha:src/lib.rs'",
+        &[],
+    )
+    .unwrap();
+    pg.execute(
+        "INSERT INTO embed_queue (entity_id, text_key, reason) SELECT id, text_key, 'changed' FROM entities WHERE id = 'alpha:Cargo.toml' ON CONFLICT DO NOTHING",
+        &[],
+    )
+    .unwrap();
+    let live = vecs::Live {
+        model: m.clone(),
+        corpora: code.clone(),
+        chunks: true,
+        kept: false,
+    };
+    let enc = Toward(8);
+    let k = super::embed_pg::keep_up(
+        pg,
+        &[(&live, &enc as &(dyn crate::embed::Encode + Sync))],
+        false,
+        &["alpha:src/lib.rs".to_string()],
+    )
+    .unwrap();
+    assert!(k.embedded > 0 && k.parts.len() == 1, "{k:?}");
+    assert!(
+        count("SELECT count(*) FROM vec_chunks_qwen3_8 WHERE entity_id = 'alpha:src/lib.rs'") > 0
+    );
+    assert_eq!(count("SELECT count(*) FROM embed_queue"), 0);
+    // Nothing queued or cut: nothing to do.
+    let k = super::embed_pg::keep_up(
+        pg,
+        &[(&live, &enc as &(dyn crate::embed::Encode + Sync))],
+        false,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(k.embedded, 0);
+    // A dry run against a schema that has none of the vectors counts them
+    // all, and writes nothing; a copy from this schema into that one then
+    // leaves nothing to embed.
+    if let Some(t2) = throwaway("copyto") {
+        let other = Pg::connect_with(&url, &t2.0.schema, cfg.clone()).unwrap();
+        // The same entities: a sync of the same ledger.
+        super::sync::sync(&ix.conn, &other, false).unwrap();
+        let src = pg.schema.clone();
+        let dry = super::embed_pg::drain_model(
+            &other,
+            &Toward(8),
+            &m,
+            &super::embed_pg::Pass {
+                dry_run: true,
+                have_from: Some(&src),
+                ..pass(false)
+            },
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!((dry.cards, dry.windows), (0, 0), "{dry:?}");
+        let c = super::embed_pg::copy_from(&other, &m, &src).unwrap();
+        assert_eq!(
+            c.cards as i64,
+            count("SELECT count(*) FROM vec_cards_qwen3_8")
+        );
+        assert_eq!(
+            c.windows as i64,
+            count("SELECT count(*) FROM vec_chunks_qwen3_8")
+        );
+        let after =
+            super::embed_pg::drain_model(&other, &Toward(8), &m, &pass(true), &mut |_| {}).unwrap();
+        assert_eq!(
+            (after.cards, after.windows, after.removed),
+            (0, 0, 0),
+            "{after:?}"
+        );
+    }
     assert_eq!(again.windows_seen, r.windows_seen);
 
     // The search: the model's lists over code, named for the model.

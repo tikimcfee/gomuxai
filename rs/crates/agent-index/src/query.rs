@@ -142,6 +142,10 @@ pub struct SearchResult {
     /// search had several queries); absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross: Option<CrossInfo>,
+    /// Where the query's vector was made, when the embedder has a server:
+    /// on the GPU by it, or on the CPU because it didn't answer (and why).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedder: Option<crate::pg::vecs::EmbedOn>,
 }
 
 /// The pg store's `[cross]` part in a search: the projects it routed to,
@@ -1029,6 +1033,7 @@ fn search_entities(
         groups: None,
         lexical: None,
         cross: None,
+        embedder: None,
     })
 }
 
