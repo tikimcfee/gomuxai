@@ -1666,6 +1666,29 @@ fn model_tables_and_chunk_lists() {
         "{k:?}"
     );
     assert_eq!(waiting.windows, 0);
+    // The tidy (a full pass) with the server down is capped too: one window
+    // on the CPU, the rest waiting; with it up, it takes them all.
+    pg.execute("DELETE FROM vec_chunks_qwen3_8", &[]).unwrap();
+    super::embed_pg::keep_up(
+        pg,
+        &[(&live, &down as &(dyn crate::embed::Encode + Sync))],
+        true,
+        &[],
+        &mut waiting,
+    )
+    .unwrap();
+    assert_eq!(count("SELECT count(*) FROM vec_chunks_qwen3_8"), 1);
+    assert_eq!(waiting.windows as i64, all - 1);
+    super::embed_pg::keep_up(
+        pg,
+        &[(&live, &enc as &(dyn crate::embed::Encode + Sync))],
+        true,
+        &[],
+        &mut waiting,
+    )
+    .unwrap();
+    assert_eq!(count("SELECT count(*) FROM vec_chunks_qwen3_8"), all);
+    assert_eq!(waiting.texts(), 0);
     // A dry run against a schema that has none of the vectors counts them
     // all, and writes nothing; a copy from this schema into that one then
     // leaves nothing to embed.

@@ -765,10 +765,13 @@ pub fn keep_up(
     waiting: &mut Waiting,
 ) -> Result<KeepReport> {
     let mut rep = KeepReport::default();
-    // A flush with its server down embeds `[watch].cpu_texts` texts (cards,
-    // then windows) on the CPU and leaves the rest waiting; a later flush
-    // (the server back) takes them up first; the tidy does them all.
-    let cap = (!full).then_some(pg.cfg.watch.cpu_texts);
+    // With its server down a pass embeds `[watch].cpu_texts` texts (cards,
+    // then windows) on the CPU and leaves the rest waiting; a later flush or
+    // catch-up (the server back) takes them up first. The tidy (`full`) is
+    // capped the same way: a summary batch stops the server for half an
+    // hour, and an uncapped tidy then would hold the watcher for as long as
+    // the CPU takes. With the server up the cap never applies.
+    let cap = Some(pg.cfg.watch.cpu_texts);
     let ids: Option<Vec<String>> = if full {
         None
     } else {

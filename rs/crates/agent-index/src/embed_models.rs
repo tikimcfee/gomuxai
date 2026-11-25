@@ -591,6 +591,22 @@ impl Encode for Served {
     fn degraded(&self) -> bool {
         self.backing_off().is_some() || self.fell_back.load(std::sync::atomic::Ordering::Relaxed)
     }
+    /// GET /health with the query timeout; when it answers, the back-off
+    /// and the fallen-back mark are cleared.
+    fn server_back(&self) -> Option<bool> {
+        let up = self
+            .query
+            .agent
+            .get(&format!("{}/health", self.query.endpoint))
+            .call()
+            .is_ok_and(|r| r.status().is_success());
+        if up {
+            *self.down_until.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.fell_back
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        Some(up)
+    }
     fn embed(&self, texts: &[String], query: bool) -> Result<Vec<Vec<f32>>> {
         use crate::pg::vecs::{EmbedOn, note_embed_on, note_server};
         let ep = self.query.endpoint.clone();
@@ -810,15 +826,26 @@ mod tests {
                 let mut s = s.unwrap();
                 let mut r = BufReader::new(s.try_clone().unwrap());
                 let mut len = 0usize;
+                let mut first = String::new();
                 loop {
                     let mut line = String::new();
                     r.read_line(&mut line).unwrap();
+                    if first.is_empty() {
+                        first = line.clone();
+                    }
                     if line.trim().is_empty() {
                         break;
                     }
                     if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
                         len = v.trim().parse().unwrap();
                     }
+                }
+                if first.starts_with("GET /health") {
+                    let _ = write!(
+                        s,
+                        "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    continue;
                 }
                 let mut body = vec![0u8; len];
                 r.read_exact(&mut body).unwrap();
@@ -863,6 +890,29 @@ mod tests {
         assert!(on.note.contains("asked again in"), "{}", on.note);
         // A batch goes to the CPU too.
         assert_eq!(s.embed(&["a".into(), "b".into()], false).unwrap().len(), 2);
+        // Its health check says it's still down, and it stays degraded.
+        assert_eq!(s.server_back(), Some(false));
+        assert!(s.degraded());
+    }
+
+    #[test]
+    fn served_back_clears_the_back_off() {
+        // The server answers /health once, then an embedding request.
+        let port = fake_server(2);
+        let ep = format!("http://127.0.0.1:{port}");
+        let s = served(&ep, Duration::from_secs(600));
+        // As if it had failed: backing off, the last call on the CPU.
+        *s.down_until.lock().unwrap() = Some(Instant::now() + Duration::from_secs(600));
+        s.fell_back
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(s.degraded());
+        assert_eq!(s.server_back(), Some(true));
+        assert!(!s.degraded());
+        // The next call goes to the server, not the CPU.
+        let v = s.embed(&["q".to_string()], true).unwrap();
+        assert_eq!(v[0][1], 1.0, "the server's vector");
+        // A model with no server has nothing to wait for.
+        assert_eq!(Cpu.server_back(), None);
     }
 
     #[test]

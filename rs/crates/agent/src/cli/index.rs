@@ -278,8 +278,19 @@ impl agent_index::watch::Keeper for Keep<'_> {
         0
     }
 
+    /// Only once the embedder's server answers its /health again: while it's
+    /// down (a summary batch stops it for half an hour or more) the waiting
+    /// texts wait, rather than the CPU taking a few every 30 s.
     fn catch_up(&mut self) -> anyhow::Result<Option<String>> {
         if self.texts_waiting() == 0 {
+            return Ok(None);
+        }
+        #[cfg(feature = "embed")]
+        if self
+            .models
+            .iter()
+            .any(|(_, e)| e.server_back() == Some(false))
+        {
             return Ok(None);
         }
         let (e, by_model) = self.embed(false, &[])?;

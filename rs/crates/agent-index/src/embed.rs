@@ -99,6 +99,12 @@ pub trait Encode {
     fn degraded(&self) -> bool {
         false
     }
+    /// Whether its server answers its health check now (none: there is no
+    /// server, so there's nothing to wait for), and, when it does, clears
+    /// the back-off so the next call goes to it.
+    fn server_back(&self) -> Option<bool> {
+        None
+    }
 }
 
 impl Encode for Embedder {

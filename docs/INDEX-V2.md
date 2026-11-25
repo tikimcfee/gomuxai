@@ -487,9 +487,11 @@ with queries embedded on the GPU and the CPU behind it.
 - **The watcher.** Each flush embeds, with every live model, the cards
   the sync queued and the chunks it cut again (`embed_pg::keep_up`).
   With the server down it embeds at most `[watch].cpu_texts` (2) texts,
-  cards then windows, on the CPU, and the rest wait: the next flush, a
-  catch-up every 30 s while any wait, or the tidy takes them, and
-  `agent index watch --status` counts them. With a model larger than bge
+  cards then windows, on the CPU, and the rest wait, counted by `agent
+  index watch --status`. The tidy is capped the same way (a summary
+  batch stops the server for half an hour or more). The next flush takes
+  them up, or a catch-up every 30 s once the server answers its
+  `/health` again; while it doesn't, the catch-up does nothing. With a model larger than bge
   the watcher embeds a text at a time on every core (about 3.5 s a
   window, against 28 s on one thread); bge alone keeps
   `embed_workers` single-threaded workers.
