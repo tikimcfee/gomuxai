@@ -108,6 +108,14 @@ fn tree_spawn_report_cleanup() {
         tree.events
     );
 
+    // Not an event: only reports are. It becomes the removed event's detail.
+    s.set_state(&StateEntry {
+        agent_name: "lead-t1".into(),
+        key: STATE_REMOVED_WHY.into(),
+        value: "approved by a person".into(),
+        updated_at: Time::now(),
+    })
+    .unwrap();
     s.delete_agent("lead-t1").unwrap();
     s.delete_agent("nobody")
         .expect("deleting an unknown agent: want no error and no event");
@@ -140,8 +148,8 @@ fn tree_spawn_report_cleanup() {
     assert_eq!(r.created_at, created + secs(1));
     let (events, _) = s.agent_events_after(4, 10).unwrap();
     assert!(
-        events.len() == 1 && events[0].run == r.id,
-        "removed event = {events:?}, want one naming run {}",
+        events.len() == 1 && events[0].run == r.id && events[0].detail == "approved by a person",
+        "removed event = {events:?}, want one naming run {} and why",
         r.id
     );
 }

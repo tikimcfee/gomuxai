@@ -380,10 +380,28 @@ never itself (its own session would die partway), and a helper's own helpers
 must be named in the same command, since once the helper's record is gone
 nothing records whose they are.
 
+`--approved-by-person "<who, when, why>"` is how an agent ends one outside
+its tree after a person said to. `Teams::approval_refusal` decides what it
+covers: an agent no agent here could clean up, that is one a person started,
+or one whose chain of spawners is unlisted (gone, or on another host), ended,
+or covered by the same command. An agent with a listed spawner that hasn't
+ended is refused (that spawner can do it), and so is one above the caller
+(its removal would cut the caller's own chain). The target's resolved status
+must be idle or ended unless `--force`. Approvals are decided parents first,
+so a helper goes with its approved parent; the usual pass then runs helpers
+first, and still refuses one whose helpers would be left behind. Nothing
+verifies the words: the rule guards against mistakes, as the rest of
+cleanup's rules do, and the record is what makes a false claim findable.
+`cleanup_one` prints them and sets state key `_removed_why`, which
+`close_run_tx` copies into the `removed` event's `detail`; the command log
+(`agent history`) has the full command and the caller. A person's own
+cleanup ignores the flag.
+
 An agent spawned over the bus (`spawn name@host`) gets `spawned_by`
 `<caller>@<caller host>` on that host, or "" when a person spawned it.
 Such a parent names no local agent, so its helpers nest under nothing in
-`list` there, and only a person on that host can clean them up: `cleanup`
+`list` there, and only a person on that host can clean them up (or an agent
+there with `--approved-by-person`): `cleanup`
 doesn't cross hosts, and no agent there is their ancestor. The hub doesn't
 verify the name; it is the caller's claim, like a `[from name@host]` tag.
 It must carry a host: the bus refuses a bare `spawned_by`, which would make
@@ -396,7 +414,8 @@ removed. The same rules then apply, with one difference: where named
 cleanup refuses a helper whose own helpers would be left behind, `--ended`
 skips it, since those helpers haven't ended and aren't its to remove. A
 person gets every ended agent, with a note naming the helpers that stay.
-Ended agents outside the caller's tree are counted, not listed. `--dry-run`
+Ended agents outside the caller's tree are counted, not listed
+(with `--approved-by-person`, the ones it covers are picked too). `--dry-run`
 stops after the choice, printing each agent's end, what `cleanup` would do
 to its session (kill it, leave an adopted one running, or nothing if it's
 gone) and `StatusInfo::held`.

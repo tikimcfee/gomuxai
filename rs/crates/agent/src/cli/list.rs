@@ -27,7 +27,7 @@ shown as "-".
 
 Each agent's helpers (spawned with "agent spawn") are nested right under it,
 so a team reads as one tree. An agent can clean up only its own helpers and
-theirs."#,
+theirs (another agent only once a person says to: agent help cleanup)."#,
     example: r#"  agent list
   agent list --host hub
   agent list --json"#,

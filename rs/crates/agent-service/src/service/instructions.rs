@@ -103,7 +103,7 @@ fn agent_briefing_header(
     format!(
         r#"# Working with other agents (gomuxai)
 
-You are agent {qname} on host {qhost}, started by {by} through gomuxai. Run `agent` by its full path, {bin}, since your shell's PATH may not include it. Your status (idle, processing, waiting on a permission prompt, ended) is reported automatically. Name any helper you spawn {name}-<role> (for example, `agent spawn {name}-review --backend agy` and `agent cleanup {name}-review`; `agent roster pick` suggests a harness and model), and clean up only your own helpers and theirs.
+You are agent {qname} on host {qhost}, started by {by} through gomuxai. Run `agent` by its full path, {bin}, since your shell's PATH may not include it. Your status (idle, processing, waiting on a permission prompt, ended) is reported automatically. Name any helper you spawn {name}-<role> (for example, `agent spawn {name}-review --backend agy` and `agent cleanup {name}-review`; `agent roster pick` suggests a harness and model), and clean up only your own helpers and theirs (another agent only once a person says to: `agent cleanup NAME --approved-by-person "who, when, why"`).
 
 {held}
 "#,

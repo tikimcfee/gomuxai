@@ -57,4 +57,7 @@ pub use roster::{RosterEntry, RosterNote, RosterPick};
 pub use session_reports::SessionReport;
 pub use sqlite::{ClaimUpdate, Store, new_sqlite_storage};
 pub use storage::SQLiteStorage;
-pub use tree::{AGENT_REMOVED, AGENT_SPAWNED, AGENT_STATUS, AgentEvent, Run, Tree, open_read_only};
+pub use tree::{
+    AGENT_REMOVED, AGENT_SPAWNED, AGENT_STATUS, AgentEvent, Run, STATE_REMOVED_WHY, Tree,
+    open_read_only,
+};

@@ -80,6 +80,8 @@ fn test_adopt_and_cleanup_preserves_session() {
         &cleanup::Args {
             dry_run: false,
             ended: false,
+            approved_by_person: None,
+            force: false,
             args: vec!["my-adopted".into()],
         },
     )

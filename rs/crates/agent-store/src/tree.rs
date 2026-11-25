@@ -63,6 +63,10 @@ pub const AGENT_STATUS: &str = "status";
 /// cleanup (or a failed spawn) deleted the record
 pub const AGENT_REMOVED: &str = "removed";
 
+/// The state key whose value becomes an agent's removed event's detail: why
+/// it was removed, set just before a cleanup that a person approved.
+pub const STATE_REMOVED_WHY: &str = "_removed_why";
+
 /// Run is one spawn of an agent name, from spawn until cleanup and after.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Run {
@@ -528,6 +532,17 @@ fn close_run_tx(s: &Store, tx: &Connection, name: &str) -> Result<bool> {
     let Some((run, status, transcript, end_reason)) = found else {
         return Ok(false);
     };
+    // Why it was removed, when the remover said (cleanup
+    // --approved-by-person). The transaction already holds the write lock.
+    let detail: String = tx
+        .query_row(
+            "SELECT value FROM state WHERE agent_name = ? AND key = ?",
+            params![name, STATE_REMOVED_WHY],
+            |r| text(r, 0),
+        )
+        .optional()
+        .context("reading why it was removed")?
+        .unwrap_or_default();
     insert_agent_event(
         s,
         tx,
@@ -537,6 +552,7 @@ fn close_run_tx(s: &Store, tx: &Connection, name: &str) -> Result<bool> {
             agent: name.to_string(),
             run,
             status,
+            detail,
             transcript,
             end_reason,
             ..AgentEvent::default()

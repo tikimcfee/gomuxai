@@ -403,6 +403,23 @@ cleaned up. Inside an agent, you can clean up only your own helpers and
 theirs, never yourself. Given names, it never removes an agent you didn't
 name.
 
+When a person tells an agent to end one that isn't its helper (an agent the
+person started, say, whose work is done):
+
+```bash
+agent cleanup worker --approved-by-person "Sam, in chat at 14:10: its branch is merged"
+agent cleanup --ended --approved-by-person "Sam, by voice: clear out what has ended" --dry-run
+```
+
+`--approved-by-person` covers an agent a person started, or one whose
+spawners are gone or have ended; one whose spawner is still here is refused
+(ask that agent). It must be idle or ended (`--force` takes it mid-turn or
+at a prompt), and it is never the caller or an agent above it. The words are
+the caller's claim, not proof: they are printed, kept in `agent history`
+with the caller's name and in the agent's `removed` event, and since
+`cleanup` is never pre-allowed, the person sees them in the permission
+prompt.
+
 `--ended` names them for you: every agent on this host whose status (as
 `agent status` resolves it) is ended, that you may clean up. An ended
 agent's helpers that are still running stay: for a person it says so, and
@@ -1099,7 +1116,8 @@ Everything lives in `.gomuxai/` next to the binary (`agent-busd` sits next to
 
 State keys starting with `_` are written by status reports (`_status`,
 `_detail`, `_tool`, `_tool_input`, `_result`, `_transcript`, `_turn_at`,
-`_named`, ...) and by `send` (`_sent_at`, `_unsubmitted`, `_unchecked`). Delete
+`_named`, ...), by `send` (`_sent_at`, `_unsubmitted`, `_unchecked`) and by
+an approved `cleanup` (`_removed_why`). Delete
 the folder to reset that binary's agents.
 
 ## Working on gomuxai

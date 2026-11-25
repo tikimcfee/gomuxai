@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use agent_backend::EndReason;
-use agent_service::{AGENT_STATUS_ENDED, StatusReport};
+use agent_service::{AGENT_STATUS_ENDED, AGENT_STATUS_IDLE, StatusReport};
 use agent_store::{Agent, MESSAGE_STATUS_PENDING, Message, Time};
 
 use super::cleanup;
@@ -40,6 +40,8 @@ fn cleanup_args(names: &[&str]) -> cleanup::Args {
     cleanup::Args {
         dry_run: false,
         ended: false,
+        approved_by_person: None,
+        force: false,
         args: names.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -48,9 +50,20 @@ fn ended_args(dry_run: bool) -> cleanup::Args {
     cleanup::Args {
         dry_run,
         ended: true,
+        approved_by_person: None,
+        force: false,
         args: Vec::new(),
     }
 }
+
+/// args, with a person's approval as the caller relays it.
+fn approved(mut args: cleanup::Args, force: bool) -> cleanup::Args {
+    args.approved_by_person = Some("Sam, in chat:  the branch is merged".into());
+    args.force = force;
+    args
+}
+
+const SAID: &str = r#"  not your helper: approved by a person, as "lead" says: Sam, in chat: the branch is merged"#;
 
 /// Fails unless out's lines start, in order, with want's (Go: checkLines).
 pub fn check_lines(what: &str, out: &str, want: &[&str]) {
@@ -364,7 +377,7 @@ fn test_cleanup_ended_inside_agent() {
         "  its session rpc-cli-boss-a-x is already gone; no held messages",
         r#"would clean up "boss-a": ended (gone)"#,
         "  its session rpc-cli-boss-a is already gone; no held messages",
-        r#"Would clean up 2 ended agents; nothing changed (dry run). Skipped 2. Left 2 more ended agents here that others spawned, not you ("boss") or your helpers."#,
+        r#"Would clean up 2 ended agents; nothing changed (dry run). Skipped 2. Left 2 more ended agents here that others spawned, not you ("boss") or your helpers; once a person says to, --approved-by-person "who, when, why" adds them."#,
     ]);
     check_lines("cleanup --ended --dry-run inside boss", &out, &want);
 
@@ -375,7 +388,7 @@ fn test_cleanup_ended_inside_agent() {
     want.extend([
         r#"cleaned up "boss-a-x": removed"#,
         r#"cleaned up "boss-a": removed"#,
-        r#"Cleaned up 2 ended agents. Skipped 2. Left 2 more ended agents here that others spawned, not you ("boss") or your helpers."#,
+        r#"Cleaned up 2 ended agents. Skipped 2. Left 2 more ended agents here that others spawned, not you ("boss") or your helpers; once a person says to, --approved-by-person "who, when, why" adds them."#,
     ]);
     check_lines("cleanup --ended inside boss", &out, &want);
     assert_eq!(
@@ -410,6 +423,14 @@ fn test_cleanup_ended_args() {
         (vec!["--ended", "x"], "--ended picks the agents itself"),
         (vec!["--dry-run", "x"], "--dry-run goes with --ended"),
         (vec![], "requires at least 1 arg"),
+        (
+            vec!["x", "--approved-by-person", " "],
+            "--approved-by-person needs who said yes, when and why",
+        ),
+        (
+            vec!["x", "--force"],
+            "--force goes with --approved-by-person",
+        ),
     ] {
         let mut env = TestEnv::new();
         let mut line = vec!["cleanup".to_string()];
@@ -420,4 +441,193 @@ fn test_cleanup_ended_args() {
             "{argv:?}: err = {err:#}, want {want:?}"
         );
     }
+}
+
+// --approved-by-person: inside an agent, a person's relayed yes covers an
+// agent no agent here could clean up (a person's, or one whose spawners are
+// gone, ended, or going with it), idle or ended unless --force, and never
+// one above the caller. The words are printed and kept in the removed event.
+#[test]
+fn test_cleanup_approved_by_person() {
+    crate::require_termd!();
+    let mut env = TestEnv::setup_cli_private();
+    env.set_env("AGENT_NAME", "lead");
+
+    add_record(&env, agent("boss", "", ""), false);
+    add_record(&env, agent("lead", "boss", ""), false);
+    add_record(&env, agent("done", "", ""), false);
+    add_record(&env, agent("done-h", "done", ""), false);
+    add_record(&env, agent("orphan", "departed", ""), false);
+    add_record(&env, agent("far", "lead@elsewhere", ""), false);
+    add_record(&env, agent("busy", "", "aider"), true);
+    add_record(&env, agent("owner", "", "aider"), true);
+    add_record(&env, agent("owner-h", "owner", ""), false);
+    add_record(&env, agent("resting", "", ""), true);
+    env.service()
+        .report(
+            "resting",
+            StatusReport {
+                status: AGENT_STATUS_IDLE,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let first = env.store().agent_events_after(0, 1000).unwrap().1;
+
+    let refused: Vec<(Vec<&str>, bool, &str)> = vec![
+        (
+            vec!["boss"],
+            true,
+            r#"refused "boss": it is above you ("lead") in your own chain, so only a person can clean it up"#,
+        ),
+        (
+            vec!["lead"],
+            true,
+            r#"refused "lead": an agent can't clean itself up"#,
+        ),
+        (
+            vec!["done"],
+            false,
+            r#"refused "done": its helpers done-h would be left behind"#,
+        ),
+        (vec!["busy"], false, r#"refused "busy": it is "#),
+        (
+            vec!["owner-h"],
+            true,
+            r#"refused "owner-h": "owner" is above it and still here, and can clean it up: ask it to (agent send owner "...")"#,
+        ),
+    ];
+    for (names, force, want) in refused {
+        let res = cleanup::run(&env.ctx, &approved(cleanup_args(&names), force));
+        let out = env.take_out();
+        check_lines(&format!("approved cleanup {names:?}"), out.trim(), &[want]);
+        assert!(res.is_err(), "approved cleanup {names:?}: no error");
+    }
+    let out_busy = {
+        let _ = cleanup::run(&env.ctx, &approved(cleanup_args(&["busy"]), false));
+        env.take_out()
+    };
+    assert!(
+        out_busy.contains(
+            "a person's approval covers an idle or ended agent: wait for it, or add --force"
+        ),
+        "busy without --force = {out_busy:?}"
+    );
+
+    // Without the flag, the refusal says how.
+    let res = cleanup::run(&env.ctx, &cleanup_args(&["done", "done-h"]));
+    let out = env.take_out();
+    assert!(
+        res.is_err()
+            && out.contains(r#"once a person says to: agent cleanup done-h --approved-by-person "who, when, why""#),
+        "plain cleanup = {out:?}"
+    );
+
+    let res = cleanup::run(
+        &env.ctx,
+        &approved(
+            cleanup_args(&["done-h", "done", "orphan", "far", "resting"]),
+            false,
+        ),
+    );
+    let out = env.take_out();
+    res.unwrap_or_else(|e| panic!("approved cleanup: {e:#}\n{out}"));
+    check_lines(
+        "approved cleanup",
+        &out,
+        &[
+            r#"cleaned up "done-h": removed"#,
+            SAID,
+            r#"cleaned up "orphan": removed"#,
+            SAID,
+            r#"cleaned up "far": removed"#,
+            SAID,
+            r#"cleaned up "done": removed"#,
+            SAID,
+            r#"cleaned up "resting": killed session rpc-cli-resting; removed"#,
+            SAID,
+        ],
+    );
+
+    // Mid-turn, with --force; and its helper goes with an owner that goes.
+    let res = cleanup::run(
+        &env.ctx,
+        &approved(cleanup_args(&["busy", "owner", "owner-h"]), true),
+    );
+    let out = env.take_out();
+    res.unwrap_or_else(|e| panic!("forced cleanup: {e:#}\n{out}"));
+    assert_eq!(
+        listed(
+            &env,
+            &[
+                "boss", "lead", "done", "done-h", "orphan", "far", "busy", "owner", "owner-h",
+                "resting"
+            ]
+        ),
+        vec!["boss", "lead"]
+    );
+
+    let (events, _) = env.store().agent_events_after(first, 1000).unwrap();
+    let whys: Vec<&str> = events
+        .iter()
+        .filter(|e| e.kind == agent_store::AGENT_REMOVED)
+        .map(|e| e.detail.as_str())
+        .collect();
+    assert_eq!(whys.len(), 8, "removed events: {events:?}");
+    assert!(
+        whys.iter()
+            .all(|w| *w == SAID.trim_start().trim_start_matches("not your helper: ")),
+        "removed events' details = {whys:?}"
+    );
+}
+
+// cleanup --ended --approved-by-person adds the ended agents the approval
+// covers, and still leaves one whose spawner is here.
+#[test]
+fn test_cleanup_ended_approved_by_person() {
+    crate::require_termd!();
+    let mut env = TestEnv::setup_cli_private();
+    env.set_env("AGENT_NAME", "lead");
+
+    add_record(&env, agent("boss", "", ""), false);
+    add_record(&env, agent("lead", "boss", ""), false);
+    add_record(&env, agent("lead-a", "lead", ""), false);
+    add_record(&env, agent("done", "", ""), false);
+    add_record(&env, agent("done-h", "done", ""), false);
+    add_record(&env, agent("owner", "", "aider"), true);
+    add_record(&env, agent("owner-h", "owner", ""), false);
+
+    let total = r#"ended agents; nothing changed (dry run). Skipped 1. Left 2 more ended agents here that a person's approval doesn't cover: an agent above it is still here, or it is above you ("lead")."#;
+    let res = cleanup::run(&env.ctx, &approved(ended_args(true), false));
+    let out = env.take_out();
+    res.unwrap_or_else(|e| panic!("dry run: {e:#}\n{out}"));
+    check_lines(
+        "cleanup --ended --dry-run --approved-by-person",
+        &out,
+        &[
+            r#"skipped "lead" (ended): that's you"#,
+            r#"would clean up "lead-a": ended (gone)"#,
+            "  its session rpc-cli-lead-a is already gone; no held messages",
+            r#"would clean up "done-h": ended (gone)"#,
+            "  its session rpc-cli-done-h is already gone; no held messages",
+            SAID,
+            r#"would clean up "done": ended (gone)"#,
+            "  its session rpc-cli-done is already gone; no held messages",
+            SAID,
+            &format!("Would clean up 3 {total}"),
+        ],
+    );
+
+    let res = cleanup::run(&env.ctx, &approved(ended_args(false), false));
+    let out = env.take_out();
+    res.unwrap_or_else(|e| panic!("cleanup --ended: {e:#}\n{out}"));
+    assert_eq!(
+        listed(
+            &env,
+            &[
+                "boss", "lead", "lead-a", "done", "done-h", "owner", "owner-h"
+            ]
+        ),
+        vec!["boss", "lead", "owner", "owner-h"]
+    );
 }

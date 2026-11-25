@@ -12,6 +12,16 @@ own helpers along with it, or it is refused, since you couldn't reach them
 once it's gone. A person can clean up any agent. Given names, cleanup never
 removes an agent you didn't name: it says which helpers remain instead.
 
+--approved-by-person "who said yes, when, why" lets an agent clean up one
+that isn't its helper, once a person has said to: an agent a person started,
+or one whose spawner (and that agent's, up the chain) is gone or has ended.
+One whose spawner is still here is refused: ask that agent. It must be idle
+or ended (--force takes it mid-turn or at a prompt), and it is never you or
+an agent above you in your own chain. Its helpers go with it, named in the
+same command. The words are the caller's claim, and they are kept: in the
+output, in agent history (with the caller's name), and in the agent's
+removed event. With --ended it adds the ended agents it covers.
+
 --ended picks the agents instead of names: every agent on this host whose
 status is ended, as agent status resolves it (not just the last report), that
 you may clean up (inside an agent: your helpers and theirs). An ended agent's
@@ -30,11 +40,14 @@ Examples:
   agent cleanup lead-build lead-build-test
   agent cleanup --ended --dry-run     # what --ended would clean up, and why
   agent cleanup --ended
+  agent cleanup worker --approved-by-person "Sam, in chat at 14:10: its branch is merged"
 
 Flags:
-      --dry-run   With --ended: list what it would clean up and why, changing nothing
-      --ended     Clean up every agent here whose status is ended (yours only, inside an agent)
-  -h, --help      help for cleanup
+      --approved-by-person string   Inside an agent: a person said to clean these up, though they aren't your helpers (kept in the log)
+      --dry-run                     With --ended: list what it would clean up and why, changing nothing
+      --ended                       Clean up every agent here whose status is ended (yours only, inside an agent)
+      --force                       With --approved-by-person: also take an agent that is mid-turn or at a prompt
+  -h, --help                        help for cleanup
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

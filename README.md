@@ -204,7 +204,8 @@ Other ways in:
   memory-limited systemd scope (recording the script, sha256, limits, and exit
   code in `jobs`) so an OOM kills the job instead of the agent's terminal.
 - Agents run these same commands. An agent's helpers show nested under their
-  parent in `agent list`, and it can clean up only its own.
+  parent in `agent list`, and it can clean up only its own (another agent only once a person
+  says to: `agent cleanup NAME --approved-by-person "who, when, why"`).
 
 Every command has details and tested examples in `agent help <command>`.
 
