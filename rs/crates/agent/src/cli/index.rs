@@ -308,9 +308,34 @@ fn run_watch(ctx: &Ctx, a: &WatchArgs) -> anyhow::Result<()> {
     let ledger = cfg.ledger_path(agent_index::path_beside(&ctx.cfg().database_path));
     let socket = cfg.watch_socket(&ledger);
     if a.status {
-        let st = watch::ask(&socket, &watch::Request { status: true, ..Default::default() }, std::time::Duration::from_secs(5))?;
+        // A watcher that just started may not have read its socket yet (or
+        // be busy): asked again a few times before saying so.
+        let req = watch::Request { status: true, ..Default::default() };
+        let mut tries = 0;
+        let st = loop {
+            match watch::ask(&socket, &req, std::time::Duration::from_secs(5)) {
+                Ok(st) => break st,
+                Err(_) if tries < 3 && socket.exists() => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                Err(e) => {
+                    return Err(e.context(format!(
+                        "the index watcher at {} didn't answer its status in {} tries",
+                        socket.display(),
+                        tries + 1
+                    )))
+                }
+            }
+        };
         if a.json {
             return ctx.print_json(&st);
+        }
+        if st.catching_up {
+            return ctx.write_out(&format!(
+                "Catching up since {}: the tidy that starts the watcher is running (a full crawl and sync); nothing is watched until it ends.\n",
+                st.started
+            ));
         }
         return ctx.write_out(&format!(
             "Watching {} directories of {} projects since {}{}; {} events, {} paths named on the socket ({} outside every project), {} flushes, {} tidies, {} projects waiting.\nLast flush ({}): {}\nLast tidy: {}\n{}{}",

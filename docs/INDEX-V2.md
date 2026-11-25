@@ -441,6 +441,173 @@ kept`, `rerank.error` says why, and the text output says so in a line.
 Tests run it against a stand-in server (it reorders; an endpoint that
 doesn't answer leaves the fused order).
 
+## A code-trained embedder
+
+The dense lists moved from bge-small over cards alone to
+Qwen3-Embedding-0.6B at 512 dimensions over cards and chunk windows,
+with queries embedded on the GPU and the CPU behind it.
+
+**Built** (`pg/vecs.rs`, `pg/embed_pg.rs`, `embed_models.rs`):
+- **Models by name.** `[embedder].model` takes `bge-small-en-v1.5`,
+  `qwen3-embedding-0.6b` (1,024 dimensions, Matryoshka: `dims` cuts and
+  renormalizes) or `coderankembed` (768), run by candle on the CPU or
+  by an OpenAI-compatible `/v1/embeddings` server (vLLM's pooling
+  runner). `[embedder.corpus]` can give a corpus its own model.
+- **Tables by model.** bge's card vectors stay in `entities.card_vec`.
+  Every other model has `vec_cards_<key>` and `vec_chunks_<key>`
+  (key: the model's slug, and its width when cut), with each entity's
+  filter columns copied in, so the search's filters and HNSW's iterative
+  scan work on one table. The sync drops the rows of entities that go.
+- **Chunk windows.** `[embedder.chunks]` cuts each chunk into windows at
+  line ends, `window_chars` (3,500) at most, capped at about 3
+  characters a token of what the model reads. Each window's text starts
+  with a header (`header`: none, path, or full: the project and path,
+  the file's summary in a sentence, then what the window defines or its
+  heading path; a session's title). A window's key hashes the model's
+  slug, the header's version and mode, and its text, so a Matryoshka cut
+  keeps the full vectors' keys and only changed windows are embedded
+  again.
+- **Search.** One dense list per model: `semantic <key>` over the cards
+  and `semantic chunks <key>`, each entity ranked by its best window,
+  both fused by RRF with the word lists.
+- **The live path.** `[embedder].endpoint` names the query server. A
+  query asks it with `timeout_ms` (1,500), a batch with
+  `batch_timeout_s` (60). On an error or a timeout, the CPU embeds instead
+  and the server is left alone for `recheck_s` (30), counted from the end
+  of the CPU's work, so a dead server costs one timeout, not one per
+  query. Both sides cut an over-long text the same way (`fit`: at a
+  token boundary, before either sees it; vLLM's own cut keeps the first
+  tokens too). The endpoint, served name, timeouts and `keep` are left
+  out of the fingerprint: they change where a vector is made, not what
+  it is.
+- **What it says.** `search --json` has `"embedder": {model, on: gpu|cpu,
+  note}`; the text output says in a line when the CPU did it; the query
+  log has `embed_on`; `agent index serve --status` shows each embedding
+  server's health (up, down since, served and fallen-back counts).
+- **The watcher.** Each flush embeds, with every live model, the cards
+  the sync queued and the chunks it cut again (`embed_pg::keep_up`).
+  With the server down it embeds at most `[watch].cpu_texts` (2) texts,
+  cards then windows, on the CPU, and the rest wait: the next flush, a
+  catch-up every 30 s while any wait, or the tidy takes them, and
+  `agent index watch --status` counts them. With a model larger than bge
+  the watcher embeds a text at a time on every core (about 3.5 s a
+  window, against 28 s on one thread); bge alone keeps
+  `embed_workers` single-threaded workers.
+- **Kept models.** `[embedder].keep` lists models kept current but not
+  searched: bge's cards, so going back is a configuration change.
+- **`agent index embed`** takes `--model`, `--endpoint` (a bulk pass on
+  the GPU), `--bulk` (HNSW built after the rows), `--copy-from SCHEMA`
+  (a model's vectors from another schema of the same database, matched by
+  entity key and text key), `--dry-run` (counts only, against the other
+  schema's tables with `--copy-from`) and `--refit-long` (windows past the
+  token cut embedded again with the live cut).
+
+**Dev comparison** (2026-11-24, a scratch schema copied from the live
+one; dev sets only: blind 2, blind 3, cross dev and the episodes, all
+spent; B2 is blind 2 by sentence at the project, B3 blind 3 at its scope,
+X cross dev at its scope; cells are hit@5 / MRR@10; dense R@10 is cards
+and chunks over the 140 questions of B2, B3 and X, bge's cards only):
+
+| arm | dense R@10 | B2, no rerank | B3, no rerank | X, no rerank | B2, depth 20 | B3, depth 20 | X, depth 20 |
+|---|---|---|---|---|---|---|---|
+| bge (cards) | 0.568 | 0.58 / 0.416 | 0.82 / 0.620 | 0.80 / 0.505 | 0.83 / 0.698 | 0.90 / 0.764 | 0.80 / 0.540 |
+| Qwen3 1,024 | 0.656 | 0.83 / 0.572 | 0.87 / 0.624 | 0.80 / 0.580 | | | |
+| Qwen3 512 | 0.648 | 0.80 / 0.575 | 0.88 / 0.640 | 0.80 / 0.651 | 0.92 / 0.795 | 0.92 / 0.846 | 0.85 / 0.595 |
+| CodeRankEmbed | 0.579 | 0.68 / 0.476 | 0.88 / 0.650 | 0.75 / 0.456 | 0.88 / 0.766 | 0.90 / 0.820 | 0.85 / 0.610 |
+| CRK code + Qwen3 rest | | 0.72 / 0.481 | 0.88 / 0.652 | 0.85 / 0.526 | | | |
+| CRK code + bge rest | | 0.73 / 0.489 | 0.87 / 0.656 | 0.85 / 0.493 | | | |
+
+- At depth 20, Qwen3 512 against bge, paired by question: B2 MRR +0.097
+  [+0.031, +0.174], B3 +0.082 [+0.025, +0.144], X +0.054 [-0.037,
+  +0.180].
+- The episodes don't move with any arm (Qwen3 512 against bge at depth
+  20: MRR -0.009 [-0.023, +0.001]).
+- The chunk windows carry the gain: Qwen3 over cards alone lands near
+  bge (B2 0.63 / 0.454).
+- The headers help, mostly in the dense ranking (chunks alone without
+  them: MRR 0.531 against 0.609).
+- 512 dimensions equal 1,024 within the noise, at half the storage.
+- The per-corpus mixes beat neither model alone.
+
+**Blind 5** (pre-registered, once: Qwen3 512 at depth 20 against bge at
+depth 20): a relevant file in the top 5 for 56 questions against 52,
++0.067 [0.000, +0.150], so **not shown** by the pre-registration's bar;
+5 questions won, 1 lost; MRR +0.024 and nDCG +0.039, both inside the
+noise. The switch was made anyway, on the dev gains and no loss seen, and
+the smoke test on the live schema afterwards (blind 3, spent) matched the
+scratch schema's run (hit@5 0.92, MRR 0.847).
+
+**The query server** (a `serve.sh` beside the reranker's on the host;
+vLLM 0.28, `--runner pooling --convert embed`, on 127.0.0.1:8201, as the
+transient unit `gomuxai-embed`, started at boot after the reranker's):
+- **Sizing** (a 32 GB GPU, 8 GiB kept free for its other users): the
+  weights take 1.12 GiB and vLLM's own overhead about 0.6 more, so a
+  1.5 GiB budget can't hold one 2,048-token window. At a 2.0 GiB budget
+  it takes 2.47 GiB in all (the CUDA context sits outside vLLM's share),
+  with KV for 5,360 tokens. Queries alone: p50 8 ms, p99 14. Windows:
+  102 a second, the same at 2.5 GiB.
+- **The cut.** 2,048 tokens. Over the live windows: p50 797 tokens, p90
+  1,406, p99 2,456, max 3,561; 1.4% are past 2,048 (25.5% past 1,024, so
+  1,024 would cut a quarter).
+- **The hang, and its fix.** With vLLM's defaults (chunked prefill and
+  prefix caching on) and a step of 2,048 tokens, a request of two windows
+  at the cut and a few others hung: they were prefilled in part, filled
+  the KV cache, and a pooling request isn't preempted, so none finished
+  until the client gave up. The server runs with
+  `--no-enable-chunked-prefill --no-enable-prefix-caching`: each window
+  is prefilled whole in one step and its blocks freed. Requests of 6.7K
+  to 10.4K tokens then answer in 0.1 to 0.2 s; 4 clients of 8 windows at
+  the cut, 0.74 s. A client that times out drops its connection, which
+  vLLM takes as an abort.
+- **Agreement.** candle on the CPU against the server, at 512 dimensions,
+  over 16 windows, 8 queries and 2 windows past the cut: least cosine
+  0.99987, the same nearest window for 8 of 8 queries.
+- **The GPU batches.** A summary batch stops it with the reranker and
+  starts both again after (`embed.state` beside `reranker.state`); a bulk
+  embed batch stops it and starts it after. Search embeds on the CPU
+  meanwhile.
+
+**Measured, live path** (blind 3 at depth 20 on the scratch schema; medians
+and p90s in ms):
+
+| | at the project | at its scope |
+|---|---|---|
+| bge | 333 / 420 | 875 / 1,014 |
+| Qwen3 512, server up | 406 / 561 | 737 / 864 |
+| Qwen3 512, server down (the CPU) | 792 / 896 | 1,129 / 1,278 |
+
+The answers are the same up or down (MRR 0.893 at the project, against
+0.823 for bge).
+
+The watcher's flush (a scratch project, its own crawl, sync and
+`keep_up`):
+
+| flush | server up | server down |
+|---|---|---|
+| a small edit (1 window) | 75 ms | 2.7 s |
+| a file of 40 windows | 1.15 s (embed 950 ms) | 7 s (the card and 1 window; 39 wait) |
+
+- Keeping bge's cards current costs about 110 to 160 ms a flush.
+- Uncapped, the 40 windows on one thread each took 287 s, which is why the
+  cap exists.
+
+**Install** (2026-11-24):
+1. The server and its boot unit.
+2. The new tables filled with `agent index embed --model
+   qwen3-embedding-0.6b --copy-from <scratch schema>`: 83,149 cards and
+   152,883 windows copied, 13 cards and 218 windows embedded through the
+   server, HNSW built, in 30 s; 640 MB in all.
+3. The same command without `--copy-from` just before the flip (the
+   watcher's changes since).
+4. The flip: `[embedder]` (the model, `dims = 512`, the endpoint, `keep =
+   ["bge-small-en-v1.5"]`), `[embedder.chunks] enabled = true` and the
+   reranker's `flat_depth = 20` (the depth measured), then a restart of
+   serve and the watcher.
+
+**Roll back**: the previous configuration file back, and a restart of
+serve and the watcher. bge's cards stayed current (`keep`). The Qwen3
+tables then go stale; going forward again is step 3, then step 4.
+
 ## A warm query process
 
 `agent index serve` keeps a database pool, the query embedder and the
@@ -1067,13 +1234,13 @@ The sections:
 | `[chunks]` | the cut (`max_lines` 400, `max_bytes` 32,768), `lexeme_floor` (50) and the `file_kinds` cut into chunks. A cut other than the default becomes part of each file's chunk key, so the next sync cuts every file again; a new floor recounts `lexemes` |
 | `[cards]` | `children` named in a card's search text (200), `symbols` after `defines:` in the embedded card (60), `max_chars` (2,000), `asks` (false, the default: a model's asks stay stored, and the summarizer still writes them, but they are in no card, vector or text search, since blind 2 found they add nothing to the top 5; true: in the card, after the names, so in its vector, and in the text search); a change rewrites the cards and re-queues their vectors at the next sync (switching `asks` re-embeds the summarized cards: about 5,400 took about 4 minutes) |
 | `[summaries]` | `withhold`: entity id prefixes (`"project:docs/notes/"`) whose model summaries stay out of the live index, their seeds showing; empty by default. Which summaries go live, not how they are written (`[llm.summaries]`). An answer that echoes the scrub's placeholder (`[redacted]`) fails summarize's check ("placeholder echo") |
-| `[embedder]` | `model` (this build runs `bge-small-en-v1.5` only and refuses another), `model_dir` (the Hugging Face cache's when empty; `embed --model-dir` wins), `batch` (512) |
+| `[embedder]` | `model` (`bge-small-en-v1.5`, `qwen3-embedding-0.6b` or `coderankembed`; another is refused), `model_dir` (the Hugging Face cache's when empty; `embed --model-dir` wins), `batch` (512), `dims` (0: the model's; a Matryoshka cut), `query_instruction` ("": the model's), `max_tokens` (2,048), `[embedder.chunks]` (`enabled` false, `window_chars` 3,500, `header` full), `[embedder.corpus]` (a model per corpus); and, left out of the fingerprint, `endpoint` with `served`, `backend` (candle: the server first, the CPU behind it; http: the server only), `timeout_ms` (1,500), `batch_timeout_s` (60), `recheck_s` (30) and `keep` (models kept current, not searched); see "A code-trained embedder" |
 | `[reranker]` | `enabled` (false), `endpoint` (`http://127.0.0.1:8100`), `model` (`Qwen/Qwen3-Reranker-4B`), `instruction`, `timeout_ms`, and `depth` per corpus (code 50, prose 20, session 20, memory 10, friction 10), `doc_chars` (1,500), `max_tokens_per_doc` (512), `keep_pins` (true), `flat_depth` (50, a flat search's one pool); see "Reranker" |
 | `[serve]` | `workers` (4) and `socket` ("" for `index.sock` beside `index.db`) of `agent index serve` |
 | `[store]` | the store a command uses when neither `--store` nor `AGENT_INDEX_STORE` says: `kind` ("" is sqlite, or `pg`), and the pg store's `url` and `schema` when `AGENT_INDEX_PG` and `AGENT_INDEX_PG_SCHEMA` aren't set ("" is `idx`); not in the fingerprint |
 | `[ledger]` | `path`: the crawl's ledger ("" is `index.db` beside the binary's `gomuxai.db`, which ties it to one copy of the binary); every sync of a schema should use the ledger the schema was built from; not in the fingerprint |
 | `[log]` | the query log: `enabled` (true) and `path` ("" is `$XDG_DATA_HOME/gomuxai/index-queries.jsonl`); not in the fingerprint |
-| `[watch]` | `agent index watch`: `socket` ("" is `index-watch.sock` beside the ledger), `settle_ms` (1,000), `max_wait_ms` (10,000), `git_lock_ms` (60,000), `tidy_quiet_s` (600), `tidy_every_s` (3,600), `embed_workers` (4: the embedder's threads in the watcher; a bulk `agent index embed` takes half the logical CPUs); not in the fingerprint |
+| `[watch]` | `agent index watch`: `socket` ("" is `index-watch.sock` beside the ledger), `settle_ms` (1,000), `max_wait_ms` (10,000), `git_lock_ms` (60,000), `tidy_quiet_s` (600), `tidy_every_s` (3,600), `embed_workers` (4: the embedder's threads in the watcher, with bge alone; a bulk `agent index embed` takes half the logical CPUs), `cpu_texts` (2: with the embedder's server down, the cards and windows a flush embeds on the CPU; the rest wait); not in the fingerprint |
 | `[cross]` | answers that span projects, every switch off: `route` (`route_cards` 60, `route_per_project` 3, `route_summary_best` 3, the lists' weights `route_summary` 0, `route_dense` 0, `route_fused` 1, `route_names` 1, `route_fused_depth` 100, `route_projects` 2, `route_ratio` 0.5, `route_caller` false), `split` (`split_depth` 30, `split_raise` 1), `slots` (`slot_min` 5, `slot_cap` 0.6, `slot_projects` 2, `pool_depth` 0: the reranker's `flat_depth`), `top_cap` (0), `own_project` (0: the priors stand), `touched` (`touched_seeds` 10, `touched_max` 10, `touched_weight` 1, `touched_cross` 1); at its defaults the fingerprint is the one from before the section; see "Across projects" |
 | `[bm25]` | the BM25 card list's field boosts (`terms` 10, `labels` 10, `title` 4, `summary` 4, `asks` 4, `seed` 2, `why` 2, `symbols` 1), for `--lexical bm25|both`; `pushdown` (true: kind, project, corpus and `--under`'s projects filtered inside pg_search's query; see "Filters inside the BM25 query") |
 | `[llm.summaries]` | `agent index summarize`: `endpoint` (OpenAI-compatible; empty is none), `model`, `temperature` (0.2), `max_tokens` (500), `timeout_ms`, `seed`, `concurrency` (48), `retries` and `backoff_ms`, `max_connection_errors` (8), the clip (`clip_tokens` 6,000; a doc's `doc_head_tokens` 4,500 and `doc_tail_tokens` 1,500; `max_input_tokens` 9,000; `preclip_chars`; `symbols_chars` 2,500), the floors (`min_chars` 200, `min_lines` 5, `json_max_bytes`), `pause_file`, `scrub_words`, and the served `dtype` and `quantization`; every key is in each summary's fingerprint |

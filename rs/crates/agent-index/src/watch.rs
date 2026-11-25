@@ -332,6 +332,9 @@ pub struct Status {
     /// ([watch].cpu_texts).
     #[serde(default)]
     pub texts_waiting: usize,
+    /// The catch-up tidy at start is running (nothing is watched yet).
+    #[serde(default)]
+    pub catching_up: bool,
 }
 
 /// Names changed paths to the watcher at `socket` (or asks its status);
@@ -379,19 +382,56 @@ pub fn run(
         UnixListener::bind(socket).with_context(|| format!("listening on {}", socket.display()))?;
     let status = Arc::new(Mutex::new(Status {
         started: now_rfc3339(),
+        catching_up: true,
         ..Default::default()
     }));
     let (tx, rx) = mpsc::channel::<Msg>();
 
+    // The socket: paths into the queue; the status out. Served from the
+    // start, so the status answers (and touches queue up) while the
+    // catch-up tidy runs.
+    {
+        let tx = tx.clone();
+        let status = Arc::clone(&status);
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(conn) = conn else { continue };
+                let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut line = String::new();
+                if BufReader::new(&conn).read_line(&mut line).is_err() {
+                    continue;
+                }
+                let req: Request = serde_json::from_str(&line).unwrap_or_default();
+                let queued = req.paths.len();
+                if queued > 0 {
+                    let paths = req.paths.iter().map(PathBuf::from).collect();
+                    if tx.send(Msg::Touch(paths)).is_err() {
+                        return;
+                    }
+                }
+                let mut st = status.lock().map(|s| s.clone()).unwrap_or_default();
+                st.queued = queued;
+                let mut out = serde_json::to_vec(&st).unwrap_or_default();
+                out.push(b'\n');
+                let mut c = &conn;
+                let _ = c.write_all(&out);
+            }
+        });
+    }
+
     // Catch up on what changed while nothing watched.
-    match keeper.tidy() {
-        Ok(line) => {
-            log(&format!("caught up: {line}"));
-            let mut st = status.lock().unwrap();
-            st.tidies += 1;
-            st.last_tidy = now_rfc3339();
+    let caught = keeper.tidy();
+    {
+        let mut st = status.lock().unwrap();
+        st.catching_up = false;
+        match caught {
+            Ok(line) => {
+                log(&format!("caught up: {line}"));
+                st.tidies += 1;
+                st.last_tidy = now_rfc3339();
+            }
+            Err(e) => log(&format!("catching up failed ({e:#}); watching anyway")),
         }
-        Err(e) => log(&format!("catching up failed ({e:#}); watching anyway")),
     }
     let mut last_tidy = Instant::now();
 
@@ -453,35 +493,6 @@ pub fn run(
                 if tx.send(Msg::Fs(batch)).is_err() {
                     return;
                 }
-            }
-        });
-    }
-    // The socket: paths into the queue; the status out.
-    {
-        let tx = tx.clone();
-        let status = Arc::clone(&status);
-        std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                let Ok(conn) = conn else { continue };
-                let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
-                let mut line = String::new();
-                if BufReader::new(&conn).read_line(&mut line).is_err() {
-                    continue;
-                }
-                let req: Request = serde_json::from_str(&line).unwrap_or_default();
-                let queued = req.paths.len();
-                if queued > 0 {
-                    let paths = req.paths.iter().map(PathBuf::from).collect();
-                    if tx.send(Msg::Touch(paths)).is_err() {
-                        return;
-                    }
-                }
-                let mut st = status.lock().map(|s| s.clone()).unwrap_or_default();
-                st.queued = queued;
-                let mut out = serde_json::to_vec(&st).unwrap_or_default();
-                out.push(b'\n');
-                let mut c = &conn;
-                let _ = c.write_all(&out);
             }
         });
     }
