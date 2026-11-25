@@ -49,7 +49,6 @@ pub fn has_go() -> bool {
 
 /// Builds `busd/` once per test binary and returns `Some(path)` or `None` if `go` is absent.
 pub fn busd_binary() -> Option<PathBuf> {
-    static BUSD: OnceLock<Option<PathBuf>> = OnceLock::new();
     BUSD.get_or_init(|| {
         if !has_go() {
             eprintln!("skipping test: `go` toolchain not found on PATH to build agent-busd");
@@ -61,7 +60,8 @@ pub fn busd_binary() -> Option<PathBuf> {
             .unwrap_or_else(test_temp_root);
         let build_dir = base.join("agent-busd-test-bin");
         std::fs::create_dir_all(&build_dir).expect("busd test bin dir");
-        let bin = build_dir.join(format!("agent-busd-{}", std::process::id()));
+        sweep_busd(&build_dir);
+        let bin = build_dir.join(format!("{BUSD_PREFIX}{}", std::process::id()));
         let busd_src = repo_root().join("busd");
         let out = Command::new("go")
             .arg("build")
@@ -79,9 +79,48 @@ pub fn busd_binary() -> Option<PathBuf> {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
+        // SAFETY: registering a plain extern "C" function.
+        unsafe {
+            libc::atexit(remove_busd);
+        }
         Some(bin)
     })
     .clone()
+}
+
+static BUSD: OnceLock<Option<PathBuf>> = OnceLock::new();
+const BUSD_PREFIX: &str = "agent-busd-";
+
+/// Removes this test binary's agent-busd when the process exits.
+extern "C" fn remove_busd() {
+    if let Some(Some(p)) = BUSD.get() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Removes the agent-busd binaries in dir that earlier test processes left
+/// (a killed run skips its exit hook): files named BUSD_PREFIX + a pid that
+/// no longer runs. A test binary running now keeps its own.
+fn sweep_busd(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(BUSD_PREFIX))
+            .and_then(|p| p.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        // SAFETY: signal 0 only asks whether the process exists.
+        let gone = unsafe { libc::kill(pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 pub fn require_busd() -> Option<PathBuf> {

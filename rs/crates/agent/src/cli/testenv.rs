@@ -194,7 +194,6 @@ pub fn isolate() -> &'static Isolation {
 /// Builds agent-busd from busd/ once per test binary: None (skip the test)
 /// when there is no go toolchain.
 pub fn busd_binary() -> Option<PathBuf> {
-    static BUSD: OnceLock<Option<PathBuf>> = OnceLock::new();
     BUSD.get_or_init(|| {
         let iso = isolate();
         let ok = std::process::Command::new("go")
@@ -211,7 +210,8 @@ pub fn busd_binary() -> Option<PathBuf> {
             .to_path_buf();
         let build_dir = PathBuf::from("/var/tmp").join("agent-busd-test-bin");
         std::fs::create_dir_all(&build_dir).expect("busd test bin dir");
-        let bin = build_dir.join(format!("agent-busd-cli-{}", std::process::id()));
+        sweep_busd(&build_dir, BUSD_PREFIX);
+        let bin = build_dir.join(format!("{BUSD_PREFIX}{}", std::process::id()));
         let out = std::process::Command::new("go")
             .args(["build", "-trimpath", "-o"])
             .arg(&bin)
@@ -227,9 +227,48 @@ pub fn busd_binary() -> Option<PathBuf> {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
+        // SAFETY: registering a plain extern "C" function.
+        unsafe {
+            libc::atexit(remove_busd);
+        }
         Some(bin)
     })
     .clone()
+}
+
+static BUSD: OnceLock<Option<PathBuf>> = OnceLock::new();
+const BUSD_PREFIX: &str = "agent-busd-cli-";
+
+/// Removes this test binary's agent-busd when the process exits.
+extern "C" fn remove_busd() {
+    if let Some(Some(p)) = BUSD.get() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Removes the agent-busd binaries in dir that earlier test processes left
+/// (a killed run skips its exit hook): files named prefix + a pid that no
+/// longer runs. A test binary running now keeps its own.
+fn sweep_busd(dir: &Path, prefix: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(prefix))
+            .and_then(|p| p.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        // SAFETY: signal 0 only asks whether the process exists.
+        let gone = unsafe { libc::kill(pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// A single-host bus with its own identity, on a random port (Go:
