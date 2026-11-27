@@ -182,7 +182,7 @@ pub fn walk_capped(root: &Path, skip: &[String], max_depth: usize, cap: usize) -
             };
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
-                if agent_dream::skip::contains(name.as_str())
+                if crate::files::skipped(name.as_str())
                     || skip.iter().any(|s| s == &rel)
                     || ignored(&ignores, &rel, true)
                     || (max_depth > 0 && depth >= max_depth)

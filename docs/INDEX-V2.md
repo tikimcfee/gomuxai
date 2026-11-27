@@ -670,8 +670,11 @@ the one writer.
   ignore it (an old commit checked out, from before its `.gitignore`).
 - **The skip list**: the directory names no walk goes into, for the
   crawl, the watcher and dreams alike, are a file a person may edit,
-  `skip-dirs.txt` beside `index.toml` (one name per line, `#` comments;
-  the built-in defaults with no file). `agent index skip list|add|remove`
+  `~/.config/gomuxai/skip-dirs.txt` (`$XDG_CONFIG_HOME/gomuxai/` when
+  set, whatever `--config` names; one name per line, `#` comments; the
+  built-in defaults with no file). It is in no configuration fingerprint:
+  `agent index config` prints its source and its own hash, for an eval
+  run to record. `agent index skip list|add|remove`
   prints and edits it. A dream may only propose a change to it, which a
   person accepts or rejects (`agent dream proposals`).
 - **Reloading**: `agent index root add|remove` and `skip add|remove` tell

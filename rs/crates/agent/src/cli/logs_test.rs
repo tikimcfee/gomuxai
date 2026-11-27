@@ -788,3 +788,25 @@ fn test_logs_caps_long_pieces_with_a_pointer() {
     let (_, out, _) = run_words(&mut env, &["logs", &path, "--full"]);
     assert!(out.contains(&long), "a person's --full isn't capped");
 }
+
+/// A picture can't be redacted: a reader for mining gets what it was, not
+/// its data; the prompt's text is kept.
+#[test]
+fn test_redact_event_marks_images() {
+    let mut e = Event {
+        kind: KIND_PROMPT.into(),
+        prompt: Some(PromptEvent {
+            text: "see this".into(),
+            images: vec![Image {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo".into(),
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    redact_event(&mut e);
+    let p = e.prompt.unwrap();
+    assert_eq!(p.text, "see this");
+    assert_eq!(p.images[0].data, "[redacted: image, image/png, 11 bytes of base64]");
+}

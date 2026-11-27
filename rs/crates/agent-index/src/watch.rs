@@ -166,7 +166,7 @@ impl Debounce {
 /// A file or directory name no flush needs: editors' swap and backup files,
 /// and directories the crawl never reads.
 pub fn ignored_name(name: &str) -> bool {
-    agent_dream::skip::contains(name)
+    crate::files::skipped(name)
         || name.ends_with('~')
         || name.ends_with(".swp")
         || name.ends_with(".swx")
@@ -296,28 +296,37 @@ impl Watches {
         }
     }
 
-    /// Watches what `projects` hold that isn't watched, and stops watching
-    /// what none holds any more or the skip list now skips; (added, dropped).
+    /// Watches every directory `projects` hold that isn't watched (as at
+    /// startup), and stops watching one only when its project is gone, the
+    /// directory is gone, or it is in no project's list and the skip list
+    /// now names a folder on its way (a directory add_tree watched that the
+    /// ledger doesn't hold yet stays); (added, dropped).
     fn reconcile(&mut self, projects: &[Project]) -> (usize, usize) {
-        let mut want: HashMap<&Path, &str> = HashMap::new();
-        for p in projects {
-            for d in &p.dirs {
-                let skipped = d.strip_prefix(&p.path).is_ok_and(|rel| {
-                    rel.components()
-                        .any(|c| ignored_name(&c.as_os_str().to_string_lossy()))
-                });
-                if !skipped {
-                    want.insert(d.as_path(), p.name.as_str());
-                }
-            }
-        }
-        let gone: Vec<(PathBuf, i32)> = self
-            .by_dir
+        let want: HashMap<&Path, &str> = projects
             .iter()
-            .filter(|(d, _)| !want.contains_key(d.as_path()))
-            .map(|(d, wd)| (d.clone(), *wd))
+            .flat_map(|p| p.dirs.iter().map(move |d| (d.as_path(), p.name.as_str())))
             .collect();
-        for (_, wd) in &gone {
+        let by_name: HashMap<&str, &Project> =
+            projects.iter().map(|p| (p.name.as_str(), p)).collect();
+        let gone: Vec<i32> = self
+            .by_wd
+            .iter()
+            .filter(|(_, (dir, project))| {
+                if want.contains_key(dir.as_path()) {
+                    return false;
+                }
+                let Some(p) = by_name.get(project.as_str()) else {
+                    return true; // its project is gone
+                };
+                !dir.is_dir()
+                    || dir.strip_prefix(&p.path).is_ok_and(|rel| {
+                        rel.components()
+                            .any(|c| ignored_name(&c.as_os_str().to_string_lossy()))
+                    })
+            })
+            .map(|(wd, _)| *wd)
+            .collect();
+        for wd in &gone {
             // A watch already gone (its directory removed) errs, and is
             // forgotten all the same.
             let _ = inotify::remove_watch(&self.fd, *wd);
@@ -379,9 +388,11 @@ pub struct Status {
     #[serde(default)]
     pub catching_up: bool,
     /// Reloads asked for (roots or the skip list changed), and when the last
-    /// one finished.
+    /// one finished; `reloading` while one runs (its tidy takes a while).
     #[serde(default)]
     pub reloads: usize,
+    #[serde(default)]
+    pub reloading: bool,
     #[serde(default)]
     pub last_reload: String,
 }
@@ -552,6 +563,8 @@ pub fn run(
     drop(tx);
 
     let mut q = Debounce::default();
+    // Messages taken off the channel while draining reloads, handled next.
+    let mut backlog: std::collections::VecDeque<Msg> = std::collections::VecDeque::new();
     let mut activity = false;
     let mut last_activity = Instant::now();
     let tidy_quiet = Duration::from_secs(s.tidy_quiet_s);
@@ -584,7 +597,11 @@ pub fn run(
         if !q.is_empty() {
             wait = wait.min(Duration::from_millis(250));
         }
-        match rx.recv_timeout(wait.max(Duration::from_millis(10))) {
+        let next = match backlog.pop_front() {
+            Some(m) => Ok(m),
+            None => rx.recv_timeout(wait.max(Duration::from_millis(10))),
+        };
+        match next {
             Ok(Msg::Fs(batch)) => {
                 let now = Instant::now();
                 let mut st = status.lock().unwrap();
@@ -651,6 +668,14 @@ pub fn run(
                 last_activity = now;
             }
             Ok(Msg::Reload) => {
+                // Two edits in a row cost one tidy: what else is queued is
+                // kept, and further reloads go with this one.
+                while let Ok(m) = rx.try_recv() {
+                    if !matches!(m, Msg::Reload) {
+                        backlog.push_back(m);
+                    }
+                }
+                status.lock().unwrap().reloading = true;
                 let skip = crate::files::reload_skip();
                 let t = Instant::now();
                 match keeper.tidy() {
@@ -677,6 +702,7 @@ pub fn run(
                     Err(e) => log(&format!("reloading: listing the projects failed: {e:#}")),
                 }
                 let mut st = status.lock().unwrap();
+                st.reloading = false;
                 st.reloads += 1;
                 st.last_reload = now_rfc3339();
                 st.tidies += 1;
@@ -1085,6 +1111,26 @@ mod tests {
         std::fs::write(a.path.join("src/y.rs"), "fn y() {}\n").unwrap();
         std::thread::sleep(Duration::from_millis(400));
         assert_eq!(flushes.lock().unwrap().len(), 1, "a is no longer watched");
+        // A directory made since (watched by add_tree, not in the ledger's
+        // list yet) stays watched across a reload.
+        std::fs::create_dir_all(b.path.join("src/new")).unwrap();
+        let t0 = Instant::now();
+        while flushes.lock().unwrap().len() < 2 && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        req(true).unwrap();
+        let st = wait(&|st| st.reloads == 2 && !st.reloading);
+        assert_eq!(st.watched_dirs, 3, "{st:?}");
+        std::fs::write(b.path.join("src/new/n.rs"), "fn n() {}\n").unwrap();
+        let t0 = Instant::now();
+        while flushes.lock().unwrap().len() < 3 && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            flushes.lock().unwrap().len(),
+            3,
+            "the new directory is still watched"
+        );
     }
 
     #[test]

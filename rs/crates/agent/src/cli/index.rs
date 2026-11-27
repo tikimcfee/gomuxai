@@ -1042,8 +1042,10 @@ pub const SKIP: Doc = Doc {
     long: r#"Skip holds the skip list: directory names that no walk of a project goes
 into (build output, caches, VCS internals), for the index's crawl and
 watcher and for dreams alike. It is a file a person may edit too, one name
-per line, # for comments: skip-dirs.txt beside index.toml
-($XDG_CONFIG_HOME/gomuxai/, else ~/.config/gomuxai/). With no file, the
+per line, # for comments: ~/.config/gomuxai/skip-dirs.txt
+($XDG_CONFIG_HOME/gomuxai/ when set, whatever --config names). It is in
+no configuration fingerprint; agent index config prints its source and
+hash. With no file, the
 list is the defaults (list --defaults prints them); add and remove write
 the file, starting from the defaults.
 
@@ -1847,11 +1849,21 @@ fn run_config(ctx: &Ctx, a: &ConfigArgs) -> anyhow::Result<()> {
     let l = load_config(&a.config)?;
     let path = l.path.as_ref().map(|p| p.display().to_string());
     let fp = l.config.fingerprint();
+    // The skip list is its own file (agent index skip), not in the
+    // fingerprint above: its source and hash, so a run can record it.
+    let skip_file = agent_dream::skip::default_file();
+    let skip = agent_dream::skip::read(skip_file.as_deref())?;
+    let skip_fp = agent_dream::skip::fingerprint(&skip);
+    let skip_from = match &skip_file {
+        Some(f) if f.exists() => f.display().to_string(),
+        _ => "the defaults".to_string(),
+    };
     if a.json {
         return ctx.print_json(&serde_json::json!({
             "path": path,
             "fingerprint": fp,
             "config": l.config,
+            "skip": {"from": skip_from, "fingerprint": skip_fp, "dirs": skip},
         }));
     }
     let from = match &path {
@@ -1859,7 +1871,7 @@ fn run_config(ctx: &Ctx, a: &ConfigArgs) -> anyhow::Result<()> {
         None => "the built-in defaults (no configuration file)".to_string(),
     };
     ctx.write_out(&format!(
-        "# The index configuration in effect: {from}.\n# Fingerprint {fp}.\n\n{}",
+        "# The index configuration in effect: {from}.\n# Fingerprint {fp}.\n# Skip list: {skip_from}, fingerprint {skip_fp} (agent index skip list).\n\n{}",
         l.config.to_toml()
     ))
 }

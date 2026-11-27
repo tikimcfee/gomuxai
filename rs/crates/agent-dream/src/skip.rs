@@ -2,8 +2,8 @@
 //! output, caches, VCS internals), shared by the index's crawl and
 //! watcher and by dreams (docs/DREAMING.md, "Scope").
 //!
-//! It lives in a file a person can edit, `skip-dirs.txt` beside the index
-//! configuration (`$XDG_CONFIG_HOME/gomuxai/`, else `~/.config/gomuxai/`):
+//! It lives in a file a person can edit, `~/.config/gomuxai/skip-dirs.txt`
+//! (`$XDG_CONFIG_HOME/gomuxai/` when set, whatever the index's `--config`):
 //! one name per line, `#` starting a comment. With no file, the list is
 //! [`DEFAULT_DIRS`]. A process reads it once, at its first use, and again on
 //! [`reload`] (the index watcher does when told the list changed). A dream
@@ -33,7 +33,7 @@ pub const DEFAULT_DIRS: &[&str] = &[
     ".cache",
 ];
 
-/// The file's name, beside the index configuration.
+/// The file's name, in `~/.config/gomuxai/` (or `$XDG_CONFIG_HOME/gomuxai/`).
 pub const FILE_NAME: &str = "skip-dirs.txt";
 
 /// The list in effect in this process, once read.
@@ -110,6 +110,20 @@ pub fn reload() -> Vec<String> {
 /// another file).
 pub fn set(list: Vec<String>) {
     *DIRS.write().unwrap_or_else(|e| e.into_inner()) = Some(list);
+}
+
+/// A short hash of a list (sha256 of its names, one per line, first 12 hex
+/// digits), so an eval run or a crawl report can record which list it ran
+/// under.
+pub fn fingerprint(list: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for n in list {
+        h.update(n.as_bytes());
+        h.update(b"\n");
+    }
+    let d = h.finalize();
+    d.iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
 
 /// Checks a name for the list: one directory name, no path.

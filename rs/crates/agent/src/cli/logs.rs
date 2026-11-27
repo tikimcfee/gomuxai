@@ -406,6 +406,12 @@ pub(crate) fn redact_event(e: &mut Event) {
     if let Some(p) = &mut e.prompt {
         p.text = redact(&label_blocks(&p.text));
         p.command = redact(&p.command);
+        // A picture can't be redacted: say what it was instead.
+        for i in &mut p.images {
+            if !i.data.starts_with("[redacted") {
+                i.data = format!("[redacted: image, {}, {} bytes of base64]", i.media_type, i.data.len());
+            }
+        }
     }
     if let Some(t) = &mut e.think {
         t.text = redact(&t.text);
@@ -436,9 +442,14 @@ pub(crate) fn redact_event(e: &mut Event) {
 }
 
 /// A JSON value redacted as text: a marker holds no quote or backslash, so
-/// it stays JSON; None in the unlikely case it doesn't.
+/// it stays JSON. In the unlikely case it doesn't, the redacted text is kept
+/// as a JSON string, so nothing is lost.
 fn redact_json(j: agent_transcript::RawJson) -> Option<agent_transcript::RawJson> {
-    agent_transcript::RawJson::from_json_string(agent_dream::scrub::redact(j.as_str())).ok()
+    let r = agent_dream::scrub::redact(j.as_str());
+    if let Ok(v) = agent_transcript::RawJson::from_json_string(r.clone()) {
+        return Some(v);
+    }
+    agent_transcript::RawJson::from_json_string(serde_json::to_string(&r).ok()?).ok()
 }
 
 /// One line's text redacted (a session's title, a recorded command's

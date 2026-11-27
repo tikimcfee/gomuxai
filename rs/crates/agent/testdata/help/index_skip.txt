@@ -1,8 +1,10 @@
 Skip holds the skip list: directory names that no walk of a project goes
 into (build output, caches, VCS internals), for the index's crawl and
 watcher and for dreams alike. It is a file a person may edit too, one name
-per line, # for comments: skip-dirs.txt beside index.toml
-($XDG_CONFIG_HOME/gomuxai/, else ~/.config/gomuxai/). With no file, the
+per line, # for comments: ~/.config/gomuxai/skip-dirs.txt
+($XDG_CONFIG_HOME/gomuxai/ when set, whatever --config names). It is in
+no configuration fingerprint; agent index config prints its source and
+hash. With no file, the
 list is the defaults (list --defaults prints them); add and remove write
 the file, starting from the defaults.
 

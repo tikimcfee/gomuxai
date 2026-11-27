@@ -439,7 +439,7 @@ pub fn sync_roots(conn: &Connection) -> Result<Sync> {
         children.sort();
         for c in children {
             let name = dir_name(&c);
-            if name.starts_with('.') || agent_dream::skip::contains(name.as_str()) {
+            if name.starts_with('.') || crate::files::skipped(name.as_str()) {
                 continue;
             }
             // A directory kept out of the way (`_public`, `archive`, `old`)

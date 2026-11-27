@@ -27,7 +27,20 @@ pub const SKIP_DIRS: &[&str] = agent_dream::skip::DEFAULT_DIRS;
 /// Reads the skip list again (the watcher, told it changed); the list now
 /// in effect.
 pub fn reload_skip() -> Vec<String> {
+    if cfg!(test) {
+        return SKIP_DIRS.iter().map(|s| s.to_string()).collect();
+    }
     agent_dream::skip::reload()
+}
+
+/// Whether a walk skips a directory of this name: the skip list in effect
+/// (agent_dream::skip), or the defaults in this crate's own tests, so they
+/// never read a developer's list.
+pub fn skipped(name: &str) -> bool {
+    if cfg!(test) {
+        return SKIP_DIRS.contains(&name);
+    }
+    agent_dream::skip::contains(name)
 }
 
 /// Whether bytes look binary: a NUL in the first 8 KB.
