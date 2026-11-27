@@ -148,7 +148,14 @@ pub fn def() -> Def {
 }
 
 pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
-    let (r#ref, remote) = super::remote::parse_target(ctx, &args.args[0])?;
+    let arg = &args.args[0];
+    // A transcript's path is a path, '@' in it or not; name@host otherwise.
+    let (name, remote) = if is_path(arg) {
+        (arg.clone(), None)
+    } else {
+        let (r, remote) = super::remote::parse_target(ctx, arg)?;
+        (r.name.clone(), remote.then_some(r))
+    };
     let opts = LogsOptions {
         lines: args.lines,
         full: args.full,
@@ -161,13 +168,12 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         scrub: args.scrub || in_dream(ctx),
     };
     opts.check()?;
-    if remote && opts.scrub {
+    if remote.is_some() && opts.scrub {
         anyhow::bail!(
-            "agent logs {} would read another host's transcript unscrubbed: --scrub (and a dream's agent) reads this host's only",
-            args.args[0]
+            "agent logs {arg} would read another host's transcript unscrubbed: --scrub (and a dream's agent) reads this host's only"
         );
     }
-    if remote {
+    if let Some(r#ref) = remote {
         if opts.parts() {
             anyhow::bail!(
                 "--talk, --grep and --start read a transcript here, not over the bus: run agent logs on {}'s host",
@@ -183,7 +189,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         };
         return super::remote_ops::run_remote_logs(ctx, &r#ref, req);
     }
-    let (chunks, why) = build_logs(ctx, &r#ref.name, &opts)?;
+    let (chunks, why) = build_logs(ctx, &name, &opts)?;
     if !why.is_empty() {
         ctx.hint(&why);
     }
@@ -265,6 +271,13 @@ pub fn build_logs(ctx: &Ctx, name: &str, o: &LogsOptions) -> anyhow::Result<(Vec
             Err(e)
                 if agent_service::validate_agent_name(name).is_ok()
                     && format!("{e:#}").starts_with("no agent or session matches") => {}
+            // The start of several sessions' ids: say no agent has it either.
+            Err(e) if agent_service::validate_agent_name(name).is_ok() && !is_path(name) => {
+                return Err(anyhow::anyhow!(
+                    "no agent named {} here (agent list lists them), and as a session: {e:#}",
+                    strconv::quote(name)
+                ));
+            }
             res => return res,
         }
     }
@@ -321,14 +334,35 @@ pub fn build_logs(ctx: &Ctx, name: &str, o: &LogsOptions) -> anyhow::Result<(Vec
 /// Whether the caller is a worker of an open dream: what it reads of
 /// transcripts is scrubbed, whatever it asks (Ivan's rule: anything that
 /// mines other sessions' transcripts scrubs them first).
+///
+/// It fails closed: only a caller that is clearly no dream's worker (a
+/// person, or an agent the store says has no dream) reads unscrubbed. A
+/// store it can't read, or a worker whose dream has just closed, scrubs.
 pub(crate) fn in_dream(ctx: &Ctx) -> bool {
-    super::dream::own_worker(ctx, "logs", super::dream::ANY_ROLE).is_ok()
+    let caller = ctx.caller_agent();
+    if caller.is_empty() {
+        return false;
+    }
+    let Ok(store) = ctx.store() else { return true };
+    match store.get_state(&caller, super::dream::STATE_KEY_DREAM) {
+        Ok(Some(_)) => return true,
+        Ok(None) => {}
+        Err(_) => return true,
+    }
+    !matches!(store.open_dream_worker(&caller), Ok(None))
+}
+
+/// Whether an argument names a transcript by its path rather than an agent
+/// or a session id.
+fn is_path(arg: &str) -> bool {
+    arg.contains('/') || arg.ends_with(".jsonl")
 }
 
 /// Scrubs every event a read holds: the stream --json prints, and the
 /// events the lines print.
 fn scrub_sessions(sessions: &mut [LogsSession]) {
     for s in sessions {
+        s.file.session.title = scrub_line(&s.file.session.title);
         s.file.events.iter_mut().for_each(scrub_event);
         s.events.iter_mut().for_each(scrub_event);
     }
@@ -341,10 +375,11 @@ fn scrub_sessions(sessions: &mut [LogsSession]) {
 /// structured result and meta, a prompt's images and a request's body left
 /// out; a tool's target or detail with a credential replaced.
 pub(crate) fn scrub_event(e: &mut Event) {
-    use agent_dream::scrub::{excerpt, has_credential};
+    use agent_dream::scrub::excerpt;
     let all = usize::MAX;
     if let Some(p) = &mut e.prompt {
         p.text = excerpt(&p.text, all);
+        p.command = scrub_line(&p.command);
         p.images.clear();
     }
     if let Some(t) = &mut e.think {
@@ -356,10 +391,9 @@ pub(crate) fn scrub_event(e: &mut Event) {
     if let Some(t) = &mut e.tool {
         t.input = None;
         t.meta = None;
+        // A command can carry pasted text or a message: one bounded line.
         for f in [&mut t.tool_summary.target, &mut t.tool_summary.detail] {
-            if has_credential(f) {
-                *f = "[scrubbed]".to_string();
-            }
+            *f = scrub_line(f);
         }
         if let Some(r) = &mut t.result {
             r.output = excerpt(&r.output, all);
@@ -373,6 +407,32 @@ pub(crate) fn scrub_event(e: &mut Event) {
     if e.request.is_some() {
         e.request = None;
     }
+}
+
+/// How long a line scrub_line keeps.
+const SCRUBBED_LINE: usize = 200;
+
+/// One line of `s`, scrubbed as excerpt scrubs text and cut to
+/// SCRUBBED_LINE characters; "[scrubbed]" when nothing of a non-empty `s`
+/// is left. For what is shown on one line: a tool call's command or path,
+/// a slash command, a session's title, a recorded command's words.
+pub(crate) fn scrub_line(s: &str) -> String {
+    use agent_dream::scrub::{clip, excerpt, has_credential};
+    if s.is_empty() {
+        return String::new();
+    }
+    let first = s.lines().next().unwrap_or("");
+    if has_credential(first) {
+        return "[scrubbed]".to_string();
+    }
+    let kept = excerpt(first, SCRUBBED_LINE);
+    if kept.is_empty() {
+        return "[scrubbed]".to_string();
+    }
+    if s.lines().nth(1).is_some() && kept.chars().count() < SCRUBBED_LINE {
+        return clip(&format!("{kept} …"), SCRUBBED_LINE);
+    }
+    kept
 }
 
 /// How many events a read in parts asks for: all of them.
@@ -469,7 +529,8 @@ fn part_chunks(sessions: &[LogsSession], o: &LogsOptions) -> (Vec<LogsChunk>, St
     let mut chunks = Vec::new();
     let mut session = None;
     for (n, (i, e)) in kept[first..last].iter().enumerate() {
-        if session.is_some_and(|s| s != *i) {
+        // A window that starts in a later session says which one it is.
+        if session.is_some_and(|s| s != *i) || (session.is_none() && *i > 0) {
             chunks.push(session_chunk(&sessions[*i]));
         }
         session = Some(*i);

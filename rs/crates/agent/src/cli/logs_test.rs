@@ -680,9 +680,77 @@ fn test_logs_parts_and_scrub_stay_local() {
     assert!(format!("{:#}", res.unwrap_err()).contains("not over the bus"));
     let (res, _, _) = run_words(&mut env, &["logs", "worker@elsewhere", "--scrub"]);
     assert!(format!("{:#}", res.unwrap_err()).contains("reads this host's only"));
-    let opts = LogsOptions {
-        lines: 5,
+    // What a peer's request gets: a path or a session id names no agent.
+    let dir = temp_dir("agent-logs-");
+    let path = temp_path(&dir, "sess-p.jsonl");
+    write_test_file(&path, PARTS_TRANSCRIPT);
+    for agent in [path.as_str(), "sess-p", "claude:sess-p"] {
+        let req = agent_bus::LogsRequest {
+            agent: agent.to_string(),
+            lines: 5,
+            ..Default::default()
+        };
+        let res = serve_logs(&env.ctx, &agent_bus::Context::background(), req);
+        assert!(res.is_err(), "a peer read {agent}: {:?}", res.map(|r| r.output));
+    }
+}
+
+/// What review found: a path with '@' is a path; a short name says no agent
+/// has it either; a window starting in a later session names it; a tool's
+/// command and a session's title are scrubbed to one bounded line.
+#[test]
+fn test_logs_paths_names_windows_and_scrubbed_lines() {
+    crate::require_termd!();
+    let mut env = setup_logs();
+    let dir = temp_dir("agent-logs-");
+    let sub = dir.path().join("a@b");
+    std::fs::create_dir_all(&sub).unwrap();
+    let path = sub.join("sess-p.jsonl").to_string_lossy().into_owned();
+    write_test_file(&path, PARTS_TRANSCRIPT);
+    let (res, out, _) = run_words(&mut env, &["logs", &path, "--lines", "1"]);
+    res.unwrap();
+    assert!(out.contains("Deployed"), "a path with @:\n{out}");
+
+    let other = temp_path(&dir, "sess-q.jsonl");
+    write_test_file(&other, &PARTS_TRANSCRIPT.replace("sess-p", "sess-q"));
+
+    // Two sessions of one agent; a page that starts in the second names it.
+    hook_transcript(&env, &path);
+    hook_transcript(&env, &other);
+    let (_, out, _) = run_words(&mut env, &["logs", "worker", "--talk", "--start", "6", "--lines", "1"]);
+    assert!(out.starts_with("--- session sess-q (claude)\n#6 "), "{out}");
+
+    let mut e = Event {
+        kind: KIND_TOOL.into(),
+        tool: Some(agent_transcript::ToolEvent {
+            name: "Bash".into(),
+            tool_summary: ToolSummary {
+                detail: "agent send helper \"line one\nline two with more\"".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
         ..Default::default()
     };
-    assert!(!opts.sessions, "serve_logs's options read agents only");
+    scrub_event(&mut e);
+    assert_eq!(e.tool.unwrap().tool_summary.detail, "agent send helper \"line one …");
+    assert_eq!(scrub_line("curl -H 'Authorization: Bearer x'"), "[scrubbed]");
+    assert_eq!(scrub_line(&"x".repeat(500)).chars().count(), 200);
+}
+
+/// A short name that no agent has, and that starts several sessions' ids,
+/// says both.
+#[test]
+fn test_logs_short_name_says_no_agent_and_which_sessions() {
+    let (mut env, home) = crate::cli::sessions::sessions_test::setup_sessions();
+    let day = std::time::Duration::from_secs(3600);
+    crate::cli::sessions::sessions_test::claude_transcript(&home, "abc-1", "/home/user/shop", "", day);
+    crate::cli::sessions::sessions_test::claude_transcript(&home, "abc-2", "/home/user/shop", "", day);
+    let (res, _, _) = run_words(&mut env, &["logs", "abc"]);
+    let err = format!("{:#}", res.unwrap_err());
+    assert!(err.starts_with("no agent named \"abc\" here"), "{err}");
+    assert!(err.contains("starts the ids of 2 sessions"), "{err}");
+    let (res, out, _) = run_words(&mut env, &["logs", "claude:abc-2", "--lines", "1"]);
+    res.unwrap();
+    assert!(out.contains("prompt hi"), "harness:id:\n{out}");
 }

@@ -704,11 +704,38 @@ fn a_dreams_agent_reads_transcripts_scrubbed() {
     );
     let out = run(&mut env, &["logs", &path, "--full"]);
     assert!(out.contains("hunter2"), "a person reads it whole:\n{out}");
-    open_dream_as_agent(&mut env, &[]);
+    let d = open_dream_as_agent(&mut env, &[]);
+    // As spawn sets it for a dream's worker.
+    env.store()
+        .set_state(&StateEntry {
+            agent_name: d.agent.clone(),
+            key: "dream".into(),
+            value: d.id.to_string(),
+            updated_at: Time::now(),
+        })
+        .unwrap();
     let out = run(&mut env, &["logs", &path, "--full"]);
     assert!(!out.contains("hunter2") && out.contains("thanks"), "logs, as a dream's agent:\n{out}");
     let out = run(&mut env, &["transcript", &path]);
     assert!(!out.contains("hunter2") && !out.contains(r#""input""#), "transcript, as a dream's agent:\n{out}");
     let err = run_err(&mut env, &["transcript", &path, "--requests"]);
     assert!(err.contains("can't be scrubbed"), "{err}");
+
+    // A recorded command's words, too.
+    env.store()
+        .log_command(&mut agent_store::CommandRecord {
+            started_at: Time::now(),
+            host: "local".into(),
+            agent: "someone".into(),
+            args: vec!["send".into(), "x".into(), "the password is hunter2".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    let out = run(&mut env, &["history", "--agent", "someone"]);
+    assert!(!out.contains("hunter2") && out.contains("[scrubbed]"), "history, as a dream's agent:\n{out}");
+
+    // A worker whose dream has closed still reads scrubbed (it fails closed).
+    env.store().commit_dream(d.id).unwrap();
+    let out = run(&mut env, &["logs", &path, "--full"]);
+    assert!(!out.contains("hunter2"), "after its dream closed:\n{out}");
 }

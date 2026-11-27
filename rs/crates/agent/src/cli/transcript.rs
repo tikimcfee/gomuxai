@@ -925,7 +925,13 @@ impl TranscriptStream<'_, '_> {
     /// Writes the session line (Go: writeSession).
     fn write_session(&mut self) -> anyhow::Result<()> {
         self.written = session_meta(&self.session);
-        let line = typed_json_line("session", &self.session)?;
+        let line = if self.opts.shape.scrub {
+            let mut session = self.session.clone();
+            session.title = super::logs::scrub_line(&session.title);
+            typed_json_line("session", &session)?
+        } else {
+            typed_json_line("session", &self.session)?
+        };
         self.w.write_all(line.as_bytes())?;
         Ok(())
     }
