@@ -36,6 +36,7 @@ Examples:
 
 Available Commands:
   root        Add, remove and list the trees the index covers
+  skip        List, add and remove the directory names no walk goes into
   project     Make a deeper directory a project, or change a project's depth
   crawl       Bring the index up to date with the files on disk
   sync        Mirror the crawl's index.db into Postgres (the pg store)

@@ -85,6 +85,14 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
     }
     let mut recs = ctx.store()?.list_commands(&f)?;
     recs.reverse();
+    if super::logs::in_dream(ctx) {
+        // A command's words can hold a secret: a dream's agent reads them
+        // redacted, as it reads transcripts.
+        for r in &mut recs {
+            r.args.iter_mut().for_each(|a| *a = super::logs::redact_line(a));
+            r.error = super::logs::redact_line(&r.error);
+        }
+    }
 
     if args.json {
         // json.NewEncoder(out).Encode: one line, with Go's HTML escaping.

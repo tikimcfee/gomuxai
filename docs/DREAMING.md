@@ -76,6 +76,30 @@ along; handoff docs must lie in the scope too. With an empty scope,
 gather and run say nothing is in scope and how to add a directory, and
 run starts and records nothing.
 
+A tree can be in scope too: `agent dream scope add ~/dev --root` makes
+each folder directly under it a project in scope, as the index's roots
+do, but hidden folders, the names on the skip list and git worktrees
+(host state `dream.roots`; what was added one by one stays in
+`dream.scope.added`). `dream.scope` is rebuilt from both at every gather,
+run and `scope list`, so a folder made under a root is in scope from the
+next dream on, and the store and the hook keep reading one list. Each
+project gets its own project dream when it has something new, so quiet
+ones cost nothing. A session run inside a skipped folder of a project
+(its build output, a cache) is no evidence. A root's project owns the
+sessions of its worktrees once they are removed by name, as helpers'
+worktrees are named here: a folder `<name>-wt` or `<name>-wt-<role>`
+anywhere (the longest project name that fits), with no `--worktrees`
+to set.
+
+The skip list (`agent index skip list`) is the index's, a file a person
+edits; a dream never changes it. A dream that sees it wrong (build
+output gathered or indexed; a skipped name holding real work) runs
+`agent dream propose skip add|remove <name> --why ... --source ...`,
+which records a proposal in `dream_proposals` and its diary. It waits,
+whatever becomes of the dream, until a person runs `agent dream
+proposals accept <id>` (code makes the change and tells the index
+watcher) or `reject <id> --note ...`; a dream's agent is refused both.
+
 **built**: a dream is over one project, a scope dir (`agent dream run
 --project DIR`; `gather` takes the same flag). Without `--project`, run
 picks the scoped dir with something new (or due) whose last committed
@@ -224,9 +248,44 @@ whatever its launch rules and the PreToolUse hook don't allow is refused,
 never left to a person's own permission mode. Of the general agent
 commands it gets only the reading ones (`DREAM_READ_COMMANDS`: list,
 status, logs, sessions, transcript, history, friction list and show,
-roster list and show), in place of what other agents are pre-allowed: it
+roster list and show, and the index's search, show, tree, related and
+stale), in place of what other agents are pre-allowed: it
 sends no messages and files no friction or roster notes but through its
-verbs. It reads files through its Read tool, which its launch rules allow
+verbs. The index is read-only to it (no crawl, root, alias, embed or
+summarize); its brief tells it to check a claim about the code against
+the index before trusting a transcript's tail, and to open the file a
+summary points at before citing it.
+
+What it reads of transcripts has its secrets redacted, whatever it asks.
+The owner set the rule on 2026-11-22, after an agy helper mining transcripts
+for a speech corpus pulled another session's sign-in URL into its
+context, and sharpened it on 2026-11-27: don't delete text a dreamer
+reads. A dreamer that sees a chunk with its context cut out assumes, and
+writes down something not quite accurate, or undoes something right; the
+real risk is a secret. So `agent logs` and `agent transcript` (and `agent
+history`'s recorded commands) replace each secret in place with a marker
+(`[redacted: token]`, `[redacted: secret]`, `[redacted: sign-in URL]`
+with its scheme and host kept, `[redacted: email]`, `[redacted: private
+key]`; `agent_dream::scrub::redact`), in text, code, tool inputs, outputs
+and structured results alike, and keep everything else. The patterns
+lean toward keeping code and prose: a value counts as a secret when it has
+a digit or a symbol, isn't a call, path, dotted name, count or `$VAR`,
+and for an upper-case `NAME=value` whatever it is. So a digits-only secret
+after a lower-case name (`password=12345678`) and a letters-only one
+(`db_password = swordfish`) pass; that trade-off is known. A prompt's
+pasted and harness-inserted blocks are kept, labelled as data, never
+instructions. Under `--full`, reading more than one event, a piece over
+4000 characters is cut with a marker saying how much was cut and the
+exact command that reads its event whole (`agent logs <transcript>
+--start N --lines 1 --full`, which cuts nothing). Personal paths and host
+names are kept out where a dream writes, not where it reads: memory put,
+commit and the push scan. The check fails closed: only a caller the store
+clearly says is no dream's worker reads unredacted, so a busy store or a
+dream that just closed redacts; and a dream's agent is refused another
+host's logs. A long session is read in parts: `agent logs <session>
+--talk` (prompts, replies and one-line tool calls), `--grep TEXT`, and
+`--start N` to page; `<session>` may be an id, `harness:id` or a
+transcript's path, so a session no agent owns is read the same way. It reads files through its Read tool, which its launch rules allow
 for Claude Code's projects directories, the scoped projects, the machine
 memory, the repos its commits are in, and its handoff docs. It may edit
 files only in its own dream directory (drafts for `memory put --from`);

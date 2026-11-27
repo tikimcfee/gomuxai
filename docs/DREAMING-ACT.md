@@ -5,7 +5,57 @@ never change code. The act layer picks one cited item, has one agent fix it
 in a fresh worktree, has another model review the diff against the
 evidence, and lands it only if it is small. It starts as a command a person
 runs (`agent dream act`); once trusted, it runs after a dream commits.
-Nothing here is built; names are the plan.
+
+## The general actor (built, 2026-11-27)
+
+The owner (2026-11-27): the actor isn't a fixed menu. It gets a cited friction
+entry or finding, its sources, and a scope; within the scope it may do
+the mechanical upkeep that is usually what holds small items up, so the
+machine keeps itself clean without a person saying "yes, clean that up".
+What is already gated stays a person's: a default branch, pushes,
+installs and the bus. Every act names its evidence and stops at its scope.
+
+`agent dream act start <item> --scope S [--repo DIR] [--check CMD]
+[--source REF]...` (a person) opens a run on a friction entry (its number
+or `friction:<uid>`, open or accepted) or `finding:<dream id>` (with
+`--summary`). The scopes, each including the ones before:
+
+- `ask`: read, then `act ask "..."`, one question for a person; nothing
+  changes.
+- `fix`: edit in its own worktree (under `/var/tmp/gomuxai-act/<run>/`,
+  on branch `act/<run>-<slug>` from the default branch), `act check` (the
+  run's `--check`, through `agent run`, with its own target and temp
+  dirs), `act crawl <project>` for an index entry a dream found stale.
+- `commit`: `act commit "message"` (trailers: `Act-Run`, `Item`,
+  `Sources`), and the upkeep git keeps safe, each guarded in code: `act
+  rebase [<worktree>]` (its own onto `act/landed`, or an idle, clean
+  linked worktree's branch onto its repo's default branch; a conflict
+  aborts), `act remove-worktree <path>` (a linked worktree of a scoped
+  repo, merged into the default branch, clean, no running agent in it;
+  never forced), `act delete-branch <repo> <branch>` (merged, checked out
+  nowhere; never the default branch, `act/landed` or an open run's;
+  `git branch -d`, local only), `act cleanup-agent <name>` (ended, its
+  directory clean, not a dream's or a run's).
+- `branch`: `act land`, after a passing check at HEAD: `act/landed`
+  (made from the default branch the first time) moves to the run's
+  HEAD; a person merges it.
+
+The run's agent, `act-<run>`, is Claude in don't-ask mode, reading the
+scope, Claude Code's projects, the machine memory and its run dir,
+editing only its worktree, with `DREAM_READ_COMMANDS` and the act verbs
+(`ACT_AGENT_COMMANDS`, allowed by the PreToolUse hook for that agent while
+its run is open) and git that reads (`git -C <worktree>
+status|diff|log|show`, `git -C <repo> log|show` in the scope). Its brief
+is `agent-dream`'s `brief_act.md`; its item file is redacted as dream
+reads are. It ends with `act done` (at commit and up, a clean worktree),
+`act ask` or `act give-up`; a person may `act stop` it. `act list` and
+`act show` read the record (`act_runs`), whose log has a line per verb.
+One run at a time per host, started by hand only: no timer, and dreams
+don't start runs. An act agent's sessions are no evidence for a dream.
+
+Not yet: a second-model review of the diff (section 4), the size gate
+(section 5) and the filing verb (section 1), which the sections below
+design; asks reaching a person beyond `act list`; agy as the actor.
 
 ## 1. Filing: `agent dream file`
 

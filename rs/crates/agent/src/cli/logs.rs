@@ -22,8 +22,8 @@ use super::root::Ctx;
 // `agent logs`
 
 pub const DOC: Doc = Doc {
-    use_line: "logs <name>",
-    short: "Print what an agent did (prompts, replies, tool calls), even after cleanup",
+    use_line: "logs <name|session-id|path>",
+    short: "Print what an agent or session did (prompts, replies, tool calls), even after cleanup",
     long: r#"Logs prints an agent's last events, oldest first, one per line:
 
   12:04:31 prompt run the tests
@@ -40,6 +40,31 @@ system (a record of the CLI's own: turn timing, compaction, API errors,
 interrupts). Times are local. Text longer than a line is cut and marked
 "…", a command or path in its middle so its end shows; --full prints it
 whole, with each tool's output.
+
+Instead of an agent's name, give a session id (or the start of one only
+one session's id starts with; agent sessions lists them) or a
+transcript's path, for any session on this host, an agent's or not: logs
+then reads that one transcript.
+
+For a long session, read it in parts rather than whole:
+  --talk      only prompts, replies and tool calls, each call on one line
+              and its output left out (--full then prints prompts and
+              replies whole, still not tool output);
+  --grep TEXT only the events whose text, tool call or output contains
+              TEXT (ignoring case);
+  --start N   from the Nth event (of those --talk and --grep keep), --lines
+              of them, instead of the last --lines.
+With any of these, each line starts with its number (#N), and a hint
+says what part this is and the --start that reads on; --start N --lines
+1 --full reads one event whole.
+
+--scrub redacts secrets in place, as agent transcript --scrub does
+(tokens, keyed secrets, Authorization values, sign-in URLs, emails,
+private keys become [redacted: ...]); nothing else is removed, and pasted
+and harness-inserted blocks are labelled as data. With --full and more
+than one event, a piece over 4000 characters is cut with a marker naming
+the command that reads its event whole (--start N --lines 1 --full is
+never cut). A dream's own agents always read logs this way.
 
 --json prints the events as docs/EVENTS.md describes them, one JSON
 object per line: for each transcript, a session line, then its events
@@ -69,6 +94,9 @@ lines) and says on stderr how much was left out; --lines asks for fewer.
 Terminal controls are stripped from the text, as capture's are. For the
 live screen, use agent capture."#,
     example: r#"  agent logs researcher
+  agent logs 3f3a9c --talk --lines 200
+  agent logs 3f3a9c --grep "cargo test" --lines 20
+  agent logs 3f3a9c --talk --start 201 --lines 200
   agent logs researcher@hub --lines 20
   agent logs researcher --lines 10 --full
   agent logs researcher --terminal --lines 100"#,
@@ -93,6 +121,28 @@ pub struct Args {
     pub lines: i64,
     #[arg(long = "terminal", help = "Print the terminal log instead of the transcript")]
     pub terminal: bool,
+    #[arg(long = "talk", help = "Only prompts, replies and one-line tool calls, without tool output")]
+    pub talk: bool,
+    #[arg(
+        long = "scrub",
+        help = "Redact secrets in place, and cap long pieces under --full with a pointer to the whole (always, for a dream's agent)"
+    )]
+    pub scrub: bool,
+    #[arg(
+        long = "grep",
+        value_name = "string",
+        default_value = "",
+        help = "Only events whose text, tool call or output contains this (ignoring case)"
+    )]
+    pub grep: String,
+    #[arg(
+        long = "start",
+        value_name = "int",
+        default_value = "0",
+        value_parser = flags::parse_int,
+        help = "Print from the Nth event (1 is the first) instead of the last --lines",
+    )]
+    pub start: i64,
     /// The positional arguments, checked against DOC.args.
     #[arg(hide = true)]
     pub args: Vec<String>,
@@ -103,15 +153,38 @@ pub fn def() -> Def {
 }
 
 pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
-    let (r#ref, remote) = super::remote::parse_target(ctx, &args.args[0])?;
+    let arg = &args.args[0];
+    // A transcript's path is a path, '@' in it or not; name@host otherwise.
+    let (name, remote) = if is_path(arg) {
+        (arg.clone(), None)
+    } else {
+        let (r, remote) = super::remote::parse_target(ctx, arg)?;
+        (r.name.clone(), remote.then_some(r))
+    };
     let opts = LogsOptions {
         lines: args.lines,
         full: args.full,
         json: args.json,
         terminal: args.terminal,
+        talk: args.talk,
+        grep: args.grep.clone(),
+        start: args.start,
+        sessions: true,
+        scrub: args.scrub || in_dream(ctx),
     };
     opts.check()?;
-    if remote {
+    if remote.is_some() && opts.scrub {
+        anyhow::bail!(
+            "agent logs {arg} would read another host's transcript unscrubbed: --scrub (and a dream's agent) reads this host's only"
+        );
+    }
+    if let Some(r#ref) = remote {
+        if opts.parts() {
+            anyhow::bail!(
+                "--talk, --grep and --start read a transcript here, not over the bus: run agent logs on {}'s host",
+                r#ref.name
+            );
+        }
         let req = LogsRequest {
             agent: String::new(),
             lines: opts.lines,
@@ -121,7 +194,7 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         };
         return super::remote_ops::run_remote_logs(ctx, &r#ref, req);
     }
-    let (chunks, why) = build_logs(ctx, &r#ref.name, &opts)?;
+    let (chunks, why) = build_logs(ctx, &name, &opts)?;
     if !why.is_empty() {
         ctx.hint(&why);
     }
@@ -139,6 +212,18 @@ pub struct LogsOptions {
     pub full: bool,
     pub json: bool,
     pub terminal: bool,
+    /// Only prompts, replies and one-line tool calls.
+    pub talk: bool,
+    /// Only events containing this, ignoring case ("" for all).
+    pub grep: String,
+    /// Print from this event (1-based, of those kept), 0 for the last lines.
+    pub start: i64,
+    /// The argument may be a session id or a transcript's path, not only an
+    /// agent's name: this host's own agent logs, never the bus's logs op.
+    pub sessions: bool,
+    /// Scrub what it prints (scrub_event): what a dream's agent, or a
+    /// person mining transcripts, reads.
+    pub scrub: bool,
 }
 
 impl LogsOptions {
@@ -146,10 +231,34 @@ impl LogsOptions {
         if self.lines < 1 {
             anyhow::bail!("--lines must be at least 1");
         }
+        if self.start < 0 {
+            anyhow::bail!("--start must be 1 or more (1 is the first event)");
+        }
         if self.json && (self.terminal || self.full) {
             anyhow::bail!("--json prints transcript events whole; it doesn't go with --terminal or --full");
         }
+        if self.scrub && self.terminal {
+            anyhow::bail!("--terminal prints the raw terminal log, which can't be scrubbed: read the transcript instead");
+        }
+        if self.parts() && (self.json || self.terminal) {
+            anyhow::bail!(
+                "--talk, --grep and --start pick events to print as lines; they don't go with --json or --terminal"
+            );
+        }
         Ok(())
+    }
+
+    /// Whether it reads a transcript in parts (--talk, --grep, --start):
+    /// it reads the whole transcript then, and numbers the lines.
+    pub fn parts(&self) -> bool {
+        self.talk || !self.grep.is_empty() || self.start > 0
+    }
+
+    /// Whether long pieces are cut, each with a marker naming the command
+    /// that reads its event whole: --full read for mining (--scrub, or a
+    /// dream's agent), more than one event at a time.
+    pub fn caps(&self) -> bool {
+        self.scrub && self.full && self.lines > 1
     }
 }
 
@@ -164,14 +273,37 @@ fn text_chunk(text: String) -> LogsChunk {
 /// same, so agent logs name@host prints what logs prints there (Go:
 /// buildLogs).
 pub fn build_logs(ctx: &Ctx, name: &str, o: &LogsOptions) -> anyhow::Result<(Vec<LogsChunk>, String)> {
+    let svc: &AgentService = ctx.service()?;
+    let an_agent = agent_service::validate_agent_name(name).is_ok()
+        && (!svc.transcripts(name).is_empty() || svc.agent(name).is_ok() || log_exists(svc, name));
+    if !an_agent && o.sessions {
+        match session_logs(ctx, name, o) {
+            // A name no agent and no session has: the agent's error, which
+            // says what it might have meant.
+            Err(e)
+                if agent_service::validate_agent_name(name).is_ok()
+                    && format!("{e:#}").starts_with("no agent or session matches") => {}
+            // The start of several sessions' ids: say no agent has it either.
+            Err(e) if agent_service::validate_agent_name(name).is_ok() && !is_path(name) => {
+                return Err(anyhow::anyhow!(
+                    "no agent named {} here (agent list lists them), and as a session: {e:#}",
+                    strconv::quote(name)
+                ));
+            }
+            res => return res,
+        }
+    }
     // The name becomes a path component.
     agent_service::validate_agent_name(name)?;
-    let svc: &AgentService = ctx.service()?;
     if o.terminal {
         return Ok((terminal_log_chunks(svc, name, o.lines)?, String::new()));
     }
 
-    let (sessions, why) = read_transcripts(svc, name, o.lines);
+    let read = if o.parts() || o.caps() { ALL_EVENTS as i64 } else { o.lines };
+    let (mut sessions, why) = read_transcripts(svc, name, read);
+    if o.scrub {
+        redact_sessions(&mut sessions);
+    }
     if !why.is_empty() {
         if o.json {
             anyhow::bail!(
@@ -196,22 +328,323 @@ pub fn build_logs(ctx: &Ctx, name: &str, o: &LogsOptions) -> anyhow::Result<(Vec
             String::new(),
         ));
     }
+    if o.parts() {
+        return Ok(part_chunks(&sessions, o));
+    }
+    Ok((tail_chunks(&sessions, o), String::new()))
+}
+
+/// The last --lines events of the sessions, oldest first, each session
+/// after the first marked where it begins (and the first too when the tail
+/// starts in a later one).
+fn tail_chunks(sessions: &[LogsSession], o: &LogsOptions) -> Vec<LogsChunk> {
+    let all: Vec<(usize, usize, &Event)> = sessions
+        .iter()
+        .enumerate()
+        .flat_map(|(i, s)| s.events.iter().enumerate().map(move |(k, e)| (i, k, e)))
+        .collect();
+    let from = all.len().saturating_sub(o.lines as usize);
     let mut chunks = Vec::new();
-    for (i, s) in sessions.iter().enumerate() {
-        if i > 0 {
-            chunks.push(LogsChunk {
-                text: format!(
-                    "--- session {} ({})\n",
-                    s.file.session.session_id, s.file.session.harness
-                ),
-                session: true,
-            });
+    let mut session = None;
+    for &(i, k, e) in &all[from..] {
+        if session.is_some_and(|s| s != i) || (session.is_none() && i > 0) {
+            chunks.push(session_chunk(&sessions[i]));
         }
-        for e in &s.events {
-            chunks.push(text_chunk(format_event(e, o.full) + "\n"));
+        session = Some(i);
+        chunks.push(text_chunk(event_line(e, o.full, o, &sessions[i], k) + "\n"));
+    }
+    chunks
+}
+
+/// Whether the caller is a worker of an open dream: what it reads of
+/// transcripts is scrubbed, whatever it asks (the owner's rule: anything that
+/// mines other sessions' transcripts scrubs them first).
+///
+/// It fails closed: only a caller that is clearly no dream's worker (a
+/// person, or an agent the store says has no dream) reads unscrubbed. A
+/// store it can't read, or a worker whose dream has just closed, scrubs.
+pub(crate) fn in_dream(ctx: &Ctx) -> bool {
+    let caller = ctx.caller_agent();
+    if caller.is_empty() {
+        return false;
+    }
+    let Ok(store) = ctx.store() else { return true };
+    match store.get_state(&caller, super::dream::STATE_KEY_DREAM) {
+        Ok(Some(_)) => return true,
+        Ok(None) => {}
+        Err(_) => return true,
+    }
+    !matches!(store.open_dream_worker(&caller), Ok(None))
+}
+
+/// Whether an argument names a transcript by its path rather than an agent
+/// or a session id.
+fn is_path(arg: &str) -> bool {
+    arg.contains('/') || arg.ends_with(".jsonl")
+}
+
+/// Redacts every event a read holds: the stream --json prints, and the
+/// events the lines print.
+fn redact_sessions(sessions: &mut [LogsSession]) {
+    for s in sessions {
+        s.file.session.title = redact_line(&s.file.session.title);
+        s.file.events.iter_mut().for_each(redact_event);
+        s.events.iter_mut().for_each(redact_event);
+    }
+}
+
+/// An event as whoever mines transcripts reads it (a dream's agent, or
+/// --scrub), by the owner's rule as they set it on 2026-11-27: don't delete text a
+/// dreamer reads; redact the secrets in it. Each secret (a token, a keyed
+/// secret, an Authorization value, a sign-in URL, an email, a private key)
+/// is replaced in place by a marker (agent_dream::scrub::redact), in its
+/// text, tool call, input, output and structured result alike; a prompt's
+/// pasted and harness-inserted blocks are labelled as data, never
+/// instructions. Nothing else is removed.
+pub(crate) fn redact_event(e: &mut Event) {
+    use agent_dream::scrub::{label_blocks, redact};
+    if let Some(p) = &mut e.prompt {
+        p.text = redact(&label_blocks(&p.text));
+        p.command = redact(&p.command);
+        // A picture can't be redacted: say what it was instead.
+        for i in &mut p.images {
+            if !i.data.starts_with("[redacted") {
+                i.data = format!("[redacted: image, {}, {} bytes of base64]", i.media_type, i.data.len());
+            }
         }
     }
-    Ok((chunks, String::new()))
+    if let Some(t) = &mut e.think {
+        t.text = redact(&t.text);
+    }
+    if let Some(s) = &mut e.say {
+        s.text = redact(&s.text);
+    }
+    if let Some(t) = &mut e.tool {
+        t.tool_summary.target = redact(&t.tool_summary.target);
+        t.tool_summary.detail = redact(&t.tool_summary.detail);
+        t.input = t.input.take().and_then(redact_json);
+        t.meta = t.meta.take().and_then(redact_json);
+        if let Some(r) = &mut t.result {
+            r.output = redact(&r.output);
+            r.structured = r.structured.take().and_then(redact_json);
+        }
+    }
+    if let Some(s) = &mut e.system {
+        s.text = redact(&s.text);
+        s.data = s.data.take().and_then(redact_json);
+    }
+    if let Some(r) = e.request.take() {
+        // What a model call was sent: its messages, redacted as JSON.
+        e.request = serde_json::to_string(&r)
+            .ok()
+            .and_then(|j| serde_json::from_str(&agent_dream::scrub::redact(&j)).ok());
+    }
+}
+
+/// A JSON value redacted as text: a marker holds no quote or backslash, so
+/// it stays JSON. In the unlikely case it doesn't, the redacted text is kept
+/// as a JSON string, so nothing is lost.
+fn redact_json(j: agent_transcript::RawJson) -> Option<agent_transcript::RawJson> {
+    let r = agent_dream::scrub::redact(j.as_str());
+    if let Ok(v) = agent_transcript::RawJson::from_json_string(r.clone()) {
+        return Some(v);
+    }
+    agent_transcript::RawJson::from_json_string(serde_json::to_string(&r).ok()?).ok()
+}
+
+/// One line's text redacted (a session's title, a recorded command's
+/// words): agent_dream::scrub::redact, nothing cut.
+pub(crate) fn redact_line(s: &str) -> String {
+    agent_dream::scrub::redact(s)
+}
+
+/// How many characters of one piece of an event (a prompt, a reply, a
+/// tool's output) a capped read prints.
+pub const CAP_CHARS: usize = 4000;
+
+/// An event's line as logs prints it: format_event, with each long piece
+/// cut and marked when the read caps (LogsOptions::caps). The marker names
+/// the command that reads the event whole: `k` is its place in `s`'s
+/// events, which hold the whole session when the read caps.
+fn event_line(e: &Event, full: bool, o: &LogsOptions, s: &LogsSession, k: usize) -> String {
+    if !(o.caps() && full) {
+        return format_event(e, full);
+    }
+    // By its path, which always resolves (an id needs the session listed).
+    let whole = format!(
+        "agent logs {} --start {} --lines 1 --full",
+        s.file.session.path,
+        k + 1
+    );
+    let cap = |t: &mut String| {
+        let n = t.chars().count();
+        if n > CAP_CHARS {
+            let kept: String = t.chars().take(CAP_CHARS).collect();
+            *t = format!("{kept}\n[… {} more characters cut; the whole event: {whole}]", n - CAP_CHARS);
+        }
+    };
+    let mut e = e.clone();
+    if let Some(p) = &mut e.prompt {
+        cap(&mut p.text);
+    }
+    if let Some(t) = &mut e.think {
+        cap(&mut t.text);
+    }
+    if let Some(x) = &mut e.say {
+        cap(&mut x.text);
+    }
+    if let Some(r) = e.tool.as_mut().and_then(|t| t.result.as_mut()) {
+        cap(&mut r.output);
+    }
+    format_event(&e, full)
+}
+
+/// How many events a read in parts asks for: all of them.
+const ALL_EVENTS: usize = 1 << 40;
+
+/// The line that marks where a session begins, after the first.
+fn session_chunk(s: &LogsSession) -> LogsChunk {
+    LogsChunk {
+        text: format!(
+            "--- session {} ({})\n",
+            s.file.session.session_id, s.file.session.harness
+        ),
+        session: true,
+    }
+}
+
+/// What agent logs prints for one session named by its id or its
+/// transcript's path (agent transcript's resolve_transcript finds it): any
+/// session on this host, an agent's or not.
+fn session_logs(ctx: &Ctx, arg: &str, o: &LogsOptions) -> anyhow::Result<(Vec<LogsChunk>, String)> {
+    if o.terminal {
+        anyhow::bail!(
+            "--terminal prints an agent's terminal log, and {} isn't an agent here: give the agent's name (agent list)",
+            strconv::quote(arg)
+        );
+    }
+    let target = super::transcript::resolve_transcript(ctx, arg)?;
+    if target.unwritten {
+        anyhow::bail!(
+            "session {} has no transcript yet: {} isn't written (Claude Code writes it at the first prompt)",
+            target.session.session_id,
+            target.path
+        );
+    }
+    let read = if o.parts() || o.caps() { ALL_EVENTS } else { o.lines as usize };
+    let f = transcript::read_file(&target.path, Some(target.reader), read)
+        .map_err(|e| anyhow::anyhow!("can't read {}: {}", target.path, read_error_text(&target.path, &e)))?;
+    let mut events = transcript::latest(&f.events);
+    if !o.parts() && !o.caps() && events.len() > o.lines as usize {
+        events.drain(..events.len() - o.lines as usize);
+    }
+    let mut sessions = vec![LogsSession { file: f, events }];
+    if o.scrub {
+        redact_sessions(&mut sessions);
+    }
+    if o.json {
+        return Ok((event_line_chunks(&sessions)?, String::new()));
+    }
+    if sessions[0].events.is_empty() {
+        return Ok((
+            vec![text_chunk(format!(
+                "Session {}'s transcript has no events yet ({}).\n",
+                target.session.session_id, target.path
+            ))],
+            String::new(),
+        ));
+    }
+    if o.parts() {
+        return Ok(part_chunks(&sessions, o));
+    }
+    Ok((tail_chunks(&sessions, o), String::new()))
+}
+
+/// A transcript read in parts: the events --talk and --grep keep, numbered
+/// from 1, and of those, --lines from --start (or the last --lines); with a
+/// hint saying which part this is and how to read on.
+fn part_chunks(sessions: &[LogsSession], o: &LogsOptions) -> (Vec<LogsChunk>, String) {
+    let needle = o.grep.to_lowercase();
+    let mut kept: Vec<(usize, usize, &Event)> = Vec::new();
+    for (i, s) in sessions.iter().enumerate() {
+        for (k, e) in s.events.iter().enumerate() {
+            if o.talk && !is_talk(e) {
+                continue;
+            }
+            if !needle.is_empty() && !event_text(e).to_lowercase().contains(&needle) {
+                continue;
+            }
+            kept.push((i, k, e));
+        }
+    }
+    let total = kept.len();
+    let lines = o.lines as usize;
+    let first = if o.start > 0 {
+        (o.start as usize - 1).min(total)
+    } else {
+        total.saturating_sub(lines)
+    };
+    let last = (first + lines).min(total);
+    let mut chunks = Vec::new();
+    let mut session = None;
+    for (n, (i, k, e)) in kept[first..last].iter().enumerate() {
+        // A window that starts in a later session says which one it is.
+        if session.is_some_and(|s| s != *i) || (session.is_none() && *i > 0) {
+            chunks.push(session_chunk(&sessions[*i]));
+        }
+        session = Some(*i);
+        // --talk never prints tool output, --full or not.
+        let full = o.full && !(o.talk && e.tool.is_some());
+        let line = event_line(e, full, o, &sessions[*i], *k);
+        chunks.push(text_chunk(format!("#{} {line}\n", first + n + 1)));
+    }
+    let what = match (o.talk, needle.is_empty()) {
+        (true, true) => "talk events".to_string(),
+        (true, false) => format!("talk events matching {}", strconv::quote(&o.grep)),
+        (false, false) => format!("events matching {}", strconv::quote(&o.grep)),
+        (false, true) => "events".to_string(),
+    };
+    let hint = if total == 0 {
+        format!("no {what}")
+    } else if first >= total {
+        format!("--start {} is past the last of {total} {what}", o.start)
+    } else if last < total {
+        format!(
+            "{what} {}-{last} of {total}; --start {} reads on",
+            first + 1,
+            last + 1
+        )
+    } else {
+        format!("{what} {}-{last} of {total}", first + 1)
+    };
+    (chunks, hint)
+}
+
+/// Whether --talk keeps an event: what was said, and the calls made.
+fn is_talk(e: &Event) -> bool {
+    e.prompt.is_some() || e.say.is_some() || e.tool.is_some()
+}
+
+/// The text --grep looks in: an event's text, and a tool call's name,
+/// target, detail and output.
+fn event_text(e: &Event) -> String {
+    if let Some(p) = &e.prompt {
+        return p.text.clone();
+    }
+    if let Some(t) = &e.think {
+        return t.text.clone();
+    }
+    if let Some(s) = &e.say {
+        return s.text.clone();
+    }
+    if let Some(t) = &e.tool {
+        let out = t.result.as_ref().map(|r| r.output.as_str()).unwrap_or("");
+        return format!("{}\n{}\n{}\n{out}", t.name, t.target, t.detail);
+    }
+    if let Some(s) = &e.system {
+        return s.text.clone();
+    }
+    String::new()
 }
 
 /// A transcript read for logs: the stream its lines make, and the events logs
@@ -732,11 +1165,13 @@ pub fn tail_log_lines(path: &str, n: usize) -> anyhow::Result<Vec<String>> {
 /// cut to fit a bus message (Go: serveLogs, in remote_ops.go). The bus's
 /// handler (remote_ops::bus_handler) calls it with a quiet Ctx of its own.
 pub fn serve_logs(ctx: &Ctx, _c: &Context, req: LogsRequest) -> anyhow::Result<LogsResponse> {
+    // An agent's name only: a peer reads no session or path here.
     let opts = LogsOptions {
         lines: req.lines,
         full: req.full,
         json: req.json,
         terminal: req.terminal,
+        ..Default::default()
     };
     opts.check()?;
     let (chunks, why) = build_logs(ctx, &req.agent, &opts)?;

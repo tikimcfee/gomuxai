@@ -153,7 +153,7 @@ fn dream_gather_run_list_and_show() {
         out.starts_with("Dream #1 (committed) on local\nOver:     every project in scope\nAgent:    dream-1\n"),
         "{out}"
     );
-    assert!(out.contains("  session  claude:old  claude session in shop: Old work\n           read: agent transcript old\n"), "{out}");
+    assert!(out.contains("  session  claude:old  claude session in shop: Old work\n           read: agent logs claude:old --talk\n"), "{out}");
     let out = run(&mut env, &["dream", "show"]);
     assert!(out.starts_with("Dream #3 (quiet)"), "the newest: {out}");
     let err = run_err(&mut env, &["dream", "show", "9"]);
@@ -682,4 +682,162 @@ fn rule_paths_are_the_read_and_edit_rules_paths() {
         super::rule_paths(&rules),
         vec!["/data/dreams/3", "/data/h.md", "/srv/app"]
     );
+}
+
+/// A dream's agent reads transcripts scrubbed, whatever it asks: logs and
+/// transcript drop credential lines and tool inputs for it (the owner's rule).
+#[test]
+fn a_dreams_agent_reads_transcripts_scrubbed() {
+    crate::require_termd!();
+    let mut env = TestEnv::setup_cli_private();
+    env.forbid_bus();
+    let dir = crate::cli::testenv::temp_dir("dream-scrub-");
+    let path = dir.path().join("s.jsonl").to_string_lossy().into_owned();
+    write_test_file(
+        &path,
+        concat!(
+            r#"{"type":"user","sessionId":"s","cwd":"/home/user/p","timestamp":"2026-08-01T12:00:00Z","message":{"role":"user","content":"go\nmy password is hunter2\nthanks"}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-08-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            "\n",
+        ),
+    );
+    let out = run(&mut env, &["logs", &path, "--full"]);
+    assert!(out.contains("hunter2"), "a person reads it whole:\n{out}");
+    let d = open_dream_as_agent(&mut env, &[]);
+    // As spawn sets it for a dream's worker.
+    env.store()
+        .set_state(&StateEntry {
+            agent_name: d.agent.clone(),
+            key: "dream".into(),
+            value: d.id.to_string(),
+            updated_at: Time::now(),
+        })
+        .unwrap();
+    let out = run(&mut env, &["logs", &path, "--full"]);
+    assert!(!out.contains("hunter2") && out.contains("thanks"), "logs, as a dream's agent:\n{out}");
+    assert!(out.contains("my password is [redacted: secret]"), "in place:\n{out}");
+    let out = run(&mut env, &["transcript", &path]);
+    assert!(!out.contains("hunter2") && out.contains(r#""input""#), "transcript, as a dream's agent:\n{out}");
+    assert!(out.contains("[redacted: secret]") && out.contains("thanks"), "redacted in place:\n{out}");
+
+    // A recorded command's words, too.
+    env.store()
+        .log_command(&mut agent_store::CommandRecord {
+            started_at: Time::now(),
+            host: "local".into(),
+            agent: "someone".into(),
+            args: vec!["send".into(), "x".into(), "the password is hunter2".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    let out = run(&mut env, &["history", "--agent", "someone"]);
+    assert!(!out.contains("hunter2") && out.contains("[redacted: secret]"), "history, as a dream's agent:\n{out}");
+
+    // A worker whose dream has closed still reads scrubbed (it fails closed).
+    env.store().commit_dream(d.id).unwrap();
+    let out = run(&mut env, &["logs", &path, "--full"]);
+    assert!(!out.contains("hunter2"), "after its dream closed:\n{out}");
+}
+
+/// A root puts each folder under it in scope (but hidden ones, skipped
+/// names and worktrees), follows the folders as they come and go, and keeps
+/// what was added on its own.
+#[test]
+fn a_scope_root_holds_each_folder_under_it() {
+    let mut env = TestEnv::new();
+    let tmp = crate::cli::testenv::temp_dir("dream-root-");
+    let root = tmp.path().join("dev");
+    for d in ["a", "b", ".hidden", "target", "wt"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    std::fs::write(root.join("wt/.git"), "gitdir: /elsewhere\n").unwrap();
+    let solo = tmp.path().join("solo");
+    std::fs::create_dir_all(&solo).unwrap();
+    let (root_s, solo_s) = (root.to_string_lossy().into_owned(), solo.to_string_lossy().into_owned());
+
+    run(&mut env, &["dream", "scope", "add", &solo_s]);
+    let out = run(&mut env, &["dream", "scope", "add", &root_s, "--root"]);
+    assert!(out.contains("its 2 projects are in scope"), "{out}");
+    let scope = crate::cli::dream::read_scope(&env.ctx).unwrap();
+    assert_eq!(
+        scope,
+        [format!("{root_s}/a"), format!("{root_s}/b"), solo_s.clone()],
+        "hidden, skipped and worktree folders left out"
+    );
+    // A folder made later is in scope at the next refresh (run, gather, list).
+    std::fs::create_dir_all(root.join("c")).unwrap();
+    let out = run(&mut env, &["dream", "scope", "list"]);
+    assert!(out.contains(&format!("{root_s}/c  (under the root {root_s})")), "{out}");
+    let err = run_err(&mut env, &["dream", "scope", "remove", &format!("{root_s}/a")]);
+    assert!(err.contains("skip list"), "{err}");
+    run(&mut env, &["dream", "scope", "remove", &root_s]);
+    assert_eq!(crate::cli::dream::read_scope(&env.ctx).unwrap(), [solo_s], "the added dir stays");
+}
+
+/// A dream proposes a skip-list change; it waits until a person accepts it
+/// (the list changes) or rejects it; a dream's agent can't decide.
+#[test]
+fn a_skip_proposal_waits_for_a_person() {
+    crate::require_termd!();
+    let mut env = TestEnv::setup_cli_private();
+    env.forbid_bus();
+    let cfg = crate::cli::testenv::temp_dir("dream-skip-");
+    env.set_env("XDG_CONFIG_HOME", cfg.path());
+    let file = cfg.path().join("gomuxai").join(agent_dream::skip::FILE_NAME);
+    let d = open_dream_as_agent(&mut env, &[]);
+    let err = run_err(&mut env, &["dream", "propose", "skip", "add", "zz-gen", "--why", "x"]);
+    assert!(err.contains("--source"), "{err}");
+    let err = run_err(&mut env, &["dream", "propose", "skip", "add", "target", "--why", "x", "--source", "dream:1"]);
+    assert!(err.contains("has target already"), "{err}");
+    let out = run(
+        &mut env,
+        &["dream", "propose", "skip", "add", "zz-gen", "--why", "generated code indexed", "--source", "claude:s1"],
+    );
+    assert!(out.starts_with("Proposed #1: skip add zz-gen."), "{out}");
+    let out = run(&mut env, &["dream", "propose", "skip", "add", "zz-gen", "--why", "again", "--source", "claude:s2"]);
+    assert!(out.contains("pending already"), "{out}");
+    run(&mut env, &["dream", "propose", "skip", "remove", "dist", "--why", "dist holds sources", "--source", "claude:s3"]);
+    let err = run_err(&mut env, &["dream", "proposals", "accept", "1"]);
+    assert!(err.contains("refused to a dream's agent"), "{err}");
+    assert!(env.store().get_dream(d.id).unwrap().unwrap().diary.contains("proposed #1: skip add zz-gen"));
+
+    // A person decides.
+    env.set_env("AGENT_NAME", "");
+    let out = run(&mut env, &["dream", "proposals", "list"]);
+    assert!(out.contains("#1  skip add zz-gen  pending") && out.contains("sources: claude:s1"), "{out}");
+    let out = run(&mut env, &["dream", "proposals", "accept", "1"]);
+    assert!(out.contains("Added zz-gen to the skip list") && out.contains("Accepted #1"), "{out}");
+    assert!(agent_dream::skip::read(Some(&file)).unwrap().contains(&"zz-gen".to_string()));
+    let err = run_err(&mut env, &["dream", "proposals", "reject", "2"]);
+    assert!(err.contains("--note"), "{err}");
+    run(&mut env, &["dream", "proposals", "reject", "2", "--note", "dist is build output here"]);
+    assert!(agent_dream::skip::read(Some(&file)).unwrap().contains(&"dist".to_string()), "a reject changes nothing");
+    let out = run(&mut env, &["dream", "proposals", "list"]);
+    assert!(out.starts_with("Nothing waits"), "{out}");
+    let out = run(&mut env, &["dream", "proposals", "list", "--all"]);
+    assert!(out.contains("rejected by a person: dist is build output here"), "{out}");
+    let err = run_err(&mut env, &["dream", "proposals", "accept", "1"]);
+    assert!(err.contains("accepted already"), "{err}");
+    agent_dream::skip::set(agent_dream::skip::DEFAULT_DIRS.iter().map(|s| s.to_string()).collect());
+}
+
+/// A root's project owns the sessions of its removed worktrees by name
+/// (<name>-wt-<role>), with no --worktrees to set.
+#[test]
+fn a_roots_project_owns_its_removed_worktrees_by_name() {
+    crate::require_termd!();
+    let (mut env, home) = setup_sessions();
+    let root = env.dir.path().join("dev");
+    std::fs::create_dir_all(root.join("shop")).unwrap();
+    std::fs::create_dir_all(root.join("shopping")).unwrap();
+    let root_s = root.to_string_lossy().into_owned();
+    claude_transcript(&home, "helper", "/scratch/shop-wt-fix", "Fix it", Duration::from_secs(86400));
+    claude_transcript(&home, "other", "/scratch/shopping-wt-x", "Other", Duration::from_secs(86400));
+    claude_transcript(&home, "nope", "/scratch/shopwt", "Not one", Duration::from_secs(86400));
+    run(&mut env, &["dream", "scope", "add", &root_s, "--root"]);
+    let shop = run(&mut env, &["dream", "gather", "--project", &format!("{root_s}/shop")]);
+    assert!(shop.contains("claude:helper") && !shop.contains("claude:other") && !shop.contains("claude:nope"), "{shop}");
+    let shopping = run(&mut env, &["dream", "gather", "--project", &format!("{root_s}/shopping")]);
+    assert!(shopping.contains("claude:other") && !shopping.contains("claude:helper"), "the longest name: {shopping}");
 }

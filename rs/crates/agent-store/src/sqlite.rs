@@ -6,7 +6,9 @@ use anyhow::{Context, Result, anyhow};
 use rusqlite::types::{Type, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Params, Row, Transaction, params};
 
+use crate::act::ACT_SCHEMA;
 use crate::commands::COMMAND_LOG_SCHEMA;
+use crate::dream_proposals::DREAM_PROPOSALS_SCHEMA;
 use crate::dream_workers::{DREAM_WORKERS_MIGRATE, DREAM_WORKERS_SCHEMA};
 use crate::dreams::{DREAMS_ADDED_COLUMNS, DREAMS_SCHEMA};
 use crate::friction::FRICTION_SCHEMA;
@@ -151,6 +153,8 @@ impl Store {
             + MANAGE_SCHEMA
             + DREAMS_SCHEMA
             + DREAM_WORKERS_SCHEMA
+            + DREAM_PROPOSALS_SCHEMA
+            + ACT_SCHEMA
             + ROSTER_SCHEMA;
 
         let conn = self.conn();

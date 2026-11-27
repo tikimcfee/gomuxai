@@ -1,0 +1,28 @@
+Propose records a change a dream may not make itself, for a person to
+accept or reject (agent dream proposals). For now that is the skip list,
+the directory names no walk of a project goes into (agent index skip
+list): propose skip add NAME when build output or a cache was indexed or
+gathered (a session's digest full of it, index search returning it), and
+skip remove NAME when a name skips what holds real work.
+
+--why says what you saw, in a sentence; --source cites it (a session,
+commit, friction entry or dream, as memory does), at least once. The
+proposal waits whatever becomes of the dream; the same change pending
+already is not recorded twice. Only a dream's own agent runs it.
+
+Usage:
+  agent dream propose skip add|remove <name> [flags]
+
+Examples:
+  agent dream propose skip add .next --why "the index lists glyph3d-js's .next build output" --source claude:3f3a9c
+
+Flags:
+  -h, --help                 help for propose
+      --source stringArray   A source the proposal rests on (claude:<id>, commit:<hash>, friction:<uid>, dream:<id>); repeatable
+      --why string           What you saw, in a sentence
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

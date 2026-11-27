@@ -207,7 +207,7 @@ pub struct Verdict {
 const WORKER_COLUMNS: &str =
     "dream_id, agent, role, model, effort, lens, status, started_at, finished_at";
 
-fn opt_time(s: String) -> Time {
+pub(crate) fn opt_time(s: String) -> Time {
     if s.is_empty() {
         Time::zero()
     } else {
@@ -232,7 +232,7 @@ fn scan_worker(row: &Row<'_>) -> rusqlite::Result<DreamWorker> {
 const IDEA_COLUMNS: &str = "id, dream_id, caller, worker, idea, citations, status, created_at,
 	judged_by, judged_at, why, checked, leverage, evidence, feasibility, novelty, rank, outcome";
 
-fn json_list(s: &str) -> Vec<String> {
+pub(crate) fn json_list(s: &str) -> Vec<String> {
     serde_json::from_str(s).unwrap_or_default()
 }
 

@@ -1,0 +1,20 @@
+Check runs the check the run was started with (--check) in the run's
+worktree, through agent run (a memory-limited scope), with its own
+CARGO_TARGET_DIR and TMPDIR on disk. It prints the end of the output and
+logs whether it passed at which commit; land needs a passing check at
+HEAD.
+
+Usage:
+  agent dream act check [flags]
+
+Examples:
+  agent dream act check
+
+Flags:
+  -h, --help   help for check
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

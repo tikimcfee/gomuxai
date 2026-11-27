@@ -52,9 +52,6 @@ const CODE_EXTENSIONS: &[&str] = &[
     "rs", "go", "py", "js", "ts", "tsx", "c", "h", "cpp", "swift", "sh",
 ];
 
-/// Directories the walk of a repo skips: build output and VCS internals.
-const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", ".venv", "__pycache__"];
-
 /// A walk of a repo stops here, so a huge tree can't stall a check.
 const MAX_ENTRIES: usize = 200_000;
 
@@ -104,7 +101,7 @@ fn walk(dir: &Path, prefix: &str, out: &mut BTreeSet<String>) {
         let path = dir.join(&name);
         // Build output, VCS internals, and checkouts of their own inside the
         // repo (worktrees, vendored clones): what is there isn't the repo's.
-        if is_dir && (SKIP_DIRS.contains(&name.as_str()) || path.join(".git").exists()) {
+        if is_dir && (crate::skip::contains(name.as_str()) || path.join(".git").exists()) {
             out.insert(rel);
             continue;
         }
@@ -321,7 +318,7 @@ impl Repo {
     fn under_skipped(&self, rel: &str) -> bool {
         rel.split('/')
             .next()
-            .is_some_and(|f| SKIP_DIRS.contains(&f) && self.root.join(rel).exists())
+            .is_some_and(|f| crate::skip::contains(f) && self.root.join(rel).exists())
     }
 
     /// Whether the walk stopped at MAX_ENTRIES.

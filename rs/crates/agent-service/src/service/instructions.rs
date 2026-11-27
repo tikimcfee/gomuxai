@@ -181,6 +181,13 @@ pub const DREAM_READ_COMMANDS: &[&str] = &[
     "friction show",
     "roster list",
     "roster show",
+    // The index, read only: what a dream checks a claim against (no crawl,
+    // root, project, embed, alias or summarize).
+    "index search",
+    "index show",
+    "index tree",
+    "index related",
+    "index stale",
 ];
 
 /// DREAM_AGENT_COMMANDS are the `agent dream` verbs a dream's own agent may
@@ -203,10 +210,48 @@ pub const DREAM_AGENT_COMMANDS: &[&str] = &[
     "dream limitation",
     "dream memory",
     "dream roster note",
+    "dream propose",
     // Reading only: the global dream reads its project dreams' diaries.
     "dream show",
     "dream list",
 ];
+
+/// ACT_AGENT_COMMANDS are the `agent dream act` verbs an act run's own
+/// agent may run without a prompt while its run is open (docs/DREAMING-ACT.md,
+/// "The general actor"). Each checks the run's scope itself: what is above
+/// the scope is refused by the verb, not by this list.
+pub const ACT_AGENT_COMMANDS: &[&str] = &[
+    "dream act note",
+    "dream act ask",
+    "dream act done",
+    "dream act give-up",
+    "dream act check",
+    "dream act commit",
+    "dream act land",
+    "dream act rebase",
+    "dream act remove-worktree",
+    "dream act delete-branch",
+    "dream act cleanup-agent",
+    "dream act crawl",
+    "dream act show",
+];
+
+/// Whether command is one plain `git -C <worktree> status|diff|log|show
+/// ...`, reading only, in the act run's own worktree.
+pub(crate) fn act_git_allowed(command: &str, worktree: &str) -> bool {
+    let Ok(w) = agent_allowcmd::literal_words(command) else {
+        return false;
+    };
+    !worktree.is_empty()
+        && w.len() >= 4
+        && w[0] == "git"
+        && w[1] == "-C"
+        && w[2].trim_end_matches('/') == worktree.trim_end_matches('/')
+        && matches!(w[3].as_str(), "status" | "diff" | "log" | "show")
+        && w[4..]
+            .iter()
+            .all(|a| !a.starts_with("--output") && !a.starts_with("--ext-diff") && a != "-o")
+}
 
 /// The dream item kind whose key is `<repo>@<hash>` (agent_dream::gather).
 const DREAM_KIND_COMMIT: &str = "commit";
@@ -349,6 +394,12 @@ impl AgentService {
         if hr.command.is_empty() {
             return None;
         }
+        // An act run's agent: its reading commands, its verbs (each checks
+        // the run's scope), and git that reads its worktree or the scope.
+        if let Ok(Some(run)) = self.storage.open_act_run_of(name) {
+            let reason = self.act_command_allowed(&run, &hr.command, &hr.cwd)?;
+            return Some(ha.allow_output(reason));
+        }
         // A dream's agent gets its own, narrower list, never the general one
         // (which sends messages and files friction).
         let Ok(Some(dream)) = self.storage.open_dream_of(name) else {
@@ -364,6 +415,47 @@ impl AgentService {
         };
         let reason = self.dream_command_allowed(dream.id, &hr.command, &hr.cwd)?;
         Some(ha.allow_output(reason))
+    }
+
+    /// Why `command` may run without a prompt for the agent of open act run
+    /// `run`, or None: a reading agent command, an act verb, or git reading
+    /// its worktree or a scoped repo.
+    pub(crate) fn act_command_allowed(
+        &self,
+        run: &agent_store::ActRun,
+        command: &str,
+        cwd: &str,
+    ) -> Option<&'static str> {
+        if command.is_empty() {
+            return None;
+        }
+        if !self.cfg.agent_binary.is_empty() {
+            let c = Checker::new(self.cfg.agent_binary.clone(), DREAM_READ_COMMANDS);
+            if c.check(command, cwd).is_ok() {
+                return Some(
+                    "gomuxai: a reading agent command, pre-allowed for an act run's agent",
+                );
+            }
+            let c = Checker::new(self.cfg.agent_binary.clone(), ACT_AGENT_COMMANDS);
+            if c.check(command, cwd).is_ok() {
+                return Some(
+                    "gomuxai: an act verb, pre-allowed for its open run's agent (the verb checks its scope)",
+                );
+            }
+        }
+        if act_git_allowed(command, &run.worktree) {
+            return Some("gomuxai: git reading an act run's own worktree");
+        }
+        let repos: BTreeSet<String> = self
+            .storage
+            .dream_scope()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        if dream_git_allowed(command, &repos) {
+            return Some("gomuxai: git log or show in a scoped repo, for an act run's agent");
+        }
+        None
     }
 
     /// Why `command` may run without a prompt for the agent of open dream

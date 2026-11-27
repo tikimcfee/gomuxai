@@ -113,6 +113,28 @@ dream judge
 dream done
 dream roster
 dream roster note
+dream act
+dream act start
+dream act list
+dream act show
+dream act stop
+dream act note
+dream act ask
+dream act done
+dream act give-up
+dream act check
+dream act commit
+dream act land
+dream act rebase
+dream act remove-worktree
+dream act delete-branch
+dream act cleanup-agent
+dream act crawl
+dream propose
+dream proposals
+dream proposals list
+dream proposals accept
+dream proposals reject
 dream memory
 dream memory get
 dream memory put
@@ -134,6 +156,10 @@ index root
 index root add
 index root remove
 index root list
+index skip
+index skip list
+index skip add
+index skip remove
 index project
 index project add
 index crawl

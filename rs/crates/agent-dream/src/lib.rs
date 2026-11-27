@@ -8,8 +8,18 @@ pub mod memory;
 pub mod review;
 pub mod schedule;
 pub mod scrub;
+pub mod skip;
 pub mod stale;
 pub mod start_here;
+
+/// The fixed brief an act run's agent gets, with `{item}` standing for the
+/// path of its item file (docs/DREAMING-ACT.md, "The general actor").
+pub const BRIEF_ACT: &str = include_str!("brief_act.md");
+
+/// The act brief for a run whose item file is at `item_path`.
+pub fn brief_act(item_path: &str) -> String {
+    BRIEF_ACT.replace("{item}", item_path)
+}
 
 /// The fixed brief a dream agent gets, with `{digest}` standing for the
 /// digest's path.

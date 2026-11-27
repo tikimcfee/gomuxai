@@ -115,9 +115,31 @@ fn test_pre_tool_use_allows_dream_verbs_for_the_open_dream_only() {
         format!("{bin} dream friction accept 3 --note x"),
         format!("{bin} dream commit"),
         format!("{bin} logs worker"),
+        format!("{bin} logs claude:3f3a9c --talk --grep \"cargo test\""),
+        format!("{bin} index search \"held message delivery\" --budget 800"),
+        format!("{bin} index show gomuxai:rs/crates/agent-dream"),
+        format!("{bin} index tree gomuxai --depth 1"),
+        format!("{bin} index related gomuxai:rs/crates/agent-dream/src/memory.rs"),
+        format!("{bin} index stale --project gomuxai"),
+        format!("{bin} dream propose skip add .next --why \"x\" --source claude:s"),
         "git -C /srv/app show abcdef1 --stat".to_string(),
     ] {
         assert!(allowed("dream-1", &dreamer, &cmd), "{cmd}: want allowed");
+    }
+    // The index is read only to a dream: what writes it stays a person's.
+    for cmd in [
+        format!("{bin} index crawl"),
+        format!("{bin} index root add /srv"),
+        format!("{bin} index alias gomuxai:x y"),
+        format!("{bin} index summarize --project gomuxai"),
+        format!("{bin} index embed"),
+        format!("{bin} index skip add out"),
+        format!("{bin} dream proposals accept 1"),
+    ] {
+        assert!(
+            !allowed("dream-1", &dreamer, &cmd),
+            "{cmd}: want refused for a dream"
+        );
     }
     assert!(
         !allowed("worker", &other, &note),
@@ -157,4 +179,86 @@ fn test_pre_tool_use_allows_dream_verbs_for_the_open_dream_only() {
     );
     env.store.commit_dream(d.id).unwrap();
     assert!(!allowed("dream-1", &dreamer, &note), "the dream is closed");
+}
+
+// An act run's agent gets its verbs (each checks the run's scope itself),
+// its reading commands and git that reads its worktree; nothing that
+// writes outside a verb, and nothing once the run has ended.
+#[test]
+fn test_pre_tool_use_allows_act_verbs_for_the_open_run_only() {
+    require_termd!();
+    let mut env = setup_test_env();
+    let root = tempdir();
+    let rootp = root.path().display().to_string();
+    let bin = root.path().join("agent");
+    std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = bin.display().to_string();
+    env.cfg_mut().agent_binary = bin.clone();
+    let actor = spawn_fake(&env, "act-1");
+    let other = spawn_fake(&env, "worker");
+    let allowed = |name: &str, fake: &FakeHook, command: &str| -> bool {
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse", "session_id": fake.session_id(), "cwd": rootp,
+            "tool_name": "Bash", "tool_input": {"command": command},
+        })
+        .to_string();
+        let (out, err) = env.service.handle_hook(name, "", "", payload.as_bytes());
+        if let Err(e) = err {
+            panic!("HandleHook {payload}: {e:#}");
+        }
+        let v: serde_json::Value =
+            serde_json::from_slice(&out.unwrap_or_default()).unwrap_or_default();
+        v["hookSpecificOutput"]["permissionDecision"] == "allow"
+    };
+    let wt = format!("{rootp}/act/1/app");
+    let run = env
+        .store
+        .open_act_run(
+            &agent_store::ActRun {
+                item: "friction:x".into(),
+                summary: "s".into(),
+                scope: "commit".into(),
+                worktree: wt.clone(),
+                ..Default::default()
+            },
+            |id| format!("act-{id}"),
+        )
+        .unwrap();
+    assert_eq!(run.agent, "act-1");
+    for cmd in [
+        format!("{bin} dream act commit \"the fix\""),
+        format!("{bin} dream act remove-worktree /x/wt"),
+        format!("{bin} dream act done \"ok\""),
+        format!("{bin} logs claude:s --talk"),
+        format!("{bin} index search \"x\""),
+        format!("git -C {wt} diff"),
+        format!("git -C {wt} log --oneline -3"),
+    ] {
+        assert!(allowed("act-1", &actor, &cmd), "{cmd}: want allowed");
+    }
+    for cmd in [
+        format!("git -C {wt} commit -m x"),
+        format!("git -C {wt} push"),
+        format!("git -C {wt} diff --output=/tmp/x"),
+        format!("{bin} send worker hi"),
+        format!("{bin} dream note x"),
+        format!("{bin} dream act start 1 --scope branch"),
+        format!("{bin} cleanup worker"),
+        "rm -rf /".to_string(),
+    ] {
+        assert!(
+            !allowed("act-1", &actor, &cmd),
+            "{cmd}: want refused for an act run"
+        );
+    }
+    assert!(
+        !allowed("worker", &other, &format!("{bin} dream act commit \"x\"")),
+        "another agent's act verbs"
+    );
+    env.store.end_act_run(run.id, "done", "ok").unwrap();
+    assert!(
+        !allowed("act-1", &actor, &format!("{bin} dream act note x")),
+        "the run has ended"
+    );
 }

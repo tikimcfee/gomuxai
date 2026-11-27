@@ -109,7 +109,7 @@ fn sessions_filtered_and_oldest_first() {
     let g = gather(&f, &cur).unwrap();
     assert_eq!(keys(&g), ["session:claude:old", "session:claude:new"]);
     assert!(!g.quiet);
-    assert_eq!(g.items[0].read, "agent transcript old");
+    assert_eq!(g.items[0].read, "agent logs claude:old --talk");
     assert_eq!(g.counts(), [("session", 2)]);
     // The evidence reads each session's transcript, a subagent's under its
     // parent's key.
@@ -637,4 +637,20 @@ fn a_worktree_of_a_scoped_repo_is_in_scope() {
         .map(|i| i.key.as_str())
         .collect();
     assert_eq!(keys, vec!["claude:wt"]);
+}
+
+/// A path inside a scoped dir is in scope, but not inside a folder the skip
+/// list names below it.
+#[test]
+fn in_scope_leaves_skipped_folders_out() {
+    let dirs = vec!["/srv/app".to_string()];
+    assert!(in_scope("/srv/app", &dirs));
+    assert!(in_scope("/srv/app/src", &dirs));
+    assert!(!in_scope("/srv/app2", &dirs));
+    assert!(
+        !in_scope("/srv/app/node_modules/x", &dirs),
+        "a skipped folder"
+    );
+    assert!(!in_scope("/srv/app/sub/target", &dirs));
+    assert!(in_scope("/srv/app/targets", &dirs), "names, not prefixes");
 }

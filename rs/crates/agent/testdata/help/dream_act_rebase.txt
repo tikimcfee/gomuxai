@@ -1,0 +1,22 @@
+Rebase brings a branch up to date. With no argument, the run's own
+worktree goes onto act/landed (or, before it exists, the default branch).
+Given another worktree, a linked worktree of a scoped repo, its branch
+goes onto that repo's default branch, only if it is clean and no running
+agent works in it. A conflict aborts the rebase and leaves the branch as
+it was.
+
+Usage:
+  agent dream act rebase [<worktree>] [flags]
+
+Examples:
+  agent dream act rebase
+  agent dream act rebase /var/tmp/app-wt-fix
+
+Flags:
+  -h, --help   help for rebase
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

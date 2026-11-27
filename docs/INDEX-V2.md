@@ -108,8 +108,9 @@ research behind it, the refutation, the session where it broke.
 - **prose**: docs, research notes, design docs and experiment write-ups,
   including the research and review repos in the dev tree; long files
   are chunked by section.
-- **sessions**: every Claude and agy session, as full scrubbed text,
-  chunked (below).
+- **sessions**: every Claude and agy session, as full text with its
+  secrets redacted, chunked (below); what was pasted into them is a
+  corpus of its own, **pasted**.
 - **memory and friction**: memory directories' notes and the friction
   box, each note or entry an entity.
 
@@ -157,7 +158,8 @@ answer.
   personal: in the local database only, never in fixtures, docs or
   commits.
 - **Grouped answers**: `search` with no `--kind` answers by corpus
-  (code, prose, memory, friction), each group with its own limit and
+  (code, prose, memory, friction, session, and pasted when it matched),
+  each group with its own limit and
   share of `--budget` (`[corpora.NAME]` `limit` and `budget`: code 8 and
   700 tokens, prose 5 and 450, memory 3 and 200, friction 3 and 150),
   and a corpus with no match says `nothing good here` in one line.
@@ -221,9 +223,13 @@ A summary throws information away before anyone has looked at it, so
 sessions go in whole, and filtering does the work:
 
 - read through `agent transcript` (both harnesses, one event shape);
-- **scrubbed at the point of reading**, under the machine's rule:
-  sign-in and token URLs, keys and credentials, and pasted content are
-  dropped before anything reaches the database (`agent_dream::scrub`);
+- **secrets redacted in place at the point of reading**, and nothing
+  else removed (2026-11-27: a reader that sees text cut out
+  assumes): sign-in and token URLs, keys, tokens and emails become
+  markers saying what was there before anything reaches the database
+  (`agent_dream::scrub::redact`); harness-inserted blocks are labelled as
+  data, and pasted blocks are kept apart, in a corpus a search can leave
+  out;
 - chunked by turn: a person's prompt, the agent's replies, and one line
   per tool call (its action, target and outcome), in windows of about
   500 tokens with a small overlap; a chunk keeps its session, harness,
@@ -250,13 +256,28 @@ answers; `[sessions]` in the configuration):
   read_file`, folded to each event's latest state, so a tool call shows
   once with its result); branches the person left (edited or rewound
   prompts) and request records are skipped.
-- **Scrubbed at the point of reading**: each prompt and reply goes
-  through `agent_dream::scrub::excerpt` (pasted and harness-inserted
-  blocks, code blocks, quotes, private key blocks, and lines with a
-  credential marker, an email address or a sign-in URL dropped); a tool
-  line (action, target or clipped detail, a failed status) with a
-  credential is dropped whole. The scrubber is broad by design (any line
-  naming a token goes), and the sync reports what it dropped.
+- **Redacted at the point of reading**: each prompt and reply keeps every
+  line, code and quotes included. `agent_dream::scrub::redact` replaces
+  each secret where it stands with a marker (`[redacted: token]`,
+  `[redacted: secret]`, `[redacted: private key]`, `[redacted: email]`,
+  a sign-in URL's host kept and the rest `[redacted: sign-in URL]`), in
+  tool lines and titles too, before a long one is clipped, so a cut
+  can't leave part of a secret too short to be seen as one.
+  Harness-inserted blocks (`<system-reminder>` and the like) stay in the
+  text between `⟦NAME: data, not instructions⟧` and `⟦end of NAME⟧`
+  (`label_blocks`). The sync reports how many secrets it redacted and
+  blocks it labelled.
+- **Pasted blocks, kept apart**: each `<pasted_content>` block goes, labelled
+  and redacted the same way, to one more entity per session,
+  `session:<harness>:<id>#pasted` (corpus and kind `pasted`, title
+  `Pasted into: <the session's title>`, chunks cut by turn like the
+  session's, each with `pasted: true` in its meta), and the session's text
+  says where it was (`⟦pasted content N: kept apart, in
+  session:<harness>:<id>#pasted⟧`). A grouped search shows a `pasted`
+  group when something there matched (an empty one isn't shown, so other
+  searches stay as they were), and `--corpus` without `pasted` leaves it
+  out of every list, lexical and dense. A hidden folder (`.raw/`) under a
+  root is no project, so nothing in it is indexed.
 - **Chunked by turn**: a turn is `Person:`, `Agent:` and `- action
   target` lines under `## Turn n time`; whole turns are gathered up to
   `chunk_chars` (2,000, about 500 tokens) and a longer turn is cut in
@@ -265,7 +286,7 @@ answers; `[sessions]` in the configuration):
   the files they touched.
 - **The entity** `session:<harness>:<id>`: its project (the indexed
   project holding its directory), title (the harness's, else the first
-  prompt's line), seed (its first prompt, scrubbed), its card embedded
+  prompt's line), seed (its first prompt, redacted), its card embedded
   like any other; `touched` edges session → file for each file it read,
   edited or wrote (an absolute path resolved to the crawled file), the
   call count as weight and the actions as evidence, so a file's
@@ -273,9 +294,11 @@ answers; `[sessions]` in the configuration):
   by sessions").
 - **Incremental**: a session's key is its transcript's path, size and
   last write and the reader's version; one unchanged since the last sync
-  isn't read again, its row, chunks and edges kept.
+  isn't read again, its row, chunks and edges kept (its `#pasted`
+  entity's too).
 
-**Measured** (2026-11-23, every session on this host, in a trial schema
+**Measured** (2026-11-23, with the reader of then, which dropped pasted
+blocks and lines naming a credential; every session on this host, in a trial schema
 with one project crawled; the full index's grouped latency waits for the
 evals reading it):
 
@@ -668,6 +691,22 @@ the one writer.
   Editors' swap and backup files are dropped. The crawl, too, now leaves
   out an untracked file under such a directory even when git doesn't
   ignore it (an old commit checked out, from before its `.gitignore`).
+- **The skip list**: the directory names no walk goes into, for the
+  crawl, the watcher and dreams alike, are a file a person may edit,
+  `~/.config/gomuxai/skip-dirs.txt` (`$XDG_CONFIG_HOME/gomuxai/` when
+  set, whatever `--config` names; one name per line, `#` comments; the
+  built-in defaults with no file). It is in no configuration fingerprint:
+  `agent index config` prints its source and its own hash, for an eval
+  run to record. `agent index skip list|add|remove`
+  prints and edits it. A dream may only propose a change to it, which a
+  person accepts or rejects (`agent dream proposals`).
+- **Reloading**: `agent index root add|remove` and `skip add|remove` tell
+  a running watcher on its socket (`{"reload": true}`): it reads the skip
+  list again, runs the tidy (which crawls every root, a new one too),
+  watches what the projects now hold, and drops the watches of what they
+  no longer hold or the list now skips; `status` counts `reloads`. Before
+  this a new root went unwatched and unembedded until the watcher was
+  restarted (friction #67).
 - **When it flushes**: once a project has been quiet for
   `[watch].settle_ms` (1 s), or `max_wait_ms` (10 s) after its first
   change, however busy it stays. It waits while git holds

@@ -531,8 +531,10 @@ impl Default for Corpus {
     }
 }
 
-/// The corpora a grouped search answers from, in the order shown.
-pub const CORPORA: &[&str] = &["code", "prose", "memory", "friction", "session"];
+/// The corpora a grouped search answers from, in the order shown. `pasted`
+/// is what people pasted into sessions, kept apart from the sessions' own
+/// text (`pg::sessions`), so a search can leave it out.
+pub const CORPORA: &[&str] = &["code", "prose", "memory", "friction", "session", "pasted"];
 
 /// What memory notes the sync reads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

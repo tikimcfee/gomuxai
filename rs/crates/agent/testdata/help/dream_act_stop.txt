@@ -1,0 +1,17 @@
+Stop ends open act run <id> as abandoned, with --note saying why, and cleans up its agent. Its worktree and branch stay, for a look.
+
+Usage:
+  agent dream act stop <id> [flags]
+
+Examples:
+  agent dream act stop 3 --note "not now"
+
+Flags:
+  -h, --help          help for stop
+      --note string   Why
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

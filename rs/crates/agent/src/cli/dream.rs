@@ -5,7 +5,7 @@
 //! on the caller's own open dream.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -125,6 +125,9 @@ pub fn def() -> Def {
             super::dream_steps::judge_def(),
             super::dream_steps::done_def(),
             roster_def(),
+            super::dream_act::act_def(),
+            super::dream_proposals::propose_def(),
+            super::dream_proposals::proposals_def(),
             super::dream_memory::def(),
             super::dream_schedule::def(),
         ],
@@ -140,6 +143,9 @@ struct HostSources<'a> {
     roots: RefCell<HashMap<String, Option<String>>>,
     /// Worktree path prefixes and the repo each belongs to.
     worktrees: std::collections::BTreeMap<String, String>,
+    /// The roots' projects by folder name, for a removed worktree named
+    /// `<name>-wt-<role>` (the worktrees helpers make here).
+    root_names: std::collections::BTreeMap<String, String>,
     commits: RefCell<HashMap<String, Vec<CommitIn>>>,
     /// Discovery's sessions, read once: picking a project gathers each.
     sessions: RefCell<Option<Vec<SessionIn>>>,
@@ -152,6 +158,15 @@ impl<'a> HostSources<'a> {
             repos: RefCell::default(),
             roots: RefCell::default(),
             worktrees: read_worktrees(ctx).unwrap_or_default(),
+            root_names: read_roots(ctx)
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|r| root_projects(r))
+                .filter_map(|d| {
+                    let name = Path::new(&d).file_name()?.to_string_lossy().into_owned();
+                    Some((name, d))
+                })
+                .collect(),
             commits: RefCell::default(),
             sessions: RefCell::default(),
         }
@@ -187,6 +202,24 @@ impl<'a> HostSources<'a> {
                 .iter()
                 .find(|(prefix, _)| cwd.starts_with(prefix.as_str()))
                 .map(|(_, dir)| dir.clone())
+        });
+        // Or, for a root's project, its name: a folder named <name>-wt or
+        // <name>-wt-<role> (the longest name that fits).
+        let root = root.or_else(|| {
+            if Path::new(cwd).is_dir() {
+                return None;
+            }
+            Path::new(cwd).components().find_map(|c| {
+                let c = c.as_os_str().to_string_lossy();
+                self.root_names
+                    .iter()
+                    .filter(|(name, _)| {
+                        c.strip_prefix(name.as_str())
+                            .is_some_and(|rest| rest == "-wt" || rest.starts_with("-wt-"))
+                    })
+                    .max_by_key(|(name, _)| name.len())
+                    .map(|(_, dir)| dir.clone())
+            })
         });
         self.roots.borrow_mut().insert(cwd.to_string(), root.clone());
         root
@@ -514,6 +547,79 @@ pub(crate) fn read_scope(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
     ctx.store()?.dream_scope()
 }
 
+/// The host state key holding the dream's roots: directories each of whose
+/// folders is a project in scope (agent dream scope add --root).
+pub const HOST_KEY_ROOTS: &str = "dream.roots";
+/// The host state key holding the directories added one by one; the scope
+/// (HOST_KEY_SCOPE) is these and the roots' folders. Before roots, the
+/// scope itself was this list.
+pub const HOST_KEY_ADDED: &str = "dream.scope.added";
+
+fn read_list(ctx: &Ctx, key: &str) -> anyhow::Result<Option<Vec<String>>> {
+    match ctx.store()?.get_host_state(key)? {
+        None => Ok(None),
+        Some(v) if v.is_empty() => Ok(Some(Vec::new())),
+        Some(v) => Ok(Some(
+            serde_json::from_str(&v).with_context(|| format!("reading host state {key}"))?,
+        )),
+    }
+}
+
+fn write_list(ctx: &Ctx, key: &str, list: &[String]) -> anyhow::Result<()> {
+    ctx.store()?.set_host_state(key, &serde_json::to_string(list)?)
+}
+
+pub(crate) fn read_roots(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
+    Ok(read_list(ctx, HOST_KEY_ROOTS)?.unwrap_or_default())
+}
+
+/// The directories added one by one (the scope as it was, before any root).
+fn read_added(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
+    match read_list(ctx, HOST_KEY_ADDED)? {
+        Some(l) => Ok(l),
+        None => read_scope(ctx),
+    }
+}
+
+/// The projects a root holds: each folder directly under it, but hidden
+/// ones, those the skip list names, and git worktrees (a `.git` file: a
+/// worktree is its main repo's).
+pub(crate) fn root_projects(root: &str) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = rd
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            !name.starts_with('.') && !agent_dream::skip::contains(&name) && !e.path().join(".git").is_file()
+        })
+        .map(|e| agent_base::gostd::filepath::clean(&e.path().to_string_lossy()))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Writes the scope from what was added and the roots' folders as they are
+/// now (a folder made under a root is in scope from the next dream on);
+/// returns it.
+pub(crate) fn refresh_scope(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
+    let roots = read_roots(ctx)?;
+    if roots.is_empty() && read_list(ctx, HOST_KEY_ADDED)?.is_none() {
+        return read_scope(ctx); // no root was ever added: the scope is as added
+    }
+    let mut scope: BTreeSet<String> = read_added(ctx)?.into_iter().collect();
+    for r in &roots {
+        scope.extend(root_projects(r));
+    }
+    let scope: Vec<String> = scope.into_iter().collect();
+    if scope != read_scope(ctx)? {
+        write_scope(ctx, &scope)?;
+    }
+    Ok(scope)
+}
+
 fn write_scope(ctx: &Ctx, scope: &[String]) -> anyhow::Result<()> {
     ctx.store()?
         .set_host_state(HOST_KEY_SCOPE, &serde_json::to_string(scope)?)
@@ -584,7 +690,7 @@ fn gather_for(ctx: &Ctx, src: &HostSources, target: &Target) -> anyhow::Result<(
 /// oldest.
 fn gather_host(ctx: &Ctx, want: Option<Target>) -> anyhow::Result<Plan> {
     let src = HostSources::new(ctx);
-    let scope = read_scope(ctx)?;
+    let scope = refresh_scope(ctx)?;
     if scope.is_empty() {
         let target = want.unwrap_or(Target::Global);
         let (_, g) = gather_for(ctx, &src, &target)?;
@@ -903,6 +1009,11 @@ pub struct ScopeAddArgs {
         help = "A path prefix the repo's worktrees are made under (e.g. /var/tmp/app-wt-)"
     )]
     pub worktrees: String,
+    #[arg(
+        long = "root",
+        help = "Add a tree: each folder directly under it is a project (but hidden ones, skipped names and worktrees)"
+    )]
+    pub root: bool,
     #[arg(hide = true)]
     pub args: Vec<String>,
 }
@@ -918,8 +1029,14 @@ too, with the repo's memory and commits, while the worktree exists.
 --worktrees names the path prefix the repo's worktrees are made under
 (say /var/tmp/app-wt-): a session whose directory starts with it belongs
 to the repo even after its worktree was removed, as helpers' worktrees
-usually are. Add again with another --worktrees to change it."#,
-    example: "  agent dream scope add ~/src/app\n  agent dream scope add ~/src/app --worktrees /var/tmp/app-wt-",
+usually are. Add again with another --worktrees to change it.
+
+--root adds a tree instead: each folder directly under it is a project
+in scope, as it is in the index (agent index root add), but hidden
+folders, the names on the skip list (agent index skip list) and git
+worktrees. A folder made under it later is in scope from the next dream
+on, and one removed drops out."#,
+    example: "  agent dream scope add ~/src/app\n  agent dream scope add ~/src/app --worktrees /var/tmp/app-wt-\n  agent dream scope add ~/dev --root",
     args: ArgRule::Exact(1),
     ..Doc::DEFAULT
 };
@@ -933,6 +1050,27 @@ pub fn run_scope_add(ctx: &Ctx, args: &ScopeAddArgs) -> anyhow::Result<()> {
     if !Path::new(&dir).is_dir() {
         anyhow::bail!("{dir} isn't a directory");
     }
+    if args.root {
+        if !args.worktrees.is_empty() {
+            anyhow::bail!("--worktrees is a repo's, and --root adds a tree of them: add the repo on its own for --worktrees");
+        }
+        // Keep what was added one by one, now that a root joins it.
+        let added = read_added(ctx)?;
+        write_list(ctx, HOST_KEY_ADDED, &added)?;
+        let mut roots = read_roots(ctx)?;
+        if roots.contains(&dir) {
+            refresh_scope(ctx)?;
+            return ctx.write_out(&format!("{dir} is already a dream root.\n"));
+        }
+        roots.push(dir.clone());
+        roots.sort();
+        write_list(ctx, HOST_KEY_ROOTS, &roots)?;
+        refresh_scope(ctx)?;
+        let n = root_projects(&dir).len();
+        return ctx.write_out(&format!(
+            "Added {dir} as a dream root: its {n} projects are in scope (agent dream scope list shows them).\n"
+        ));
+    }
     if !args.worktrees.is_empty() {
         let prefix = &args.worktrees;
         if !Path::new(prefix).is_absolute() || prefix.contains('*') {
@@ -945,8 +1083,8 @@ pub fn run_scope_add(ctx: &Ctx, args: &ScopeAddArgs) -> anyhow::Result<()> {
         wt.insert(prefix.clone(), dir.clone());
         write_worktrees(ctx, &wt)?;
     }
-    let mut scope = read_scope(ctx)?;
-    if scope.contains(&dir) {
+    let mut added = read_added(ctx)?;
+    if added.contains(&dir) {
         if !args.worktrees.is_empty() {
             return ctx.write_out(&format!(
                 "{dir} is in the dream scope; its worktrees are under {}.\n",
@@ -955,9 +1093,14 @@ pub fn run_scope_add(ctx: &Ctx, args: &ScopeAddArgs) -> anyhow::Result<()> {
         }
         return ctx.write_out(&format!("{dir} is already in the dream scope.\n"));
     }
-    scope.push(dir.clone());
-    scope.sort();
-    write_scope(ctx, &scope)?;
+    added.push(dir.clone());
+    added.sort();
+    if read_roots(ctx)?.is_empty() && read_list(ctx, HOST_KEY_ADDED)?.is_none() {
+        write_scope(ctx, &added)?;
+    } else {
+        write_list(ctx, HOST_KEY_ADDED, &added)?;
+        refresh_scope(ctx)?;
+    }
     ctx.write_out(&format!("Added {dir} to the dream scope.\n"))
 }
 
@@ -965,7 +1108,9 @@ pub const SCOPE_REMOVE: Doc = Doc {
     use_line: "remove <dir>",
     short: "Remove a directory from the dream scope",
     long: r#"Remove takes a directory out of the dream scope: later dreams leave its
-sessions out. What earlier dreams wrote stays."#,
+sessions out. What earlier dreams wrote stays. Given a root, it removes the
+root (its folders leave the scope, but those added on their own); given a
+folder a root holds, it says to add it to the skip list or remove the root."#,
     example: "  agent dream scope remove ~/src/app",
     args: ArgRule::Exact(1),
     ..Doc::DEFAULT
@@ -977,13 +1122,30 @@ pub fn scope_remove_def() -> Def {
 
 pub fn run_scope_remove(ctx: &Ctx, args: &ScopeDirArgs) -> anyhow::Result<()> {
     let dir = scope_dir(&args.args[0])?;
-    let mut scope = read_scope(ctx)?;
-    let before = scope.len();
-    scope.retain(|d| *d != dir);
-    if scope.len() == before {
+    let mut roots = read_roots(ctx)?;
+    if roots.contains(&dir) {
+        roots.retain(|r| *r != dir);
+        write_list(ctx, HOST_KEY_ROOTS, &roots)?;
+        refresh_scope(ctx)?;
+        return ctx.write_out(&format!("Removed the dream root {dir}.\n"));
+    }
+    let mut added = read_added(ctx)?;
+    let before = added.len();
+    added.retain(|d| *d != dir);
+    if added.len() == before {
+        if let Some(root) = roots.iter().find(|r| root_projects(r).contains(&dir)) {
+            anyhow::bail!(
+                "{dir} is in scope as a folder of the root {root}: add its name to the skip list (agent index skip add), or remove the root"
+            );
+        }
         anyhow::bail!("{dir} isn't in the dream scope (agent dream scope list shows it)");
     }
-    write_scope(ctx, &scope)?;
+    if read_roots(ctx)?.is_empty() && read_list(ctx, HOST_KEY_ADDED)?.is_none() {
+        write_scope(ctx, &added)?;
+    } else {
+        write_list(ctx, HOST_KEY_ADDED, &added)?;
+        refresh_scope(ctx)?;
+    }
     let mut wt = read_worktrees(ctx)?;
     let had = wt.len();
     wt.retain(|_, d| *d != dir);
@@ -1015,7 +1177,7 @@ pub fn scope_list_def() -> Def {
 }
 
 pub fn run_scope_list(ctx: &Ctx, args: &ScopeListArgs) -> anyhow::Result<()> {
-    let scope = read_scope(ctx)?;
+    let scope = refresh_scope(ctx)?;
     if args.json {
         return ctx.write_out(&format!("{}\n", gojson::marshal(&scope)?));
     }
@@ -1023,9 +1185,16 @@ pub fn run_scope_list(ctx: &Ctx, args: &ScopeListArgs) -> anyhow::Result<()> {
         return ctx.write_out(NO_SCOPE);
     }
     let wt = read_worktrees(ctx)?;
+    let roots = read_roots(ctx)?;
     let mut out = String::new();
+    for r in &roots {
+        out += &format!("{r}/*  (a root: each folder under it, but hidden and skipped ones)\n");
+    }
     for d in &scope {
         out += d;
+        if let Some(r) = roots.iter().find(|r| Path::new(d).parent() == Some(Path::new(r.as_str()))) {
+            out += &format!("  (under the root {r})");
+        }
         for (prefix, _) in wt.iter().filter(|(_, root)| *root == d) {
             out += &format!("  (worktrees under {prefix})");
         }

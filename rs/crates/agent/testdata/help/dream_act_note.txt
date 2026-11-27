@@ -1,0 +1,16 @@
+Note adds a line to the run's log: what you read, decided or found.
+
+Usage:
+  agent dream act note "..." [flags]
+
+Examples:
+  agent dream act note "the fix belongs in gather.rs, not the brief"
+
+Flags:
+  -h, --help   help for note
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

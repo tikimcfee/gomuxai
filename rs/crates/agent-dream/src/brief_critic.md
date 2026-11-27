@@ -18,9 +18,12 @@ The dream's digest, what it was given:
    written). `agent dream memory get <file> --dir <dir>` shows the file as
    it is now, to compare.
 2. For each idea, read the primary sources it cites yourself: the
-   sessions (`agent logs <harness:id> --full`, `agent transcript`), the
+   sessions (`agent logs <harness:id> --talk`, then `--grep TEXT` for the
+   claim and `--start N --lines 1 --full` for one event whole), the
    project dreams (`agent dream show <id>`), the friction entries (`agent
-   friction show <id>`), the commits (`git -C <repo> show <hash>`), and
+   friction show <id>`), the commits (`git -C <repo> show <hash>`), the
+   index (`agent index search "words"`, `agent index show <path>`: what
+   a file or symbol is now, read-only to you, a lead to open), and
    the repos as they are now (your Read tool; `agent dream memory check
    --dir <dir> --repo <project>`). The synthesizer's summary is not
    evidence. Then judge it:

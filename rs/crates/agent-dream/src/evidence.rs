@@ -175,10 +175,9 @@ pub fn normalize_error(error: &str) -> String {
         .or_else(|| line.strip_prefix("error:"))
         .unwrap_or(line)
         .trim();
-    if scrub::has_credential(line) {
-        return "(withheld: the line looks like it holds a credential)".into();
-    }
-    let s = DQUOTE_RE.replace_all(line, "\"…\"");
+    // Secrets redacted in place; the rest is the error's shape.
+    let line = scrub::redact(line);
+    let s = DQUOTE_RE.replace_all(&line, "\"…\"");
     let s = BQUOTE_RE.replace_all(&s, "`…`");
     let s = SQUOTE_RE.replace_all(&s, "$1'…'");
     let s = PATH_RE.replace_all(&s, "<path>");
@@ -693,7 +692,9 @@ pub fn corrections(prompts: &[Prompt]) -> Vec<Correction> {
             if !is_correction(&m) {
                 continue;
             }
-            let ex = scrub::excerpt(&m, CORRECTION_CHARS * 4);
+            // Kept whole but for its secrets, then cut to one line ("…"
+            // marks a cut; the session id says where to read it all).
+            let ex = scrub::for_reading(&m, CORRECTION_CHARS * 4);
             let ex = scrub::clip(
                 &ex.split_whitespace().collect::<Vec<_>>().join(" "),
                 CORRECTION_CHARS,

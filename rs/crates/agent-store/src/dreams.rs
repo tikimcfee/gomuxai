@@ -380,7 +380,8 @@ impl Store {
     }
 
     /// The names of every agent that has dreamt (every worker of every
-    /// dream), whatever became of its dream.
+    /// dream) or acted (every act run's agent), whatever became of it: their
+    /// sessions are the machine's own, no evidence for a dream.
     pub fn dream_agents(&self) -> Result<HashSet<String>> {
         let conn = self.conn();
         if !has_table(self, &conn, "dreams")? {
@@ -391,9 +392,15 @@ impl Store {
         } else {
             ""
         };
+        // An act run's agent too: a failing check mid-fix isn't a trip.
+        let actors = if has_table(self, &conn, "act_runs")? {
+            " UNION SELECT agent FROM act_runs WHERE agent != ''"
+        } else {
+            ""
+        };
         let names = query_all(
             &conn,
-            &format!("SELECT DISTINCT agent FROM dreams WHERE agent != ''{workers}"),
+            &format!("SELECT DISTINCT agent FROM dreams WHERE agent != ''{workers}{actors}"),
             [],
             |r| text(r, 0),
         )

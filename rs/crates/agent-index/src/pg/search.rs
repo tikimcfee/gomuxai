@@ -992,6 +992,12 @@ pub fn search_grouped(
         for (i, h) in hits.iter_mut().enumerate() {
             h.rank = i + 1;
         }
+        // What was pasted into sessions shows only when something matched
+        // (or the caller asked for it): every other search stays as it was,
+        // its groups' shares of the budget too.
+        if c == "pasted" && hits.is_empty() && o.corpora.is_empty() {
+            continue;
+        }
         let note = hits
             .is_empty()
             .then(|| format!("nothing good here: no {c} matched"));

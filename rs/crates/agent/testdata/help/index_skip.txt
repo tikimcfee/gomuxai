@@ -1,0 +1,39 @@
+Skip holds the skip list: directory names that no walk of a project goes
+into (build output, caches, VCS internals), for the index's crawl and
+watcher and for dreams alike. It is a file a person may edit too, one name
+per line, # for comments: ~/.config/gomuxai/skip-dirs.txt
+($XDG_CONFIG_HOME/gomuxai/ when set, whatever --config names). It is in
+no configuration fingerprint; agent index config prints its source and
+hash. With no file, the
+list is the defaults (list --defaults prints them); add and remove write
+the file, starting from the defaults.
+
+add and remove tell a running index watcher, which reads the list again,
+crawls, and stops watching what is now skipped. A dream never changes the
+list: it proposes a change, and a person accepts or rejects it (agent
+dream proposals).
+
+Usage:
+  agent index skip [flags]
+  agent index skip [command]
+
+Examples:
+  agent index skip list
+  agent index skip add .next
+  agent index skip remove build
+
+Available Commands:
+  list        Print the skip list in effect, and where it comes from
+  add         Add a directory name to the skip list
+  remove      Take a directory name off the skip list
+
+Flags:
+  -h, --help   help for skip
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent index skip [command] --help" for more information about a command.

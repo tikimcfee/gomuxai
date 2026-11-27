@@ -1,0 +1,16 @@
+Remove-worktree removes a linked worktree of a scoped repo whose branch is merged into the repo's default branch, with nothing uncommitted and no running agent in it (git worktree remove, never forced). The branch stays: delete-branch removes it.
+
+Usage:
+  agent dream act remove-worktree <path> [flags]
+
+Examples:
+  agent dream act remove-worktree /var/tmp/app-wt-done
+
+Flags:
+  -h, --help   help for remove-worktree
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

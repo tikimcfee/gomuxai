@@ -1,0 +1,16 @@
+Give-up ends the run as failed, saying why: what blocked it, what a person or the next run should know.
+
+Usage:
+  agent dream act give-up "why" [flags]
+
+Examples:
+  agent dream act give-up "the check fails on main too"
+
+Flags:
+  -h, --help   help for give-up
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

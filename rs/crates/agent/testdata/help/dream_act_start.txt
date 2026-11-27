@@ -1,0 +1,33 @@
+Start opens a run on <item>: a friction entry (its number, or
+friction:<uid>), open or accepted; or finding:<dream id>, a committed
+dream's finding, with --summary saying what it is. Its sources are the
+item itself and each --source. --scope is the ceiling (ask, fix, commit,
+branch). From fix up, --repo names the scoped repo it works in: a worktree
+is made for it under /var/tmp/gomuxai-act/<run>/ on a branch
+act/<run>-<slug> from the default branch, and --check is what `act check`
+runs there (make test, cargo test). The agent is Claude, --model and
+--effort as given (claude-opus-5-5 at high by default). An agent's run of
+it prompts its person.
+
+Usage:
+  agent dream act start <item> [flags]
+
+Examples:
+  agent dream act start 61 --scope fix --repo ~/dev/gomuxai --check "make lint test"
+  agent dream act start finding:14 --scope ask --summary "..." --source claude:3f3a9c
+
+Flags:
+      --check string         What act check runs in its worktree
+      --effort string        The agent's effort (default "high")
+  -h, --help                 help for start
+      --model string         The agent's model (default "claude-opus-5-5")
+      --repo string          The scoped repo it works in (fix and up)
+      --scope string         ask, fix, commit or branch
+      --source stringArray   A source it rests on; repeatable
+      --summary string       What the item is (a finding's)
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

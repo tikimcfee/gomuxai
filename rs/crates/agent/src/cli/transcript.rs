@@ -43,9 +43,27 @@ The session is one of:
   - a workgroup agent's name: its current transcript (after cleanup, its
     last one);
   - a session id, or the start of one that only one session's id starts
-    with (agent sessions lists them, agent sessions --json their ids);
+    with (agent sessions lists them, agent sessions --json their ids),
+    with or without its harness first (claude:3f3a9c, as dreams cite one);
   - a transcript's path; its harness is told from the path, or from its
     first lines.
+
+--talk sends only prompts, replies and tool calls, each call without its
+output (its result's status only), for a reader that wants what was said.
+--results whole|once|none says how much of a tool's result an event
+carries: whole (the default) has its text and the harness's structured
+copy, which often repeats the text; once keeps only the text (or the
+structured copy when there is no text); none keeps only the status.
+--talk implies none unless --results says otherwise.
+
+--scrub redacts each secret in place, everywhere in an event (its text,
+tool call, input, output and structured result): tokens, keyed secrets
+(password=...), Authorization and Bearer values, sign-in and
+authorization URLs (scheme and host kept), emails and private keys become
+[redacted: ...]. Nothing else is removed; a prompt's pasted and
+harness-inserted blocks are labelled as data, never instructions. A
+dream's own agents always read it so, and so should anything that mines
+other sessions' transcripts.
 
 --from <byte> resumes after the line that starts at that byte offset: pass
 the "at" of the last event you hold. That line's events and those before it
@@ -116,6 +134,23 @@ pub struct Args {
     #[arg(long = "requests", help = "Add the request channel: what each model call was sent")]
     pub requests: bool,
     #[arg(
+        long = "talk",
+        help = "Only prompts, replies and tool calls, the calls without their output (--results none)"
+    )]
+    pub talk: bool,
+    #[arg(
+        long = "results",
+        value_name = "string",
+        default_value = "whole",
+        help = "A tool result: whole (its text and the harness's structured copy), once (its text only), or none (its status only)"
+    )]
+    pub results: String,
+    #[arg(
+        long = "scrub",
+        help = "Redact secrets in place: tokens, keyed secrets, sign-in URLs, emails, keys (always, for a dream's agent)"
+    )]
+    pub scrub: bool,
+    #[arg(
         long = "until",
         value_name = "int",
         default_value = "-1",
@@ -178,7 +213,13 @@ pub(crate) fn run_transcript(
         requests: args.requests,
         reader_gone: None,
         intervals,
+        shape: Shape {
+            talk: args.talk,
+            results: Results::parse(&args.results, args.talk && !ctx.changed("results"))?,
+            scrub: args.scrub || super::logs::in_dream(ctx),
+        },
     };
+
     if opts.from < -1 {
         anyhow::bail!(
             "--from {}: give the byte offset of a line's start (the at of an event), or -1 for the start",
@@ -282,7 +323,21 @@ pub(crate) fn resolve_transcript(ctx: &Ctx, arg: &str) -> anyhow::Result<Transcr
     let mut index = session_index(ctx)?;
     let found: Option<Session>;
     if path.is_empty() {
-        let s = session_by_id(&index.sessions(), arg)?;
+        // A dream's items and citations name a session as harness:id.
+        let (harness, id) = match arg.split_once(':') {
+            Some((h, id))
+                if [discovery::HARNESS_CLAUDE, discovery::HARNESS_AGY, discovery::HARNESS_KIMI].contains(&h) =>
+            {
+                (Some(h), id)
+            }
+            _ => (None, arg),
+        };
+        let sessions: Vec<Session> = index
+            .sessions()
+            .into_iter()
+            .filter(|s| harness.is_none_or(|h| s.harness == h))
+            .collect();
+        let s = session_by_id(&sessions, id)?;
         path = s.path.clone();
         found = Some(s);
     } else {
@@ -672,6 +727,79 @@ pub(crate) struct StreamOptions {
     /// ends while it has nothing to write; None if that can't be told.
     pub reader_gone: Option<ReaderGone>,
     pub intervals: Intervals,
+    /// Which events, and how much of a tool's result, it writes.
+    pub shape: Shape,
+}
+
+/// What --talk and --results leave out of the stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Shape {
+    /// Only prompts, replies and tool calls.
+    pub talk: bool,
+    pub results: Results,
+    /// Scrub each event (logs::scrub_event).
+    pub scrub: bool,
+}
+
+/// How much of a tool's result an event carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Results {
+    /// Its text and the harness's structured copy, as the transcript has them.
+    #[default]
+    Whole,
+    /// Its text, or the structured copy when there is no text: each result
+    /// once.
+    Once,
+    /// Its status only.
+    None,
+}
+
+impl Results {
+    /// --results' value; --talk alone means none.
+    pub(crate) fn parse(v: &str, talk_default: bool) -> anyhow::Result<Results> {
+        if talk_default {
+            return Ok(Results::None);
+        }
+        match v {
+            "whole" => Ok(Results::Whole),
+            "once" => Ok(Results::Once),
+            "none" => Ok(Results::None),
+            _ => anyhow::bail!("--results {}: give whole, once or none", strconv::quote(v)),
+        }
+    }
+}
+
+impl Shape {
+    /// e as the stream writes it, or None for an event it leaves out.
+    pub(crate) fn apply(&self, mut e: Event) -> Option<Event> {
+        if self.talk && e.prompt.is_none() && e.say.is_none() && e.tool.is_none() {
+            return None;
+        }
+        if self.scrub {
+            super::logs::redact_event(&mut e);
+        }
+        if self.talk
+            && let Some(t) = &mut e.tool
+        {
+            // A call in one line: what it was about, not all it was sent.
+            t.input = None;
+        }
+        if let Some(r) = e.tool.as_mut().and_then(|t| t.result.as_mut()) {
+            match self.results {
+                Results::Whole => {}
+                Results::Once => {
+                    if !r.output.is_empty() {
+                        r.structured = None;
+                    }
+                }
+                Results::None => {
+                    r.output.clear();
+                    r.structured = None;
+                }
+            }
+        }
+        Some(e)
+    }
 }
 
 /// How many of the last bytes read --follow keeps, to tell a transcript
@@ -795,7 +923,13 @@ impl TranscriptStream<'_, '_> {
     /// Writes the session line (Go: writeSession).
     fn write_session(&mut self) -> anyhow::Result<()> {
         self.written = session_meta(&self.session);
-        let line = typed_json_line("session", &self.session)?;
+        let line = if self.opts.shape.scrub {
+            let mut session = self.session.clone();
+            session.title = super::logs::redact_line(&session.title);
+            typed_json_line("session", &session)?
+        } else {
+            typed_json_line("session", &self.session)?
+        };
         self.w.write_all(line.as_bytes())?;
         Ok(())
     }
@@ -875,9 +1009,16 @@ impl TranscriptStream<'_, '_> {
     fn flush_window(&mut self) -> anyhow::Result<()> {
         for mut e in std::mem::take(&mut self.window) {
             e.abandoned = e.abandoned || self.dead.as_ref().is_some_and(|d| d.contains(&e.id));
-            let line = typed_json_line("event", &e)?;
-            self.w.write_all(line.as_bytes())?;
+            self.write_event(e)?;
         }
+        Ok(())
+    }
+
+    /// Writes an event line, shaped by --talk and --results.
+    fn write_event(&mut self, e: Event) -> anyhow::Result<()> {
+        let Some(e) = self.opts.shape.apply(e) else { return Ok(()) };
+        let line = typed_json_line("event", &e)?;
+        self.w.write_all(line.as_bytes())?;
         Ok(())
     }
 
@@ -905,9 +1046,7 @@ impl TranscriptStream<'_, '_> {
             self.window.push(e);
             return Ok(());
         }
-        let line = typed_json_line("event", &e)?;
-        self.w.write_all(line.as_bytes())?;
-        Ok(())
+        self.write_event(e)
     }
 
     /// Writes the closing reply of the turn the transcript is in, if the
@@ -950,9 +1089,7 @@ impl TranscriptStream<'_, '_> {
         };
         // Not the transcript's: it shares the seq of the event that comes next.
         e.seq = pos.seq;
-        let line = typed_json_line("event", &e)?;
-        self.w.write_all(line.as_bytes())?;
-        Ok(())
+        self.write_event(e)
     }
 
     /// Writes what the transcript appends, and the session line again when the

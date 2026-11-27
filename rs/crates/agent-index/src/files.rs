@@ -19,23 +19,29 @@ pub fn is_secret(name: &str) -> bool {
             .any(|e| n.ends_with(e))
 }
 
-/// Directories never walked outside git: VCS internals and build output.
-pub const SKIP_DIRS: &[&str] = &[
-    ".git",
-    "target",
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".pixi",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".tox",
-    "dist",
-    "build",
-    ".gomuxai",
-    ".cache",
-];
+/// Directories never walked outside git, with no skip-list file: VCS
+/// internals and build output. The list in effect is
+/// [`agent_dream::skip::dirs`], which a person may change.
+pub const SKIP_DIRS: &[&str] = agent_dream::skip::DEFAULT_DIRS;
+
+/// Reads the skip list again (the watcher, told it changed); the list now
+/// in effect.
+pub fn reload_skip() -> Vec<String> {
+    if cfg!(test) {
+        return SKIP_DIRS.iter().map(|s| s.to_string()).collect();
+    }
+    agent_dream::skip::reload()
+}
+
+/// Whether a walk skips a directory of this name: the skip list in effect
+/// (agent_dream::skip), or the defaults in this crate's own tests, so they
+/// never read a developer's list.
+pub fn skipped(name: &str) -> bool {
+    if cfg!(test) {
+        return SKIP_DIRS.contains(&name);
+    }
+    agent_dream::skip::contains(name)
+}
 
 /// Whether bytes look binary: a NUL in the first 8 KB.
 pub fn is_binary(head: &[u8]) -> bool {

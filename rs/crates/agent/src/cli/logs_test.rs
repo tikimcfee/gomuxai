@@ -599,3 +599,214 @@ fn test_typed_json_line() {
         "{\"type\":\"event\",\"id\":\"a\",\"op\":\"add\",\"seq\":0,\"at\":0,\"line\":0,\"kind\":\"say\",\"say\":{\"text\":\"a && <b>\\u2028\"}}\n"
     );
 }
+
+/// A transcript with a secret in a prompt, a second tool call, and a reply:
+/// what reading in parts and scrubbing are tested on.
+const PARTS_TRANSCRIPT: &str = r#"{"type":"user","sessionId":"sess-p","cwd":"/home/user/proj","timestamp":"2026-08-01T12:00:00Z","message":{"role":"user","content":"deploy it\nmy api_key is abc123\nthen report"}}
+{"type":"assistant","timestamp":"2026-08-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan the deploy","signature":"s"}]}}
+{"type":"assistant","timestamp":"2026-08-01T12:00:02Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]}}
+{"type":"user","timestamp":"2026-08-01T12:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"test a ... ok\nAuthorization: Bearer zzzz9999yyyy\ntest b ... ok"}]}}
+{"type":"assistant","timestamp":"2026-08-01T12:00:04Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"make deploy"}}]}}
+{"type":"user","timestamp":"2026-08-01T12:00:05Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"deployed"}]}}
+{"type":"assistant","timestamp":"2026-08-01T12:00:06Z","message":{"role":"assistant","content":[{"type":"text","text":"Deployed; tests pass."}]}}
+"#;
+
+/// agent logs reads any session by its transcript's path or id, an agent's
+/// or not, and in parts: --talk, --grep and --start, numbered, with a hint
+/// that says how to read on.
+#[test]
+fn test_logs_session_in_parts() {
+    let mut env = setup_logs();
+    let dir = temp_dir("agent-logs-");
+    let path = temp_path(&dir, "sess-p.jsonl");
+    write_test_file(&path, PARTS_TRANSCRIPT);
+
+    let (res, out, _) = run_words(&mut env, &["logs", &path, "--lines", "1"]);
+    res.unwrap();
+    assert_eq!(out, "12:00:06 say    Deployed; tests pass.\n", "by path");
+
+    // --talk: no thinking, calls in one line.
+    let (res, out, hint) = run_words(&mut env, &["logs", &path, "--talk"]);
+    res.unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 4, "--talk:\n{out}");
+    assert!(lines[0].starts_with("#1 12:00:00 prompt deploy it"), "{out}");
+    assert!(lines[1].starts_with("#2 12:00:02 tool   Bash: cargo test → ok (3 lines)"), "{out}");
+    assert!(!out.contains("plan the deploy"), "--talk leaves thinking out:\n{out}");
+    assert!(hint.contains("talk events 1-4 of 4"), "hint: {hint}");
+
+    // --full with --talk prints prompts whole, never tool output.
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--talk", "--full"]);
+    assert!(out.contains("then report"), "--talk --full prompt whole:\n{out}");
+    assert!(!out.contains("test a ... ok"), "--talk --full prints no tool output:\n{out}");
+
+    // Paging.
+    let (_, out, hint) = run_words(&mut env, &["logs", &path, "--talk", "--start", "2", "--lines", "2"]);
+    assert_eq!(out.lines().count(), 2, "{out}");
+    assert!(out.starts_with("#2 "), "{out}");
+    assert!(hint.contains("2-3 of 4; --start 4 reads on"), "hint: {hint}");
+    let (_, out, hint) = run_words(&mut env, &["logs", &path, "--start", "9"]);
+    assert!(out.is_empty(), "{out}");
+    assert!(hint.contains("past the last"), "hint: {hint}");
+
+    // --grep looks in tool output too.
+    let (_, out, hint) = run_words(&mut env, &["logs", &path, "--grep", "DEPLOYED"]);
+    assert_eq!(out.lines().count(), 2, "--grep:\n{out}");
+    assert!(hint.contains("matching \"DEPLOYED\" 1-2 of 2"), "hint: {hint}");
+
+    // --scrub redacts the secrets in place, in the prompt and the output,
+    // and keeps every line.
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--full", "--scrub"]);
+    assert!(!out.contains("abc123") && !out.contains("zzzz9999yyyy"), "--scrub:\n{out}");
+    assert!(out.contains("my api_key is [redacted: secret]"), "{out}");
+    assert!(out.contains("Authorization: Bearer [redacted: token]"), "{out}");
+    assert!(out.contains("then report") && out.contains("test b ... ok"), "--scrub keeps the rest:\n{out}");
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--json", "--scrub"]);
+    assert!(!out.contains("abc123") && !out.contains("zzzz9999yyyy"), "--json --scrub:\n{out}");
+    assert!(out.contains(r#""input""#) && out.contains("make deploy"), "--json --scrub keeps tool input:\n{out}");
+
+    // What doesn't go together.
+    let (res, _, _) = run_words(&mut env, &["logs", &path, "--talk", "--json"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("don't go with --json"));
+    let (res, _, _) = run_words(&mut env, &["logs", &path, "--terminal"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("isn't an agent here"));
+    let (res, _, _) = run_words(&mut env, &["logs", "no/such/sess.jsonl"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("no transcript at"));
+}
+
+/// A peer reads only agents' logs through the bus's op: never a session or
+/// a path, and never in parts.
+#[test]
+fn test_logs_parts_and_scrub_stay_local() {
+    let mut env = setup_logs();
+    let (res, _, _) = run_words(&mut env, &["logs", "worker@elsewhere", "--talk"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("not over the bus"));
+    let (res, _, _) = run_words(&mut env, &["logs", "worker@elsewhere", "--scrub"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("reads this host's only"));
+    // What a peer's request gets: a path or a session id names no agent.
+    let dir = temp_dir("agent-logs-");
+    let path = temp_path(&dir, "sess-p.jsonl");
+    write_test_file(&path, PARTS_TRANSCRIPT);
+    for agent in [path.as_str(), "sess-p", "claude:sess-p"] {
+        let req = agent_bus::LogsRequest {
+            agent: agent.to_string(),
+            lines: 5,
+            ..Default::default()
+        };
+        let res = serve_logs(&env.ctx, &agent_bus::Context::background(), req);
+        assert!(res.is_err(), "a peer read {agent}: {:?}", res.map(|r| r.output));
+    }
+}
+
+/// What review found: a path with '@' is a path; a short name says no agent
+/// has it either; a window starting in a later session names it; a tool's
+/// command and a session's title are scrubbed to one bounded line.
+#[test]
+fn test_logs_paths_names_windows_and_scrubbed_lines() {
+    crate::require_termd!();
+    let mut env = setup_logs();
+    let dir = temp_dir("agent-logs-");
+    let sub = dir.path().join("a@b");
+    std::fs::create_dir_all(&sub).unwrap();
+    let path = sub.join("sess-p.jsonl").to_string_lossy().into_owned();
+    write_test_file(&path, PARTS_TRANSCRIPT);
+    let (res, out, _) = run_words(&mut env, &["logs", &path, "--lines", "1"]);
+    res.unwrap();
+    assert!(out.contains("Deployed"), "a path with @:\n{out}");
+
+    let other = temp_path(&dir, "sess-q.jsonl");
+    write_test_file(&other, &PARTS_TRANSCRIPT.replace("sess-p", "sess-q"));
+
+    // Two sessions of one agent; a page that starts in the second names it.
+    hook_transcript(&env, &path);
+    hook_transcript(&env, &other);
+    let (_, out, _) = run_words(&mut env, &["logs", "worker", "--talk", "--start", "6", "--lines", "1"]);
+    assert!(out.starts_with("--- session sess-q (claude)\n#6 "), "{out}");
+
+    let mut e = Event {
+        kind: KIND_TOOL.into(),
+        tool: Some(agent_transcript::ToolEvent {
+            name: "Bash".into(),
+            tool_summary: ToolSummary {
+                detail: "agent send helper \"line one\nline two with more\"".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    redact_event(&mut e);
+    assert_eq!(
+        e.tool.unwrap().tool_summary.detail,
+        "agent send helper \"line one\nline two with more\"",
+        "a command is kept whole"
+    );
+    assert_eq!(
+        redact_line("curl -H 'Authorization: Bearer abcdef123456'"),
+        "curl -H 'Authorization: Bearer [redacted: token]'"
+    );
+    assert_eq!(redact_line(&"x".repeat(500)).chars().count(), 500, "nothing cut");
+}
+
+/// A short name that no agent has, and that starts several sessions' ids,
+/// says both.
+#[test]
+fn test_logs_short_name_says_no_agent_and_which_sessions() {
+    let (mut env, home) = crate::cli::sessions::sessions_test::setup_sessions();
+    let day = std::time::Duration::from_secs(3600);
+    crate::cli::sessions::sessions_test::claude_transcript(&home, "abc-1", "/home/user/shop", "", day);
+    crate::cli::sessions::sessions_test::claude_transcript(&home, "abc-2", "/home/user/shop", "", day);
+    let (res, _, _) = run_words(&mut env, &["logs", "abc"]);
+    let err = format!("{:#}", res.unwrap_err());
+    assert!(err.starts_with("no agent named \"abc\" here"), "{err}");
+    assert!(err.contains("starts the ids of 2 sessions"), "{err}");
+    let (res, out, _) = run_words(&mut env, &["logs", "claude:abc-2", "--lines", "1"]);
+    res.unwrap();
+    assert!(out.contains("prompt hi"), "harness:id:\n{out}");
+}
+
+/// A capped read (--scrub --full, more than one event) cuts a long piece
+/// and names the command that reads its event whole; that command cuts
+/// nothing.
+#[test]
+fn test_logs_caps_long_pieces_with_a_pointer() {
+    let mut env = setup_logs();
+    let dir = temp_dir("agent-logs-");
+    let path = temp_path(&dir, "sess-c.jsonl");
+    let long = "y".repeat(5000);
+    let user = r#"{"type":"user","sessionId":"sess-c","cwd":"/home/user/proj","timestamp":"2026-08-01T12:00:00Z","message":{"role":"user","content":"go"}}"#;
+    let reply = format!(
+        r#"{{"type":"assistant","timestamp":"2026-08-01T12:00:01Z","message":{{"role":"assistant","content":[{{"type":"text","text":"{long}"}}]}}}}"#
+    );
+    write_test_file(&path, &format!("{user}\n{reply}\n"));
+    let (res, out, _) = run_words(&mut env, &["logs", &path, "--full", "--scrub"]);
+    res.unwrap();
+    let marker = format!("[… 1000 more characters cut; the whole event: agent logs {path} --start 2 --lines 1 --full]");
+    assert!(out.contains(&marker), "{out}");
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--start", "2", "--lines", "1", "--full", "--scrub"]);
+    assert!(out.contains(&long) && !out.contains("more characters cut"), "one event whole:\n{}", &out[..200.min(out.len())]);
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--full"]);
+    assert!(out.contains(&long), "a person's --full isn't capped");
+}
+
+/// A picture can't be redacted: a reader for mining gets what it was, not
+/// its data; the prompt's text is kept.
+#[test]
+fn test_redact_event_marks_images() {
+    let mut e = Event {
+        kind: KIND_PROMPT.into(),
+        prompt: Some(PromptEvent {
+            text: "see this".into(),
+            images: vec![Image {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo".into(),
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    redact_event(&mut e);
+    let p = e.prompt.unwrap();
+    assert_eq!(p.text, "see this");
+    assert_eq!(p.images[0].data, "[redacted: image, image/png, 11 bytes of base64]");
+}

@@ -39,7 +39,7 @@ pub use friction::*;
 pub use handover::*;
 pub use held::*;
 pub use hook::*;
-pub use instructions::{DREAM_READ_COMMANDS, skill_text};
+pub use instructions::{ACT_AGENT_COMMANDS, DREAM_READ_COMMANDS, skill_text};
 pub use model::{validate_effort, validate_model};
 pub use resume::*;
 pub use rpc::*;

@@ -72,6 +72,9 @@ Available Commands:
   judge       Approve or reject one of your dream's ideas
   done        Finish your part of the dream: the next step starts
   roster      Note how a harness and model did, from a session your dream reviewed
+  act         Run one agent on one cited item, within a scope (a person starts it)
+  propose     Propose a change only a person may make (a dream's agent)
+  proposals   List, accept and reject what dreams proposed (a person)
   memory      Read, write and check a memory directory, under a dream's guard
   schedule    Run dreams on a timer (a systemd user timer)
 

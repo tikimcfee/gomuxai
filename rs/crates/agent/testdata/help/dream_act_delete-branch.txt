@@ -1,0 +1,16 @@
+Delete-branch deletes a local branch of a scoped repo that is merged into its default branch and checked out nowhere (git branch -d, never -D). The default branch, act/landed and open runs' branches are refused, and nothing is pushed or deleted remotely.
+
+Usage:
+  agent dream act delete-branch <repo> <branch> [flags]
+
+Examples:
+  agent dream act delete-branch ~/dev/app old-fix
+
+Flags:
+  -h, --help   help for delete-branch
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
