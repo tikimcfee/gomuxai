@@ -51,7 +51,10 @@ fn file_of(h: &Hit) -> Option<&str> {
     if !matches!(h.kind.as_str(), "file" | "symbol" | "section") {
         return None;
     }
-    if matches!(h.corpus.as_str(), "memory" | "friction" | "session") {
+    if matches!(
+        h.corpus.as_str(),
+        "memory" | "friction" | "session" | "pasted"
+    ) {
         return None;
     }
     Some(h.id.split('#').next().unwrap_or(&h.id))

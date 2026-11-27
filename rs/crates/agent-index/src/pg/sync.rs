@@ -684,8 +684,9 @@ fn read_ledger(
 
 /// The corpora that come from outside the crawl: their entities are written
 /// by the sync from what the caller read (memory notes from their
-/// directories, friction entries from the agent store).
-pub const SIDE_CORPORA: &[&str] = &["memory", "friction", "session"];
+/// directories, friction entries from the agent store, sessions and what was
+/// pasted into them from their transcripts).
+pub const SIDE_CORPORA: &[&str] = &["memory", "friction", "session", "pasted"];
 
 /// A chunk a side note brings cut already (a session's turns), with its meta
 /// (the corpus is added).

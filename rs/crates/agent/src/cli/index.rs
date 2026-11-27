@@ -740,7 +740,7 @@ fn sync_pg(
     ));
     if let Some(s) = &sessions {
         ctx.notice(format!(
-            "Sessions: {} listed, {} read, {} unchanged, {} left out (scripted {}, subagents {}, too large {}), {} unreadable; {} turns in {} chunks; scrubbed {} pasted and {} inserted blocks and {} credential lines ({} of {} prose lines kept).",
+            "Sessions: {} listed, {} read, {} unchanged, {} left out (scripted {}, subagents {}, too large {}), {} unreadable; {} turns in {} chunks; {} secrets redacted, {} pasted blocks kept apart (in {} #pasted entities), {} inserted blocks labelled.",
             s.listed,
             s.read,
             s.kept,
@@ -751,11 +751,10 @@ fn sync_pg(
             s.failed,
             s.turns,
             s.chunks,
+            s.redacted,
             s.pasted_blocks,
-            s.inserted_blocks,
-            s.credential_lines,
-            s.lines_kept,
-            s.lines_in
+            s.pasted_notes,
+            s.inserted_blocks
         ));
     }
     r.sessions = sessions;
@@ -2672,7 +2671,7 @@ pub struct SearchArgs {
         long = "corpus",
         value_name = "string",
         default_value = "",
-        help = "pg store: only these corpora, comma-separated: code, prose, memory, friction (default: all of them, grouped; code and prose for a --kind)"
+        help = "pg store: only these corpora, comma-separated: code, prose, memory, friction, session, pasted (default: all of them, grouped, pasted shown only when it matched; code and prose for a --kind)"
     )]
     pub corpus: String,
     #[arg(

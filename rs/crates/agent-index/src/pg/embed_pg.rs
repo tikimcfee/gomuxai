@@ -539,7 +539,7 @@ pub fn drain_model<E: Encode + ?Sized>(
                 if headings.is_empty() && !heading.is_empty() {
                     headings.push(heading.clone());
                 }
-                if e.5 == "session" && !e.7.is_empty() {
+                if (e.5 == "session" || e.5 == "pasted") && !e.7.is_empty() {
                     headings.insert(0, e.7.clone());
                 }
                 let parts = vecs::HeaderParts {

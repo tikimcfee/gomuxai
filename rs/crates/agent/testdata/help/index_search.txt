@@ -41,7 +41,7 @@ Flags:
       --budget int       Fit the text to this many tokens (0: no limit) (default 1500)
       --cold             pg store: search in this process even when agent index serve is up
       --config string    The index configuration (TOML; default: AGENT_INDEX_CONFIG, else ~/.config/gomuxai/index.toml, else built-in defaults)
-      --corpus string    pg store: only these corpora, comma-separated: code, prose, memory, friction (default: all of them, grouped; code and prose for a --kind)
+      --corpus string    pg store: only these corpora, comma-separated: code, prose, memory, friction, session, pasted (default: all of them, grouped, pasted shown only when it matched; code and prose for a --kind)
       --explain          Say which list found each result, and the priors applied
   -h, --help             help for search
       --json             Print the results as JSON
