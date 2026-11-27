@@ -224,9 +224,29 @@ whatever its launch rules and the PreToolUse hook don't allow is refused,
 never left to a person's own permission mode. Of the general agent
 commands it gets only the reading ones (`DREAM_READ_COMMANDS`: list,
 status, logs, sessions, transcript, history, friction list and show,
-roster list and show), in place of what other agents are pre-allowed: it
+roster list and show, and the index's search, show, tree, related and
+stale), in place of what other agents are pre-allowed: it
 sends no messages and files no friction or roster notes but through its
-verbs. It reads files through its Read tool, which its launch rules allow
+verbs. The index is read-only to it (no crawl, root, alias, embed or
+summarize); its brief tells it to check a claim about the code against
+the index before trusting a transcript's tail, and to open the file a
+summary points at before citing it.
+
+What it reads of transcripts is scrubbed whatever it asks (Ivan's rule:
+anything that mines other sessions' transcripts scrubs them first):
+`agent logs` and `agent transcript` drop pasted and tagged blocks, code,
+keys and lines with a credential, an email or a sign-in URL, and tool
+inputs, cut a tool call's command and a session's title to one bounded
+line, and do the same to `agent history`'s recorded commands, for a
+caller that is a dream's worker, and refuse it another host's logs. The
+check fails closed: only a caller the store clearly says is no dream's
+worker reads unscrubbed, so a busy store or a dream that just closed
+scrubs. Messages that hooks delivered from other agents are kept, with
+the same lines dropped: they are the session's own dialog, and often the
+evidence a dream needs (the task, the answer). A long session is read in parts: `agent logs
+<session> --talk` (prompts, replies and one-line tool calls), `--grep
+TEXT`, and `--start N` to page; `<session>` may be an id, `harness:id`
+or a transcript's path, so a session no agent owns is read the same way. It reads files through its Read tool, which its launch rules allow
 for Claude Code's projects directories, the scoped projects, the machine
 memory, the repos its commits are in, and its handoff docs. It may edit
 files only in its own dream directory (drafts for `memory put --from`);

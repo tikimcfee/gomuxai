@@ -109,6 +109,12 @@ fn test_a_dreams_agy_agent_is_confined() {
             "allow",
         ),
         ("run_command", run(&format!("{bin} logs helper")), "allow"),
+        (
+            "run_command",
+            run(&format!("{bin} index search \"dream memory\"")),
+            "allow",
+        ),
+        ("run_command", run(&format!("{bin} index crawl")), "deny"),
         ("run_command", run(&format!("{bin} send helper hi")), "deny"),
         ("run_command", run("rm -rf /srv/app"), "deny"),
         (

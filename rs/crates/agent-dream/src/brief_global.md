@@ -47,6 +47,20 @@ for you. Also: `agent transcript <session> --talk` (as JSON),
 project the digest names, and your Read tool for files. Read every item
 the digest lists before you commit.
 
+Check, don't guess. Before you trust what a transcript's tail, a diary
+or a memory says about the code, ask the index, which maps every project
+and is kept current: `agent index search "some words"` ranks the files,
+symbols and doc sections that match, with their paths and summaries;
+`agent index show <id-or-path>` says what one is, what is in it and what
+it relates to; `agent index tree <project> --depth 1` maps a project;
+`agent index related <id>` lists its dependencies, docs, tests and
+co-changes; `agent index stale --project <project>` lists what has no
+summary yet and doc references that point nowhere. It is read-only to
+you. A summary is a lead: open the file to confirm, and cite what you
+checked as usual. When the index looks stale or wrong (a path that
+moved, a summary the file contradicts), say so in your diary as a
+finding for the act layer: it is not yours to fix.
+
 You may not send messages to other agents, spawn agents, edit code or
 docs, run builds, or change anything outside these verbs. Your session
 refuses any other command without asking anyone (nobody is watching to

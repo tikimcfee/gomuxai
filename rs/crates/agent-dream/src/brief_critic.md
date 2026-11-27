@@ -21,7 +21,9 @@ The dream's digest, what it was given:
    sessions (`agent logs <harness:id> --talk`, then `--grep TEXT` for the
    claim and `--start N --lines 1 --full` for one event whole), the
    project dreams (`agent dream show <id>`), the friction entries (`agent
-   friction show <id>`), the commits (`git -C <repo> show <hash>`), and
+   friction show <id>`), the commits (`git -C <repo> show <hash>`), the
+   index (`agent index search "words"`, `agent index show <path>`: what
+   a file or symbol is now, read-only to you, a lead to open), and
    the repos as they are now (your Read tool; `agent dream memory check
    --dir <dir> --repo <project>`). The synthesizer's summary is not
    evidence. Then judge it:

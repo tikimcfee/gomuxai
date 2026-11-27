@@ -115,9 +115,28 @@ fn test_pre_tool_use_allows_dream_verbs_for_the_open_dream_only() {
         format!("{bin} dream friction accept 3 --note x"),
         format!("{bin} dream commit"),
         format!("{bin} logs worker"),
+        format!("{bin} logs claude:3f3a9c --talk --grep \"cargo test\""),
+        format!("{bin} index search \"held message delivery\" --budget 800"),
+        format!("{bin} index show gomuxai:rs/crates/agent-dream"),
+        format!("{bin} index tree gomuxai --depth 1"),
+        format!("{bin} index related gomuxai:rs/crates/agent-dream/src/memory.rs"),
+        format!("{bin} index stale --project gomuxai"),
         "git -C /srv/app show abcdef1 --stat".to_string(),
     ] {
         assert!(allowed("dream-1", &dreamer, &cmd), "{cmd}: want allowed");
+    }
+    // The index is read only to a dream: what writes it stays a person's.
+    for cmd in [
+        format!("{bin} index crawl"),
+        format!("{bin} index root add /srv"),
+        format!("{bin} index alias gomuxai:x y"),
+        format!("{bin} index summarize --project gomuxai"),
+        format!("{bin} index embed"),
+    ] {
+        assert!(
+            !allowed("dream-1", &dreamer, &cmd),
+            "{cmd}: want refused for a dream"
+        );
     }
     assert!(
         !allowed("worker", &other, &note),

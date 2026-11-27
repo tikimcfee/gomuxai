@@ -181,6 +181,13 @@ pub const DREAM_READ_COMMANDS: &[&str] = &[
     "friction show",
     "roster list",
     "roster show",
+    // The index, read only: what a dream checks a claim against (no crawl,
+    // root, project, embed, alias or summarize).
+    "index search",
+    "index show",
+    "index tree",
+    "index related",
+    "index stale",
 ];
 
 /// DREAM_AGENT_COMMANDS are the `agent dream` verbs a dream's own agent may
