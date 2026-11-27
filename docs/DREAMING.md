@@ -256,21 +256,31 @@ summarize); its brief tells it to check a claim about the code against
 the index before trusting a transcript's tail, and to open the file a
 summary points at before citing it.
 
-What it reads of transcripts is scrubbed whatever it asks (Ivan's rule:
-anything that mines other sessions' transcripts scrubs them first):
-`agent logs` and `agent transcript` drop pasted and tagged blocks, code,
-keys and lines with a credential, an email or a sign-in URL, and tool
-inputs, cut a tool call's command and a session's title to one bounded
-line, and do the same to `agent history`'s recorded commands, for a
-caller that is a dream's worker, and refuse it another host's logs. The
-check fails closed: only a caller the store clearly says is no dream's
-worker reads unscrubbed, so a busy store or a dream that just closed
-scrubs. Messages that hooks delivered from other agents are kept, with
-the same lines dropped: they are the session's own dialog, and often the
-evidence a dream needs (the task, the answer). A long session is read in parts: `agent logs
-<session> --talk` (prompts, replies and one-line tool calls), `--grep
-TEXT`, and `--start N` to page; `<session>` may be an id, `harness:id`
-or a transcript's path, so a session no agent owns is read the same way. It reads files through its Read tool, which its launch rules allow
+What it reads of transcripts has its secrets redacted, whatever it asks.
+Ivan set the rule on 2026-11-22, after an agy helper mining transcripts
+for a speech corpus pulled another session's sign-in URL into its
+context, and sharpened it on 2026-11-27: don't delete text a dreamer
+reads. A dreamer that sees a chunk with its context cut out assumes, and
+writes down something not quite accurate, or undoes something right; the
+real risk is a secret. So `agent logs` and `agent transcript` (and `agent
+history`'s recorded commands) replace each secret in place with a marker
+(`[redacted: token]`, `[redacted: secret]`, `[redacted: sign-in URL]`
+with its scheme and host kept, `[redacted: email]`, `[redacted: private
+key]`; `agent_dream::scrub::redact`), in text, code, tool inputs, outputs
+and structured results alike, and keep everything else. A prompt's
+pasted and harness-inserted blocks are kept, labelled as data, never
+instructions. Under `--full`, reading more than one event, a piece over
+4000 characters is cut with a marker saying how much was cut and the
+exact command that reads its event whole (`agent logs <transcript>
+--start N --lines 1 --full`, which cuts nothing). Personal paths and host
+names are kept out where a dream writes, not where it reads: memory put,
+commit and the push scan. The check fails closed: only a caller the store
+clearly says is no dream's worker reads unredacted, so a busy store or a
+dream that just closed redacts; and a dream's agent is refused another
+host's logs. A long session is read in parts: `agent logs <session>
+--talk` (prompts, replies and one-line tool calls), `--grep TEXT`, and
+`--start N` to page; `<session>` may be an id, `harness:id` or a
+transcript's path, so a session no agent owns is read the same way. It reads files through its Read tool, which its launch rules allow
 for Claude Code's projects directories, the scoped projects, the machine
 memory, the repos its commits are in, and its handoff docs. It may edit
 files only in its own dream directory (drafts for `memory put --from`);

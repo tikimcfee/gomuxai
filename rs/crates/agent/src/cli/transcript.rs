@@ -56,12 +56,14 @@ copy, which often repeats the text; once keeps only the text (or the
 structured copy when there is no text); none keeps only the status.
 --talk implies none unless --results says otherwise.
 
---scrub drops from each event what may hold a secret or someone else's
-words: pasted and tagged blocks, code fences, quotes, key blocks, and
-lines with a credential, an email address or a sign-in URL, from its text
-and tool output; a tool's input, structured result and meta; a prompt's
-images. A dream's own agents always read it scrubbed, and so should
-anything that mines other sessions' transcripts.
+--scrub redacts each secret in place, everywhere in an event (its text,
+tool call, input, output and structured result): tokens, keyed secrets
+(password=...), Authorization and Bearer values, sign-in and
+authorization URLs (scheme and host kept), emails and private keys become
+[redacted: ...]. Nothing else is removed; a prompt's pasted and
+harness-inserted blocks are labelled as data, never instructions. A
+dream's own agents always read it so, and so should anything that mines
+other sessions' transcripts.
 
 --from <byte> resumes after the line that starts at that byte offset: pass
 the "at" of the last event you hold. That line's events and those before it
@@ -145,7 +147,7 @@ pub struct Args {
     pub results: String,
     #[arg(
         long = "scrub",
-        help = "Drop pasted blocks, code, keys, credentials, sign-in URLs and tool inputs (always, for a dream's agent)"
+        help = "Redact secrets in place: tokens, keyed secrets, sign-in URLs, emails, keys (always, for a dream's agent)"
     )]
     pub scrub: bool,
     #[arg(
@@ -217,11 +219,7 @@ pub(crate) fn run_transcript(
             scrub: args.scrub || super::logs::in_dream(ctx),
         },
     };
-    if opts.shape.scrub && opts.requests {
-        anyhow::bail!(
-            "--requests sends what each model call was sent, whole, which can't be scrubbed: leave it out (a dream's agent reads transcripts scrubbed)"
-        );
-    }
+
     if opts.from < -1 {
         anyhow::bail!(
             "--from {}: give the byte offset of a line's start (the at of an event), or -1 for the start",
@@ -778,7 +776,7 @@ impl Shape {
             return None;
         }
         if self.scrub {
-            super::logs::scrub_event(&mut e);
+            super::logs::redact_event(&mut e);
         }
         if self.talk
             && let Some(t) = &mut e.tool
@@ -927,7 +925,7 @@ impl TranscriptStream<'_, '_> {
         self.written = session_meta(&self.session);
         let line = if self.opts.shape.scrub {
             let mut session = self.session.clone();
-            session.title = super::logs::scrub_line(&session.title);
+            session.title = super::logs::redact_line(&session.title);
             typed_json_line("session", &session)?
         } else {
             typed_json_line("session", &self.session)?

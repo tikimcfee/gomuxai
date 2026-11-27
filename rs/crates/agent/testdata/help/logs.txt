@@ -32,8 +32,13 @@ With any of these, each line starts with its number (#N), and a hint
 says what part this is and the --start that reads on; --start N --lines
 1 --full reads one event whole.
 
---scrub drops what may hold a secret or someone else's words, as agent
-transcript --scrub does; a dream's own agents always read logs scrubbed.
+--scrub redacts secrets in place, as agent transcript --scrub does
+(tokens, keyed secrets, Authorization values, sign-in URLs, emails,
+private keys become [redacted: ...]); nothing else is removed, and pasted
+and harness-inserted blocks are labelled as data. With --full and more
+than one event, a piece over 4000 characters is cut with a marker naming
+the command that reads its event whole (--start N --lines 1 --full is
+never cut). A dream's own agents always read logs this way.
 
 --json prints the events as docs/EVENTS.md describes them, one JSON
 object per line: for each transcript, a session line, then its events
@@ -81,7 +86,7 @@ Flags:
   -h, --help          help for logs
       --json          Print the sessions and their events as JSON lines
       --lines int     Number of events (or terminal lines) to print (default 50)
-      --scrub         Drop pasted blocks, code, keys, credentials and sign-in URLs from what it prints (always, for a dream's agent)
+      --scrub         Redact secrets in place, and cap long pieces under --full with a pointer to the whole (always, for a dream's agent)
       --start int     Print from the Nth event (1 is the first) instead of the last --lines
       --talk          Only prompts, replies and one-line tool calls, without tool output
       --terminal      Print the terminal log instead of the transcript

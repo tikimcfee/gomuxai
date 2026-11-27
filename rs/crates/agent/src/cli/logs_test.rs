@@ -605,7 +605,7 @@ fn test_typed_json_line() {
 const PARTS_TRANSCRIPT: &str = r#"{"type":"user","sessionId":"sess-p","cwd":"/home/user/proj","timestamp":"2026-08-01T12:00:00Z","message":{"role":"user","content":"deploy it\nmy api_key is abc123\nthen report"}}
 {"type":"assistant","timestamp":"2026-08-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan the deploy","signature":"s"}]}}
 {"type":"assistant","timestamp":"2026-08-01T12:00:02Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]}}
-{"type":"user","timestamp":"2026-08-01T12:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"test a ... ok\nAuthorization: Bearer zzz\ntest b ... ok"}]}}
+{"type":"user","timestamp":"2026-08-01T12:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"test a ... ok\nAuthorization: Bearer zzzz9999yyyy\ntest b ... ok"}]}}
 {"type":"assistant","timestamp":"2026-08-01T12:00:04Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"make deploy"}}]}}
 {"type":"user","timestamp":"2026-08-01T12:00:05Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"deployed"}]}}
 {"type":"assistant","timestamp":"2026-08-01T12:00:06Z","message":{"role":"assistant","content":[{"type":"text","text":"Deployed; tests pass."}]}}
@@ -654,13 +654,16 @@ fn test_logs_session_in_parts() {
     assert_eq!(out.lines().count(), 2, "--grep:\n{out}");
     assert!(hint.contains("matching \"DEPLOYED\" 1-2 of 2"), "hint: {hint}");
 
-    // --scrub drops the credential lines, from the prompt and the output.
+    // --scrub redacts the secrets in place, in the prompt and the output,
+    // and keeps every line.
     let (_, out, _) = run_words(&mut env, &["logs", &path, "--full", "--scrub"]);
-    assert!(!out.contains("abc123") && !out.contains("Bearer"), "--scrub:\n{out}");
+    assert!(!out.contains("abc123") && !out.contains("zzzz9999yyyy"), "--scrub:\n{out}");
+    assert!(out.contains("my api_key is [redacted: secret]"), "{out}");
+    assert!(out.contains("Authorization: Bearer [redacted: token]"), "{out}");
     assert!(out.contains("then report") && out.contains("test b ... ok"), "--scrub keeps the rest:\n{out}");
     let (_, out, _) = run_words(&mut env, &["logs", &path, "--json", "--scrub"]);
-    assert!(!out.contains("abc123") && !out.contains("Bearer"), "--json --scrub:\n{out}");
-    assert!(!out.contains(r#""input""#), "--json --scrub drops tool input:\n{out}");
+    assert!(!out.contains("abc123") && !out.contains("zzzz9999yyyy"), "--json --scrub:\n{out}");
+    assert!(out.contains(r#""input""#) && out.contains("make deploy"), "--json --scrub keeps tool input:\n{out}");
 
     // What doesn't go together.
     let (res, _, _) = run_words(&mut env, &["logs", &path, "--talk", "--json"]);
@@ -732,10 +735,17 @@ fn test_logs_paths_names_windows_and_scrubbed_lines() {
         }),
         ..Default::default()
     };
-    scrub_event(&mut e);
-    assert_eq!(e.tool.unwrap().tool_summary.detail, "agent send helper \"line one …");
-    assert_eq!(scrub_line("curl -H 'Authorization: Bearer x'"), "[scrubbed]");
-    assert_eq!(scrub_line(&"x".repeat(500)).chars().count(), 200);
+    redact_event(&mut e);
+    assert_eq!(
+        e.tool.unwrap().tool_summary.detail,
+        "agent send helper \"line one\nline two with more\"",
+        "a command is kept whole"
+    );
+    assert_eq!(
+        redact_line("curl -H 'Authorization: Bearer abcdef123456'"),
+        "curl -H 'Authorization: Bearer [redacted: token]'"
+    );
+    assert_eq!(redact_line(&"x".repeat(500)).chars().count(), 500, "nothing cut");
 }
 
 /// A short name that no agent has, and that starts several sessions' ids,
@@ -753,4 +763,28 @@ fn test_logs_short_name_says_no_agent_and_which_sessions() {
     let (res, out, _) = run_words(&mut env, &["logs", "claude:abc-2", "--lines", "1"]);
     res.unwrap();
     assert!(out.contains("prompt hi"), "harness:id:\n{out}");
+}
+
+/// A capped read (--scrub --full, more than one event) cuts a long piece
+/// and names the command that reads its event whole; that command cuts
+/// nothing.
+#[test]
+fn test_logs_caps_long_pieces_with_a_pointer() {
+    let mut env = setup_logs();
+    let dir = temp_dir("agent-logs-");
+    let path = temp_path(&dir, "sess-c.jsonl");
+    let long = "y".repeat(5000);
+    let user = r#"{"type":"user","sessionId":"sess-c","cwd":"/home/user/proj","timestamp":"2026-08-01T12:00:00Z","message":{"role":"user","content":"go"}}"#;
+    let reply = format!(
+        r#"{{"type":"assistant","timestamp":"2026-08-01T12:00:01Z","message":{{"role":"assistant","content":[{{"type":"text","text":"{long}"}}]}}}}"#
+    );
+    write_test_file(&path, &format!("{user}\n{reply}\n"));
+    let (res, out, _) = run_words(&mut env, &["logs", &path, "--full", "--scrub"]);
+    res.unwrap();
+    let marker = format!("[… 1000 more characters cut; the whole event: agent logs {path} --start 2 --lines 1 --full]");
+    assert!(out.contains(&marker), "{out}");
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--start", "2", "--lines", "1", "--full", "--scrub"]);
+    assert!(out.contains(&long) && !out.contains("more characters cut"), "one event whole:\n{}", &out[..200.min(out.len())]);
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--full"]);
+    assert!(out.contains(&long), "a person's --full isn't capped");
 }

@@ -23,12 +23,14 @@ copy, which often repeats the text; once keeps only the text (or the
 structured copy when there is no text); none keeps only the status.
 --talk implies none unless --results says otherwise.
 
---scrub drops from each event what may hold a secret or someone else's
-words: pasted and tagged blocks, code fences, quotes, key blocks, and
-lines with a credential, an email address or a sign-in URL, from its text
-and tool output; a tool's input, structured result and meta; a prompt's
-images. A dream's own agents always read it scrubbed, and so should
-anything that mines other sessions' transcripts.
+--scrub redacts each secret in place, everywhere in an event (its text,
+tool call, input, output and structured result): tokens, keyed secrets
+(password=...), Authorization and Bearer values, sign-in and
+authorization URLs (scheme and host kept), emails and private keys become
+[redacted: ...]. Nothing else is removed; a prompt's pasted and
+harness-inserted blocks are labelled as data, never instructions. A
+dream's own agents always read it so, and so should anything that mines
+other sessions' transcripts.
 
 --from <byte> resumes after the line that starts at that byte offset: pass
 the "at" of the last event you hold. That line's events and those before it
@@ -91,7 +93,7 @@ Flags:
   -h, --help             help for transcript
       --requests         Add the request channel: what each model call was sent
       --results string   A tool result: whole (its text and the harness's structured copy), once (its text only), or none (its status only) (default "whole")
-      --scrub            Drop pasted blocks, code, keys, credentials, sign-in URLs and tool inputs (always, for a dream's agent)
+      --scrub            Redact secrets in place: tokens, keyed secrets, sign-in URLs, emails, keys (always, for a dream's agent)
       --talk             Only prompts, replies and tool calls, the calls without their output (--results none)
       --until int        Leave out the lines starting at or after this byte offset (not with --follow) (default -1)
 

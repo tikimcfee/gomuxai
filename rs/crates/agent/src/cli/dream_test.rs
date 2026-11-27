@@ -716,10 +716,10 @@ fn a_dreams_agent_reads_transcripts_scrubbed() {
         .unwrap();
     let out = run(&mut env, &["logs", &path, "--full"]);
     assert!(!out.contains("hunter2") && out.contains("thanks"), "logs, as a dream's agent:\n{out}");
+    assert!(out.contains("my password is [redacted: secret]"), "in place:\n{out}");
     let out = run(&mut env, &["transcript", &path]);
-    assert!(!out.contains("hunter2") && !out.contains(r#""input""#), "transcript, as a dream's agent:\n{out}");
-    let err = run_err(&mut env, &["transcript", &path, "--requests"]);
-    assert!(err.contains("can't be scrubbed"), "{err}");
+    assert!(!out.contains("hunter2") && out.contains(r#""input""#), "transcript, as a dream's agent:\n{out}");
+    assert!(out.contains("[redacted: secret]") && out.contains("thanks"), "redacted in place:\n{out}");
 
     // A recorded command's words, too.
     env.store()
@@ -732,7 +732,7 @@ fn a_dreams_agent_reads_transcripts_scrubbed() {
         })
         .unwrap();
     let out = run(&mut env, &["history", "--agent", "someone"]);
-    assert!(!out.contains("hunter2") && out.contains("[scrubbed]"), "history, as a dream's agent:\n{out}");
+    assert!(!out.contains("hunter2") && out.contains("[redacted: secret]"), "history, as a dream's agent:\n{out}");
 
     // A worker whose dream has closed still reads scrubbed (it fails closed).
     env.store().commit_dream(d.id).unwrap();

@@ -58,8 +58,13 @@ With any of these, each line starts with its number (#N), and a hint
 says what part this is and the --start that reads on; --start N --lines
 1 --full reads one event whole.
 
---scrub drops what may hold a secret or someone else's words, as agent
-transcript --scrub does; a dream's own agents always read logs scrubbed.
+--scrub redacts secrets in place, as agent transcript --scrub does
+(tokens, keyed secrets, Authorization values, sign-in URLs, emails,
+private keys become [redacted: ...]); nothing else is removed, and pasted
+and harness-inserted blocks are labelled as data. With --full and more
+than one event, a piece over 4000 characters is cut with a marker naming
+the command that reads its event whole (--start N --lines 1 --full is
+never cut). A dream's own agents always read logs this way.
 
 --json prints the events as docs/EVENTS.md describes them, one JSON
 object per line: for each transcript, a session line, then its events
@@ -120,7 +125,7 @@ pub struct Args {
     pub talk: bool,
     #[arg(
         long = "scrub",
-        help = "Drop pasted blocks, code, keys, credentials and sign-in URLs from what it prints (always, for a dream's agent)"
+        help = "Redact secrets in place, and cap long pieces under --full with a pointer to the whole (always, for a dream's agent)"
     )]
     pub scrub: bool,
     #[arg(
@@ -248,6 +253,13 @@ impl LogsOptions {
     pub fn parts(&self) -> bool {
         self.talk || !self.grep.is_empty() || self.start > 0
     }
+
+    /// Whether long pieces are cut, each with a marker naming the command
+    /// that reads its event whole: --full read for mining (--scrub, or a
+    /// dream's agent), more than one event at a time.
+    pub fn caps(&self) -> bool {
+        self.scrub && self.full && self.lines > 1
+    }
 }
 
 /// A chunk of a line of text: an event's line(s), a line of the terminal log,
@@ -287,10 +299,10 @@ pub fn build_logs(ctx: &Ctx, name: &str, o: &LogsOptions) -> anyhow::Result<(Vec
         return Ok((terminal_log_chunks(svc, name, o.lines)?, String::new()));
     }
 
-    let read = if o.parts() { ALL_EVENTS as i64 } else { o.lines };
+    let read = if o.parts() || o.caps() { ALL_EVENTS as i64 } else { o.lines };
     let (mut sessions, why) = read_transcripts(svc, name, read);
     if o.scrub {
-        scrub_sessions(&mut sessions);
+        redact_sessions(&mut sessions);
     }
     if !why.is_empty() {
         if o.json {
@@ -319,16 +331,29 @@ pub fn build_logs(ctx: &Ctx, name: &str, o: &LogsOptions) -> anyhow::Result<(Vec
     if o.parts() {
         return Ok(part_chunks(&sessions, o));
     }
+    Ok((tail_chunks(&sessions, o), String::new()))
+}
+
+/// The last --lines events of the sessions, oldest first, each session
+/// after the first marked where it begins (and the first too when the tail
+/// starts in a later one).
+fn tail_chunks(sessions: &[LogsSession], o: &LogsOptions) -> Vec<LogsChunk> {
+    let all: Vec<(usize, usize, &Event)> = sessions
+        .iter()
+        .enumerate()
+        .flat_map(|(i, s)| s.events.iter().enumerate().map(move |(k, e)| (i, k, e)))
+        .collect();
+    let from = all.len().saturating_sub(o.lines as usize);
     let mut chunks = Vec::new();
-    for (i, s) in sessions.iter().enumerate() {
-        if i > 0 {
-            chunks.push(session_chunk(s));
+    let mut session = None;
+    for &(i, k, e) in &all[from..] {
+        if session.is_some_and(|s| s != i) || (session.is_none() && i > 0) {
+            chunks.push(session_chunk(&sessions[i]));
         }
-        for e in &s.events {
-            chunks.push(text_chunk(format_event(e, o.full) + "\n"));
-        }
+        session = Some(i);
+        chunks.push(text_chunk(event_line(e, o.full, o, &sessions[i], k) + "\n"));
     }
-    Ok((chunks, String::new()))
+    chunks
 }
 
 /// Whether the caller is a worker of an open dream: what it reads of
@@ -358,81 +383,109 @@ fn is_path(arg: &str) -> bool {
     arg.contains('/') || arg.ends_with(".jsonl")
 }
 
-/// Scrubs every event a read holds: the stream --json prints, and the
+/// Redacts every event a read holds: the stream --json prints, and the
 /// events the lines print.
-fn scrub_sessions(sessions: &mut [LogsSession]) {
+fn redact_sessions(sessions: &mut [LogsSession]) {
     for s in sessions {
-        s.file.session.title = scrub_line(&s.file.session.title);
-        s.file.events.iter_mut().for_each(scrub_event);
-        s.events.iter_mut().for_each(scrub_event);
+        s.file.session.title = redact_line(&s.file.session.title);
+        s.file.events.iter_mut().for_each(redact_event);
+        s.events.iter_mut().for_each(redact_event);
     }
 }
 
-/// An event made safe to show to whoever mines transcripts, as a dream's
-/// digest makes its excerpts (agent_dream::scrub): pasted and tagged
-/// blocks, code, quotes, key blocks and lines with a credential, an email or
-/// a sign-in URL dropped from its text and tool output; a tool's input, its
-/// structured result and meta, a prompt's images and a request's body left
-/// out; a tool's target or detail with a credential replaced.
-pub(crate) fn scrub_event(e: &mut Event) {
-    use agent_dream::scrub::excerpt;
-    let all = usize::MAX;
+/// An event as whoever mines transcripts reads it (a dream's agent, or
+/// --scrub), by Ivan's rule as he set it on 2026-11-27: don't delete text a
+/// dreamer reads; redact the secrets in it. Each secret (a token, a keyed
+/// secret, an Authorization value, a sign-in URL, an email, a private key)
+/// is replaced in place by a marker (agent_dream::scrub::redact), in its
+/// text, tool call, input, output and structured result alike; a prompt's
+/// pasted and harness-inserted blocks are labelled as data, never
+/// instructions. Nothing else is removed.
+pub(crate) fn redact_event(e: &mut Event) {
+    use agent_dream::scrub::{label_blocks, redact};
     if let Some(p) = &mut e.prompt {
-        p.text = excerpt(&p.text, all);
-        p.command = scrub_line(&p.command);
-        p.images.clear();
+        p.text = redact(&label_blocks(&p.text));
+        p.command = redact(&p.command);
     }
     if let Some(t) = &mut e.think {
-        t.text = excerpt(&t.text, all);
+        t.text = redact(&t.text);
     }
     if let Some(s) = &mut e.say {
-        s.text = excerpt(&s.text, all);
+        s.text = redact(&s.text);
     }
     if let Some(t) = &mut e.tool {
-        t.input = None;
-        t.meta = None;
-        // A command can carry pasted text or a message: one bounded line.
-        for f in [&mut t.tool_summary.target, &mut t.tool_summary.detail] {
-            *f = scrub_line(f);
-        }
+        t.tool_summary.target = redact(&t.tool_summary.target);
+        t.tool_summary.detail = redact(&t.tool_summary.detail);
+        t.input = t.input.take().and_then(redact_json);
+        t.meta = t.meta.take().and_then(redact_json);
         if let Some(r) = &mut t.result {
-            r.output = excerpt(&r.output, all);
-            r.structured = None;
+            r.output = redact(&r.output);
+            r.structured = r.structured.take().and_then(redact_json);
         }
     }
     if let Some(s) = &mut e.system {
-        s.text = excerpt(&s.text, all);
-        s.data = None;
+        s.text = redact(&s.text);
+        s.data = s.data.take().and_then(redact_json);
     }
-    if e.request.is_some() {
-        e.request = None;
+    if let Some(r) = e.request.take() {
+        // What a model call was sent: its messages, redacted as JSON.
+        e.request = serde_json::to_string(&r)
+            .ok()
+            .and_then(|j| serde_json::from_str(&agent_dream::scrub::redact(&j)).ok());
     }
 }
 
-/// How long a line scrub_line keeps.
-const SCRUBBED_LINE: usize = 200;
+/// A JSON value redacted as text: a marker holds no quote or backslash, so
+/// it stays JSON; None in the unlikely case it doesn't.
+fn redact_json(j: agent_transcript::RawJson) -> Option<agent_transcript::RawJson> {
+    agent_transcript::RawJson::from_json_string(agent_dream::scrub::redact(j.as_str())).ok()
+}
 
-/// One line of `s`, scrubbed as excerpt scrubs text and cut to
-/// SCRUBBED_LINE characters; "[scrubbed]" when nothing of a non-empty `s`
-/// is left. For what is shown on one line: a tool call's command or path,
-/// a slash command, a session's title, a recorded command's words.
-pub(crate) fn scrub_line(s: &str) -> String {
-    use agent_dream::scrub::{clip, excerpt, has_credential};
-    if s.is_empty() {
-        return String::new();
+/// One line's text redacted (a session's title, a recorded command's
+/// words): agent_dream::scrub::redact, nothing cut.
+pub(crate) fn redact_line(s: &str) -> String {
+    agent_dream::scrub::redact(s)
+}
+
+/// How many characters of one piece of an event (a prompt, a reply, a
+/// tool's output) a capped read prints.
+pub const CAP_CHARS: usize = 4000;
+
+/// An event's line as logs prints it: format_event, with each long piece
+/// cut and marked when the read caps (LogsOptions::caps). The marker names
+/// the command that reads the event whole: `k` is its place in `s`'s
+/// events, which hold the whole session when the read caps.
+fn event_line(e: &Event, full: bool, o: &LogsOptions, s: &LogsSession, k: usize) -> String {
+    if !(o.caps() && full) {
+        return format_event(e, full);
     }
-    let first = s.lines().next().unwrap_or("");
-    if has_credential(first) {
-        return "[scrubbed]".to_string();
+    // By its path, which always resolves (an id needs the session listed).
+    let whole = format!(
+        "agent logs {} --start {} --lines 1 --full",
+        s.file.session.path,
+        k + 1
+    );
+    let cap = |t: &mut String| {
+        let n = t.chars().count();
+        if n > CAP_CHARS {
+            let kept: String = t.chars().take(CAP_CHARS).collect();
+            *t = format!("{kept}\n[… {} more characters cut; the whole event: {whole}]", n - CAP_CHARS);
+        }
+    };
+    let mut e = e.clone();
+    if let Some(p) = &mut e.prompt {
+        cap(&mut p.text);
     }
-    let kept = excerpt(first, SCRUBBED_LINE);
-    if kept.is_empty() {
-        return "[scrubbed]".to_string();
+    if let Some(t) = &mut e.think {
+        cap(&mut t.text);
     }
-    if s.lines().nth(1).is_some() && kept.chars().count() < SCRUBBED_LINE {
-        return clip(&format!("{kept} …"), SCRUBBED_LINE);
+    if let Some(x) = &mut e.say {
+        cap(&mut x.text);
     }
-    kept
+    if let Some(r) = e.tool.as_mut().and_then(|t| t.result.as_mut()) {
+        cap(&mut r.output);
+    }
+    format_event(&e, full)
 }
 
 /// How many events a read in parts asks for: all of them.
@@ -467,16 +520,16 @@ fn session_logs(ctx: &Ctx, arg: &str, o: &LogsOptions) -> anyhow::Result<(Vec<Lo
             target.path
         );
     }
-    let read = if o.parts() { ALL_EVENTS } else { o.lines as usize };
+    let read = if o.parts() || o.caps() { ALL_EVENTS } else { o.lines as usize };
     let f = transcript::read_file(&target.path, Some(target.reader), read)
         .map_err(|e| anyhow::anyhow!("can't read {}: {}", target.path, read_error_text(&target.path, &e)))?;
     let mut events = transcript::latest(&f.events);
-    if !o.parts() && events.len() > o.lines as usize {
+    if !o.parts() && !o.caps() && events.len() > o.lines as usize {
         events.drain(..events.len() - o.lines as usize);
     }
     let mut sessions = vec![LogsSession { file: f, events }];
     if o.scrub {
-        scrub_sessions(&mut sessions);
+        redact_sessions(&mut sessions);
     }
     if o.json {
         return Ok((event_line_chunks(&sessions)?, String::new()));
@@ -493,12 +546,7 @@ fn session_logs(ctx: &Ctx, arg: &str, o: &LogsOptions) -> anyhow::Result<(Vec<Lo
     if o.parts() {
         return Ok(part_chunks(&sessions, o));
     }
-    let chunks = sessions[0]
-        .events
-        .iter()
-        .map(|e| text_chunk(format_event(e, o.full) + "\n"))
-        .collect();
-    Ok((chunks, String::new()))
+    Ok((tail_chunks(&sessions, o), String::new()))
 }
 
 /// A transcript read in parts: the events --talk and --grep keep, numbered
@@ -506,16 +554,16 @@ fn session_logs(ctx: &Ctx, arg: &str, o: &LogsOptions) -> anyhow::Result<(Vec<Lo
 /// hint saying which part this is and how to read on.
 fn part_chunks(sessions: &[LogsSession], o: &LogsOptions) -> (Vec<LogsChunk>, String) {
     let needle = o.grep.to_lowercase();
-    let mut kept: Vec<(usize, &Event)> = Vec::new();
+    let mut kept: Vec<(usize, usize, &Event)> = Vec::new();
     for (i, s) in sessions.iter().enumerate() {
-        for e in &s.events {
+        for (k, e) in s.events.iter().enumerate() {
             if o.talk && !is_talk(e) {
                 continue;
             }
             if !needle.is_empty() && !event_text(e).to_lowercase().contains(&needle) {
                 continue;
             }
-            kept.push((i, e));
+            kept.push((i, k, e));
         }
     }
     let total = kept.len();
@@ -528,7 +576,7 @@ fn part_chunks(sessions: &[LogsSession], o: &LogsOptions) -> (Vec<LogsChunk>, St
     let last = (first + lines).min(total);
     let mut chunks = Vec::new();
     let mut session = None;
-    for (n, (i, e)) in kept[first..last].iter().enumerate() {
+    for (n, (i, k, e)) in kept[first..last].iter().enumerate() {
         // A window that starts in a later session says which one it is.
         if session.is_some_and(|s| s != *i) || (session.is_none() && *i > 0) {
             chunks.push(session_chunk(&sessions[*i]));
@@ -536,7 +584,7 @@ fn part_chunks(sessions: &[LogsSession], o: &LogsOptions) -> (Vec<LogsChunk>, St
         session = Some(*i);
         // --talk never prints tool output, --full or not.
         let full = o.full && !(o.talk && e.tool.is_some());
-        let line = format_event(e, full);
+        let line = event_line(e, full, o, &sessions[*i], *k);
         chunks.push(text_chunk(format!("#{} {line}\n", first + n + 1)));
     }
     let what = match (o.talk, needle.is_empty()) {

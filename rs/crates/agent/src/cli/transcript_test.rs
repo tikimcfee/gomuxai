@@ -1131,8 +1131,8 @@ fn test_transcript_shapes() {
         ..Default::default()
     };
     let t = scrub.apply(tool("fine\npassword: hunter2\nalso fine")).unwrap().tool.unwrap();
-    assert!(t.input.is_none(), "--scrub drops the input");
+    assert!(t.input.is_some(), "--scrub keeps the input, redacted");
     let r = t.result.unwrap();
-    assert_eq!(r.output, "fine\nalso fine");
-    assert!(r.structured.is_none());
+    assert_eq!(r.output, "fine\npassword: [redacted: secret]\nalso fine");
+    assert!(r.structured.is_some(), "and the structured result");
 }
