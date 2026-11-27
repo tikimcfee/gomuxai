@@ -355,7 +355,7 @@ fn list(project: &Project, nested: &[String]) -> Result<(Vec<Listed>, bool, bool
             }
             // Build output git doesn't ignore (an old commit's .gitignore,
             // or none): never what a person wrote, as a plain walk skips it.
-            if f.untracked && f.rel.split('/').any(|c| files::SKIP_DIRS.contains(&c)) {
+            if f.untracked && f.rel.split('/').any(agent_dream::skip::contains) {
                 continue;
             }
             let submodule = f.mode == "160000";

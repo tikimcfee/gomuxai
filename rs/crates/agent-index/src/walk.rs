@@ -9,8 +9,6 @@ use std::rc::Rc;
 
 use regex::Regex;
 
-use crate::files::SKIP_DIRS;
-
 /// One file the walk found.
 #[derive(Debug, Clone)]
 pub struct WalkFile {
@@ -184,7 +182,7 @@ pub fn walk_capped(root: &Path, skip: &[String], max_depth: usize, cap: usize) -
             };
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
-                if SKIP_DIRS.contains(&name.as_str())
+                if agent_dream::skip::contains(name.as_str())
                     || skip.iter().any(|s| s == &rel)
                     || ignored(&ignores, &rel, true)
                     || (max_depth > 0 && depth >= max_depth)

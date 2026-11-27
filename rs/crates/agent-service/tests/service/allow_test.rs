@@ -121,6 +121,7 @@ fn test_pre_tool_use_allows_dream_verbs_for_the_open_dream_only() {
         format!("{bin} index tree gomuxai --depth 1"),
         format!("{bin} index related gomuxai:rs/crates/agent-dream/src/memory.rs"),
         format!("{bin} index stale --project gomuxai"),
+        format!("{bin} dream propose skip add .next --why \"x\" --source claude:s"),
         "git -C /srv/app show abcdef1 --stat".to_string(),
     ] {
         assert!(allowed("dream-1", &dreamer, &cmd), "{cmd}: want allowed");
@@ -132,6 +133,8 @@ fn test_pre_tool_use_allows_dream_verbs_for_the_open_dream_only() {
         format!("{bin} index alias gomuxai:x y"),
         format!("{bin} index summarize --project gomuxai"),
         format!("{bin} index embed"),
+        format!("{bin} index skip add out"),
+        format!("{bin} dream proposals accept 1"),
     ] {
         assert!(
             !allowed("dream-1", &dreamer, &cmd),

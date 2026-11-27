@@ -1,0 +1,19 @@
+List prints the skip list in effect, one name per line, after a line
+saying which file it comes from (or that it is the defaults).
+
+Usage:
+  agent index skip list [flags]
+
+Examples:
+  agent index skip list
+  agent index skip list --defaults
+
+Flags:
+      --defaults   Print the defaults, whatever the file says
+  -h, --help       help for list
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

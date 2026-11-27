@@ -1,5 +1,7 @@
 Remove takes a directory out of the dream scope: later dreams leave its
-sessions out. What earlier dreams wrote stays.
+sessions out. What earlier dreams wrote stays. Given a root, it removes the
+root (its folders leave the scope, but those added on their own); given a
+folder a root holds, it says to add it to the skip list or remove the root.
 
 Usage:
   agent dream scope remove <dir> [flags]

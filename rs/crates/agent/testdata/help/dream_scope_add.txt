@@ -8,15 +8,23 @@ too, with the repo's memory and commits, while the worktree exists.
 to the repo even after its worktree was removed, as helpers' worktrees
 usually are. Add again with another --worktrees to change it.
 
+--root adds a tree instead: each folder directly under it is a project
+in scope, as it is in the index (agent index root add), but hidden
+folders, the names on the skip list (agent index skip list) and git
+worktrees. A folder made under it later is in scope from the next dream
+on, and one removed drops out.
+
 Usage:
   agent dream scope add <dir> [flags]
 
 Examples:
   agent dream scope add ~/src/app
   agent dream scope add ~/src/app --worktrees /var/tmp/app-wt-
+  agent dream scope add ~/dev --root
 
 Flags:
   -h, --help               help for add
+      --root               Add a tree: each folder directly under it is a project (but hidden ones, skipped names and worktrees)
       --worktrees string   A path prefix the repo's worktrees are made under (e.g. /var/tmp/app-wt-)
 
 Global Flags:

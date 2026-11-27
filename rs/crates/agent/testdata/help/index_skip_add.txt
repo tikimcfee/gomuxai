@@ -1,0 +1,18 @@
+Add puts NAME (a directory name, not a path) on the skip list, writing
+the file from the defaults when there is none, and tells a running index
+watcher.
+
+Usage:
+  agent index skip add NAME [flags]
+
+Examples:
+  agent index skip add .next
+
+Flags:
+  -h, --help   help for add
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

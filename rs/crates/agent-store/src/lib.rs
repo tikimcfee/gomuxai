@@ -5,6 +5,7 @@
 //! see [`gotime`] for timestamps and [`gojson`] for the JSON columns.
 
 pub mod commands;
+pub mod dream_proposals;
 pub mod dream_workers;
 pub mod dreams;
 pub mod friction;
@@ -39,6 +40,9 @@ mod roster_test;
 #[cfg(test)]
 mod tree_test;
 
+pub use dream_proposals::{
+    PROPOSAL_ACCEPTED, PROPOSAL_PENDING, PROPOSAL_REJECTED, PROPOSAL_SKIP, Proposal,
+};
 pub use dream_workers::{
     CALLER_SYNTHESIS, DreamIdea, DreamWorker, IDEA_APPLIED, IDEA_APPROVED, IDEA_PROPOSED,
     IDEA_REJECTED, IDEA_SKIPPED, IdeaVote, ROLE_CRITIC, ROLE_DREAMER, ROLE_GENERATOR, Scores,

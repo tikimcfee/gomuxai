@@ -210,6 +210,7 @@ pub const DREAM_AGENT_COMMANDS: &[&str] = &[
     "dream limitation",
     "dream memory",
     "dream roster note",
+    "dream propose",
     // Reading only: the global dream reads its project dreams' diaries.
     "dream show",
     "dream list",

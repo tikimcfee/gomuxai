@@ -62,6 +62,11 @@ your reasoning.
 - `agent dream ideas` lists what you have proposed.
 - `agent dream note "..."` adds to this dream's diary.
 - `agent dream limitation "..."` when dreaming itself got in your way.
+- `agent dream propose skip add|remove <name> --why "..." --source <id>`
+  when the skip list (`agent index skip list`: the folder names no walk
+  goes into) is wrong: build output or a cache got indexed or gathered
+  (add), or a skipped name holds real work (remove). A person decides; you
+  never change the list.
 - `agent dream done` when your change set is complete: it starts the
   critic. Zero ideas is a fine result when nothing needs changing. `agent
   dream abandon "why"` if you can't finish.

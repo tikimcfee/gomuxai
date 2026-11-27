@@ -10,7 +10,6 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::db::{Index, now};
-use crate::files::SKIP_DIRS;
 use crate::git;
 
 pub const DEPTHS: &[&str] = &["full", "files", "shallow"];
@@ -440,7 +439,7 @@ pub fn sync_roots(conn: &Connection) -> Result<Sync> {
         children.sort();
         for c in children {
             let name = dir_name(&c);
-            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
+            if name.starts_with('.') || agent_dream::skip::contains(name.as_str()) {
                 continue;
             }
             // A directory kept out of the way (`_public`, `archive`, `old`)

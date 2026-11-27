@@ -344,10 +344,18 @@ fn finished_sessions<'a>(sessions: &'a [SessionIn], cur: &Cursor) -> Vec<&'a Ses
 }
 
 /// Whether path is one of dirs or inside one (by path components, so
-/// /srv/app2 isn't inside /srv/app).
+/// /srv/app2 isn't inside /srv/app), and not inside a folder the skip list
+/// names below it (a session run in a project's build output or cache).
 pub fn in_scope(path: &str, dirs: &[String]) -> bool {
     let p = Path::new(path);
-    !path.is_empty() && p.is_absolute() && dirs.iter().any(|d| p.starts_with(d))
+    !path.is_empty()
+        && p.is_absolute()
+        && dirs.iter().any(|d| {
+            p.strip_prefix(d).is_ok_and(|rel| {
+                !rel.components()
+                    .any(|c| crate::skip::contains(&c.as_os_str().to_string_lossy()))
+            })
+        })
 }
 
 fn session_item(s: &SessionIn) -> Item {

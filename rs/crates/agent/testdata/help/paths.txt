@@ -113,6 +113,11 @@ dream judge
 dream done
 dream roster
 dream roster note
+dream propose
+dream proposals
+dream proposals list
+dream proposals accept
+dream proposals reject
 dream memory
 dream memory get
 dream memory put
@@ -134,6 +139,10 @@ index root
 index root add
 index root remove
 index root list
+index skip
+index skip list
+index skip add
+index skip remove
 index project
 index project add
 index crawl

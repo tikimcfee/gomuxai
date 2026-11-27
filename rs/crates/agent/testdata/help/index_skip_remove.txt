@@ -1,0 +1,18 @@
+Remove takes NAME off the skip list, writing the file from the defaults
+when there is none, and tells a running index watcher. The next crawl
+reads what it skipped.
+
+Usage:
+  agent index skip remove NAME [flags]
+
+Examples:
+  agent index skip remove build
+
+Flags:
+  -h, --help   help for remove
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)

@@ -18,7 +18,11 @@
 //!
 //! A Unix socket takes the same queue's other feed: one JSON line naming
 //! changed paths (`agent index touch`, an edit hook, the search's stale
-//! check), or asking for the status.
+//! check), asking for the status, or saying the roots or the skip list
+//! changed (`reload`: `agent index root add|remove` and `skip add|remove`
+//! send it). A reload reads the skip list again, runs the tidy (which
+//! crawls every root, new ones included), and watches what the projects now
+//! hold, dropping the watches of what they no longer do.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -34,7 +38,6 @@ use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Watch as Settings;
-use crate::files::SKIP_DIRS;
 
 /// A project the watcher keeps: its name, its directory, whether git keeps
 /// it, and its indexed directories (absolute).
@@ -163,7 +166,7 @@ impl Debounce {
 /// A file or directory name no flush needs: editors' swap and backup files,
 /// and directories the crawl never reads.
 pub fn ignored_name(name: &str) -> bool {
-    SKIP_DIRS.contains(&name)
+    agent_dream::skip::contains(name)
         || name.ends_with('~')
         || name.ends_with(".swp")
         || name.ends_with(".swx")
@@ -292,6 +295,43 @@ impl Watches {
             self.by_dir.remove(&dir);
         }
     }
+
+    /// Watches what `projects` hold that isn't watched, and stops watching
+    /// what none holds any more or the skip list now skips; (added, dropped).
+    fn reconcile(&mut self, projects: &[Project]) -> (usize, usize) {
+        let mut want: HashMap<&Path, &str> = HashMap::new();
+        for p in projects {
+            for d in &p.dirs {
+                let skipped = d.strip_prefix(&p.path).is_ok_and(|rel| {
+                    rel.components()
+                        .any(|c| ignored_name(&c.as_os_str().to_string_lossy()))
+                });
+                if !skipped {
+                    want.insert(d.as_path(), p.name.as_str());
+                }
+            }
+        }
+        let gone: Vec<(PathBuf, i32)> = self
+            .by_dir
+            .iter()
+            .filter(|(d, _)| !want.contains_key(d.as_path()))
+            .map(|(d, wd)| (d.clone(), *wd))
+            .collect();
+        for (_, wd) in &gone {
+            // A watch already gone (its directory removed) errs, and is
+            // forgotten all the same.
+            let _ = inotify::remove_watch(&self.fd, *wd);
+            self.forget(*wd);
+        }
+        let mut added = 0;
+        for (d, name) in want {
+            if !self.by_dir.contains_key(d) {
+                self.add(d, name);
+                added += 1;
+            }
+        }
+        (added, gone.len())
+    }
 }
 
 /// What the socket is asked: changed paths, or the status.
@@ -301,6 +341,9 @@ pub struct Request {
     pub paths: Vec<String>,
     #[serde(default)]
     pub status: bool,
+    /// The roots or the skip list changed: read them again.
+    #[serde(default)]
+    pub reload: bool,
 }
 
 /// What the watcher says back.
@@ -335,6 +378,12 @@ pub struct Status {
     /// The catch-up tidy at start is running (nothing is watched yet).
     #[serde(default)]
     pub catching_up: bool,
+    /// Reloads asked for (roots or the skip list changed), and when the last
+    /// one finished.
+    #[serde(default)]
+    pub reloads: usize,
+    #[serde(default)]
+    pub last_reload: String,
 }
 
 /// Names changed paths to the watcher at `socket` (or asks its status);
@@ -355,6 +404,7 @@ pub fn ask(socket: &Path, req: &Request, timeout: Duration) -> Result<Status> {
 enum Msg {
     Fs(Vec<(i32, ReadFlags, Option<String>)>),
     Touch(Vec<PathBuf>),
+    Reload,
 }
 
 fn now_rfc3339() -> String {
@@ -408,6 +458,9 @@ pub fn run(
                     if tx.send(Msg::Touch(paths)).is_err() {
                         return;
                     }
+                }
+                if req.reload && tx.send(Msg::Reload).is_err() {
+                    return;
                 }
                 let mut st = status.lock().map(|s| s.clone()).unwrap_or_default();
                 st.queued = queued;
@@ -596,6 +649,42 @@ pub fn run(
                 drop(st);
                 activity = true;
                 last_activity = now;
+            }
+            Ok(Msg::Reload) => {
+                let skip = crate::files::reload_skip();
+                let t = Instant::now();
+                match keeper.tidy() {
+                    Ok(line) => log(&format!(
+                        "reloaded ({} skipped names) and tidied in {} ms: {line}",
+                        skip.len(),
+                        t.elapsed().as_millis()
+                    )),
+                    Err(e) => log(&format!(
+                        "reloading: the tidy failed ({e:#}); watching what it has"
+                    )),
+                }
+                last_tidy = Instant::now();
+                match keeper.projects() {
+                    Ok(ps) => {
+                        projects = ps;
+                        let (added, dropped) = w.reconcile(&projects);
+                        log(&format!(
+                            "watching {} directories of {} projects ({added} added, {dropped} dropped)",
+                            w.by_wd.len(),
+                            projects.len()
+                        ));
+                    }
+                    Err(e) => log(&format!("reloading: listing the projects failed: {e:#}")),
+                }
+                let mut st = status.lock().unwrap();
+                st.reloads += 1;
+                st.last_reload = now_rfc3339();
+                st.tidies += 1;
+                st.last_tidy = st.last_reload.clone();
+                st.projects = projects.len();
+                st.watched_dirs = w.by_wd.len();
+                st.over_limit = w.over_limit;
+                st.texts_waiting = keeper.texts_waiting();
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => bail!("the watcher's readers stopped"),
@@ -885,7 +974,7 @@ mod tests {
             &socket,
             &Request {
                 paths: vec![p.join("src/keep.rs").to_string_lossy().into_owned()],
-                status: false,
+                ..Default::default()
             },
             Duration::from_secs(2),
         )
@@ -894,6 +983,108 @@ mod tests {
         assert_eq!(until(5), 5);
         let st = ask_status().unwrap();
         assert_eq!((st.flushes, st.touched, st.outside), (5, 1, 0), "{st:?}");
+    }
+
+    /// A keeper whose projects a test changes, as root add and remove do.
+    struct Moving {
+        projects: Arc<Mutex<Vec<Project>>>,
+        flushes: Arc<Mutex<Vec<Vec<String>>>>,
+        tidies: Arc<Mutex<usize>>,
+    }
+
+    impl Keeper for Moving {
+        fn projects(&mut self) -> Result<Vec<Project>> {
+            Ok(self.projects.lock().unwrap().clone())
+        }
+        fn flush(&mut self, projects: &[String]) -> Result<String> {
+            self.flushes.lock().unwrap().push(projects.to_vec());
+            Ok("ok".into())
+        }
+        fn tidy(&mut self) -> Result<String> {
+            *self.tidies.lock().unwrap() += 1;
+            Ok("tidy".into())
+        }
+    }
+
+    /// A reload (roots or the skip list changed) tidies, watches a new
+    /// root's project, and drops the watches of one no longer indexed.
+    #[test]
+    fn a_reload_watches_new_roots_and_drops_old_ones() {
+        let t = tempfile::Builder::new()
+            .prefix("agent-index-reload")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        let proj = |name: &str| {
+            let p = t.path().join(name);
+            std::fs::create_dir_all(p.join("src")).unwrap();
+            Project {
+                name: name.into(),
+                path: p.clone(),
+                git: false,
+                dirs: vec![p.clone(), p.join("src")],
+            }
+        };
+        let (a, b) = (proj("a"), proj("b"));
+        let projects = Arc::new(Mutex::new(vec![a.clone()]));
+        let flushes = Arc::new(Mutex::new(Vec::new()));
+        let tidies = Arc::new(Mutex::new(0));
+        let socket = t.path().join("w.sock");
+        {
+            let mut k = Moving {
+                projects: Arc::clone(&projects),
+                flushes: Arc::clone(&flushes),
+                tidies: Arc::clone(&tidies),
+            };
+            let socket = socket.clone();
+            std::thread::spawn(move || {
+                let s = Settings {
+                    settle_ms: 100,
+                    max_wait_ms: 3000,
+                    tidy_quiet_s: 3600,
+                    ..Default::default()
+                };
+                let _ = run(&mut k, &s, &socket, |_| {});
+            });
+        }
+        let req = |reload: bool| {
+            ask(
+                &socket,
+                &Request {
+                    status: true,
+                    reload,
+                    ..Default::default()
+                },
+                Duration::from_secs(2),
+            )
+        };
+        let wait = |f: &dyn Fn(&Status) -> bool| {
+            let t0 = Instant::now();
+            loop {
+                if let Ok(st) = req(false)
+                    && f(&st)
+                {
+                    return st;
+                }
+                assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", req(false));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait(&|st| st.watched_dirs == 2);
+        // Root b added, a removed: one reload.
+        *projects.lock().unwrap() = vec![b.clone()];
+        req(true).unwrap();
+        let st = wait(&|st| st.reloads == 1);
+        assert_eq!((st.projects, st.watched_dirs), (1, 2), "{st:?}");
+        assert_eq!(*tidies.lock().unwrap(), 2, "the catch-up and the reload's");
+        std::fs::write(b.path.join("src/x.rs"), "fn x() {}\n").unwrap();
+        let t0 = Instant::now();
+        while flushes.lock().unwrap().is_empty() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(flushes.lock().unwrap().clone(), vec![vec!["b".to_string()]]);
+        std::fs::write(a.path.join("src/y.rs"), "fn y() {}\n").unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(flushes.lock().unwrap().len(), 1, "a is no longer watched");
     }
 
     #[test]

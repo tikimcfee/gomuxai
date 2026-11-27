@@ -31,6 +31,11 @@ own dream only:
   task. One note per session; it stays a note, and the roster weighs
   them. Only sessions your digest lists can be cited.
 - `agent dream limitation "..."` when dreaming itself got in your way.
+- `agent dream propose skip add|remove <name> --why "..." --source <id>`
+  when the skip list (`agent index skip list`: the folder names no walk
+  goes into) is wrong: build output or a cache got indexed or gathered
+  (add), or a skipped name holds real work (remove). A person decides; you
+  never change the list.
 - `agent dream note "..."` adds to this dream's diary.
 - `agent dream commit` when you are done, or `agent dream abandon
   "why"` if you can't finish. Only a committed dream counts its items as

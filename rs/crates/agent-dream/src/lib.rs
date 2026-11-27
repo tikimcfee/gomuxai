@@ -8,6 +8,7 @@ pub mod memory;
 pub mod review;
 pub mod schedule;
 pub mod scrub;
+pub mod skip;
 pub mod stale;
 pub mod start_here;
 

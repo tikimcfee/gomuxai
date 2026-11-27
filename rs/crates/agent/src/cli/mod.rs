@@ -44,6 +44,7 @@ mod bus_service;
 mod dream_evidence;
 // `agent dream memory`, wired under `agent dream` by its group's def().
 mod dream_memory;
+mod dream_proposals;
 // `agent dream schedule`, wired under `agent dream` by its group's def().
 mod dream_schedule;
 // The global dream's steps and the idea, ideas, judge and done verbs, wired

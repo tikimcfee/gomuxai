@@ -668,6 +668,19 @@ the one writer.
   Editors' swap and backup files are dropped. The crawl, too, now leaves
   out an untracked file under such a directory even when git doesn't
   ignore it (an old commit checked out, from before its `.gitignore`).
+- **The skip list**: the directory names no walk goes into, for the
+  crawl, the watcher and dreams alike, are a file a person may edit,
+  `skip-dirs.txt` beside `index.toml` (one name per line, `#` comments;
+  the built-in defaults with no file). `agent index skip list|add|remove`
+  prints and edits it. A dream may only propose a change to it, which a
+  person accepts or rejects (`agent dream proposals`).
+- **Reloading**: `agent index root add|remove` and `skip add|remove` tell
+  a running watcher on its socket (`{"reload": true}`): it reads the skip
+  list again, runs the tidy (which crawls every root, a new one too),
+  watches what the projects now hold, and drops the watches of what they
+  no longer hold or the list now skips; `status` counts `reloads`. Before
+  this a new root went unwatched and unembedded until the watcher was
+  restarted (friction #67).
 - **When it flushes**: once a project has been quiet for
   `[watch].settle_ms` (1 s), or `max_wait_ms` (10 s) after its first
   change, however busy it stays. It waits while git holds

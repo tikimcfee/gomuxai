@@ -58,6 +58,7 @@ pub fn def() -> Def {
         &DOC,
         vec![
             root_def(),
+            skip_def(),
             project_def(),
             crawl_def(),
             sync_def(),
@@ -499,7 +500,7 @@ fn run_touch(ctx: &Ctx, a: &TouchArgs) -> anyhow::Result<()> {
         cfg.watch_socket(&cfg.ledger_path(agent_index::path_beside(&ctx.cfg().database_path)));
     let req = agent_index::watch::Request {
         paths: absolute(&a.args)?,
-        status: false,
+        ..Default::default()
     };
     match agent_index::watch::ask(&socket, &req, std::time::Duration::from_secs(2)) {
         Ok(st) => ctx.write_out(&format!(
@@ -528,7 +529,7 @@ fn nudge_watcher(ctx: &Ctx, cfg: &agent_index::config::Config, paths: &[String])
             cfg.watch_socket(&cfg.ledger_path(agent_index::path_beside(&ctx.cfg().database_path)));
         let req = agent_index::watch::Request {
             paths: paths.to_vec(),
-            status: false,
+            ..Default::default()
         };
         let _ = agent_index::watch::ask(&socket, &req, std::time::Duration::from_millis(200));
     }
@@ -957,7 +958,39 @@ fn run_root_add(ctx: &Ctx, a: &RootAddArgs) -> anyhow::Result<()> {
     ctx.write_out(&format!(
         "Added root {} ({}), its projects at depth {}.\nNext: agent index crawl reads it.\n",
         r.id, r.path, r.depth
-    ))
+    ))?;
+    tell_watcher(ctx)
+}
+
+/// Tells a running index watcher the roots or the skip list changed, so it
+/// reads them again, crawls and watches what is new (friction #67: a new
+/// root went unwatched and unembedded until the watcher was restarted).
+/// Says what came of it.
+fn tell_watcher(ctx: &Ctx) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let cfg = load_config("")?.config;
+        let socket =
+            cfg.watch_socket(&cfg.ledger_path(agent_index::path_beside(&ctx.cfg().database_path)));
+        let req = agent_index::watch::Request {
+            reload: true,
+            ..Default::default()
+        };
+        match agent_index::watch::ask(&socket, &req, std::time::Duration::from_secs(2)) {
+            Ok(_) => ctx.write_out(
+                "Told the index watcher: it reads the roots and the skip list again, crawls, and watches what is new.\n",
+            ),
+            Err(_) => {
+                ctx.hint("no index watcher is running; it reads the roots and the skip list when it starts");
+                Ok(())
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = ctx;
+        Ok(())
+    }
 }
 
 pub const ROOT_REMOVE: Doc = Doc {
@@ -997,7 +1030,151 @@ fn run_root_remove(ctx: &Ctx, a: &RootRemoveArgs) -> anyhow::Result<()> {
         r.id,
         r.path,
         removed.len()
-    ))
+    ))?;
+    tell_watcher(ctx)
+}
+
+// `agent index skip`
+
+pub const SKIP: Doc = Doc {
+    use_line: "skip",
+    short: "List, add and remove the directory names no walk goes into",
+    long: r#"Skip holds the skip list: directory names that no walk of a project goes
+into (build output, caches, VCS internals), for the index's crawl and
+watcher and for dreams alike. It is a file a person may edit too, one name
+per line, # for comments: skip-dirs.txt beside index.toml
+($XDG_CONFIG_HOME/gomuxai/, else ~/.config/gomuxai/). With no file, the
+list is the defaults (list --defaults prints them); add and remove write
+the file, starting from the defaults.
+
+add and remove tell a running index watcher, which reads the list again,
+crawls, and stops watching what is now skipped. A dream never changes the
+list: it proposes a change, and a person accepts or rejects it (agent
+dream proposals)."#,
+    example: r#"  agent index skip list
+  agent index skip add .next
+  agent index skip remove build"#,
+    args: ArgRule::Any,
+    ..Doc::DEFAULT
+};
+
+fn skip_def() -> Def {
+    Def::group(&SKIP, vec![skip_list_def(), skip_add_def(), skip_remove_def()])
+}
+
+pub const SKIP_LIST: Doc = Doc {
+    use_line: "list",
+    short: "Print the skip list in effect, and where it comes from",
+    long: r#"List prints the skip list in effect, one name per line, after a line
+saying which file it comes from (or that it is the defaults)."#,
+    example: r#"  agent index skip list
+  agent index skip list --defaults"#,
+    args: ArgRule::None,
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct SkipListArgs {
+    #[arg(long = "defaults", help = "Print the defaults, whatever the file says")]
+    pub defaults: bool,
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+fn skip_list_def() -> Def {
+    leaf!(SKIP_LIST, SkipListArgs, run_skip_list)
+}
+
+fn run_skip_list(ctx: &Ctx, a: &SkipListArgs) -> anyhow::Result<()> {
+    use agent_dream::skip;
+    let (head, list) = if a.defaults {
+        (
+            "# The defaults.".to_string(),
+            skip::DEFAULT_DIRS.iter().map(|s| s.to_string()).collect(),
+        )
+    } else {
+        let file = skip::default_file();
+        let head = match &file {
+            Some(f) if f.exists() => format!("# From {}.", f.display()),
+            Some(f) => format!("# The defaults ({} isn't there).", f.display()),
+            None => "# The defaults (no config directory).".to_string(),
+        };
+        (head, skip::read(file.as_deref())?)
+    };
+    ctx.write_out(&format!("{head}\n{}\n", list.join("\n")))
+}
+
+pub const SKIP_ADD: Doc = Doc {
+    use_line: "add NAME",
+    short: "Add a directory name to the skip list",
+    long: r#"Add puts NAME (a directory name, not a path) on the skip list, writing
+the file from the defaults when there is none, and tells a running index
+watcher."#,
+    example: r#"  agent index skip add .next"#,
+    args: ArgRule::Exact(1),
+    ..Doc::DEFAULT
+};
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct SkipEditArgs {
+    #[arg(hide = true)]
+    pub args: Vec<String>,
+}
+
+fn skip_add_def() -> Def {
+    leaf!(SKIP_ADD, SkipEditArgs, run_skip_add)
+}
+
+fn run_skip_add(ctx: &Ctx, a: &SkipEditArgs) -> anyhow::Result<()> {
+    skip_edit(ctx, &a.args[0], true)
+}
+
+pub const SKIP_REMOVE: Doc = Doc {
+    use_line: "remove NAME",
+    short: "Take a directory name off the skip list",
+    long: r#"Remove takes NAME off the skip list, writing the file from the defaults
+when there is none, and tells a running index watcher. The next crawl
+reads what it skipped."#,
+    example: r#"  agent index skip remove build"#,
+    args: ArgRule::Exact(1),
+    ..Doc::DEFAULT
+};
+
+fn skip_remove_def() -> Def {
+    leaf!(SKIP_REMOVE, SkipEditArgs, run_skip_remove)
+}
+
+fn run_skip_remove(ctx: &Ctx, a: &SkipEditArgs) -> anyhow::Result<()> {
+    skip_edit(ctx, &a.args[0], false)
+}
+
+/// Adds or removes a name, says so, and tells the watcher if it changed.
+pub(crate) fn skip_edit(ctx: &Ctx, name: &str, add: bool) -> anyhow::Result<()> {
+    use agent_dream::skip::{self, Change};
+    let file = skip::default_file()
+        .ok_or_else(|| anyhow::anyhow!("no config directory for the skip list: set HOME or XDG_CONFIG_HOME"))?;
+    let change = if add {
+        skip::add(&file, name)?
+    } else {
+        skip::remove(&file, name)?
+    };
+    skip::reload();
+    match change {
+        Change::Unchanged => ctx.write_out(&format!(
+            "The skip list already {} {name} ({}).\n",
+            if add { "has" } else { "leaves out" },
+            file.display()
+        )),
+        Change::Added | Change::Removed => {
+            ctx.write_out(&format!(
+                "{} {name} {} the skip list ({}).\n",
+                if add { "Added" } else { "Took" },
+                if add { "to" } else { "off" },
+                file.display()
+            ))?;
+            tell_watcher(ctx)
+        }
+    }
 }
 
 pub const ROOT_LIST: Doc = Doc {

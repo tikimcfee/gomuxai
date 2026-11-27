@@ -1,0 +1,32 @@
+Proposals are changes a dream may not make itself and proposed instead,
+for now to the skip list (agent index skip). list shows the pending ones
+(--all every one), with what was seen and its sources; accept makes the
+change (and tells a running index watcher) and records who accepted it;
+reject records the no and why. Accepting and rejecting are a person's:
+an agent's run of either prompts its person, and a dream's agent is
+refused.
+
+Usage:
+  agent dream proposals [flags]
+  agent dream proposals [command]
+
+Examples:
+  agent dream proposals list
+  agent dream proposals accept 3
+  agent dream proposals reject 4 --note "build/ holds sources in that repo"
+
+Available Commands:
+  list        List the pending proposals (--all: every one)
+  accept      Accept a proposal: make the change (a person)
+  reject      Reject a proposal (a person)
+
+Flags:
+  -h, --help   help for proposals
+
+Global Flags:
+      --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)
+      --backend-config string   JSON file defining a custom backend (or app settings); pass it again to status/wait/watch for agents spawned with it
+  -q, --quiet                   Don't print hints (results and errors still print)
+      --termd-ns string         g3d-termd namespace (default: agents; never default or wall)
+
+Use "agent dream proposals [command] --help" for more information about a command.
