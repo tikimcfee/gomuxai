@@ -10,9 +10,25 @@ The session is one of:
   - a workgroup agent's name: its current transcript (after cleanup, its
     last one);
   - a session id, or the start of one that only one session's id starts
-    with (agent sessions lists them, agent sessions --json their ids);
+    with (agent sessions lists them, agent sessions --json their ids),
+    with or without its harness first (claude:3f3a9c, as dreams cite one);
   - a transcript's path; its harness is told from the path, or from its
     first lines.
+
+--talk sends only prompts, replies and tool calls, each call without its
+output (its result's status only), for a reader that wants what was said.
+--results whole|once|none says how much of a tool's result an event
+carries: whole (the default) has its text and the harness's structured
+copy, which often repeats the text; once keeps only the text (or the
+structured copy when there is no text); none keeps only the status.
+--talk implies none unless --results says otherwise.
+
+--scrub drops from each event what may hold a secret or someone else's
+words: pasted and tagged blocks, code fences, quotes, key blocks, and
+lines with a credential, an email address or a sign-in URL, from its text
+and tool output; a tool's input, structured result and meta; a prompt's
+images. A dream's own agents always read it scrubbed, and so should
+anything that mines other sessions' transcripts.
 
 --from <byte> resumes after the line that starts at that byte offset: pass
 the "at" of the last event you hold. That line's events and those before it
@@ -70,11 +86,14 @@ Examples:
   agent transcript ~/.claude/projects/-home-user-shop/3f3a9c1e-7a2b-4c4d-9e0f-1a2b3c4d5e6f.jsonl --requests
 
 Flags:
-      --follow      Keep reading as the transcript grows, until interrupted
-      --from int    Resume after the line starting at this byte offset (the at of the last event you hold) (default -1)
-  -h, --help        help for transcript
-      --requests    Add the request channel: what each model call was sent
-      --until int   Leave out the lines starting at or after this byte offset (not with --follow) (default -1)
+      --follow           Keep reading as the transcript grows, until interrupted
+      --from int         Resume after the line starting at this byte offset (the at of the last event you hold) (default -1)
+  -h, --help             help for transcript
+      --requests         Add the request channel: what each model call was sent
+      --results string   A tool result: whole (its text and the harness's structured copy), once (its text only), or none (its status only) (default "whole")
+      --scrub            Drop pasted blocks, code, keys, credentials, sign-in URLs and tool inputs (always, for a dream's agent)
+      --talk             Only prompts, replies and tool calls, the calls without their output (--results none)
+      --until int        Leave out the lines starting at or after this byte offset (not with --follow) (default -1)
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

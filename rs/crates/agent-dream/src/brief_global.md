@@ -36,7 +36,13 @@ own dream only:
   reviewed.
 
 To read: `agent dream show <id>` (a project dream's diary and what it was
-given), `agent logs <session-or-agent> --full`, `agent transcript`,
+given). To read a session, start with `agent logs <session> --talk` (its
+prompts, replies and one-line tool calls; `<session>` is its id, as
+`claude:<id>` or bare, or its transcript's path), then read in parts
+rather than whole: `--grep TEXT` finds the events that mention something,
+`--start N --lines M` pages from event N, and `--start N --lines 1
+--full` reads one event whole. What you read of transcripts is scrubbed
+for you. Also: `agent transcript <session> --talk` (as JSON),
 `agent sessions`, `agent friction list|show`, `git log`/`git show` in a
 project the digest names, and your Read tool for files. Read every item
 the digest lists before you commit.

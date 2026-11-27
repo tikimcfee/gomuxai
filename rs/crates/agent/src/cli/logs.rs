@@ -22,8 +22,8 @@ use super::root::Ctx;
 // `agent logs`
 
 pub const DOC: Doc = Doc {
-    use_line: "logs <name>",
-    short: "Print what an agent did (prompts, replies, tool calls), even after cleanup",
+    use_line: "logs <name|session-id|path>",
+    short: "Print what an agent or session did (prompts, replies, tool calls), even after cleanup",
     long: r#"Logs prints an agent's last events, oldest first, one per line:
 
   12:04:31 prompt run the tests
@@ -40,6 +40,26 @@ system (a record of the CLI's own: turn timing, compaction, API errors,
 interrupts). Times are local. Text longer than a line is cut and marked
 "…", a command or path in its middle so its end shows; --full prints it
 whole, with each tool's output.
+
+Instead of an agent's name, give a session id (or the start of one only
+one session's id starts with; agent sessions lists them) or a
+transcript's path, for any session on this host, an agent's or not: logs
+then reads that one transcript.
+
+For a long session, read it in parts rather than whole:
+  --talk      only prompts, replies and tool calls, each call on one line
+              and its output left out (--full then prints prompts and
+              replies whole, still not tool output);
+  --grep TEXT only the events whose text, tool call or output contains
+              TEXT (ignoring case);
+  --start N   from the Nth event (of those --talk and --grep keep), --lines
+              of them, instead of the last --lines.
+With any of these, each line starts with its number (#N), and a hint
+says what part this is and the --start that reads on; --start N --lines
+1 --full reads one event whole.
+
+--scrub drops what may hold a secret or someone else's words, as agent
+transcript --scrub does; a dream's own agents always read logs scrubbed.
 
 --json prints the events as docs/EVENTS.md describes them, one JSON
 object per line: for each transcript, a session line, then its events
@@ -69,6 +89,9 @@ lines) and says on stderr how much was left out; --lines asks for fewer.
 Terminal controls are stripped from the text, as capture's are. For the
 live screen, use agent capture."#,
     example: r#"  agent logs researcher
+  agent logs 3f3a9c --talk --lines 200
+  agent logs 3f3a9c --grep "cargo test" --lines 20
+  agent logs 3f3a9c --talk --start 201 --lines 200
   agent logs researcher@hub --lines 20
   agent logs researcher --lines 10 --full
   agent logs researcher --terminal --lines 100"#,
@@ -93,6 +116,28 @@ pub struct Args {
     pub lines: i64,
     #[arg(long = "terminal", help = "Print the terminal log instead of the transcript")]
     pub terminal: bool,
+    #[arg(long = "talk", help = "Only prompts, replies and one-line tool calls, without tool output")]
+    pub talk: bool,
+    #[arg(
+        long = "scrub",
+        help = "Drop pasted blocks, code, keys, credentials and sign-in URLs from what it prints (always, for a dream's agent)"
+    )]
+    pub scrub: bool,
+    #[arg(
+        long = "grep",
+        value_name = "string",
+        default_value = "",
+        help = "Only events whose text, tool call or output contains this (ignoring case)"
+    )]
+    pub grep: String,
+    #[arg(
+        long = "start",
+        value_name = "int",
+        default_value = "0",
+        value_parser = flags::parse_int,
+        help = "Print from the Nth event (1 is the first) instead of the last --lines",
+    )]
+    pub start: i64,
     /// The positional arguments, checked against DOC.args.
     #[arg(hide = true)]
     pub args: Vec<String>,
@@ -109,9 +154,26 @@ pub fn run(ctx: &Ctx, args: &Args) -> anyhow::Result<()> {
         full: args.full,
         json: args.json,
         terminal: args.terminal,
+        talk: args.talk,
+        grep: args.grep.clone(),
+        start: args.start,
+        sessions: true,
+        scrub: args.scrub || in_dream(ctx),
     };
     opts.check()?;
+    if remote && opts.scrub {
+        anyhow::bail!(
+            "agent logs {} would read another host's transcript unscrubbed: --scrub (and a dream's agent) reads this host's only",
+            args.args[0]
+        );
+    }
     if remote {
+        if opts.parts() {
+            anyhow::bail!(
+                "--talk, --grep and --start read a transcript here, not over the bus: run agent logs on {}'s host",
+                r#ref.name
+            );
+        }
         let req = LogsRequest {
             agent: String::new(),
             lines: opts.lines,
@@ -139,6 +201,18 @@ pub struct LogsOptions {
     pub full: bool,
     pub json: bool,
     pub terminal: bool,
+    /// Only prompts, replies and one-line tool calls.
+    pub talk: bool,
+    /// Only events containing this, ignoring case ("" for all).
+    pub grep: String,
+    /// Print from this event (1-based, of those kept), 0 for the last lines.
+    pub start: i64,
+    /// The argument may be a session id or a transcript's path, not only an
+    /// agent's name: this host's own agent logs, never the bus's logs op.
+    pub sessions: bool,
+    /// Scrub what it prints (scrub_event): what a dream's agent, or a
+    /// person mining transcripts, reads.
+    pub scrub: bool,
 }
 
 impl LogsOptions {
@@ -146,10 +220,27 @@ impl LogsOptions {
         if self.lines < 1 {
             anyhow::bail!("--lines must be at least 1");
         }
+        if self.start < 0 {
+            anyhow::bail!("--start must be 1 or more (1 is the first event)");
+        }
         if self.json && (self.terminal || self.full) {
             anyhow::bail!("--json prints transcript events whole; it doesn't go with --terminal or --full");
         }
+        if self.scrub && self.terminal {
+            anyhow::bail!("--terminal prints the raw terminal log, which can't be scrubbed: read the transcript instead");
+        }
+        if self.parts() && (self.json || self.terminal) {
+            anyhow::bail!(
+                "--talk, --grep and --start pick events to print as lines; they don't go with --json or --terminal"
+            );
+        }
         Ok(())
+    }
+
+    /// Whether it reads a transcript in parts (--talk, --grep, --start):
+    /// it reads the whole transcript then, and numbers the lines.
+    pub fn parts(&self) -> bool {
+        self.talk || !self.grep.is_empty() || self.start > 0
     }
 }
 
@@ -164,14 +255,30 @@ fn text_chunk(text: String) -> LogsChunk {
 /// same, so agent logs name@host prints what logs prints there (Go:
 /// buildLogs).
 pub fn build_logs(ctx: &Ctx, name: &str, o: &LogsOptions) -> anyhow::Result<(Vec<LogsChunk>, String)> {
+    let svc: &AgentService = ctx.service()?;
+    let an_agent = agent_service::validate_agent_name(name).is_ok()
+        && (!svc.transcripts(name).is_empty() || svc.agent(name).is_ok() || log_exists(svc, name));
+    if !an_agent && o.sessions {
+        match session_logs(ctx, name, o) {
+            // A name no agent and no session has: the agent's error, which
+            // says what it might have meant.
+            Err(e)
+                if agent_service::validate_agent_name(name).is_ok()
+                    && format!("{e:#}").starts_with("no agent or session matches") => {}
+            res => return res,
+        }
+    }
     // The name becomes a path component.
     agent_service::validate_agent_name(name)?;
-    let svc: &AgentService = ctx.service()?;
     if o.terminal {
         return Ok((terminal_log_chunks(svc, name, o.lines)?, String::new()));
     }
 
-    let (sessions, why) = read_transcripts(svc, name, o.lines);
+    let read = if o.parts() { ALL_EVENTS as i64 } else { o.lines };
+    let (mut sessions, why) = read_transcripts(svc, name, read);
+    if o.scrub {
+        scrub_sessions(&mut sessions);
+    }
     if !why.is_empty() {
         if o.json {
             anyhow::bail!(
@@ -196,22 +303,228 @@ pub fn build_logs(ctx: &Ctx, name: &str, o: &LogsOptions) -> anyhow::Result<(Vec
             String::new(),
         ));
     }
+    if o.parts() {
+        return Ok(part_chunks(&sessions, o));
+    }
     let mut chunks = Vec::new();
     for (i, s) in sessions.iter().enumerate() {
         if i > 0 {
-            chunks.push(LogsChunk {
-                text: format!(
-                    "--- session {} ({})\n",
-                    s.file.session.session_id, s.file.session.harness
-                ),
-                session: true,
-            });
+            chunks.push(session_chunk(s));
         }
         for e in &s.events {
             chunks.push(text_chunk(format_event(e, o.full) + "\n"));
         }
     }
     Ok((chunks, String::new()))
+}
+
+/// Whether the caller is a worker of an open dream: what it reads of
+/// transcripts is scrubbed, whatever it asks (Ivan's rule: anything that
+/// mines other sessions' transcripts scrubs them first).
+pub(crate) fn in_dream(ctx: &Ctx) -> bool {
+    super::dream::own_worker(ctx, "logs", super::dream::ANY_ROLE).is_ok()
+}
+
+/// Scrubs every event a read holds: the stream --json prints, and the
+/// events the lines print.
+fn scrub_sessions(sessions: &mut [LogsSession]) {
+    for s in sessions {
+        s.file.events.iter_mut().for_each(scrub_event);
+        s.events.iter_mut().for_each(scrub_event);
+    }
+}
+
+/// An event made safe to show to whoever mines transcripts, as a dream's
+/// digest makes its excerpts (agent_dream::scrub): pasted and tagged
+/// blocks, code, quotes, key blocks and lines with a credential, an email or
+/// a sign-in URL dropped from its text and tool output; a tool's input, its
+/// structured result and meta, a prompt's images and a request's body left
+/// out; a tool's target or detail with a credential replaced.
+pub(crate) fn scrub_event(e: &mut Event) {
+    use agent_dream::scrub::{excerpt, has_credential};
+    let all = usize::MAX;
+    if let Some(p) = &mut e.prompt {
+        p.text = excerpt(&p.text, all);
+        p.images.clear();
+    }
+    if let Some(t) = &mut e.think {
+        t.text = excerpt(&t.text, all);
+    }
+    if let Some(s) = &mut e.say {
+        s.text = excerpt(&s.text, all);
+    }
+    if let Some(t) = &mut e.tool {
+        t.input = None;
+        t.meta = None;
+        for f in [&mut t.tool_summary.target, &mut t.tool_summary.detail] {
+            if has_credential(f) {
+                *f = "[scrubbed]".to_string();
+            }
+        }
+        if let Some(r) = &mut t.result {
+            r.output = excerpt(&r.output, all);
+            r.structured = None;
+        }
+    }
+    if let Some(s) = &mut e.system {
+        s.text = excerpt(&s.text, all);
+        s.data = None;
+    }
+    if e.request.is_some() {
+        e.request = None;
+    }
+}
+
+/// How many events a read in parts asks for: all of them.
+const ALL_EVENTS: usize = 1 << 40;
+
+/// The line that marks where a session begins, after the first.
+fn session_chunk(s: &LogsSession) -> LogsChunk {
+    LogsChunk {
+        text: format!(
+            "--- session {} ({})\n",
+            s.file.session.session_id, s.file.session.harness
+        ),
+        session: true,
+    }
+}
+
+/// What agent logs prints for one session named by its id or its
+/// transcript's path (agent transcript's resolve_transcript finds it): any
+/// session on this host, an agent's or not.
+fn session_logs(ctx: &Ctx, arg: &str, o: &LogsOptions) -> anyhow::Result<(Vec<LogsChunk>, String)> {
+    if o.terminal {
+        anyhow::bail!(
+            "--terminal prints an agent's terminal log, and {} isn't an agent here: give the agent's name (agent list)",
+            strconv::quote(arg)
+        );
+    }
+    let target = super::transcript::resolve_transcript(ctx, arg)?;
+    if target.unwritten {
+        anyhow::bail!(
+            "session {} has no transcript yet: {} isn't written (Claude Code writes it at the first prompt)",
+            target.session.session_id,
+            target.path
+        );
+    }
+    let read = if o.parts() { ALL_EVENTS } else { o.lines as usize };
+    let f = transcript::read_file(&target.path, Some(target.reader), read)
+        .map_err(|e| anyhow::anyhow!("can't read {}: {}", target.path, read_error_text(&target.path, &e)))?;
+    let mut events = transcript::latest(&f.events);
+    if !o.parts() && events.len() > o.lines as usize {
+        events.drain(..events.len() - o.lines as usize);
+    }
+    let mut sessions = vec![LogsSession { file: f, events }];
+    if o.scrub {
+        scrub_sessions(&mut sessions);
+    }
+    if o.json {
+        return Ok((event_line_chunks(&sessions)?, String::new()));
+    }
+    if sessions[0].events.is_empty() {
+        return Ok((
+            vec![text_chunk(format!(
+                "Session {}'s transcript has no events yet ({}).\n",
+                target.session.session_id, target.path
+            ))],
+            String::new(),
+        ));
+    }
+    if o.parts() {
+        return Ok(part_chunks(&sessions, o));
+    }
+    let chunks = sessions[0]
+        .events
+        .iter()
+        .map(|e| text_chunk(format_event(e, o.full) + "\n"))
+        .collect();
+    Ok((chunks, String::new()))
+}
+
+/// A transcript read in parts: the events --talk and --grep keep, numbered
+/// from 1, and of those, --lines from --start (or the last --lines); with a
+/// hint saying which part this is and how to read on.
+fn part_chunks(sessions: &[LogsSession], o: &LogsOptions) -> (Vec<LogsChunk>, String) {
+    let needle = o.grep.to_lowercase();
+    let mut kept: Vec<(usize, &Event)> = Vec::new();
+    for (i, s) in sessions.iter().enumerate() {
+        for e in &s.events {
+            if o.talk && !is_talk(e) {
+                continue;
+            }
+            if !needle.is_empty() && !event_text(e).to_lowercase().contains(&needle) {
+                continue;
+            }
+            kept.push((i, e));
+        }
+    }
+    let total = kept.len();
+    let lines = o.lines as usize;
+    let first = if o.start > 0 {
+        (o.start as usize - 1).min(total)
+    } else {
+        total.saturating_sub(lines)
+    };
+    let last = (first + lines).min(total);
+    let mut chunks = Vec::new();
+    let mut session = None;
+    for (n, (i, e)) in kept[first..last].iter().enumerate() {
+        if session.is_some_and(|s| s != *i) {
+            chunks.push(session_chunk(&sessions[*i]));
+        }
+        session = Some(*i);
+        // --talk never prints tool output, --full or not.
+        let full = o.full && !(o.talk && e.tool.is_some());
+        let line = format_event(e, full);
+        chunks.push(text_chunk(format!("#{} {line}\n", first + n + 1)));
+    }
+    let what = match (o.talk, needle.is_empty()) {
+        (true, true) => "talk events".to_string(),
+        (true, false) => format!("talk events matching {}", strconv::quote(&o.grep)),
+        (false, false) => format!("events matching {}", strconv::quote(&o.grep)),
+        (false, true) => "events".to_string(),
+    };
+    let hint = if total == 0 {
+        format!("no {what}")
+    } else if first >= total {
+        format!("--start {} is past the last of {total} {what}", o.start)
+    } else if last < total {
+        format!(
+            "{what} {}-{last} of {total}; --start {} reads on",
+            first + 1,
+            last + 1
+        )
+    } else {
+        format!("{what} {}-{last} of {total}", first + 1)
+    };
+    (chunks, hint)
+}
+
+/// Whether --talk keeps an event: what was said, and the calls made.
+fn is_talk(e: &Event) -> bool {
+    e.prompt.is_some() || e.say.is_some() || e.tool.is_some()
+}
+
+/// The text --grep looks in: an event's text, and a tool call's name,
+/// target, detail and output.
+fn event_text(e: &Event) -> String {
+    if let Some(p) = &e.prompt {
+        return p.text.clone();
+    }
+    if let Some(t) = &e.think {
+        return t.text.clone();
+    }
+    if let Some(s) = &e.say {
+        return s.text.clone();
+    }
+    if let Some(t) = &e.tool {
+        let out = t.result.as_ref().map(|r| r.output.as_str()).unwrap_or("");
+        return format!("{}\n{}\n{}\n{out}", t.name, t.target, t.detail);
+    }
+    if let Some(s) = &e.system {
+        return s.text.clone();
+    }
+    String::new()
 }
 
 /// A transcript read for logs: the stream its lines make, and the events logs
@@ -732,11 +1045,13 @@ pub fn tail_log_lines(path: &str, n: usize) -> anyhow::Result<Vec<String>> {
 /// cut to fit a bus message (Go: serveLogs, in remote_ops.go). The bus's
 /// handler (remote_ops::bus_handler) calls it with a quiet Ctx of its own.
 pub fn serve_logs(ctx: &Ctx, _c: &Context, req: LogsRequest) -> anyhow::Result<LogsResponse> {
+    // An agent's name only: a peer reads no session or path here.
     let opts = LogsOptions {
         lines: req.lines,
         full: req.full,
         json: req.json,
         terminal: req.terminal,
+        ..Default::default()
     };
     opts.check()?;
     let (chunks, why) = build_logs(ctx, &req.agent, &opts)?;

@@ -599,3 +599,90 @@ fn test_typed_json_line() {
         "{\"type\":\"event\",\"id\":\"a\",\"op\":\"add\",\"seq\":0,\"at\":0,\"line\":0,\"kind\":\"say\",\"say\":{\"text\":\"a && <b>\\u2028\"}}\n"
     );
 }
+
+/// A transcript with a secret in a prompt, a second tool call, and a reply:
+/// what reading in parts and scrubbing are tested on.
+const PARTS_TRANSCRIPT: &str = r#"{"type":"user","sessionId":"sess-p","cwd":"/home/user/proj","timestamp":"2026-08-01T12:00:00Z","message":{"role":"user","content":"deploy it\nmy api_key is abc123\nthen report"}}
+{"type":"assistant","timestamp":"2026-08-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan the deploy","signature":"s"}]}}
+{"type":"assistant","timestamp":"2026-08-01T12:00:02Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]}}
+{"type":"user","timestamp":"2026-08-01T12:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"test a ... ok\nAuthorization: Bearer zzz\ntest b ... ok"}]}}
+{"type":"assistant","timestamp":"2026-08-01T12:00:04Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"make deploy"}}]}}
+{"type":"user","timestamp":"2026-08-01T12:00:05Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"deployed"}]}}
+{"type":"assistant","timestamp":"2026-08-01T12:00:06Z","message":{"role":"assistant","content":[{"type":"text","text":"Deployed; tests pass."}]}}
+"#;
+
+/// agent logs reads any session by its transcript's path or id, an agent's
+/// or not, and in parts: --talk, --grep and --start, numbered, with a hint
+/// that says how to read on.
+#[test]
+fn test_logs_session_in_parts() {
+    let mut env = setup_logs();
+    let dir = temp_dir("agent-logs-");
+    let path = temp_path(&dir, "sess-p.jsonl");
+    write_test_file(&path, PARTS_TRANSCRIPT);
+
+    let (res, out, _) = run_words(&mut env, &["logs", &path, "--lines", "1"]);
+    res.unwrap();
+    assert_eq!(out, "12:00:06 say    Deployed; tests pass.\n", "by path");
+
+    // --talk: no thinking, calls in one line.
+    let (res, out, hint) = run_words(&mut env, &["logs", &path, "--talk"]);
+    res.unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 4, "--talk:\n{out}");
+    assert!(lines[0].starts_with("#1 12:00:00 prompt deploy it"), "{out}");
+    assert!(lines[1].starts_with("#2 12:00:02 tool   Bash: cargo test → ok (3 lines)"), "{out}");
+    assert!(!out.contains("plan the deploy"), "--talk leaves thinking out:\n{out}");
+    assert!(hint.contains("talk events 1-4 of 4"), "hint: {hint}");
+
+    // --full with --talk prints prompts whole, never tool output.
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--talk", "--full"]);
+    assert!(out.contains("then report"), "--talk --full prompt whole:\n{out}");
+    assert!(!out.contains("test a ... ok"), "--talk --full prints no tool output:\n{out}");
+
+    // Paging.
+    let (_, out, hint) = run_words(&mut env, &["logs", &path, "--talk", "--start", "2", "--lines", "2"]);
+    assert_eq!(out.lines().count(), 2, "{out}");
+    assert!(out.starts_with("#2 "), "{out}");
+    assert!(hint.contains("2-3 of 4; --start 4 reads on"), "hint: {hint}");
+    let (_, out, hint) = run_words(&mut env, &["logs", &path, "--start", "9"]);
+    assert!(out.is_empty(), "{out}");
+    assert!(hint.contains("past the last"), "hint: {hint}");
+
+    // --grep looks in tool output too.
+    let (_, out, hint) = run_words(&mut env, &["logs", &path, "--grep", "DEPLOYED"]);
+    assert_eq!(out.lines().count(), 2, "--grep:\n{out}");
+    assert!(hint.contains("matching \"DEPLOYED\" 1-2 of 2"), "hint: {hint}");
+
+    // --scrub drops the credential lines, from the prompt and the output.
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--full", "--scrub"]);
+    assert!(!out.contains("abc123") && !out.contains("Bearer"), "--scrub:\n{out}");
+    assert!(out.contains("then report") && out.contains("test b ... ok"), "--scrub keeps the rest:\n{out}");
+    let (_, out, _) = run_words(&mut env, &["logs", &path, "--json", "--scrub"]);
+    assert!(!out.contains("abc123") && !out.contains("Bearer"), "--json --scrub:\n{out}");
+    assert!(!out.contains(r#""input""#), "--json --scrub drops tool input:\n{out}");
+
+    // What doesn't go together.
+    let (res, _, _) = run_words(&mut env, &["logs", &path, "--talk", "--json"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("don't go with --json"));
+    let (res, _, _) = run_words(&mut env, &["logs", &path, "--terminal"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("isn't an agent here"));
+    let (res, _, _) = run_words(&mut env, &["logs", "no/such/sess.jsonl"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("no transcript at"));
+}
+
+/// A peer reads only agents' logs through the bus's op: never a session or
+/// a path, and never in parts.
+#[test]
+fn test_logs_parts_and_scrub_stay_local() {
+    let mut env = setup_logs();
+    let (res, _, _) = run_words(&mut env, &["logs", "worker@elsewhere", "--talk"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("not over the bus"));
+    let (res, _, _) = run_words(&mut env, &["logs", "worker@elsewhere", "--scrub"]);
+    assert!(format!("{:#}", res.unwrap_err()).contains("reads this host's only"));
+    let opts = LogsOptions {
+        lines: 5,
+        ..Default::default()
+    };
+    assert!(!opts.sessions, "serve_logs's options read agents only");
+}

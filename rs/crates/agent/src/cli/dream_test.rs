@@ -153,7 +153,7 @@ fn dream_gather_run_list_and_show() {
         out.starts_with("Dream #1 (committed) on local\nOver:     every project in scope\nAgent:    dream-1\n"),
         "{out}"
     );
-    assert!(out.contains("  session  claude:old  claude session in shop: Old work\n           read: agent transcript old\n"), "{out}");
+    assert!(out.contains("  session  claude:old  claude session in shop: Old work\n           read: agent logs claude:old --talk\n"), "{out}");
     let out = run(&mut env, &["dream", "show"]);
     assert!(out.starts_with("Dream #3 (quiet)"), "the newest: {out}");
     let err = run_err(&mut env, &["dream", "show", "9"]);
@@ -682,4 +682,33 @@ fn rule_paths_are_the_read_and_edit_rules_paths() {
         super::rule_paths(&rules),
         vec!["/data/dreams/3", "/data/h.md", "/srv/app"]
     );
+}
+
+/// A dream's agent reads transcripts scrubbed, whatever it asks: logs and
+/// transcript drop credential lines and tool inputs for it (Ivan's rule).
+#[test]
+fn a_dreams_agent_reads_transcripts_scrubbed() {
+    crate::require_termd!();
+    let mut env = TestEnv::setup_cli_private();
+    env.forbid_bus();
+    let dir = crate::cli::testenv::temp_dir("dream-scrub-");
+    let path = dir.path().join("s.jsonl").to_string_lossy().into_owned();
+    write_test_file(
+        &path,
+        concat!(
+            r#"{"type":"user","sessionId":"s","cwd":"/home/user/p","timestamp":"2026-08-01T12:00:00Z","message":{"role":"user","content":"go\nmy password is hunter2\nthanks"}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-08-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}"#,
+            "\n",
+        ),
+    );
+    let out = run(&mut env, &["logs", &path, "--full"]);
+    assert!(out.contains("hunter2"), "a person reads it whole:\n{out}");
+    open_dream_as_agent(&mut env, &[]);
+    let out = run(&mut env, &["logs", &path, "--full"]);
+    assert!(!out.contains("hunter2") && out.contains("thanks"), "logs, as a dream's agent:\n{out}");
+    let out = run(&mut env, &["transcript", &path]);
+    assert!(!out.contains("hunter2") && !out.contains(r#""input""#), "transcript, as a dream's agent:\n{out}");
+    let err = run_err(&mut env, &["transcript", &path, "--requests"]);
+    assert!(err.contains("can't be scrubbed"), "{err}");
 }

@@ -363,7 +363,7 @@ fn session_item(s: &SessionIn) -> Item {
         key: s.key(),
         fingerprint: session_fingerprint(s),
         summary,
-        read: format!("agent transcript {}", s.session_id),
+        read: format!("agent logs {}:{} --talk", s.harness, s.session_id),
         new: true,
     }
 }

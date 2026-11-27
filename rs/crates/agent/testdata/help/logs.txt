@@ -15,6 +15,26 @@ interrupts). Times are local. Text longer than a line is cut and marked
 "…", a command or path in its middle so its end shows; --full prints it
 whole, with each tool's output.
 
+Instead of an agent's name, give a session id (or the start of one only
+one session's id starts with; agent sessions lists them) or a
+transcript's path, for any session on this host, an agent's or not: logs
+then reads that one transcript.
+
+For a long session, read it in parts rather than whole:
+  --talk      only prompts, replies and tool calls, each call on one line
+              and its output left out (--full then prints prompts and
+              replies whole, still not tool output);
+  --grep TEXT only the events whose text, tool call or output contains
+              TEXT (ignoring case);
+  --start N   from the Nth event (of those --talk and --grep keep), --lines
+              of them, instead of the last --lines.
+With any of these, each line starts with its number (#N), and a hint
+says what part this is and the --start that reads on; --start N --lines
+1 --full reads one event whole.
+
+--scrub drops what may hold a secret or someone else's words, as agent
+transcript --scrub does; a dream's own agents always read logs scrubbed.
+
 --json prints the events as docs/EVENTS.md describes them, one JSON
 object per line: for each transcript, a session line, then its events
 (a tool's result is an update of its call, sent again whole).
@@ -44,20 +64,27 @@ Terminal controls are stripped from the text, as capture's are. For the
 live screen, use agent capture.
 
 Usage:
-  agent logs <name> [flags]
+  agent logs <name|session-id|path> [flags]
 
 Examples:
   agent logs researcher
+  agent logs 3f3a9c --talk --lines 200
+  agent logs 3f3a9c --grep "cargo test" --lines 20
+  agent logs 3f3a9c --talk --start 201 --lines 200
   agent logs researcher@hub --lines 20
   agent logs researcher --lines 10 --full
   agent logs researcher --terminal --lines 100
 
 Flags:
-      --full        Print each event's text and tool output whole
-  -h, --help        help for logs
-      --json        Print the sessions and their events as JSON lines
-      --lines int   Number of events (or terminal lines) to print (default 50)
-      --terminal    Print the terminal log instead of the transcript
+      --full          Print each event's text and tool output whole
+      --grep string   Only events whose text, tool call or output contains this (ignoring case)
+  -h, --help          help for logs
+      --json          Print the sessions and their events as JSON lines
+      --lines int     Number of events (or terminal lines) to print (default 50)
+      --scrub         Drop pasted blocks, code, keys, credentials and sign-in URLs from what it prints (always, for a dream's agent)
+      --start int     Print from the Nth event (1 is the first) instead of the last --lines
+      --talk          Only prompts, replies and one-line tool calls, without tool output
+      --terminal      Print the terminal log instead of the transcript
 
 Global Flags:
       --backend string          Backend for spawn or adopt: claude, aider, agy, or shell (spawn requires it or --backend-config; adopt auto-detects)

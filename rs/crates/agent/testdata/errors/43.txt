@@ -55,7 +55,7 @@ Status and waiting:
   approve     Answer yes to an agent's permission prompt
   deny        Answer no to an agent's permission prompt
   capture     Print an agent's screen and recent scrollback
-  logs        Print what an agent did (prompts, replies, tool calls), even after cleanup
+  logs        Print what an agent or session did (prompts, replies, tool calls), even after cleanup
   transcript  Print one session's events as JSON lines; --follow streams them as they happen
   events      Stream agent status events from the bus (runs until Ctrl-C)
   report      Record an agent's status by hand (claude/agy agents report automatically)

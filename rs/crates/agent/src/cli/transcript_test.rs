@@ -792,6 +792,9 @@ fn transcript_args(arg: &str, follow: bool) -> Args {
         follow,
         from: -1,
         requests: false,
+        talk: false,
+        results: "whole".to_string(),
+        scrub: false,
         until: -1,
         args: vec![arg.to_string()],
     }
@@ -1053,4 +1056,83 @@ fn test_reply_with_line_separator_is_encoded_as_go_does() {
         assert!(say.contains(want), "{words:?}: {say}");
         assert!(!say.contains('\u{2028}') && !say.contains('\u{2029}'), "{words:?}: {say}");
     }
+}
+
+/// --talk keeps prompts, replies and calls (without input or output);
+/// --results once drops the structured copy; --scrub drops credentials and
+/// tool inputs.
+#[test]
+fn test_transcript_shapes() {
+    use agent_transcript::{PromptEvent, SayEvent, ThinkEvent, ToolEvent, ToolResult, RawJson};
+    let tool = |out: &str| Event {
+        id: "t".into(),
+        kind: "tool".into(),
+        tool: Some(ToolEvent {
+            name: "Bash".into(),
+            input: Some(RawJson::from_json_str(r#"{"command":"make deploy"}"#).unwrap()),
+            result: Some(ToolResult {
+                status: "ok".into(),
+                output: out.into(),
+                structured: Some(RawJson::from_json_str(r#"{"stdout":"x"}"#).unwrap()),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let think = Event {
+        kind: "think".into(),
+        think: Some(ThinkEvent {
+            text: "hmm".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let talk = Shape {
+        talk: true,
+        results: Results::parse("whole", true).unwrap(),
+        scrub: false,
+    };
+    assert!(talk.apply(think.clone()).is_none(), "--talk drops thinking");
+    let t = talk.apply(tool("lots of output")).unwrap().tool.unwrap();
+    assert!(t.input.is_none(), "--talk drops the input");
+    let r = t.result.unwrap();
+    assert_eq!((r.status.as_str(), r.output.as_str(), r.structured.is_none()), ("ok", "", true));
+    let prompt = Event {
+        kind: "prompt".into(),
+        prompt: Some(PromptEvent {
+            text: "hi".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(talk.apply(prompt).is_some());
+    let say = Event {
+        kind: "say".into(),
+        say: Some(SayEvent {
+            text: "done".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(talk.apply(say).is_some());
+
+    let once = Shape {
+        results: Results::parse("once", false).unwrap(),
+        ..Default::default()
+    };
+    let r = once.apply(tool("text")).unwrap().tool.unwrap().result.unwrap();
+    assert_eq!((r.output.as_str(), r.structured.is_none()), ("text", true));
+    let r = once.apply(tool("")).unwrap().tool.unwrap().result.unwrap();
+    assert!(r.structured.is_some(), "once keeps the structured copy when there is no text");
+    assert!(Results::parse("some", false).is_err());
+
+    let scrub = Shape {
+        scrub: true,
+        ..Default::default()
+    };
+    let t = scrub.apply(tool("fine\npassword: hunter2\nalso fine")).unwrap().tool.unwrap();
+    assert!(t.input.is_none(), "--scrub drops the input");
+    let r = t.result.unwrap();
+    assert_eq!(r.output, "fine\nalso fine");
+    assert!(r.structured.is_none());
 }

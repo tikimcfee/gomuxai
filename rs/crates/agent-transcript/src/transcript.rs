@@ -223,7 +223,7 @@ impl Tail {
             self.kept.remove(&dropped);
             self.cut = true;
         }
-        if self.stream.len() > 2 * self.n.saturating_add(512) {
+        if self.stream.len() > self.n.saturating_add(512).saturating_mul(2) {
             self.stream = self.events();
         }
     }

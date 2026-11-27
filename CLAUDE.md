@@ -331,6 +331,8 @@ read its lines from a script.
 ```bash
 agent state get helper _result     # a Claude or agy agent's final reply for its last turn
 agent logs helper                  # what it did: prompts, tool calls, replies
+agent logs 3f3a9c --talk           # any session, by id or path: prompts, replies, one-line calls
+agent logs 3f3a9c --grep "cargo test" --lines 20   # a long one in parts (--start N pages)
 agent capture helper --lines 100   # its screen now
 ```
 

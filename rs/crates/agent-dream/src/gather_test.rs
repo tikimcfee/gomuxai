@@ -109,7 +109,7 @@ fn sessions_filtered_and_oldest_first() {
     let g = gather(&f, &cur).unwrap();
     assert_eq!(keys(&g), ["session:claude:old", "session:claude:new"]);
     assert!(!g.quiet);
-    assert_eq!(g.items[0].read, "agent transcript old");
+    assert_eq!(g.items[0].read, "agent logs claude:old --talk");
     assert_eq!(g.counts(), [("session", 2)]);
     // The evidence reads each session's transcript, a subagent's under its
     // parent's key.
