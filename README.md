@@ -1,5 +1,11 @@
 # gomuxai
 
+> **This project has moved to [rmuxai](https://github.com/tikimcfee/rmuxai).**
+> Development continues there, as one Rust workspace with a fresh history.
+> This repository is kept for reference: it holds the earlier history and the
+> Go source of `agent-busd` (`busd/`), the bus server hosts keep running until
+> its Rust replacement lands in rmuxai. Nothing new is merged here.
+
 `agent` is a CLI that runs AI coding agents (Claude Code, agy, aider, or any
 CLI you describe in JSON) in their own `g3d-termd` sessions, and lets them
 coordinate: spawn helpers, message each other, wait on each other, share
